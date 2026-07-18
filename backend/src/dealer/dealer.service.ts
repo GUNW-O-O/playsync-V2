@@ -76,12 +76,19 @@ export class DealerService {
       if (blind.isBreak) {
         throw new Error('휴식 상태입니다.');
       }
-      // 시작할 수 없는 상태면 아무것도 건드리지 않고 돌아간다.
+      // 시작할 수 없는 상태면 아무것도 건드리지 않고 거절한다.
+      //
       // 이 검사가 잡 제거보다 뒤로 가면, 이미 진행 중인 핸드에서 액션을
       // 기다리던 플레이어의 타이머를 지우고 나가게 된다 — 아무도 타이머가
       // 없는 상태가 되어 그 유저가 자리를 비우면 라운드가 끝나지 않는다.
-      if (!state || state.phase !== GamePhase.WAITING) {
-        return;
+      //
+      // 조용한 `return`이 아니라 `throw`인 이유: 실패를 undefined로 표현하면
+      // 게이트웨이가 그걸 renderGame으로 브로드캐스트해 테이블 전원의 상태를
+      // undefined로 덮는다. 딜러의 오조작 한 번에 전 화면이 날아가는 셈이다.
+      // 실패는 예외로 올리고 경계에서 잡는다.
+      if (!state) throw new Error('테이블을 찾을 수 없습니다.');
+      if (state.phase !== GamePhase.WAITING) {
+        throw new Error('대기 상태가 아닙니다.');
       }
 
       const ante = blind.blindStructure[blind.currentBlindLv].ante;

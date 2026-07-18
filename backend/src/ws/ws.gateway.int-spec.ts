@@ -62,13 +62,22 @@ describe('WsGateway 인바운드 경계', () => {
     };
   }
 
-  /** 최소한의 가짜 소켓. 거부는 close(1008)로 관찰한다. */
-  function makeClient() {
-    return {
+  /**
+   * 최소한의 가짜 소켓. 거부는 close(1008)로 관찰한다.
+   *
+   * 닫힌 소켓에 send하면 던진다 — `ws`가 실제로 그렇게 동작한다. 브로드캐스트가
+   * 이걸 걸러내지 않으면 죽은 소켓 하나가 루프를 중단시켜 뒤에 있는 멀쩡한
+   * 클라이언트들이 상태를 못 받는다.
+   */
+  function makeClient(readyState = 1) {
+    const client: any = {
       close: jest.fn(),
-      send: jest.fn(),
-      readyState: 1,
-    } as any;
+      send: jest.fn(() => {
+        if (client.readyState !== 1) throw new Error('WebSocket is not open');
+      }),
+      readyState,
+    };
+    return client;
   }
 
   function makeRequest(query: string, origin?: string) {
@@ -311,15 +320,90 @@ describe('WsGateway 인바운드 경계', () => {
       expect(result).toEqual({ event: 'error', data: '휴식 상태입니다.' });
     });
 
-    it('상태를 반환하지 않는 명령에도 undefined를 브로드캐스트하지 않는다', async () => {
-      // startPreFlop은 시작할 수 없는 상태면 undefined를 반환한다.
+    it('시작할 수 없는 상태는 에러로 돌아온다', async () => {
+      // 예전에는 startPreFlop이 undefined를 반환했고 게이트웨이가 `if (updatedState)`로
+      // 그걸 걸렀다. 지금은 실패가 예외로만 표현되므로 "상태 없이 성공한" 반환값
+      // 자체가 존재하지 않는다 — 걸러낼 것이 없어졌다.
       const client = await connect(dealerToken(TABLE));
-      dealer.startPreFlop.mockResolvedValueOnce(undefined);
+      dealer.startPreFlop.mockRejectedValueOnce(new Error('대기 상태가 아닙니다.'));
       client.send.mockClear();
 
-      await gateway.handleDealerAction(client, { action: 'START_PRE_FLOP' });
+      const result = await gateway.handleDealerAction(client, { action: 'START_PRE_FLOP' });
 
+      expect(result).toEqual({ event: 'error', data: '대기 상태가 아닙니다.' });
       expect(client.send).not.toHaveBeenCalled();
+    });
+  });
+  describe('딜러 명령 실패', () => {
+    it('실패하면 아무에게도 브로드캐스트하지 않는다', async () => {
+      // 조용한 return이 undefined를 만들어 renderGame으로 흘러가면, 테이블
+      // 전원의 게임 상태가 undefined로 덮인다. 딜러의 실수 한 번에 전 화면이
+      // 날아가는 셈이다.
+      const dealerClient = await connect(dealerToken(TABLE));
+      const player = await connect(playerToken('alice'));
+      dealer.startPreFlop.mockRejectedValue(new Error('대기 상태가 아닙니다.'));
+      jest.clearAllMocks();
+
+      const res = await gateway.handleDealerAction(dealerClient, { action: 'START_PRE_FLOP' });
+
+      expect(res).toEqual({ event: 'error', data: '대기 상태가 아닙니다.' });
+      expect(player.send).not.toHaveBeenCalled();
+    });
+
+    it('성공하면 테이블 전원에게 브로드캐스트한다', async () => {
+      const dealerClient = await connect(dealerToken(TABLE));
+      const player = await connect(playerToken('alice'));
+      dealer.startPreFlop.mockResolvedValue(makeState());
+      jest.clearAllMocks();
+
+      await gateway.handleDealerAction(dealerClient, { action: 'START_PRE_FLOP' });
+
+      expect(player.send).toHaveBeenCalledTimes(1);
+      const sent = JSON.parse(player.send.mock.calls[0][0]);
+      expect(sent.event).toBe('renderGame');
+      expect(sent.data).not.toBeUndefined();
+    });
+  });
+
+  describe('브로드캐스트 위생', () => {
+    it('닫힌 소켓에는 보내지 않는다', async () => {
+      const open = await connect(playerToken('alice'));
+      const closed = await connect(playerToken('bob'));
+      closed.readyState = 3;
+      jest.clearAllMocks();
+
+      gateway.handleGameStateUpdated({ tableId: TABLE, state: makeState() });
+
+      expect(open.send).toHaveBeenCalledTimes(1);
+      expect(closed.send).not.toHaveBeenCalled();
+    });
+
+    it('앞선 소켓이 닫혀 있어도 뒤 소켓은 상태를 받는다', async () => {
+      // 죽은 소켓에 send하면 ws가 던진다. forEach 안에서 던지면 루프가
+      // 통째로 중단되어, 뒤에 있는 멀쩡한 클라이언트들이 상태를 못 받는다.
+      const closed = await connect(playerToken('alice'));
+      const open = await connect(playerToken('bob'));
+      closed.readyState = 3;
+      jest.clearAllMocks();
+
+      gateway.handleGameStateUpdated({ tableId: TABLE, state: makeState() });
+
+      expect(open.send).toHaveBeenCalledTimes(1);
+    });
+
+    it('닫힌 소켓은 세션에서 정리된다', async () => {
+      const closed = await connect(playerToken('alice'));
+      await connect(playerToken('bob'));
+      closed.readyState = 3;
+
+      gateway.handleGameStateUpdated({ tableId: TABLE, state: makeState() });
+
+      // 정리됐다면 다시 열려도 이 테이블 브로드캐스트를 받지 않는다.
+      closed.readyState = 1;
+      jest.clearAllMocks();
+      gateway.handleGameStateUpdated({ tableId: TABLE, state: makeState() });
+
+      expect(closed.send).not.toHaveBeenCalled();
     });
   });
 });
