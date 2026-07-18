@@ -1,5 +1,5 @@
 'use client'
-import { ActionType } from "@/app/types/game";
+import { PlayerActionType } from "@playsync/contract";
 import ActionTimer from "@/component/ActionTimer";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -142,19 +142,21 @@ function PlayerSection({ state, mySeatIndex, onAction, rebuyData, onRebuyRespons
       <div className="grid grid-cols-2 gap-2">
         {goingToAllIn ? (
           <>
-            <button onClick={() => onAction('PLAYER_ACTION', { action: ActionType.CALL, amount: myPlayer?.stack })} className="h-14 bg-rose-900 rounded-xl font-black">ALL-IN TO CALL</button>
-            <button onClick={() => onAction('PLAYER_ACTION', { action: ActionType.FOLD })} className="h-14 bg-red-700 rounded-xl font-black">FOLD</button>
+            {/* 금액을 보내지 않는다. 엔진이 콜 금액을 스택으로 캡하므로 스택이
+                모자라면 그대로 올인 콜이 된다. 보내던 amount는 읽히지 않았다. */}
+            <button onClick={() => onAction('PLAYER_ACTION', { action: PlayerActionType.CALL })} className="h-14 bg-rose-900 rounded-xl font-black">ALL-IN TO CALL</button>
+            <button onClick={() => onAction('PLAYER_ACTION', { action: PlayerActionType.FOLD })} className="h-14 bg-red-700 rounded-xl font-black">FOLD</button>
           </>
         ) : (
           <>
-            <button disabled={!canRaise} onClick={() => onAction('PLAYER_ACTION', { action: ActionType.RAISE, amount: raiseVal })} className="h-14 bg-indigo-700 rounded-xl font-black text-sm disabled:opacity-30">RAISE TO {raiseVal.toLocaleString()}</button>
-            <button onClick={() => onAction('PLAYER_ACTION', { action: ActionType.RAISE, amount: myPlayer?.stack + myPlayer?.bet })} className="h-14 bg-rose-900 rounded-xl font-black">ALL-IN</button>
+            <button disabled={!canRaise} onClick={() => onAction('PLAYER_ACTION', { action: PlayerActionType.RAISE, amount: raiseVal })} className="h-14 bg-indigo-700 rounded-xl font-black text-sm disabled:opacity-30">RAISE TO {raiseVal.toLocaleString()}</button>
+            <button onClick={() => onAction('PLAYER_ACTION', { action: PlayerActionType.RAISE, amount: myPlayer?.stack + myPlayer?.bet })} className="h-14 bg-rose-900 rounded-xl font-black">ALL-IN</button>
             {canCheck ? (
-              <button onClick={() => onAction('PLAYER_ACTION', { action: ActionType.CHECK })} className="h-14 bg-slate-700 rounded-xl font-black border-2 border-emerald-500">CHECK</button>
+              <button onClick={() => onAction('PLAYER_ACTION', { action: PlayerActionType.CHECK })} className="h-14 bg-slate-700 rounded-xl font-black border-2 border-emerald-500">CHECK</button>
             ) : (
-              <button onClick={() => onAction('PLAYER_ACTION', { action: ActionType.CALL })} className="h-14 bg-blue-700 rounded-xl font-black">CALL ({Math.min(needsToCall, myPlayer?.stack).toLocaleString()})</button>
+              <button onClick={() => onAction('PLAYER_ACTION', { action: PlayerActionType.CALL })} className="h-14 bg-blue-700 rounded-xl font-black">CALL ({Math.min(needsToCall, myPlayer?.stack).toLocaleString()})</button>
             )}
-            <button onClick={() => onAction('PLAYER_ACTION', { action: ActionType.FOLD })} className="h-14 bg-red-700 rounded-xl font-black">FOLD</button>
+            <button onClick={() => onAction('PLAYER_ACTION', { action: PlayerActionType.FOLD })} className="h-14 bg-red-700 rounded-xl font-black">FOLD</button>
           </>
         )}
       </div>

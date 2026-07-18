@@ -1,13 +1,25 @@
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { JwtService } from '@nestjs/jwt';
 import { ConnectedSocket, MessageBody, OnGatewayConnection, OnGatewayDisconnect, SubscribeMessage, WebSocketGateway } from '@nestjs/websockets';
+import { Role } from '@prisma/client';
+import { DealerActionSchema, PlayerActionSchema, RebuyResponseSchema } from '@playsync/contract';
 import { DealerService } from 'src/dealer/dealer.service';
 import { PlaysyncService } from 'src/playsync/playsync.service';
 import { RedisService } from 'src/redis/redis.service';
 
+/**
+ * 브라우저를 경유한 접속에만 적용된다. 기본값은 개발용 프론트다.
+ */
+function allowedOrigins(): string[] {
+  const configured = process.env.WS_ALLOWED_ORIGINS;
+  if (!configured) return ['http://localhost:3000'];
+  return configured.split(',').map((o) => o.trim()).filter(Boolean);
+}
+
+// 여기에 cors 옵션을 주지 않는다. WsAdapter(네이티브 ws)는 그 옵션을 무시하므로
+// 설정해 두면 막고 있다는 착각만 남는다. Origin은 핸드셰이크에서 직접 본다.
 @WebSocketGateway({
   path: '/playsync',
-  cors: true
 })
 export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
@@ -32,23 +44,65 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     sessions.add(client);
   }
 
+  /**
+   * 브라우저는 WebSocket에 same-origin 정책을 강제하지 않는다. 다른 사이트가
+   * 피해자의 브라우저를 시켜 이 엔드포인트를 열게 하는 것(CSWSH)을 막으려면
+   * 핸드셰이크의 Origin을 서버가 직접 봐야 한다.
+   *
+   * Origin이 아예 없으면 통과시킨다 — 좌석 태블릿처럼 브라우저가 아닌
+   * 클라이언트는 이 헤더를 보내지 않는다. 즉 이 검사는 브라우저를 경유한
+   * 접속만 막는다. 그 외의 접근을 막는 것은 토큰과 아래의 소속 검증이다.
+   */
+  private assertAllowedOrigin(origin?: string) {
+    if (!origin) return;
+    if (!allowedOrigins().includes(origin)) {
+      throw new Error(`허용되지 않은 출처입니다: ${origin}`);
+    }
+  }
+
+  /**
+   * 이 접속이 이 테이블을 볼 자격이 있는지 확인한다.
+   *
+   * 어느 쪽도 클라이언트가 보낸 값을 근거로 삼지 않는다. 딜러는 로그인 시
+   * 서명된 토큰의 tableId를, 플레이어는 서버가 들고 있는 스냅샷의 좌석을 본다.
+   */
+  private async assertTableAccess(payload: any, tableId: string) {
+    if (payload.role === Role.DEALER) {
+      // 토큰의 tableId는 loginDealer가 서명해 넣은 값이고, 쿼리의 tableId는
+      // 클라이언트가 고른 값이다. 대조하지 않으면 A테이블 딜러가 B테이블의
+      // 핸드 시작·킥·승자 지정 권한을 그대로 얻는다. 승자는 계산되는 값이
+      // 아니라 딜러가 입력하는 값이라 사후에 검증할 정답도 없다.
+      if (payload.tableId !== tableId) {
+        throw new Error('토큰에 없는 테이블입니다.');
+      }
+      return;
+    }
+
+    const state = await this.redis.getSnapShot(tableId);
+    if (!state) throw new Error('테이블을 찾을 수 없습니다.');
+
+    const isSeated = state.players.some((p) => p?.id === payload.sub);
+    if (!isSeated) throw new Error('이 테이블의 좌석이 없습니다.');
+  }
+
   // 1. 연결 시 토큰 검증 및 테이블 입장
   async handleConnection(client: WebSocket, request: any) {
     try {
       const url = new URL(request.url, `http://${request.headers['host']}`);
       const tableId = url.searchParams.get('tableId');
       const token = url.searchParams.get('token');
-      let tournamentId = url.searchParams.get('tournamentId');
+      const tournamentId = url.searchParams.get('tournamentId');
+
+      this.assertAllowedOrigin(request.headers['origin']);
 
       if (!token) throw new Error('필수 정보 누락');
       // JWT 검증 (딜러 토큰이든 유저 토큰이든 JwtService가 해석)
       const payload = await this.jwtService.verifyAsync(token);
-      
+
       // 소켓 객체에 유저 정보 저장 (나중에 액션 시 사용)
       (client as any).userId = payload.sub;
       (client as any).role = payload.role;
       if (payload.tournamentId) {
-        console.log('토큰 검증 토너먼트', payload.tournamentId);
         (client as any).tournamentId = payload.tournamentId;
       }
 
@@ -56,19 +110,20 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       if (tournamentId && !tableId) {
         (client as any).tournamentId = tournamentId;
         this.addToMap(this.tournamentSessions, tournamentId, client);
-        console.log(`자리예매토너먼트: ${tournamentId}`);
         return; // 예매 로직만 수행하므로 여기서 종료
       }
 
       // 2. 테이블 진입 시 (게임 시작 후)
       if (tableId) {
+        await this.assertTableAccess(payload, tableId);
+
         (client as any).tableId = tableId;
         this.addToMap(this.tableSessions, tableId, client);
 
-        const updatedState = await this.redis.getSnapShot(tableId);
-        this.broadcastToTable(tableId, 'renderGame', updatedState);
-        console.log(`${payload.role} 플레이싱크 참여: ${tableId}`);
-        console.log(payload.tournamentId)
+        // 접속자 본인에게만 보낸다. 남이 접속했다고 테이블 전원이 같은 상태를
+        // 다시 받을 이유가 없다.
+        const state = await this.redis.getSnapShot(tableId);
+        client.send(JSON.stringify({ event: 'renderGame', data: state }));
       }
 
     } catch (err) {
@@ -145,8 +200,21 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   async handlePlayerAction(@ConnectedSocket() client: any, @MessageBody() data: any) {
     const { tableId, userId, role } = client;
 
+    // 딜러 토큰의 sub는 딜러 세션 id라 좌석과 매칭되지 않는다. 서비스가
+    // 걸러내기는 하지만, 권한 판단은 경계에서 명시적으로 하는 편이 읽기 쉽다.
+    if (role === Role.DEALER) {
+      return { event: 'error', data: '플레이어만 가능한 액션입니다.' };
+    }
+
+    // 스키마가 곧 화이트리스트다. TIME_OUT처럼 서버 내부에서만 만들어지는
+    // 액션은 애초에 스키마에 없으므로 여기서 걸린다.
+    const parsed = PlayerActionSchema.safeParse(data);
+    if (!parsed.success) {
+      return { event: 'error', data: '잘못된 액션입니다.' };
+    }
+
     try {
-      const updatedState = await this.playsync.handleAction(userId, tableId, { action: data.action, amount: data.amount });
+      const updatedState = await this.playsync.handleAction(userId, tableId, parsed.data);
 
       // 해당 테이블의 모든 인원에게 변경된 상태 브로드캐스트
       this.broadcastToTable(tableId, 'renderGame', updatedState);
@@ -159,25 +227,41 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   async handleDealerAction(@ConnectedSocket() client: any, @MessageBody() data: any) {
     const { tableId, role, tournamentId } = client;
 
-    if (role !== 'DEALER') return { event: 'error', data: '딜러만 가능한 액션입니다.' };
-    let updatedState;
+    if (role !== Role.DEALER) return { event: 'error', data: '딜러만 가능한 액션입니다.' };
 
-    switch (data.action) {
-      case 'START_PRE_FLOP':
-        updatedState = await this.dealer.startPreFlop(tournamentId, tableId);
-        break;
-      case 'RESOLVE_WINNERS':
-        updatedState = await this.dealer.resolveWinners(tableId, tournamentId, data.winnerUserIds);
-        break;
-      case 'DEALER_FOLD':
-        updatedState = await this.dealer.handleDealerAction(tournamentId, tableId, data.targetUserId, 'FOLD');
-        break;
-      case 'DEALER_KICK':
-        updatedState = await this.dealer.handleDealerAction(tournamentId, tableId, data.targetUserId, 'KICK');
-        break;
+    const parsed = DealerActionSchema.safeParse(data);
+    if (!parsed.success) {
+      return { event: 'error', data: '잘못된 딜러 명령입니다.' };
     }
+    const action = parsed.data;
 
-    this.broadcastToTable(tableId, 'renderGame', updatedState);
+    try {
+      let updatedState;
+
+      switch (action.action) {
+        case 'START_PRE_FLOP':
+          updatedState = await this.dealer.startPreFlop(tournamentId, tableId);
+          break;
+        case 'RESOLVE_WINNERS':
+          updatedState = await this.dealer.resolveWinners(tableId, tournamentId, action.winnerUserIds);
+          break;
+        case 'DEALER_FOLD':
+          updatedState = await this.dealer.handleDealerAction(tournamentId, tableId, action.targetUserId, 'FOLD');
+          break;
+        case 'DEALER_KICK':
+          updatedState = await this.dealer.handleDealerAction(tournamentId, tableId, action.targetUserId, 'KICK');
+          break;
+      }
+
+      // 상태를 돌려주지 않는 경우가 있다 — startPreFlop은 시작할 수 없는
+      // 상태면 아무것도 반환하지 않는다. 그대로 브로드캐스트하면 테이블
+      // 전원이 data 없는 renderGame을 받는다.
+      if (updatedState) {
+        this.broadcastToTable(tableId, 'renderGame', updatedState);
+      }
+    } catch (e) {
+      return { event: 'error', data: e.message };
+    }
   }
 
   // 타임아웃 프로세서
@@ -202,9 +286,16 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   @SubscribeMessage('REBUY_RESPONSE')
-  handleRebuyResponse(@ConnectedSocket() client: any, @MessageBody() data: { accept: boolean }) {
+  handleRebuyResponse(@ConnectedSocket() client: any, @MessageBody() data: any) {
+    const parsed = RebuyResponseSchema.safeParse(data);
+    // accept가 없으면 undefined가 그대로 흘러가 거절로 취급된다.
+    // 거절과 잘못된 요청은 구분되어야 한다.
+    if (!parsed.success) {
+      return { event: 'error', data: '잘못된 리바인 응답입니다.' };
+    }
+
     const userId = (client as any).userId;
-    this.eventEmitter.emit(`rebuy_res_${userId}`, data.accept);
+    this.eventEmitter.emit(`rebuy_res_${userId}`, parsed.data.accept);
   }
 
 }

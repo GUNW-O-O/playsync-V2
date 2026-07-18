@@ -38,16 +38,14 @@ export default function GameClient({ tableId, initialData, seatIndex, token, ini
 
   const sendAction = (type: 'PLAYER_ACTION' | 'DEALER_ACTION', payload: any = {}) => {
     if (socketRef.current?.readyState === WebSocket.OPEN) {
+      // token과 tableId는 싣지 않는다. 서버는 둘 다 읽지 않는다 — 핸드셰이크에서
+      // 이미 검증해 소켓에 박아 두었다. 매 액션마다 토큰을 흘려 보내면 로그
+      // 유출 표면만 넓어지고, 인바운드 스키마가 모르는 키로 거부한다.
       const message = {
         event: type, // 백엔드 @SubscribeMessage와 매칭
-        data: {
-          ...payload,      // action, amount, winnerUserIds 등이 담김
-          token,           // 검증용 토큰
-          tableId          // 대상 테이블 ID
-        }
+        data: payload, // action, amount, winnerUserIds 등
       };
 
-      console.log(`[WS Send] ${type}:`, message.data); // 디버깅용
       socketRef.current.send(JSON.stringify(message));
     } else {
       console.error("웹소켓 연결이 열려있지 않습니다.");
