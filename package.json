@@ -1,0 +1,19 @@
+{
+  "name": "playsync",
+  "version": "0.0.0",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "build:contract": "npm run build -w @playsync/contract",
+    "build": "npm run build:contract && npm run build -w backend && npm run build -w frontend",
+    "typecheck": "npm run build:contract && npm run typecheck -w backend && npm run typecheck -w frontend",
+    "dev:contract": "npm run dev -w @playsync/contract",
+    "dev:backend": "npm run start:dev -w backend",
+    "dev:frontend": "npm run dev -w frontend",
+    "test": "npm run test -w backend"
+  }
+}
