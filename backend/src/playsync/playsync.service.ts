@@ -10,6 +10,9 @@ import { ActionType, GamePhase, TablePlayer, TableState } from 'src/game-engine/
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 
+/** 한 턴에 주어지는 시간. 잡의 delay와 state.actionDeadline이 같은 값을 써야 한다. */
+const TURN_TIMEOUT_MS = 30000;
+
 @Injectable()
 export class PlaysyncService {
   constructor(
@@ -58,55 +61,129 @@ export class PlaysyncService {
     return table;
   }
 
-  async handleAction(userId: string, tableId: string, dto: PlayerActionDto) {
+  /**
+   * @param expectedTimerEpoch 타임아웃 프로세서가 넘기는 타이머 세대.
+   *   자기가 예약된 세대가 아니면 낡은 잡이므로 아무것도 하지 않는다.
+   *   플레이어의 WS 액션에는 없다.
+   */
+  async handleAction(
+    userId: string,
+    tableId: string,
+    dto: PlayerActionDto,
+    expectedTimerEpoch?: number,
+  ) {
+    return this.redis.withTableLock(tableId, async () => {
+      const state = await this.redis.getSnapShot(tableId);
+      if (!state) throw new Error(`Table ${tableId} not found`);
+
+      const playerIdx = state.players.findIndex(p => p?.id === userId);
+      if (playerIdx === -1) throw new Error('테이블에 없는 유저입니다.');
+
+      // 낡은 TIME_OUT은 큐도 상태도 건드리지 않고 돌아간다.
+      //
+      // 이 검사는 반드시 타임아웃 잡 제거보다 앞에 있어야 한다. 낡은 TIME_OUT이
+      // 도착한 시점에 큐에 있는 잡은 이미 "다음 플레이어"의 타이머다. 먼저 지우면
+      // 그 유저의 타이머가 사라지거나(제거만 하고 조기 반환) 30초가 처음부터 다시
+      // 시작된다(지우고 다시 등록). 앞은 라운드 데드락이고 뒤는 제한시간 연장이다.
+      if (dto.action === ActionType.TIME_OUT) {
+        const isStaleTurn = state.currentTurnSeatIndex !== playerIdx;
+        // 세대까지 봐야 하는 이유: 스트리트가 넘어가면 턴은 같은 유저에게
+        // 다시 돌아온다. 좌석만 보면 방금 30초를 받은 유저를 낡은 잡이
+        // 즉시 시간 초과시킨다.
+        const isStaleEpoch =
+          expectedTimerEpoch !== undefined &&
+          expectedTimerEpoch !== (state.timerEpoch ?? 0);
+
+        if (isStaleTurn || isStaleEpoch) return state;
+      }
+
+      // 판정 기준은 요청 도착 순서가 아니라 마감 시각이다.
+      // 태블릿에서 30초를 넘겨 누른 버튼은, 타임아웃 잡보다 먼저 도착하더라도
+      // 시간 초과다. actionDeadline은 그동안 프론트가 카운트다운을 그리는 데만
+      // 쓰였고 서버는 아무도 읽지 않았다.
+      const isExpired =
+        state.actionDeadline !== undefined && Date.now() > state.actionDeadline;
+
+      const userState = await this.redis.getUserContext(state.tournamentId, userId);
+      const isKicked = userState?.status === 'KICKED';
+
+      // 엔진 호출은 한 번뿐이다. 폴드와 원래 액션을 연달아 호출하면 두 번째가
+      // 턴이 넘어간 덕에 흡수될 뿐, 흡수를 보장하는 것은 아무것도 없다.
+      const effectiveAction = isKicked
+        ? ActionType.FOLD
+        : isExpired
+          ? ActionType.TIME_OUT
+          : dto.action;
+      const effectiveAmount =
+        effectiveAction === dto.action ? dto.amount : undefined;
+
+      const engine = new TableEngine(state);
+      await engine.act(playerIdx, effectiveAction, effectiveAmount);
+
+      // 타이머 교체는 반드시 검증을 모두 통과한 뒤에 한다. 조기 반환 경로는
+      // 이 함수를 부르지 않으므로 큐를 건드리지 않는다.
+      await this.scheduleTurnTimeout(tableId, state);
+
+      await this.redis.saveSnapShot(tableId, state);
+
+      // 호출자가 타임아웃 프로세서인 경우에만 emit한다. WS 경로는 게이트웨이가
+      // 반환값을 받아 직접 브로드캐스트하므로(ws.gateway.ts) 여기서 또 쏘면
+      // 같은 상태가 두 번 나간다. 프로세서에는 응답할 소켓이 없어서 emit이 필요하다.
+      if (dto.action === ActionType.TIME_OUT) {
+        this.eventEmitter.emit('game.state.updated', { tableId, state: state })
+      }
+      return state;
+    });
+  }
+
+  /**
+   * 현재 턴 유저의 타임아웃을 예약하고, 직전 세대의 잡을 폐기한다.
+   * 반드시 테이블 락 안에서, 모든 검증을 통과한 뒤에 부를 것 — state를 수정한다.
+   *
+   * 잡 id에 세대를 넣는 이유: 예전에는 `jobId`가 tableId로 고정이라, 제거에
+   * 실패한 상태에서 add를 하면 BullMQ가 같은 id의 잡이 이미 있다고 보고 조용히
+   * 무시했다. 그 잡이 끝나며 removeOnComplete로 사라지면 아무도 타이머가 없는
+   * 테이블이 남는다. 세대를 붙이면 add가 충돌하지 않고, 낡은 잡은 제거 성공
+   * 여부와 무관하게 세대 불일치로 스스로 폐기된다.
+   */
+  public async scheduleTurnTimeout(tableId: string, state: TableState) {
+    const prevEpoch = state.timerEpoch ?? 0;
+    await this.removeTimeoutJob(tableId, prevEpoch);
+    // 새 타이머를 걸지 않는 경우에도 세대는 올린다. 그래야 제거에 실패한
+    // 낡은 잡이 나중에 깨어나도 스스로 폐기된다.
+    state.timerEpoch = prevEpoch + 1;
+
+    const nextPlayer =
+      state.phase === GamePhase.SHOWDOWN || state.currentTurnSeatIndex === -1
+        ? null
+        : state.players[state.currentTurnSeatIndex];
+
+    if (!nextPlayer) {
+      state.actionDeadline = undefined;
+      return;
+    }
+
+    await this.timeoutQueue.add(
+      'player-timeout',
+      { tableId, userId: nextPlayer.id, timerEpoch: state.timerEpoch },
+      {
+        delay: TURN_TIMEOUT_MS,
+        jobId: `${tableId}-${state.timerEpoch}`,
+        removeOnComplete: true,
+        removeOnFail: true,
+      },
+    );
+    state.actionDeadline = Date.now() + TURN_TIMEOUT_MS;
+  }
+
+  /** 최선 노력. 이미 실행 중인 잡은 지울 수 없고, 그 경우는 세대 검사가 막는다. */
+  private async removeTimeoutJob(tableId: string, epoch: number) {
     try {
-      const oldJob = await this.timeoutQueue.getJob(tableId);
+      const oldJob = await this.timeoutQueue.getJob(`${tableId}-${epoch}`);
       if (oldJob) await oldJob.remove();
     } catch (e) {
       console.log('타임아웃 제거 실패');
     }
-    // Redis에서 상태 로드 및 엔진 초기화
-    const state = await this.redis.getSnapShot(tableId);
-    if (!state) throw new Error(`Table ${tableId} not found`);
-
-    const userState = await this.redis.getUserContext(state.tournamentId, userId);
-
-    const engine = new TableEngine(state);
-
-    // 엔진 액션 실행
-    const playerIdx = state.players.findIndex(p => p?.id === userId);
-    if (userState?.status.endsWith('KICKED')) {
-      await engine.act(playerIdx, ActionType.FOLD);
-    }
-    await engine.act(playerIdx, dto.action, dto.amount);
-
-    // 다음 턴 유저가 결정되었다면 그 유저를 위한 타임아웃 생성
-    if (state.phase !== GamePhase.SHOWDOWN && state.currentTurnSeatIndex !== -1) {
-      const nextPlayer = state.players[state.currentTurnSeatIndex];
-      if (nextPlayer) {
-        await this.timeoutQueue.add(
-          'player-timeout',
-          {
-            tableId: tableId,
-            userId: nextPlayer.id
-          },
-          {
-            delay: 30000,
-            jobId: tableId, // 테이블별 고유 ID로 덮어쓰기/관리
-            removeOnComplete: true,
-            removeOnFail: true,
-          }
-        );
-        state.actionDeadline = Date.now() + 30000;
-      }
-    }
-
-    // Redis 저장
-    await this.redis.saveSnapShot(tableId, state);
-    if (dto.action === ActionType.TIME_OUT) {
-      this.eventEmitter.emit('game.state.updated', { tableId, state: state })
-    }
-    return state;
   }
 
   public async syncTableInventoryToDb(state: TableState) {

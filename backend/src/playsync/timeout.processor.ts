@@ -12,26 +12,20 @@ export class TimeoutProcessor extends WorkerHost {
     super();
   }
 
-  async process(job: Job<{ tableId: string; userId: string }>) {
-    const {tableId, userId } = job.data;
+  async process(job: Job<{ tableId: string; userId: string; timerEpoch?: number }>) {
+    const { tableId, userId, timerEpoch } = job.data;
 
-    // 타임아웃 시점에 해당 유저가 여전히 그 테이블의 그 턴인지 다시 확인
+    // 여기서도 한 번 걸러 두면 불필요한 락 획득을 줄일 수 있다. 다만 이 검사는
+    // 락 밖이라 신뢰할 수 없다 — 진짜 판정은 handleAction이 락을 잡은 뒤에 한다.
     const state = await this.redis.getSnapShot(tableId);
     if (!state) return;
+    if (state.players[state.currentTurnSeatIndex]?.id !== userId) return;
 
-    const currentPlayer = state.players[state.currentTurnSeatIndex];
-
-    // 만약 이미 액션을 해서 턴이 넘어갔거나 유저가 바뀌었다면 무시
-    if (currentPlayer?.id !== userId) return;
-
-    // 자동 TIME_OUT 액션 실행
     await this.playsyncService.handleAction(
       userId,
       tableId,
-      {
-        action: ActionType.TIME_OUT,
-      }
+      { action: ActionType.TIME_OUT },
+      timerEpoch,
     );
-
   }
 }
