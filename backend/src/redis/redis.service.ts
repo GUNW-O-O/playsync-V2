@@ -80,12 +80,44 @@ export class RedisService {
     await this.redis.del(lockKey);
   }
 
+  /** 한 테이블의 좌석 수. 비트맵 길이가 곧 이 값이다. */
+  private static readonly SEAT_COUNT = 9;
+
+  /**
+   * 좌석 한 칸만 원자적으로 바꾸고 바뀐 비트맵을 돌려준다.
+   *
+   * 좌석 락은 좌석**별**이라 다른 좌석에 앉는 두 사람은 서로를 막지 않는다.
+   * `hget → 문자열 수정 → hset`이면 둘이 같은 비트맵을 읽고 각자 자기 비트만
+   * 세팅해 저장하므로, 나중에 쓴 쪽이 앞선 비트를 지운다. 실착석은 DB unique
+   * 제약이 막아주니 돈이 새지는 않지만, 예매 화면에 점유 좌석이 빈자리로 남아
+   * 앉을 수 없는 자리를 계속 클릭하게 된다.
+   *
+   * 게임 상태와 달리 좌석 비트는 서로 독립적이다. 필드 간 일관성을 지킬 게
+   * 없으므로 락(`withTableLock`)이 아니라 원자 연산이 맞다. 다만 비트맵이
+   * 해시 **필드**라 `SETRANGE`를 쓸 수 없어서(Redis에 `HSETRANGE`는 없다)
+   * 같은 일을 Lua로 한다. 키를 테이블별로 쪼개면 `SETRANGE`를 쓸 수 있지만,
+   * 그러면 좌석 현황 조회의 `hgetall` 한 번이 여러 번으로 늘어난다.
+   */
+  private static readonly UPDATE_SEAT_BIT = `
+    local bitmap = redis.call('hget', KEYS[1], ARGV[1])
+    local size = tonumber(ARGV[4])
+    if not bitmap then bitmap = string.rep('0', size) end
+    local idx = tonumber(ARGV[2])
+    if idx < 0 or idx >= #bitmap then
+      return redis.error_reply('seat index out of range')
+    end
+    local updated = string.sub(bitmap, 1, idx) .. ARGV[3] .. string.sub(bitmap, idx + 2)
+    redis.call('hset', KEYS[1], ARGV[1], updated)
+    redis.call('expire', KEYS[1], 86400)
+    return updated
+  `;
+
   // 테이블 초기생성
   async setSeatBitmap(tournamentId: string, tableId: string) {
     const key = `tournament:${tournamentId}:seat`;
     const field = `table:${tableId}`;
 
-    let bitmap = '000000000'
+    const bitmap = '0'.repeat(RedisService.SEAT_COUNT);
 
     await this.redis.hset(key, field, bitmap);
     await this.redis.expire(key, 86400);
@@ -95,14 +127,15 @@ export class RedisService {
     const key = `tournament:${tournamentId}:seat`;
     const field = `table:${tableId}`;
 
-    // 자리가 비었으면 0
-    let bitmap = await this.redis.hget(key, field) || "000000000";
-    const bitmapArray = bitmap.split("");
-    bitmapArray[seatIndex] = isOccupied ? "1" : "0";
-
-    await this.redis.hset(key, field, bitmapArray.join(""));
-    await this.redis.expire(key, 86400);
-    return bitmapArray.join("");
+    return (await this.redis.eval(
+      RedisService.UPDATE_SEAT_BIT,
+      1,
+      key,
+      field,
+      seatIndex,
+      isOccupied ? '1' : '0',
+      RedisService.SEAT_COUNT,
+    )) as string;
   }
 
   async getTournamentTables(tournamentId: string) {
