@@ -185,9 +185,13 @@ export class RedisService {
     return info ? info.dashboard : null;
   }
 
-  async setTournamentDashboard(id: string, dashboard: Dashboard) {
-    await this.redis.hset(`tournament:${id}:info`, 'dashboard', JSON.stringify(dashboard));
-  }
+  // 대시보드는 해시에 평탄화해서 저장한다(setTournamentMeta). 개별 필드를
+  // hincrby로 원자적으로 증감할 수 있고, 읽을 때는 hgetall 한 번으로 끝난다.
+  // JSON 한 덩어리로 두면 증감마다 읽고-고치고-쓰기가 되어 레이스가 생긴다.
+  //
+  // setTournamentDashboard는 이 규약을 어기는 유일한 세터였다 — 'dashboard'
+  // 필드에 JSON을 통째로 넣어서 hincrby도 못 하고 getFullTournamentInfo도
+  // 읽지 못했다. 프로덕션 호출자는 없었고 테스트만 쓰고 있었으므로 제거했다.
 
   async eliminatedPlayer(tournamentId: string, startStack: number, entryFee: number, playerCount: number) {
     const key = this.getInfoKey(tournamentId);
