@@ -1,0 +1,196 @@
+// schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// --- Enums ---
+
+enum Role {
+  USER
+  DEALER
+  STORE_ADMIN
+  PLATFORM_ADMIN
+}
+
+enum GameType {
+  TOURNAMENT
+  SIT_AND_GO
+}
+
+enum TransactionType {
+  CHARGE // 포인트 충전
+  BUY_IN // 게임 참가비
+  REBUY // 리바인/애드온
+  PRIZE // 상금 수령
+  REFUND // 취소 환불
+}
+
+enum TournamentStatus {
+  PENDING // 생성 직후, 바이인 대기
+  ONGOING // 게임 진행 중
+  SYNCING // 테이블 이동/밸런싱 대기 상태
+  FINISHED // 최종 종료 (영구 데이터 보존 상태)
+}
+
+enum PlayerStatus {
+  WAITING // 바이인 완료 후 대기
+  PLAYING // 테이블 착석 중
+  ELIMINATED // 탈락
+  AWARDED // 상금권 진입 후 종료
+}
+
+// --- Models ---
+
+model User {
+  id       String @id @default(uuid())
+  nickname String @unique
+  password String
+  points   Int    @default(0) // 실제 가용 포인트
+  role     Role   @default(USER)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tablePlayers             TablePlayer[]
+  stores                   Store[]
+  transactions             PointTransaction[]
+  tournamentParticipations TournamentParticipation[]
+}
+
+model PointTransaction {
+  id           String          @id @default(uuid())
+  userId       String
+  user         User            @relation(fields: [userId], references: [id])
+  amount       Int // 포인트 변동량
+  type         TransactionType
+  tournamentId String? // 어떤 게임 세션에서 발생했는지
+  description  String? // "1번 테이블 리바인" 등 비고
+  createdAt    DateTime        @default(now())
+}
+
+model Store {
+  id      String @id @default(uuid())
+  name    String @unique
+  ownerId String
+  owner   User   @relation(fields: [ownerId], references: [id])
+
+  tournaments     Tournament[]
+  blindStructures BlindStructure[]
+
+  createdAt DateTime @default(now())
+}
+
+model BlindStructure {
+  id   String @id @default(uuid())
+  name String @unique
+
+  structure Json // [{lv:1, sb:100, ante:false, duration:10}, ...]
+
+  storeId String
+  store   Store  @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  tournaments Tournament[]
+
+  createdAt DateTime @default(now())
+}
+
+model Tournament {
+  id     String           @id @default(uuid())
+  name   String
+  type   GameType         @default(TOURNAMENT)
+  status TournamentStatus @default(PENDING)
+
+  blindId        String
+  blindStructure BlindStructure @relation(fields: [blindId], references: [id])
+  entryFee       Int            @default(0)
+  startStack     Int            @default(0)
+  itmCount       Int            @default(3)
+
+  // 실시간 전광판용 데이터
+  rebuyUntil         Int     @default(0)
+  isRegistrationOpen Boolean @default(true) // 레지 마감 여부
+  totalBuyinAmount   Int     @default(0) // 바이인 누적 총 금액
+  activePlayers      Int     @default(0)
+  totalPlayers       Int     @default(0)
+  avgStack           Int     @default(0)
+
+  dealerOtp Int
+
+  storeId                 String
+  store                   Store                     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  tables                  Table[]
+  tablePlayers            TablePlayer[]
+  dealerSession           DealerSession?
+  tornamentParticipations TournamentParticipation[]
+
+  createdAt  DateTime  @default(now())
+  startedAt  DateTime?
+  finishedAt DateTime?
+}
+
+model Table {
+  id         String @id @default(uuid())
+  tableOrder Int    @default(autoincrement())
+
+  dealerId      String
+  dealerSession DealerSession @relation(fields: [dealerId], references: [id])
+  tournamentId  String
+  tournament    Tournament    @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+
+  tablePlayers TablePlayer[]
+
+  @@unique([tournamentId, id])
+}
+
+model TablePlayer {
+  id       String  @id @default(uuid())
+  nickname String?
+
+  tableId String
+  table   Table  @relation(fields: [tableId], references: [id], onDelete: Cascade)
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  seatPosition Int // 0~8 (9인테이블)
+  currentStack Int // 실시간 칩 스택
+
+  joinedAt     DateTime    @default(now())
+  tournamentId String?
+  tournament   Tournament? @relation(fields: [tournamentId], references: [id])
+
+  @@unique([tableId, seatPosition])
+  @@unique([tableId, userId])
+}
+
+model TournamentParticipation {
+  id           String     @id @default(uuid())
+  tournamentId String
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  status      PlayerStatus @default(WAITING)
+  buyInCount  Int          @default(1)
+  finalPlace  Int?
+  prizeAmount Int          @default(0)
+
+  createdAt DateTime @default(now())
+
+  @@unique([tournamentId, userId])
+}
+
+model DealerSession {
+  // 토너먼트id 로 otp 인증후 맞으면 반환 로컬스토리지에 저장.
+  id String @id @default(uuid())
+
+  tournamentId String     @unique
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  tables       Table[]
+}

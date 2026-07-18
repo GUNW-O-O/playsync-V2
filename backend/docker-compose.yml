@@ -1,0 +1,45 @@
+# docker-compose.yml
+version: '3.8'
+services:
+  db:
+    image: postgres:18
+    container_name: playsync-db
+    environment:
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
+      POSTGRES_DB: playsync
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql # 데이터 영구 저장
+  redis:
+    image: redis:7
+    container_name: playsync-redis
+    ports:
+      - "127.0.0.1:6379:6379"
+    command: redis-server --requirepass ${REDIS_PASSWORD} --appendonly yes --save 60 1 # 데이터 유실 방지(AOF 활성화)
+    volumes:
+      - redisdata:/data # Redis 데이터 영구 저장
+
+volumes:
+  pgdata:
+  redisdata:
+
+  # backend:
+  #   image: node:lts
+  #   container_name: backend
+  #   working_dir: /app
+  #   volumes:
+  #     - .:/app # 로컬 소스 코드와 컨테이너 동기화
+  #     # - /app/node_modules  <-- 로컬 node_modules 사용
+  #   ports:
+  #     - "3001:3001" # 로컬 3001 포트 → 컨테이너 3001 포트
+  #   environment:
+  #     DB_HOST: db
+  #     DB_PORT: 5432
+  #     DB_USER: root
+  #     DB_PASSWORD: 1234
+  #     DB_NAME: playsync
+  #   command: npm run start:dev # 개발용 핫 리로드
+  #   depends_on:
+  #     - db
