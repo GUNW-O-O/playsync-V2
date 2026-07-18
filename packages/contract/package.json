@@ -1,0 +1,23 @@
+{
+  "name": "@playsync/contract",
+  "version": "0.0.0",
+  "private": true,
+  "description": "백엔드와 프론트엔드가 공유하는 계약(스키마/타입). 경계를 넘는 것만 정의한다.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}

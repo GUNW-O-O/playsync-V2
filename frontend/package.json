@@ -6,9 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@playsync/contract": "*",
     "axios": "^1.13.6",
     "cookies-next": "^6.1.1",
     "js-cookie": "^3.0.5",
