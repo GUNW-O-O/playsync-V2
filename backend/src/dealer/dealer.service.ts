@@ -129,52 +129,71 @@ export class DealerService {
   }
 
   /**
-   * TTL 30초. 정산은 리바인 응답을 최대 15초 기다리므로 기본값(5초)으로는
-   * 작업 도중 락이 만료된다.
+   * 정산은 세 구간으로 나뉘고, 가운데만 락 밖이다.
    *
-   * 트레이드오프: 그동안 도착하는 유저 액션과 타임아웃 잡은 대기하다 실패한다.
-   * 핸드가 이미 끝난 시점(SHOWDOWN 이후)이라 게임 정합성에는 문제가 없지만,
-   * 사람을 기다리는 I/O를 락 안에 두는 것 자체가 옳은 구조는 아니다.
-   * 리바인 대기를 락 밖으로 빼는 것은 T5에서 따로 다룬다.
+   * 1. 팟 분배 — 락 안. 짧고 순수한 계산이다.
+   * 2. 리바인 응답 대기 — **락 밖.** 최대 15초짜리 사람 입력이다. 이걸 락 안에
+   *    두면 그동안 테이블 전체가 멎는다(그래서 예전엔 TTL을 30초로 늘려야 했다).
+   *    대신 1단계가 남긴 `HAND_END`가 문지기가 된다 — `startPreFlop`은 `WAITING`만
+   *    받으므로 이 구간에 다음 핸드가 시작되지 않는다.
+   * 3. 탈락 확정과 초기화 — 락 안. 스냅샷을 **다시 읽는다.** 2단계 동안 각 리바인이
+   *    자기 락을 잡고 스택을 반영했으므로, 1단계의 객체는 이미 낡았다.
    */
   async resolveWinners(tableId: string, tournamentId: string, winnerUserIds: string[]) {
-    return this.redis.withTableLock(tableId, async () => {
+    const tournamentInfo = await this.redis.getTournamentDashboard(tournamentId);
+    if (!tournamentInfo) throw new Error('예기치 못한 오류가 발생했습니다.');
+    // TODO : 보드하이 무승부로직
+    if (winnerUserIds.length === 0) throw new Error("유효한 승자가 없습니다.");
+
+    // 1. 팟 분배
+    const brokePlayerIds = await this.redis.withTableLock(tableId, async () => {
       const state = await this.redis.getSnapShot(tableId);
-      const tournamentInfo = await this.redis.getTournamentDashboard(tournamentId);
-      if (!state || !tournamentInfo) throw new Error('예기치 못한 오류가 발생했습니다.')
-      // TODO : 보드하이 무승부로직
-      if (winnerUserIds.length === 0) throw new Error("유효한 승자가 없습니다.");
-      const rebuyCallback = tournamentInfo.isRegistrationOpen
-        ? async (playerId: string) => {
-          return await this.playsync.processRebuy(
+      if (!state) throw new Error('예기치 못한 오류가 발생했습니다.');
+
+      const engine = new TableEngine(state);
+      await engine.resolveWinner(winnerUserIds);
+      await this.redis.saveSnapShot(tableId, state);
+
+      return state.players
+        .filter((p): p is TablePlayer => p != null && p.stack <= 0)
+        .map(p => p.id);
+    });
+
+    // 2. 리바인 — 락 밖. 전원에게 동시에 묻고 같은 마감을 준다.
+    //    수락한 사람은 남을 기다리지 않고 그 즉시 반영·전파된다.
+    if (tournamentInfo.isRegistrationOpen && brokePlayerIds.length > 0) {
+      await Promise.all(
+        brokePlayerIds.map(playerId =>
+          this.playsync.processRebuy(
             tournamentId,
             tableId,
             playerId,
             tournamentInfo.entryFee,
             tournamentInfo.startStack,
             tournamentInfo.tournamentName,
-            state
-          );
-        }
-        : undefined;
+          ),
+        ),
+      );
+    }
 
-      const engine = new TableEngine(state, rebuyCallback);
-      await engine.resolveWinner(winnerUserIds);
+    // 3. 탈락 확정 + 다음 핸드 준비
+    return this.redis.withTableLock(tableId, async () => {
+      const state = await this.redis.getSnapShot(tableId);
+      if (!state) throw new Error('예기치 못한 오류가 발생했습니다.');
 
-      const eliminatedPlayers = engine.state.players
-        .filter((p): p is TablePlayer => p != null && p.stack <= 0).slice();
+      // 리바인으로 살아난 사람은 여기서 이미 스택이 있다.
+      const eliminatedPlayers = state.players
+        .filter((p): p is TablePlayer => p != null && p.stack <= 0);
 
       await this.playsync.eliminatePlayer(tournamentId, tableId, eliminatedPlayers, tournamentInfo);
 
       const isTxSuccess = await this.playsync.syncTableInventoryToDb(state);
-      if (isTxSuccess) {
-        await engine.initTable();
-        await this.redis.saveSnapShot(tableId, state);
-        return state;
-      } else {
-        throw new Error('DB 동기화 실패');
-      }
-    }, 30000, 30000);
+      if (!isTxSuccess) throw new Error('DB 동기화 실패');
+
+      await new TableEngine(state).initTable();
+      await this.redis.saveSnapShot(tableId, state);
+      return state;
+    });
   }
 
 }

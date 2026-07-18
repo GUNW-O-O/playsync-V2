@@ -8,6 +8,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ActionType, GamePhase, TablePlayer, TableState } from 'src/game-engine/types';
 import { BlindField, Dashboard } from 'shared/types/tournamentMeta';
+import { TableEngine } from 'src/game-engine/table-engine';
 import { createTestRedis, flushTestRedis } from '../../test/helpers/redis';
 
 /**
@@ -62,7 +63,15 @@ describe('DealerService 동시성', () => {
     };
   }
 
-  async function seedBlind() {
+  /**
+   * 대시보드와 블라인드를 한 번에 심는다.
+   *
+   * `setTournamentMeta`를 쓰는 이유: 대시보드는 Redis 해시에 **평탄화**되어
+   * 저장되고 `getFullTournamentInfo`가 개별 필드를 읽는다. 다른 형태로 심으면
+   * 전부 기본값(`isRegistrationOpen: false`)으로 읽혀서, 테스트가 아무 말 없이
+   * 다른 시나리오를 검증하게 된다.
+   */
+  async function seedMeta(isRegistrationOpen = false) {
     const blind: BlindField = {
       isBreak: false,
       startedAt: Date.now(),
@@ -71,12 +80,8 @@ describe('DealerService 동시성', () => {
       serverTime: Date.now(),
       blindStructure: [{ lv: 1, sb: 100, ante: false, duration: 600 }],
     };
-    await redisService.setTournamentBlind(TOURNAMENT, blind);
-  }
-
-  async function seedDashboard() {
     const dashboard: Dashboard = {
-      isRegistrationOpen: false,
+      isRegistrationOpen,
       totalPlayer: 3,
       activePlayer: 3,
       totalBuyinAmount: 3000,
@@ -87,7 +92,7 @@ describe('DealerService 동시성', () => {
       startStack: 10000,
       itmCount: 1,
     };
-    await redisService.setTournamentDashboard(TOURNAMENT, dashboard);
+    await redisService.setTournamentMeta(TOURNAMENT, dashboard, blind);
   }
 
   function chipTotal(state: TableState): number {
@@ -119,8 +124,7 @@ describe('DealerService 동시성', () => {
 
   beforeEach(async () => {
     await flushTestRedis(redis);
-    await seedBlind();
-    await seedDashboard();
+    await seedMeta();
   });
 
   it('딜러 폴드가 겹쳐도 플레이어의 베팅이 사라지지 않는다', async () => {
@@ -182,23 +186,115 @@ describe('DealerService 동시성', () => {
     expect(after?.timestamp).toBe(before?.timestamp);
   });
 
-  it('승자 정산 중에는 테이블 락을 쥐고 있다', async () => {
-    // 정산은 리바인 응답을 최대 15초 기다리므로 TTL이 넉넉해야 한다.
-    // 이 구간에 유저 액션이 끼어들면 팟 분배와 스택 동기화가 어긋난다.
-    await redis.set(stateKey, JSON.stringify(makeState({ phase: GamePhase.SHOWDOWN, pot: 1000 })));
-
-    let lockTtlDuringResolve = -1;
-    jest
-      .spyOn(playsync, 'syncTableInventoryToDb')
-      .mockImplementation(async () => {
-        lockTtlDuringResolve = await redis.pttl(`lock:table:state:${TABLE}`);
-        return true;
+  describe('승자 정산', () => {
+    /** carol이 올인해서 지고 스택 0으로 남은 판. */
+    function showdownState() {
+      return makeState({
+        phase: GamePhase.SHOWDOWN,
+        pot: 1000,
+        currentTurnSeatIndex: -1,
+        players: [
+          makePlayer('alice', 0, { totalContributed: 500 }),
+          makePlayer('bob', 1),
+          makePlayer('carol', 2, { stack: 0, isAllIn: true, totalContributed: 500 }),
+        ],
       });
-    jest.spyOn(playsync, 'eliminatePlayer').mockResolvedValue(undefined);
+    }
 
-    await dealer.resolveWinners(TABLE, TOURNAMENT, ['alice']);
+    beforeEach(() => {
+      jest.spyOn(playsync, 'syncTableInventoryToDb').mockResolvedValue(true);
+      jest.spyOn(playsync, 'eliminatePlayer').mockResolvedValue(undefined);
+    });
 
-    // 기본 TTL(5초)로는 리바인 대기를 못 버틴다.
-    expect(lockTtlDuringResolve).toBeGreaterThan(5000);
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('탈락 확정과 초기화는 락 안에서 한다', async () => {
+      await redis.set(stateKey, JSON.stringify(showdownState()));
+
+      let lockHeld = -1;
+      jest.spyOn(playsync, 'eliminatePlayer').mockImplementation(async () => {
+        lockHeld = await redis.exists(`lock:table:state:${TABLE}`);
+      });
+
+      await dealer.resolveWinners(TABLE, TOURNAMENT, ['alice']);
+
+      expect(lockHeld).toBe(1);
+    });
+
+    it('리바인 응답을 기다리는 동안에는 락을 놓는다', async () => {
+      // 예전에는 이 대기가 통째로 락 안에 있어서 TTL을 30초로 늘려야 했다.
+      // 그동안 도착하는 유저 액션과 타임아웃 잡은 전부 대기하다 실패한다.
+      await seedMeta(true);
+      await redis.set(stateKey, JSON.stringify(showdownState()));
+
+      let lockDuringRebuy = -1;
+      jest.spyOn(playsync, 'processRebuy').mockImplementation(async () => {
+        lockDuringRebuy = await redis.exists(`lock:table:state:${TABLE}`);
+        return 0;
+      });
+
+      await dealer.resolveWinners(TABLE, TOURNAMENT, ['alice']);
+
+      expect(playsync.processRebuy).toHaveBeenCalledTimes(1);
+      expect(lockDuringRebuy).toBe(0);
+    });
+
+    it('리바인 대기 중에는 다음 핸드가 시작되지 않는다', async () => {
+      // 락을 놓는 대신 페이즈가 문지기가 된다. HAND_END면 startPreFlop이 나간다.
+      await seedMeta(true);
+      await redis.set(stateKey, JSON.stringify(showdownState()));
+
+      let phaseDuringRebuy: GamePhase | undefined;
+      jest.spyOn(playsync, 'processRebuy').mockImplementation(async () => {
+        await dealer.startPreFlop(TOURNAMENT, TABLE);
+        const mid: TableState = JSON.parse((await redis.get(stateKey))!);
+        phaseDuringRebuy = mid.phase;
+        return 0;
+      });
+
+      await dealer.resolveWinners(TABLE, TOURNAMENT, ['alice']);
+
+      expect(phaseDuringRebuy).toBe(GamePhase.HAND_END);
+    });
+
+    it('정산이 끝나면 WAITING으로 돌아간다', async () => {
+      await redis.set(stateKey, JSON.stringify(showdownState()));
+
+      await dealer.resolveWinners(TABLE, TOURNAMENT, ['alice']);
+
+      const state: TableState = JSON.parse((await redis.get(stateKey))!);
+      expect(state.phase).toBe(GamePhase.WAITING);
+      expect(state.pot).toBe(0);
+    });
+
+    it('리바인으로 살아난 플레이어는 탈락시키지 않는다', async () => {
+      // 3단계가 1단계의 낡은 객체를 그대로 쓰면, 대기 중 반영된 리바인 스택이
+      // 보이지 않아 살아난 사람을 탈락 처리한다. 스냅샷을 다시 읽어야 한다.
+      await seedMeta(true);
+      await redis.set(stateKey, JSON.stringify(showdownState()));
+
+      jest.spyOn(playsync, 'processRebuy').mockImplementation(async () => {
+        // 진짜 processRebuy가 하는 일: 짧게 락을 잡고 스택을 반영한다.
+        await redisService.withTableLock(TABLE, async () => {
+          const mid = (await redisService.getSnapShot(TABLE))!;
+          new TableEngine(mid).applyRebuy('carol', 10000);
+          await redisService.saveSnapShot(TABLE, mid);
+        });
+        return 10000;
+      });
+
+      let eliminatedIds: string[] = [];
+      jest.spyOn(playsync, 'eliminatePlayer').mockImplementation(async (_t, _tb, players) => {
+        eliminatedIds = players.map(p => p.id);
+      });
+
+      await dealer.resolveWinners(TABLE, TOURNAMENT, ['alice']);
+
+      expect(eliminatedIds).toEqual([]);
+      const state: TableState = JSON.parse((await redis.get(stateKey))!);
+      expect(state.players[2]!.stack).toBe(10000);
+    });
   });
 });

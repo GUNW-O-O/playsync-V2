@@ -182,6 +182,80 @@ describe('TableEngine TIME_OUT', () => {
   });
 });
 
+describe('TableEngine 핸드 종료', () => {
+  function showdownState(): TableState {
+    return makeState(
+      [
+        makePlayer('winner', 0, 0, { isAllIn: true, totalContributed: 500 }),
+        makePlayer('loser', 1, 0, { isAllIn: true, totalContributed: 500 }),
+      ],
+      { phase: GamePhase.SHOWDOWN, pot: 1000, currentTurnSeatIndex: -1 },
+    );
+  }
+
+  it('승자에게 팟을 지급하고 칩 총량을 보존한다', async () => {
+    const state = showdownState();
+    const before = totalChips(state);
+
+    await new TableEngine(state).resolveWinner(['winner']);
+
+    expect(state.players[0]!.stack).toBe(1000);
+    expect(state.pot).toBe(0);
+    expect(totalChips(state)).toBe(before);
+  });
+
+  it('정산 직후에는 HAND_END에 머문다', async () => {
+    // 리바인 응답을 기다리는 구간이다. WAITING으로 넘어가면 딜러가 다음 핸드를
+    // 시작할 수 있게 되어, 리바인 중인 플레이어를 두고 판이 돈다.
+    const state = showdownState();
+
+    await new TableEngine(state).resolveWinner(['winner']);
+
+    expect(state.phase).toBe(GamePhase.HAND_END);
+  });
+
+  it('리바인 스택을 반영하고 상태 플래그를 되돌린다', async () => {
+    const state = makeState(
+      [makePlayer('broke', 0, 0, { hasFolded: true, isAllIn: true, bet: 0 })],
+      { phase: GamePhase.HAND_END },
+    );
+
+    new TableEngine(state).applyRebuy('broke', 10000);
+
+    expect(state.players[0]!.stack).toBe(10000);
+    expect(state.players[0]!.isAllIn).toBe(false);
+    expect(state.players[0]!.hasFolded).toBe(false);
+  });
+
+  it('없는 플레이어의 리바인은 무시한다', async () => {
+    const state = makeState([makePlayer('p1', 0, 1000)], { phase: GamePhase.HAND_END });
+    const before = totalChips(state);
+
+    expect(() => new TableEngine(state).applyRebuy('ghost', 10000)).not.toThrow();
+    expect(totalChips(state)).toBe(before);
+  });
+
+  it('테이블 초기화가 WAITING으로 되돌린다', async () => {
+    const state = makeState([makePlayer('p1', 0, 1000), makePlayer('p2', 1, 1000)], {
+      phase: GamePhase.HAND_END,
+    });
+
+    await new TableEngine(state).initTable();
+
+    expect(state.phase).toBe(GamePhase.WAITING);
+  });
+
+  it('초기화 시 스택이 0인 좌석을 비운다', async () => {
+    const state = makeState([makePlayer('p1', 0, 1000), makePlayer('broke', 1, 0)], {
+      phase: GamePhase.HAND_END,
+    });
+
+    await new TableEngine(state).initTable();
+
+    expect(state.players[1]).toBeNull();
+  });
+});
+
 describe('TableEngine startPreFlop', () => {
   it('헤즈업에서는 버튼이 SB다', async () => {
     // P1-4 회귀: 홀덤 헤즈업 규칙은 버튼 = SB. 예전에는 버튼 다음 사람을 SB로

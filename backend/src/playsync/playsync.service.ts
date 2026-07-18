@@ -13,6 +13,16 @@ import { RedisService } from 'src/redis/redis.service';
 /** 한 턴에 주어지는 시간. 잡의 delay와 state.actionDeadline이 같은 값을 써야 한다. */
 const TURN_TIMEOUT_MS = 30000;
 
+/**
+ * 리바인 팝업 응답을 기다리는 시간.
+ *
+ * 호출 시점에 읽는다 — 모듈 로드 시점에 고정하면 통합 테스트가 값을 줄일 수
+ * 없어서 실제 15초를 기다려야 한다.
+ */
+function rebuyTimeoutMs(): number {
+  return Number(process.env.REBUY_TIMEOUT_MS ?? 15000);
+}
+
 @Injectable()
 export class PlaysyncService {
   constructor(
@@ -267,7 +277,23 @@ export class PlaysyncService {
     });
   }
 
-  public async processRebuy(tournamentId: string, tableId: string, userId: string, entryFee: number, startStack: number, tournamentName: string, sharedState: TableState): Promise<number> {
+  /**
+   * 탈락 위기 플레이어에게 리바인을 묻고, 수락하면 반영까지 한다.
+   *
+   * **테이블 락을 쥐지 않은 채로 불러야 한다.** 응답 대기는 사람을 기다리는
+   * I/O고, 그 구간을 락 안에 두면 최대 15초 동안 테이블 전체가 멎는다.
+   * 락은 응답이 온 뒤 스택을 반영하는 순간에만 짧게 잡는다.
+   *
+   * @returns 반영된 리바인 금액. 거절·시간초과·실패는 모두 0.
+   */
+  public async processRebuy(
+    tournamentId: string,
+    tableId: string,
+    userId: string,
+    entryFee: number,
+    startStack: number,
+    tournamentName: string,
+  ): Promise<number> {
     const userPoints = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { points: true }
@@ -276,50 +302,90 @@ export class PlaysyncService {
     if (userPoints.points < entryFee) {
       return 0;
     }
-    return new Promise(async (resolve) => {
-      let isResolved = false;
-      const timeoutMs = 15000;
-      // [웹소켓] 유저에게 리바인 확인 팝업 요청 전송
-      this.eventEmitter.emit('rebuy.request.sent', {
-        userId,
-        tableId,
-        deadline: Date.now() + timeoutMs,
-        userPoints,
-        entryFee,
-        tournamentName,
-      });
 
-      // [타이머] 15초 내 응답 없으면 자동 취소 (0 반환)
+    const accepted = await this.waitForRebuyResponse(
+      userId, tableId, userPoints, entryFee, tournamentName,
+    );
+    if (!accepted) return 0;
+
+    let resultStack: number;
+    try {
+      resultStack = await this.executeRebuyTransaction(
+        tournamentId, tableId, userId, entryFee, startStack, tournamentName,
+      );
+    } catch (error) {
+      console.error('리바인 트랜잭션 실패:', error.message);
+      return 0;
+    }
+    if (resultStack <= 0) return 0;
+
+    // 반영이 먼저, 전파가 나중이다. 예전에는 트랜잭션 직후 전파하고 스택 반영은
+    // 엔진이 콜백 반환 뒤에 했다 — 나가는 상태의 스택이 아직 0이었다.
+    await this.redis.withTableLock(tableId, async () => {
+      const state = await this.redis.getSnapShot(tableId);
+      if (!state) return;
+      new TableEngine(state).applyRebuy(userId, resultStack);
+      await this.redis.saveSnapShot(tableId, state);
+      this.eventEmitter.emit('game.state.updated', { tableId, state });
+    });
+
+    return resultStack;
+  }
+
+  /**
+   * 리바인 팝업을 띄우고 응답 하나를 기다린다. 시간이 지나면 거절로 본다.
+   *
+   * executor에 `async`를 붙이지 않는다. 붙이면 안에서 던진 예외가 아무도 받지
+   * 않는 rejected promise로 사라지고, 이 Promise는 영영 pending으로 남는다.
+   * 예전 코드는 리스너·타이머 등록보다 `emit`이 먼저라 그 위험이 실재했다 —
+   * 게이트웨이 리스너가 던지면 팝업도 못 띄운 채 정산이 통째로 멈춘다.
+   */
+  private waitForRebuyResponse(
+    userId: string,
+    tableId: string,
+    userPoints: { points: number },
+    entryFee: number,
+    tournamentName: string,
+  ): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      const eventName = `rebuy_res_${userId}`;
+      const timeoutMs = rebuyTimeoutMs();
+      let settled = false;
+
+      const settle = (accept: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        // 핵심. `once`는 "실행되면 제거"라, 시간 초과로 끝난 경우 리스너가
+        // 그대로 남는다. 리바인이 일어날 때마다 하나씩 영구 누적됐다.
+        this.eventEmitter.removeListener(eventName, handler);
+        resolve(accept);
+      };
+
+      const handler = (accept: boolean) => settle(accept);
+
       const timer = setTimeout(() => {
-        if (!isResolved) {
-          isResolved = true;
-          console.log(`[TIMEOUT] 유저 ${userId} 리바인 시간초과`);
-          resolve(0);
-        }
-      }, 15000);
+        console.log(`[TIMEOUT] 유저 ${userId} 리바인 시간초과`);
+        settle(false);
+      }, timeoutMs);
 
-      // [이벤트] WsGateway에서 전달해주는 유저의 버튼 클릭 응답 대기
-      this.eventEmitter.once(`rebuy_res_${userId}`, async (accept: boolean) => {
-        if (!isResolved) {
-          isResolved = true;
-          clearTimeout(timer);
+      // 리스너를 먼저 등록한 뒤 팝업을 띄운다. 순서가 반대면 응답이 아주 빨리
+      // 돌아온 경우 받을 사람이 없다.
+      this.eventEmitter.once(eventName, handler);
 
-          if (accept) {
-            try {
-              const resultStack = await this.executeRebuyTransaction(tournamentId, tableId, userId, entryFee, startStack, tournamentName);
-              if (resultStack > 0) {
-                this.eventEmitter.emit('game.state.updated', { tableId, state: sharedState });
-              }
-              resolve(resultStack);
-            } catch (error) {
-              console.error('리바인 트랜잭션 실패:', error.message);
-              resolve(0);
-            }
-          } else {
-            resolve(0);
-          }
-        }
-      });
+      try {
+        this.eventEmitter.emit('rebuy.request.sent', {
+          userId,
+          tableId,
+          deadline: Date.now() + timeoutMs,
+          userPoints,
+          entryFee,
+          tournamentName,
+        });
+      } catch (error) {
+        console.error('리바인 팝업 전송 실패:', error.message);
+        settle(false);
+      }
     });
   }
 

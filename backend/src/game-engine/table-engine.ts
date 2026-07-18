@@ -1,13 +1,8 @@
 // table-engine.ts
 import { TableState, TablePlayer, ActionType, GamePhase } from "./types";
 
-type RebuyCallback = (playerId: string) => Promise<number>; // 금액 반환 (0이면 리바이 불가)
-
 export class TableEngine {
-  constructor(
-    public state: TableState,
-    public rebuyCallback?: RebuyCallback
-  ) { }
+  constructor(public state: TableState) { }
 
   // 플레이어 액션 처리
   public async act(playerIndex: number, action: ActionType, raiseAmount?: number) {
@@ -183,7 +178,29 @@ export class TableEngine {
     this.state.pot = 0;
     this.state.sidePots = [];
 
-    await this.handleHandEnd();
+    // HAND_END에서 멈춘다. 다음은 리바인 응답 대기 구간이고, 그건 사람을
+    // 기다리는 일이라 테이블 락 밖에서 일어나야 한다. 이 페이즈가 그동안
+    // `startPreFlop`(WAITING만 허용)을 막아주는 문지기 역할을 한다.
+    // 스택 반영은 `applyRebuy`, WAITING 복귀는 `initTable`이 맡는다.
+    this.state.phase = GamePhase.HAND_END;
+    this.resetStatus();
+  }
+
+  /**
+   * 리바인 성공분을 테이블에 반영한다.
+   *
+   * 정산과 분리된 이유: 리바인 응답은 최대 15초를 기다리는 사람의 입력이고,
+   * 그 대기를 락 안에 두면 그동안 테이블 전체가 멎는다. 대기는 락 밖에서 하고,
+   * 응답이 온 순간에만 짧게 락을 잡아 이 함수를 부른다.
+   */
+  public applyRebuy(playerId: string, amount: number) {
+    if (amount <= 0) return;
+    const player = this.state.players.find(p => p?.id === playerId);
+    if (!player) return;
+    player.stack += amount;
+    player.bet = 0;
+    player.hasFolded = false;
+    player.isAllIn = false;
   }
 
   private handleCall(player: TablePlayer) {
@@ -257,35 +274,6 @@ export class TableEngine {
 
   private getNextTurnSeatIndex(): number {
     return this.findNextActiveSeat((this.state.currentTurnSeatIndex + 1) % this.state.players.length);
-  }
-
-  /**
-   * 핸드 종료 처리 → WAITING phase
-   */
-  private async handleHandEnd() {
-    this.state.phase = GamePhase.HAND_END;
-    const callback = this.rebuyCallback;
-    this.resetStatus();
-
-    if (callback) {
-      const brokePlayers = this.state.players.filter((p): p is TablePlayer => p != null && p.stack <= 0);
-      if (brokePlayers.length > 0) {
-        await Promise.all(
-          brokePlayers.map(async (p) => {
-            const rebuyAmount = await callback(p.id);
-            if (rebuyAmount > 0) {
-              p.stack += rebuyAmount;
-              p.bet = 0;
-              p.hasFolded = false;
-              p.isAllIn = false;
-            }
-          })
-        )
-      }
-    }
-    // WAITING phase로 전환
-    this.state.phase = GamePhase.WAITING;
-    return true;
   }
 
   /**
@@ -376,6 +364,8 @@ export class TableEngine {
     this.state.currentBet = 0;
     this.state.sidePots = [];
     this.state.actionDeadline = undefined;
+    // 리바인 대기가 끝났다는 뜻이다. 여기서만 딜러가 다음 핸드를 시작할 수 있다.
+    this.state.phase = GamePhase.WAITING;
   }
 
   private shouldGoToShowdown(): boolean {

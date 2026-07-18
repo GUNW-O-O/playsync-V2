@@ -243,3 +243,213 @@ describe('PlaysyncService.handleAction', () => {
     });
   });
 });
+
+/**
+ * 리바인 응답 대기의 계약.
+ *
+ * 핵심은 "기다리는 동안 테이블 락을 쥐지 않는다"다. 최대 15초짜리 사람 입력이라
+ * 락 안에 두면 그동안 유저 액션도 딜러 조작도 전부 막힌다. 진짜 Redis를 쓰는
+ * 이유가 그것 — 락 키의 존재 여부를 직접 봐야 검증이 성립한다.
+ */
+describe('PlaysyncService.processRebuy', () => {
+  let redis: Redis;
+  let queueConnection: Redis;
+  let queue: Queue;
+  let redisService: RedisService;
+  let emitter: EventEmitter2;
+  let service: PlaysyncService;
+
+  const TABLE = 'table-1';
+  const TOURNAMENT = 'tournament-1';
+  const stateKey = `table:state:${TABLE}`;
+  const lockKey = `lock:table:state:${TABLE}`;
+  const USER = 'broke';
+
+  function brokeState(): TableState {
+    return {
+      phase: GamePhase.HAND_END,
+      players: [
+        {
+          id: USER, tableId: TABLE, nickname: USER, seatIndex: 0, stack: 0,
+          bet: 0, hasFolded: true, hasChecked: false, isAllIn: true, totalContributed: 5000,
+        },
+        {
+          id: 'winner', tableId: TABLE, nickname: 'winner', seatIndex: 1, stack: 20000,
+          bet: 0, hasFolded: false, hasChecked: false, isAllIn: false, totalContributed: 5000,
+        },
+      ],
+      buttonUser: 0,
+      currentTurnSeatIndex: -1,
+      pot: 0,
+      sidePots: [],
+      currentBet: 0,
+      smallBlind: 50,
+      ante: false,
+      tournamentId: TOURNAMENT,
+    };
+  }
+
+  function callProcessRebuy() {
+    return service.processRebuy(TOURNAMENT, TABLE, USER, 1000, 10000, 'T');
+  }
+
+  beforeAll(() => {
+    // 실제 15초를 기다리지 않는다. 검증 대상은 시간의 길이가 아니라
+    // 시간이 다 됐을 때 무엇을 정리하는가다.
+    process.env.REBUY_TIMEOUT_MS = '300';
+
+    redis = createTestRedis();
+    queueConnection = createTestRedis({ maxRetriesPerRequest: null });
+    queue = new Queue('player-timeout', { connection: queueConnection });
+    redisService = new RedisService(redis);
+    emitter = new EventEmitter2();
+
+    const prisma = {
+      user: { findUnique: async () => ({ points: 50000 }) },
+    } as unknown as PrismaService;
+
+    service = new PlaysyncService(queue, redisService, prisma, emitter);
+  });
+
+  afterAll(async () => {
+    delete process.env.REBUY_TIMEOUT_MS;
+    await queue.close();
+    await queueConnection.quit();
+    await redis.quit();
+  });
+
+  beforeEach(async () => {
+    await flushTestRedis(redis);
+    await redis.set(stateKey, JSON.stringify(brokeState()));
+    emitter.removeAllListeners();
+    jest.restoreAllMocks();
+  });
+
+  /** 팝업이 실제로 나갔을 때만 응답을 흘려보낸다. 경합 없이 순서를 맞춘다. */
+  function answerWhenPrompted(accept: boolean) {
+    emitter.once('rebuy.request.sent', () => {
+      setImmediate(() => emitter.emit(`rebuy_res_${USER}`, accept));
+    });
+  }
+
+  describe('리스너 정리', () => {
+    it('시간이 초과돼도 리스너를 남기지 않는다', async () => {
+      // once는 "실행되면 제거"다. 시간 초과 경로는 리스너를 실행하지 않으므로
+      // 직접 지우지 않으면 리바인마다 하나씩 영구 누적된다.
+      const result = await callProcessRebuy();
+
+      expect(result).toBe(0);
+      expect(emitter.listenerCount(`rebuy_res_${USER}`)).toBe(0);
+    });
+
+    it('거절해도 리스너를 남기지 않는다', async () => {
+      answerWhenPrompted(false);
+
+      const result = await callProcessRebuy();
+
+      expect(result).toBe(0);
+      expect(emitter.listenerCount(`rebuy_res_${USER}`)).toBe(0);
+    });
+
+    it('리바인이 반복돼도 리스너가 쌓이지 않는다', async () => {
+      for (let i = 0; i < 3; i++) {
+        await callProcessRebuy();
+      }
+
+      expect(emitter.listenerCount(`rebuy_res_${USER}`)).toBe(0);
+    });
+  });
+
+  describe('락', () => {
+    it('응답을 기다리는 동안에는 테이블 락을 쥐지 않는다', async () => {
+      // 예전에는 이 대기가 resolveWinners의 락 안에 있어서, TTL을 30초로
+      // 늘려야만 버틸 수 있었다. 그동안 도착한 유저 액션은 전부 대기하다 실패한다.
+      let lockedDuringWait: number | null = null;
+      emitter.once('rebuy.request.sent', () => {
+        redis.exists(lockKey).then((n) => {
+          lockedDuringWait = n;
+          emitter.emit(`rebuy_res_${USER}`, false);
+        });
+      });
+
+      await callProcessRebuy();
+
+      expect(lockedDuringWait).toBe(0);
+    });
+
+    it('대기 중에도 다른 액션이 락을 잡을 수 있다', async () => {
+      let acquiredDuringWait = false;
+      emitter.once('rebuy.request.sent', () => {
+        redisService
+          .withTableLock(TABLE, async () => {
+            acquiredDuringWait = true;
+          })
+          .then(() => emitter.emit(`rebuy_res_${USER}`, false));
+      });
+
+      await callProcessRebuy();
+
+      expect(acquiredDuringWait).toBe(true);
+    });
+  });
+
+  describe('수락', () => {
+    it('전파되는 상태에 리바인 스택이 이미 반영돼 있다', async () => {
+      // 예전에는 트랜잭션 직후 전파하고 스택 반영은 엔진이 콜백 반환 뒤에 했다.
+      // 나가는 상태의 스택이 0이라 "즉시 전파"가 사실이 아니었다.
+      jest.spyOn(service, 'executeRebuyTransaction').mockResolvedValue(10000);
+
+      let broadcast: TableState | null = null;
+      emitter.on('game.state.updated', (payload: { state: TableState }) => {
+        broadcast = payload.state;
+      });
+      answerWhenPrompted(true);
+
+      const result = await callProcessRebuy();
+
+      expect(result).toBe(10000);
+      expect(broadcast).not.toBeNull();
+      expect(broadcast!.players[0]!.stack).toBe(10000);
+    });
+
+    it('스냅샷에도 반영하고 상태 플래그를 되돌린다', async () => {
+      jest.spyOn(service, 'executeRebuyTransaction').mockResolvedValue(10000);
+      answerWhenPrompted(true);
+
+      await callProcessRebuy();
+
+      const state: TableState = JSON.parse((await redis.get(stateKey))!);
+      expect(state.players[0]!.stack).toBe(10000);
+      expect(state.players[0]!.isAllIn).toBe(false);
+      expect(state.players[0]!.hasFolded).toBe(false);
+    });
+
+    it('트랜잭션이 실패하면 0을 돌려주고 상태를 건드리지 않는다', async () => {
+      jest
+        .spyOn(service, 'executeRebuyTransaction')
+        .mockRejectedValue(new Error('포인트 부족 혹은 유저 없음'));
+      answerWhenPrompted(true);
+
+      const result = await callProcessRebuy();
+
+      expect(result).toBe(0);
+      const state: TableState = JSON.parse((await redis.get(stateKey))!);
+      expect(state.players[0]!.stack).toBe(0);
+      expect(emitter.listenerCount(`rebuy_res_${USER}`)).toBe(0);
+    });
+  });
+
+  it('포인트가 모자라면 팝업을 띄우지 않는다', async () => {
+    const poorPrisma = {
+      user: { findUnique: async () => ({ points: 10 }) },
+    } as unknown as PrismaService;
+    const poorService = new PlaysyncService(queue, redisService, poorPrisma, emitter);
+    let prompted = false;
+    emitter.on('rebuy.request.sent', () => { prompted = true; });
+
+    const result = await poorService.processRebuy(TOURNAMENT, TABLE, USER, 1000, 10000, 'T');
+
+    expect(result).toBe(0);
+    expect(prompted).toBe(false);
+  });
+});
