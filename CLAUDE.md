@@ -33,10 +33,11 @@ npm run typecheck      # contract 빌드 후 backend/frontend 타입 체크
 npm run build          # contract → backend → frontend
 npm run dev:backend    # NestJS watch
 npm run dev:frontend   # Next dev
-npm run test           # backend jest
+npm run test           # 단위 테스트 (인프라 없음, 2초)
+npm run test:int       # 통합 테스트 (컨테이너 기동부터 자동)
 ```
 
-인프라는 `cd backend && docker-compose up -d` (PostgreSQL + Redis).
+개발용 인프라는 `cd backend && docker-compose up -d` (PostgreSQL + Redis).
 
 ### 베이스라인
 
@@ -56,7 +57,28 @@ npm run test           # backend jest
 지금은 `table-engine.spec.ts` 하나로 시작해 티켓마다 실제 회귀 테스트를 쌓는다.
 버그 수정은 실패하는 테스트로 문제를 재현한 뒤 고친다.
 
-`src/...` 절대경로는 jest `moduleNameMapper`로 해석한다 (코드베이스에 43곳).
+`src/...`와 `shared/...` 절대경로는 jest `moduleNameMapper`로 해석한다.
+
+#### 두 계층
+
+| | 파일 | 인프라 | 용도 |
+|---|---|---|---|
+| 단위 | `*.spec.ts` | 없음 | 엔진처럼 순수한 로직. 빨라야 TDD 루프가 돈다 |
+| 통합 | `*.int-spec.ts` | Redis + PostgreSQL | 락, 트랜잭션처럼 진짜 인프라라야 의미 있는 것 |
+
+락을 mock으로 테스트하면 검증 대상인 원자성 자체가 사라진다. 그래서 통합 테스트는
+`docker-compose.test.yml`이 띄우는 **별도 컨테이너**를 쓴다 — 개발용과 이미지는 같지만
+포트(5433 / 6380)와 저장소가 분리돼 있다. tmpfs와 영속성 해제라 데이터가 남지 않는다.
+
+DB 이름이나 Redis 인덱스로 나누지 않은 이유는, 테스트가 데이터를 지우는 코드라
+설정 실수 하나로 개발 DB를 날릴 수 있기 때문이다. 방어 코드보다 구조로 막는다.
+
+`npm run test:int`가 컨테이너 기동 → 마이그레이션 → 테스트 → 정리까지 한다.
+반복 실행할 때는 `KEEP_TEST_CONTAINERS=1`로 기동을 건너뛸 수 있고,
+`npm run test:int:down -w backend`로 내린다.
+
+Prisma는 드라이버 어댑터 구성이라 `$disconnect()`가 pg Pool을 닫지 않는다.
+테스트에서는 반드시 `closeTestPrisma()`를 쓴다. 아니면 jest가 종료되지 않는다.
 
 ## 작업 규칙
 

@@ -10,10 +10,39 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # prisma.config.ts가 dotenv로 DATABASE_URL을 읽는다. 생성/타입 체크에는
-      # 실제 연결이 필요 없으므로 형식만 맞는 더미 값을 준다.
-      DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+      # 로컬 .env.test와 같은 값을 쓴다. 포트까지 맞춰 두면 CI에서만 깨지는
+      # 설정 차이가 생기지 않는다.
+      DATABASE_URL: postgresql://test:test@localhost:5433/playsync_test
+      REDIS_HOST: localhost
+      REDIS_PORT: 6380
       JWT_SECRET: ci-only-not-a-real-secret
+
+    services:
+      # 통합 테스트용. CI=true이므로 jest globalSetup은 compose를 띄우지 않고
+      # 여기서 뜬 컨테이너를 그대로 쓴다.
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: playsync_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U test -d playsync_test"
+          --health-interval 1s
+          --health-timeout 3s
+          --health-retries 30
+
+      redis:
+        image: redis:7
+        ports:
+          - 6380:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 1s
+          --health-timeout 3s
+          --health-retries 30
 
     steps:
       - uses: actions/checkout@v5
@@ -36,8 +65,11 @@ jobs:
       - name: 타입 체크
         run: npm run typecheck
 
-      - name: 테스트
+      - name: 단위 테스트
         run: npm run test
+
+      - name: 통합 테스트
+        run: npm run test:int
 
       - name: 빌드
         run: npm run build

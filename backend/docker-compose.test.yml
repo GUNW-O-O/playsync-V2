@@ -1,0 +1,39 @@
+# 통합 테스트 전용 인프라.
+#
+# 개발용(docker-compose.yml)과 이미지는 같지만 컨테이너·포트·저장소가 전부 분리돼 있다.
+# 테스트는 데이터를 지우는 코드라 오발 비용이 크기 때문에, DB 이름이나 인덱스로
+# 나누는 대신 물리적으로 다른 프로세스를 쓴다. 개발 DB에 연결할 수단 자체가 없다.
+#
+# 저장소는 tmpfs와 영속성 해제라 컨테이너가 죽으면 데이터가 사라진다. 테스트에는
+# 그게 맞고, 디스크를 안 건드리므로 개발용보다 빠르다.
+
+services:
+  db-test:
+    image: postgres:18
+    container_name: playsync-db-test
+    environment:
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: playsync_test
+    ports:
+      - "127.0.0.1:5433:5432"
+    tmpfs:
+      - /var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test -d playsync_test"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  redis-test:
+    image: redis:7
+    container_name: playsync-redis-test
+    ports:
+      - "127.0.0.1:6380:6379"
+    # 개발용과 달리 AOF/RDB를 끈다. 테스트는 영속성이 필요 없고, 끄면 더 빠르다.
+    command: redis-server --save "" --appendonly no --requirepass test
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "test", "ping"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
