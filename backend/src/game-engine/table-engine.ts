@@ -46,7 +46,8 @@ export class TableEngine {
           break;
 
         case ActionType.RAISE:
-          if (!raiseAmount) {
+          // 정수 양수만 허용. Number.isInteger가 NaN/Infinity/소수를 모두 거른다.
+          if (raiseAmount === undefined || !Number.isInteger(raiseAmount) || raiseAmount <= 0) {
             throw new Error("룰에 맞추어 레이즈해주세요.");
           }
           this.handleRaise(player, raiseAmount);
@@ -183,7 +184,15 @@ export class TableEngine {
 
   private handleRaise(player: TablePlayer, betAmount: number) {
     const previousBet = this.state.currentBet;
+    // 엔진은 호출자를 신뢰하지 않는다. WS 경계뿐 아니라 타임아웃 프로세서와
+    // 딜러 경로에서도 호출되므로, 칩 총량 불변식은 여기서 지킨다.
+    if (betAmount <= previousBet) {
+      throw new Error("레이즈 금액은 현재 베팅보다 커야 합니다.");
+    }
     const needed = betAmount - player.bet;
+    if (needed <= 0) {
+      throw new Error("잘못된 레이즈 금액입니다.");
+    }
     const actualAdded = Math.min(needed, player.stack);
 
     this.executeBet(player, actualAdded);
