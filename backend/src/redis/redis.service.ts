@@ -286,7 +286,10 @@ export class RedisService {
       await this.setTournamentBlind(tournamentId, updatedBlind);
       const curLv = updatedBlind.blindStructure[updatedBlind.currentBlindLv].lv;
       const regiCloseAt = await this.redis.hget(`tournament:${tournamentId}:info`, 'rebuyUntil');
-      if (regiCloseAt && curLv === parseInt(regiCloseAt)) {
+      // 레벨은 startedAt과 현재 시각으로 매번 다시 계산되므로 한 번에 여러 칸
+      // 뛸 수 있다(서버 재기동, 폴링 지연). 정확 일치로 보면 마감 레벨을 밟지
+      // 못하고 지나간 토너먼트는 등록이 영영 열린 채로 남는다.
+      if (regiCloseAt && curLv >= parseInt(regiCloseAt)) {
         await this.redis.hset(`tournament:${tournamentId}:info`, 'isRegistrationOpen', '0');
       }
       return updatedBlind;
