@@ -2,7 +2,7 @@ import { ConflictException, Injectable } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { TournamentStatus } from '@prisma/client';
 import { PayMentDto } from 'shared/dto/payment.dto';
-import { GamePhase, TablePlayer } from 'src/game-engine/types';
+import { GamePhase, TablePlayer, TableState } from 'src/game-engine/types';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { SessionService } from 'src/store/session/session.service';
@@ -81,6 +81,10 @@ export class PaymentService {
       if (user.points < session.entryFee) {
         throw new ConflictException('포인트가 부족합니다.');
       }
+      const isOngoing = session.status === TournamentStatus.ONGOING;
+
+      // 트랜잭션은 DB만 만진다. Redis는 트랜잭션에 참여하지 않으므로, 안에서
+      // 스냅샷을 쓰면 뒷부분이 실패해 DB가 롤백돼도 Redis에는 유저가 앉아 있다.
       const result = await this.prismaService.$transaction(async (tx) => {
         // DB 최종 중복 체크
         const exsitingPlayer = await tx.tablePlayer.findUnique({
@@ -91,7 +95,6 @@ export class PaymentService {
             }
           }
         });
-        const isOngoing = session.status === TournamentStatus.ONGOING;
         if (exsitingPlayer) throw new Error('이미 플레이어가 존재하는 좌석입니다');
         await this.user.paymentPoint(tx, userId, dto.tournamentId, session.name, session.entryFee);
         await tx.tournamentParticipation.create({
@@ -119,8 +122,11 @@ export class PaymentService {
             totalBuyinAmount: { increment: session.entryFee },
           }
         });
-        let updatedState = await this.redisService.getSnapShot(dto.tableId);
+        return { success: true };
+      });
 
+      let updatedState: TableState | undefined;
+      if (result.success) {
         const newPlayer: TablePlayer = {
           id: userId,
           tableId: dto.tableId,
@@ -134,8 +140,11 @@ export class PaymentService {
           totalContributed: 0,
         };
 
-        if (!updatedState) {
-          updatedState = {
+        // 좌석 락은 좌석별이라 다른 좌석에 앉는 사람을 막지 않는다. 스냅샷은
+        // JSON 통째로 덮어쓰므로, 락 없이 겹치면 나중에 쓴 쪽이 앞선 착석을
+        // 통째로 지운다 — 앉았는데 자리에 없는 유저가 생긴다.
+        updatedState = await this.redisService.withTableLock(dto.tableId, async () => {
+          const state = await this.redisService.getSnapShot(dto.tableId) ?? {
             phase: GamePhase.WAITING,
             players: Array(9).fill(null),
             pot: 0,
@@ -147,12 +156,11 @@ export class PaymentService {
             tournamentId: session.id,
             smallBlind: 100,
           };
-        }
-        updatedState.players[dto.seatIndex] = newPlayer;
-        await this.redisService.saveSnapShot(dto.tableId, updatedState);
-        return { success: true, updatedState };
-      });
-      if (result.success) {
+          state.players[dto.seatIndex] = newPlayer;
+          await this.redisService.saveSnapShot(dto.tableId, state);
+          return state;
+        });
+
         await this.redisService.setUserContext(dto.tournamentId, userId, dto.tableId, dto.seatIndex, 'ACTIVE');
         await this.redisService.joinPlayer(dto.tournamentId, session.entryFee);
         const table = await this.redisService.updateSeatBitmap(dto.tournamentId, dto.tableId, dto.seatIndex, true);
@@ -169,7 +177,7 @@ export class PaymentService {
           state : tableStatus
         })
       }
-      return result.updatedState;
+      return updatedState;
     } finally {
       await this.redisService.releaseSeatLock(dto);
     }
