@@ -579,6 +579,63 @@ if (!JWT_SECRET) {
 
 ---
 
+## [N-1] (P2) 딜러 액션 게이트웨이 무방어 — undefined 브로드캐스트 / 에러 무응답
+
+- [ ] 완료
+
+**문제**: `handleDealerAction`(게이트웨이)에 `handlePlayerAction`과 달리 try/catch가 없고 switch에 default도 없음. (1) 알 수 없는 action이면 `updatedState = undefined`인 채 `renderGame`으로 브로드캐스트 → 모든 클라이언트의 게임 상태가 undefined로 덮임. (2) 딜러 서비스가 throw하면 딜러에게 에러 응답이 안 감.
+
+**위치**: `backend/src/ws/ws.gateway.ts` 158~181행
+
+**수정 방법**: `handlePlayerAction`과 동일하게 try/catch로 감싸 `{ event: 'error', data: e.message }` 반환. switch에 `default: return { event: 'error', data: '알 수 없는 딜러 액션' };` 추가. 브로드캐스트 전 `if (!updatedState) return;` 가드 추가.
+
+---
+
+## [N-2] (P2) startPreFlop이 WAITING 아닐 때 undefined 반환 → undefined 브로드캐스트
+
+- [ ] 완료
+
+**문제**: `dealer.service.ts:86~88` — `if (!state || state.phase !== GamePhase.WAITING) return;`이 undefined를 반환하고, 게이트웨이는 그대로 `renderGame`으로 브로드캐스트. 딜러가 진행 중 실수로 START_PRE_FLOP을 누르면 전 클라이언트 화면 상태가 날아감.
+
+**위치**: `backend/src/dealer/dealer.service.ts` 86~88행 (+ [N-1] 게이트웨이 가드와 세트)
+
+**수정 방법**: `return;` 대신 `throw new Error('대기 상태가 아닙니다.');` — [N-1]의 try/catch가 딜러에게 에러로 전달.
+
+---
+
+## [N-3] (P2) 좌석 비트맵 read-modify-write 레이스
+
+- [ ] 완료
+
+**문제**: `updateSeatBitmap`이 `hget → 문자열 수정 → hset` 패턴. 두 유저가 같은 테이블의 **다른 좌석**에 동시에 앉으면(좌석 락은 좌석별이라 서로 안 막음) 둘 다 같은 비트맵을 읽고 자기 비트만 세팅해 저장 → 한쪽 비트 유실. 실착석은 DB unique 제약이 지키므로 돈 문제는 없지만, 예매 화면에 점유 좌석이 빈자리로 표시됨.
+
+**위치**: `backend/src/redis/redis.service.ts` 44~56행
+
+**수정 방법**: Redis `SETBIT`/`GETBIT`(비트 단위 원자 연산)로 교체하거나, 문자열 유지 시 `SETRANGE key seatIndex '1'` 사용. 둘 다 read-modify-write 자체를 제거함.
+
+---
+
+## [N-4] (P2) eliminatePlayer의 Promise.all이 아무것도 기다리지 않음
+
+- [ ] 완료
+
+**문제**: `players.map(player => { this.redis.updateSeatBitmap(...); this.redis.deleteUserContext(...); })` — 블록 화살표 함수에 `return`이 없어 `Promise.all([undefined, ...])`이 즉시 resolve. Redis 정리 작업이 fire-and-forget이 되고, 실패해도 감지 불가(unhandled rejection).
+
+**위치**: `backend/src/playsync/playsync.service.ts` 156~162행
+
+**수정**:
+
+```ts
+      await Promise.all(
+        players.map(player => Promise.all([
+          this.redis.updateSeatBitmap(tournamentId, tableId, player.seatIndex, false),
+          this.redis.deleteUserContext(tournamentId, player.id),
+        ]))
+      );
+```
+
+---
+
 ## [P3-1] console.log 정리 — NestJS Logger로 교체 ✅ 검증됨
 
 - [ ] 완료
@@ -660,58 +717,6 @@ function makeState(players: (TablePlayer | null)[]): TableState {
 실행: `cd backend && npx jest table-engine`
 
 ---
----
-
-# 2차 검증에서 추가 발견된 항목 [N-1] ~ [N-9]
-
-## [N-1] (P2) 딜러 액션 게이트웨이 무방어 — undefined 브로드캐스트 / 에러 무응답
-
-- [ ] 완료
-
-**문제**: `handleDealerAction`(게이트웨이)에 `handlePlayerAction`과 달리 try/catch가 없고 switch에 default도 없음. (1) 알 수 없는 action이면 `updatedState = undefined`인 채 `renderGame`으로 브로드캐스트 → 모든 클라이언트의 게임 상태가 undefined로 덮임. (2) 딜러 서비스가 throw하면 딜러에게 에러 응답이 안 감.
-
-**위치**: `backend/src/ws/ws.gateway.ts` 158~181행
-
-**수정 방법**: `handlePlayerAction`과 동일하게 try/catch로 감싸 `{ event: 'error', data: e.message }` 반환. switch에 `default: return { event: 'error', data: '알 수 없는 딜러 액션' };` 추가. 브로드캐스트 전 `if (!updatedState) return;` 가드 추가.
-
-## [N-2] (P2) startPreFlop이 WAITING 아닐 때 undefined 반환 → undefined 브로드캐스트
-
-- [ ] 완료
-
-**문제**: `dealer.service.ts:86~88` — `if (!state || state.phase !== GamePhase.WAITING) return;`이 undefined를 반환하고, 게이트웨이는 그대로 `renderGame`으로 브로드캐스트. 딜러가 진행 중 실수로 START_PRE_FLOP을 누르면 전 클라이언트 화면 상태가 날아감.
-
-**위치**: `backend/src/dealer/dealer.service.ts` 86~88행 (+ [N-1] 게이트웨이 가드와 세트)
-
-**수정 방법**: `return;` 대신 `throw new Error('대기 상태가 아닙니다.');` — [N-1]의 try/catch가 딜러에게 에러로 전달.
-
-## [N-3] (P2) 좌석 비트맵 read-modify-write 레이스
-
-- [ ] 완료
-
-**문제**: `updateSeatBitmap`이 `hget → 문자열 수정 → hset` 패턴. 두 유저가 같은 테이블의 **다른 좌석**에 동시에 앉으면(좌석 락은 좌석별이라 서로 안 막음) 둘 다 같은 비트맵을 읽고 자기 비트만 세팅해 저장 → 한쪽 비트 유실. 실착석은 DB unique 제약이 지키므로 돈 문제는 없지만, 예매 화면에 점유 좌석이 빈자리로 표시됨.
-
-**위치**: `backend/src/redis/redis.service.ts` 44~56행
-
-**수정 방법**: Redis `SETBIT`/`GETBIT`(비트 단위 원자 연산)로 교체하거나, 문자열 유지 시 `SETRANGE key seatIndex '1'` 사용. 둘 다 read-modify-write 자체를 제거함.
-
-## [N-4] (P2) eliminatePlayer의 Promise.all이 아무것도 기다리지 않음
-
-- [ ] 완료
-
-**문제**: `players.map(player => { this.redis.updateSeatBitmap(...); this.redis.deleteUserContext(...); })` — 블록 화살표 함수에 `return`이 없어 `Promise.all([undefined, ...])`이 즉시 resolve. Redis 정리 작업이 fire-and-forget이 되고, 실패해도 감지 불가(unhandled rejection).
-
-**위치**: `backend/src/playsync/playsync.service.ts` 156~162행
-
-**수정**:
-
-```ts
-      await Promise.all(
-        players.map(player => Promise.all([
-          this.redis.updateSeatBitmap(tournamentId, tableId, player.seatIndex, false),
-          this.redis.deleteUserContext(tournamentId, player.id),
-        ]))
-      );
-```
 
 ## [N-5] (P3) 리바인 성공 브로드캐스트가 스택 반영 전에 나감
 
@@ -723,6 +728,8 @@ function makeState(players: (TablePlayer | null)[]): TableState {
 
 **수정 방법**: emit을 엔진 쪽 스택 반영 이후로 옮기거나(콜백 시그니처에 후처리 훅 추가), 간단하게는 핸들러에서 `sharedState`의 해당 플레이어 스택을 직접 반영한 뒤 emit. (엔진과 서비스의 책임 경계를 유지하려면 전자 권장 — v2 리팩토링 포인트.)
 
+---
+
 ## [N-6] (P3) syncTableInventoryToDb 항상 true 반환 — 죽은 에러 분기
 
 - [ ] 완료
@@ -732,6 +739,8 @@ function makeState(players: (TablePlayer | null)[]): TableState {
 **위치**: `backend/src/playsync/playsync.service.ts` 112~121행, `dealer.service.ts` 190~197행
 
 **수정 방법**: `syncTableInventoryToDb`가 그냥 `await this.prisma.$transaction(updates);`만 하고 반환값 없애기. 실패는 예외로 전파되므로 `resolveWinners`의 if/else 제거.
+
+---
 
 ## [N-7] (P3) DEALER_KICK 반복 실행 시 activePlayers 이중 차감 + DB/Redis 비대칭
 
@@ -743,6 +752,8 @@ function makeState(players: (TablePlayer | null)[]): TableState {
 
 **수정 방법**: KICK 시 `tournamentParticipation.status`가 이미 ELIMINATED면 skip. DB `activePlayers` 감소는 KICK 시점이 아니라 `eliminatePlayer`(탈락 확정) 한 곳에서만 수행하도록 일원화.
 
+---
+
 ## [N-8] (P3) 올인 플레이어가 턴을 받으면 TIME_OUT이 폴드시킴
 
 - [ ] 완료
@@ -752,6 +763,8 @@ function makeState(players: (TablePlayer | null)[]): TableState {
 **위치**: `backend/src/game-engine/table-engine.ts` 35~37행 + 296~299행
 
 **수정 방법**: TIME_OUT 분기에 올인 가드 추가 — `if (player.isAllIn) break;` 를 폴드 판정보다 먼저. 아울러 첫 턴 폴백도 액션 가능자가 진짜 없으면 `-1`을 유지하고 [P2-6] 딜러 진행에 맡기는 쪽이 일관적.
+
+---
 
 ## [N-9] (P3/보안 노트) 토큰·OTP·관전 관련
 
