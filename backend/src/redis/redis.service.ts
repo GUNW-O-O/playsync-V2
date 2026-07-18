@@ -13,6 +13,56 @@ export class RedisService {
   private getInfoKey(id: string) {
     return `tournament:${id}:info`;
   }
+
+  /**
+   * 테이블 상태를 수정하는 구간은 반드시 이 락으로 감쌀 것.
+   *
+   * 스냅샷은 JSON 통째로 덮어쓰므로, getSnapShot → 수정 → saveSnapShot 이
+   * 겹치면 나중에 쓴 쪽이 앞선 쓰기를 통째로 지운다. 진 쪽이 이미 실행한
+   * 큐 조작·DB 쓰기·WS 브로드캐스트는 되돌아가지 않으므로, Redis 상태만
+   * 과거로 돌아가고 나머지 세계는 그대로 남는다.
+   *
+   * 락은 테이블 단위다. 다른 테이블끼리는 그대로 병렬로 돈다.
+   */
+  async withTableLock<T>(
+    tableId: string,
+    fn: () => Promise<T>,
+    ttlMs = 5000,
+    maxWaitMs = 5000,
+  ): Promise<T> {
+    const lockKey = `lock:table:state:${tableId}`;
+    // 해제할 때 "내가 잡은 락인지" 확인하려면 소유자를 구분할 값이 필요하다.
+    const token = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const retryIntervalMs = 50;
+    const deadline = Date.now() + maxWaitMs;
+
+    do {
+      const acquired = await this.redis.set(lockKey, token, 'PX', ttlMs, 'NX');
+      if (acquired === 'OK') {
+        try {
+          return await fn();
+        } finally {
+          await this.releaseTableLock(lockKey, token);
+        }
+      }
+      await new Promise((r) => setTimeout(r, retryIntervalMs));
+    } while (Date.now() < deadline);
+
+    throw new Error(`테이블 ${tableId} 락 획득 실패`);
+  }
+
+  /**
+   * 내 토큰일 때만 해제한다.
+   *
+   * 그냥 del을 부르면, TTL이 먼저 만료돼 다른 요청이 잡은 락을 지우게 된다.
+   * 그 순간 두 요청이 임계 구역에 동시에 들어가고 아무도 눈치채지 못한다.
+   * 확인과 삭제가 한 번에 일어나야 하므로 Lua로 보낸다.
+   */
+  private async releaseTableLock(lockKey: string, token: string) {
+    const script =
+      'if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end';
+    await this.redis.eval(script, 1, lockKey, token);
+  }
   // 좌석 선점 시도
   async acquireSeatLock(dto: PayMentDto, userId: string): Promise<boolean> {
     const lockKey = `lock:seat:${dto.tableId}:${dto.seatIndex}`;
