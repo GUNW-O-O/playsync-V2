@@ -203,3 +203,109 @@ describe('RedisService.updateSeatBitmap', () => {
     expect(await redis.hget(key, field)).toBe('000000000');
   });
 });
+
+/**
+ * 등록 마감(rebuyUntil) 처리.
+ *
+ * 마감은 "레벨이 바뀌는 순간"에만 검사된다. 그런데 레벨 계산은 저장된 상태가
+ * 아니라 startedAt과 현재 시각으로부터 매번 다시 구해지므로, 서버가 잠깐
+ * 죽었다 살아나거나 폴링이 밀리면 currentBlindLv가 한 번에 여러 칸 뛴다.
+ * 마감 레벨을 정확히 밟지 않고 지나가는 것이 정상 시나리오라는 뜻이다.
+ *
+ * 진짜 Redis로 검증하는 이유는 마감 플래그가 blindField(JSON)와
+ * isRegistrationOpen(해시 필드) 두 곳에 나뉘어 있어서다 — 둘의 갱신이 실제로
+ * 같은 키에 반영되는지까지 봐야 의미가 있다.
+ */
+describe('RedisService.checkAndSyncBlindLevel — 등록 마감', () => {
+  let redis: Redis;
+  let service: RedisService;
+
+  const TOURNAMENT = 'tournament-blind';
+  const infoKey = `tournament:${TOURNAMENT}:info`;
+
+  // 레벨당 20분. lv 필드가 곧 마감 기준값(rebuyUntil)과 비교되는 값이다.
+  const STRUCTURE = [1, 2, 3, 4, 5].map((lv) => ({
+    lv,
+    sb: lv * 100,
+    ante: false,
+    duration: 20,
+  }));
+
+  const MINUTE = 60 * 1000;
+
+  /**
+   * 시작한 지 elapsedMinutes 지난 토너먼트를 만든다.
+   * blindField에는 아직 레벨 0이 저장돼 있고 nextLevelAt은 이미 지난 시각이라,
+   * checkAndSyncBlindLevel이 "밀린 레벨"을 따라잡는 경로를 타게 된다.
+   */
+  const seed = async (elapsedMinutes: number, rebuyUntil: number) => {
+    const startedAt = Date.now() - elapsedMinutes * MINUTE;
+    await service.setTournamentMeta(
+      TOURNAMENT,
+      {
+        isRegistrationOpen: true,
+        totalPlayer: 9,
+        activePlayer: 9,
+        totalBuyinAmount: 90000,
+        rebuyUntil,
+        avgStack: 30000,
+        tournamentName: '테스트 토너먼트',
+        entryFee: 10000,
+        startStack: 30000,
+        itmCount: 3,
+      },
+      {
+        isBreak: false,
+        startedAt,
+        currentBlindLv: 0,
+        nextLevelAt: startedAt + 20 * MINUTE,
+        serverTime: startedAt,
+        blindStructure: STRUCTURE,
+      },
+    );
+  };
+
+  beforeAll(() => {
+    redis = createTestRedis();
+    service = new RedisService(redis);
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+  });
+
+  beforeEach(async () => {
+    await flushTestRedis(redis);
+  });
+
+  it('마감 레벨에 정확히 도달하면 등록을 닫는다', async () => {
+    // 30분 경과 = 레벨 인덱스 1 = lv 2. rebuyUntil과 정확히 일치하는 경우.
+    await seed(30, 2);
+
+    const blind = await service.checkAndSyncBlindLevel(TOURNAMENT);
+
+    expect(blind?.currentBlindLv).toBe(1);
+    expect(await redis.hget(infoKey, 'isRegistrationOpen')).toBe('0');
+  });
+
+  it('마감 레벨을 건너뛰어도 등록을 닫는다', async () => {
+    // 50분 경과 = 레벨 인덱스 2 = lv 3. 마감 기준 lv 2를 밟지 않고 지나갔다.
+    // 정확 일치로 비교하면 여기서 등록이 영영 열린 채로 남아, 이미 끝난
+    // 리바인 시간에 참가비를 계속 받게 된다.
+    await seed(50, 2);
+
+    const blind = await service.checkAndSyncBlindLevel(TOURNAMENT);
+
+    expect(blind?.currentBlindLv).toBe(2);
+    expect(await redis.hget(infoKey, 'isRegistrationOpen')).toBe('0');
+  });
+
+  it('마감 레벨 전이면 등록은 열려 있다', async () => {
+    // 10분 경과 = 레벨 인덱스 0 = lv 1.
+    await seed(10, 3);
+
+    await service.checkAndSyncBlindLevel(TOURNAMENT);
+
+    expect(await redis.hget(infoKey, 'isRegistrationOpen')).toBe('1');
+  });
+});

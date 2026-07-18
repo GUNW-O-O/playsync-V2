@@ -67,13 +67,24 @@ export class SessionService {
   }
 
   async createSession(dto: CreateTournamentDto, blindStructure?: CreateBlindStructureDto) {
-    let blindId = "blind";
-    if ((dto.blindId === undefined || dto.blindId === null) && blindStructure) {
+    // blindId와 blindStructure 둘 다 선택 인자라 "아무것도 안 넘긴" 호출이
+    // 타입상 합법이다. 예전에는 그때 자리 채우기용 문자열이 FK로 들어갔고,
+    // 운이 좋으면 외래키 에러로 즉시 죽고 운이 나쁘면 생성만 성공한 뒤
+    // startSession의 blindStructure.structure 접근에서 죽었다 — 참가자가
+    // 다 앉은 다음에. 기본값을 고치는 대신 입구에서 거부한다.
+    if (!dto.blindId && !blindStructure) {
+      throw new Error('블라인드 구조 정보가 필요합니다.');
+    }
+
+    // dto.blindId(기존 구조 재사용)가 우선이고, 없을 때만 새로 만든다.
+    // 이 시점 이후 blindId는 반드시 실재하는 BlindStructure를 가리킨다.
+    let blindId = dto.blindId;
+    if (!blindId) {
       const newBlind = await this.prismaService.blindStructure.create({
         data: {
-          name: blindStructure.name,
-          structure: blindStructure.structure as any,
-          storeId: blindStructure.storeId
+          name: blindStructure!.name,
+          structure: blindStructure!.structure as any,
+          storeId: blindStructure!.storeId
         }
       })
       blindId = newBlind.id;
@@ -86,7 +97,7 @@ export class SessionService {
           type: dto.type,
           storeId: dto.storeId,
           itmCount: dto.itmCount,
-          blindId: (dto.blindId ? dto.blindId : blindId),
+          blindId: blindId,
           dealerOtp: Math.floor(1000 + Math.random() * 9000), // 4자리 OTP [cite: 9]
           startStack: dto.startStack,
           avgStack: dto.startStack,
