@@ -33,7 +33,18 @@ export class TableEngine {
           break;
 
         case ActionType.TIME_OUT:
-          (player.bet < this.state.currentBet) ? player.hasFolded = true : false;
+          // 순서가 중요하다.
+          // 1) 올인은 더 낼 칩이 없어 bet < currentBet이지만, 이미 낸 칩에 대한
+          //    쇼다운 권리가 있다. 폴드 판정보다 먼저 빠져나가야 한다.
+          // 2) 콜 금액이 부족하면 폴드.
+          // 3) 낼 게 없으면 체크. 이걸 빠뜨리면 hasChecked가 false로 남아
+          //    shouldGoToNextPhase가 영영 참이 되지 않는다(라운드 데드락).
+          if (player.isAllIn) break;
+          if (player.bet < this.state.currentBet) {
+            player.hasFolded = true;
+          } else {
+            player.hasChecked = true;
+          }
           break;
 
         case ActionType.CHECK:
@@ -282,9 +293,29 @@ export class TableEngine {
    */
   public startPreFlop() {
     // 1. BTN, SB, BB 유저를 순차적으로 찾음 (null 제외)
+    //
+    // 활성자 수를 먼저 센다. findNextActiveSeat은 순환 탐색이라 활성자가 1명이면
+    // 같은 좌석을 세 번 돌려주고, 그 한 명이 BTN=SB=BB로 블라인드를 삼중 지불한다.
+    // 0명이면 -1이 나와 payBlind의 players[-1]!에서 프로세스가 죽는다.
+    const activeCount = this.state.players.filter(p => p && !p.hasFolded && p.stack > 0).length;
+    if (activeCount < 2) {
+      throw new Error("게임을 시작하기에 충분한 플레이어가 없습니다.");
+    }
+
     const btnIdx = this.findNextActiveSeat((this.state.buttonUser + 1) % this.state.players.length);
-    const sbIdx = this.findNextActiveSeat((btnIdx + 1) % this.state.players.length);
-    const bbIdx = this.findNextActiveSeat((sbIdx + 1) % this.state.players.length);
+    if (btnIdx === -1) throw new Error("버튼을 배정할 수 없습니다.");
+
+    let sbIdx: number;
+    let bbIdx: number;
+    if (activeCount === 2) {
+      // 헤즈업 규칙: 버튼이 SB, 상대가 BB. 프리플롭 첫 액션도 버튼이다.
+      sbIdx = btnIdx;
+      bbIdx = this.findNextActiveSeat((btnIdx + 1) % this.state.players.length);
+    } else {
+      sbIdx = this.findNextActiveSeat((btnIdx + 1) % this.state.players.length);
+      bbIdx = this.findNextActiveSeat((sbIdx + 1) % this.state.players.length);
+    }
+    if (sbIdx === -1 || bbIdx === -1) throw new Error("블라인드를 배정할 수 없습니다.");
 
     this.state.buttonUser = btnIdx;
 
@@ -299,13 +330,13 @@ export class TableEngine {
     // 4. 상태 설정
     this.state.currentBet = this.state.smallBlind * 2;
 
-    // 첫 순서는 BB 다음 사람
+    // 첫 순서는 BB 다음 사람. 헤즈업이면 BB 다음이 곧 SB(버튼)라 규칙과 맞는다.
+    //
+    // -1이 나오면 그대로 둔다. 예전에는 sbIdx로 폴백했는데, 블라인드로 전원이
+    // 올인된 경우 액션할 수 없는 사람에게 턴을 주는 것이었고, 곧이어 도착하는
+    // 타임아웃이 그를 폴드시켰다. 액션 가능자가 없으면 없다고 두고 딜러의
+    // 강제 진행에 맡긴다.
     this.state.currentTurnSeatIndex = this.findNextActiveSeat((bbIdx + 1) % this.state.players.length);
-
-    // 만약 BB 다음 사람이 아무도 없다면 (예: 2인 헤즈업) BB가 아닌 사람이 액션
-    if (this.state.currentTurnSeatIndex === -1) {
-      this.state.currentTurnSeatIndex = sbIdx;
-    }
 
     this.state.phase = GamePhase.PRE_FLOP;
   }
