@@ -2,8 +2,9 @@ import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { JwtService } from '@nestjs/jwt';
 import { ConnectedSocket, MessageBody, OnGatewayConnection, OnGatewayDisconnect, SubscribeMessage, WebSocketGateway } from '@nestjs/websockets';
 import { Role } from '@prisma/client';
-import { DealerActionSchema, PlayerActionSchema, RebuyResponseSchema } from '@playsync/contract';
+import { DealerAction, DealerActionSchema, PlayerActionSchema, RebuyResponseSchema } from '@playsync/contract';
 import { DealerService } from 'src/dealer/dealer.service';
+import { TableState } from 'src/game-engine/types';
 import { PlaysyncService } from 'src/playsync/playsync.service';
 import { RedisService } from 'src/redis/redis.service';
 
@@ -158,26 +159,44 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
+  /**
+   * 살아 있는 소켓에만 보내고, 죽은 소켓은 그 자리에서 정리한다.
+   *
+   * 닫힌 소켓에 `send`하면 `ws`가 던진다. 루프 안에서 던지면 루프가 통째로
+   * 중단되어, 뒤에 있는 멀쩡한 클라이언트들이 상태를 못 받는다. 죽은 소켓 하나가
+   * 테이블 전체를 멈추는 셈이라 걸러내는 것이 선택이 아니다.
+   *
+   * 개별 `send` 실패도 삼킨다. 보내는 도중 끊긴 소켓 때문에 나머지가 피해를
+   * 보면 안 된다 — 어차피 그 소켓은 곧 `handleDisconnect`로 정리된다.
+   */
+  private broadcast(sessions: Set<WebSocket> | undefined, event: string, data: any) {
+    if (!sessions) return;
+    const message = JSON.stringify({ event, data });
+    sessions.forEach(s => {
+      if (s.readyState !== WebSocket.OPEN) {
+        sessions.delete(s);
+        return;
+      }
+      try {
+        s.send(message);
+      } catch (e) {
+        sessions.delete(s);
+      }
+    });
+  }
+
   // 테이블 브로드캐스트 유틸리티
   private broadcastToTable(tableId: string, event: string, data: any) {
-    const sessions = this.tableSessions.get(tableId);
-    if (sessions) {
-      const message = JSON.stringify({ event, data });
-      sessions.forEach(s => s.send(message));
+    this.broadcast(this.tableSessions.get(tableId), event, data);
+    if (this.tableSessions.get(tableId)?.size === 0) {
+      this.tableSessions.delete(tableId);
     }
   }
   // 토너먼트 브로드캐스트 유틸리티
   private broadcastToTournament(tournamentId: string, event: string, data: any) {
-    const sessions = this.tournamentSessions.get(tournamentId);
-    if (sessions) {
-      const message = JSON.stringify({ event, data });
-      sessions.forEach(s => {
-        if (s.readyState === WebSocket.OPEN) {
-          s.send(message);
-        } else {
-          sessions.delete(s);
-        }
-      });
+    this.broadcast(this.tournamentSessions.get(tournamentId), event, data);
+    if (this.tournamentSessions.get(tournamentId)?.size === 0) {
+      this.tournamentSessions.delete(tournamentId);
     }
   }
   // 유저 브로드캐스트 유틸리티
@@ -236,31 +255,42 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const action = parsed.data;
 
     try {
-      let updatedState;
-
-      switch (action.action) {
-        case 'START_PRE_FLOP':
-          updatedState = await this.dealer.startPreFlop(tournamentId, tableId);
-          break;
-        case 'RESOLVE_WINNERS':
-          updatedState = await this.dealer.resolveWinners(tableId, tournamentId, action.winnerUserIds);
-          break;
-        case 'DEALER_FOLD':
-          updatedState = await this.dealer.handleDealerAction(tournamentId, tableId, action.targetUserId, 'FOLD');
-          break;
-        case 'DEALER_KICK':
-          updatedState = await this.dealer.handleDealerAction(tournamentId, tableId, action.targetUserId, 'KICK');
-          break;
-      }
-
-      // 상태를 돌려주지 않는 경우가 있다 — startPreFlop은 시작할 수 없는
-      // 상태면 아무것도 반환하지 않는다. 그대로 브로드캐스트하면 테이블
-      // 전원이 data 없는 renderGame을 받는다.
-      if (updatedState) {
-        this.broadcastToTable(tableId, 'renderGame', updatedState);
-      }
+      const updatedState = await this.runDealerAction(tournamentId, tableId, action);
+      this.broadcastToTable(tableId, 'renderGame', updatedState);
     } catch (e) {
       return { event: 'error', data: e.message };
+    }
+  }
+
+  /**
+   * 딜러 명령 하나를 실행하고 **반드시 상태를 돌려준다.**
+   *
+   * 반환 타입에 `undefined`가 없는 것이 이 함수의 요점이다. 예전에는 실패를
+   * 조용한 `return;`으로 표현했고, 그 undefined가 `renderGame`으로 브로드캐스트되어
+   * 테이블 전원의 게임 상태를 덮었다. 실패는 예외로만 표현하면 "브로드캐스트할
+   * 상태가 없는데 브로드캐스트하는" 경로가 아예 만들어지지 않는다.
+   */
+  private async runDealerAction(
+    tournamentId: string,
+    tableId: string,
+    action: DealerAction,
+  ): Promise<TableState> {
+    switch (action.action) {
+      case 'START_PRE_FLOP':
+        return this.dealer.startPreFlop(tournamentId, tableId);
+      case 'RESOLVE_WINNERS':
+        return this.dealer.resolveWinners(tableId, tournamentId, action.winnerUserIds);
+      case 'DEALER_FOLD':
+        return this.dealer.handleDealerAction(tournamentId, tableId, action.targetUserId, 'FOLD');
+      case 'DEALER_KICK':
+        return this.dealer.handleDealerAction(tournamentId, tableId, action.targetUserId, 'KICK');
+      default: {
+        // 스키마가 이미 모르는 액션을 거르므로 런타임에 여기 오지 않는다.
+        // 이 줄의 목적은 컴파일 타임이다 — contract에 액션을 추가하면 case를
+        // 채울 때까지 타입 에러가 난다. 문자열 default는 그 실수를 못 잡는다.
+        const unreachable: never = action;
+        throw new Error(`알 수 없는 딜러 액션: ${JSON.stringify(unreachable)}`);
+      }
     }
   }
 

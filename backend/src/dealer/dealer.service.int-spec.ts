@@ -151,39 +151,60 @@ describe('DealerService 동시성', () => {
     await redis.set(stateKey, JSON.stringify(makeState({ phase: GamePhase.WAITING })));
 
     // 딜러가 버튼을 두 번 누르거나, 요청이 중복 도착한 경우.
-    await Promise.all([
+    const results = await Promise.allSettled([
       dealer.startPreFlop(TOURNAMENT, TABLE),
       dealer.startPreFlop(TOURNAMENT, TABLE),
     ]);
 
-    const state: TableState = JSON.parse((await redis.get(stateKey))!);
+    // 직렬화되면 두 번째 호출은 phase가 이미 WAITING이 아니라 거절된다.
+    expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
 
-    // 직렬화되면 두 번째 호출은 phase가 이미 WAITING이 아니라 그대로 반환된다.
+    const state: TableState = JSON.parse((await redis.get(stateKey))!);
     expect(state.phase).toBe(GamePhase.PRE_FLOP);
     expect(state.pot).toBe(300); // SB 100 + BB 200
     expect(chipTotal(state)).toBe(30000);
   });
 
-  it('시작할 수 없는 상태면 진행 중인 타이머를 건드리지 않는다', async () => {
-    // 이미 핸드가 진행 중인데 딜러가 시작 버튼을 또 누른 경우.
-    // startPreFlop은 phase를 확인하기도 전에 큐 잡부터 지운다 — 그 잡은
-    // 지금 액션을 기다리는 플레이어의 타이머다.
-    await redis.set(
-      stateKey,
-      JSON.stringify(makeState({ phase: GamePhase.PRE_FLOP, timerEpoch: 3 })),
-    );
-    await queue.add(
-      'player-timeout',
-      { tableId: TABLE, userId: 'alice', timerEpoch: 3 },
-      { delay: 30000, jobId: `${TABLE}-3`, removeOnComplete: true, removeOnFail: true },
-    );
-    const before = await queue.getJob(`${TABLE}-3`);
+  describe('시작할 수 없는 상태', () => {
+    beforeEach(async () => {
+      await redis.set(
+        stateKey,
+        JSON.stringify(makeState({ phase: GamePhase.PRE_FLOP, timerEpoch: 3 })),
+      );
+    });
 
-    await dealer.startPreFlop(TOURNAMENT, TABLE);
+    it('조용히 넘어가지 않고 거절한다', async () => {
+      // 예전에는 `return;`으로 undefined를 돌려줬고, 게이트웨이가 그걸 그대로
+      // renderGame으로 브로드캐스트했다. 딜러가 진행 중에 시작 버튼을 한 번
+      // 잘못 누르면 테이블 전원의 화면 상태가 undefined로 덮인다.
+      await expect(dealer.startPreFlop(TOURNAMENT, TABLE)).rejects.toThrow();
+    });
 
-    const after = await queue.getJob(`${TABLE}-3`);
-    expect(after).toBeDefined();
-    expect(after?.timestamp).toBe(before?.timestamp);
+    it('진행 중인 타이머를 건드리지 않는다', async () => {
+      // 거절하더라도 큐를 먼저 만지면 안 된다. 그 잡은 지금 액션을 기다리는
+      // 플레이어의 타이머다.
+      await queue.add(
+        'player-timeout',
+        { tableId: TABLE, userId: 'alice', timerEpoch: 3 },
+        { delay: 30000, jobId: `${TABLE}-3`, removeOnComplete: true, removeOnFail: true },
+      );
+      const before = await queue.getJob(`${TABLE}-3`);
+
+      await expect(dealer.startPreFlop(TOURNAMENT, TABLE)).rejects.toThrow();
+
+      const after = await queue.getJob(`${TABLE}-3`);
+      expect(after).toBeDefined();
+      expect(after?.timestamp).toBe(before?.timestamp);
+    });
+
+    it('테이블 상태를 바꾸지 않는다', async () => {
+      await expect(dealer.startPreFlop(TOURNAMENT, TABLE)).rejects.toThrow();
+
+      const state: TableState = JSON.parse((await redis.get(stateKey))!);
+      expect(state.phase).toBe(GamePhase.PRE_FLOP);
+      expect(state.pot).toBe(0);
+      expect(chipTotal(state)).toBe(30000);
+    });
   });
 
   describe('승자 정산', () => {
@@ -242,13 +263,14 @@ describe('DealerService 동시성', () => {
     });
 
     it('리바인 대기 중에는 다음 핸드가 시작되지 않는다', async () => {
-      // 락을 놓는 대신 페이즈가 문지기가 된다. HAND_END면 startPreFlop이 나간다.
+      // 락을 놓는 대신 페이즈가 문지기가 된다. HAND_END면 startPreFlop이 거절한다.
       await seedMeta(true);
       await redis.set(stateKey, JSON.stringify(showdownState()));
 
       let phaseDuringRebuy: GamePhase | undefined;
+      let startRejected = false;
       jest.spyOn(playsync, 'processRebuy').mockImplementation(async () => {
-        await dealer.startPreFlop(TOURNAMENT, TABLE);
+        await dealer.startPreFlop(TOURNAMENT, TABLE).catch(() => { startRejected = true; });
         const mid: TableState = JSON.parse((await redis.get(stateKey))!);
         phaseDuringRebuy = mid.phase;
         return 0;
@@ -256,6 +278,7 @@ describe('DealerService 동시성', () => {
 
       await dealer.resolveWinners(TABLE, TOURNAMENT, ['alice']);
 
+      expect(startRejected).toBe(true);
       expect(phaseDuringRebuy).toBe(GamePhase.HAND_END);
     });
 
