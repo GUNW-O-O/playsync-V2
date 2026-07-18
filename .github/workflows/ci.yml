@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    env:
+      # prisma.config.ts가 dotenv로 DATABASE_URL을 읽는다. 생성/타입 체크에는
+      # 실제 연결이 필요 없으므로 형식만 맞는 더미 값을 준다.
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+      JWT_SECRET: ci-only-not-a-real-secret
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 의존성 설치
+        run: npm ci
+
+      - name: contract 빌드
+        run: npm run build:contract
+
+      - name: Prisma Client 생성
+        working-directory: backend
+        run: npx prisma generate
+
+      - name: 타입 체크
+        run: npm run typecheck
+
+      - name: 테스트
+        run: npm run test
+
+      - name: 빌드
+        run: npm run build

@@ -38,11 +38,25 @@ npm run test           # backend jest
 
 인프라는 `cd backend && docker-compose up -d` (PostgreSQL + Redis).
 
-### 알려진 베이스라인
+### 베이스라인
 
-`backend` 타입 체크에 에러 1건이 남아 있다 — `test/app.e2e-spec.ts:20`의 supertest
-타입 문제. 소스와 무관하며, 베이스라인을 정직하게 유지하려고 일부러 두고 있다.
-타입 에러가 **1건이 아니면** 뭔가 잘못된 것이다.
+타입 에러 0건, 테스트 전부 통과가 정상이다. CI(`.github/workflows/ci.yml`)가
+타입 체크 · 테스트 · 빌드를 돌린다.
+
+`tsc`가 이미 지운 파일의 에러를 계속 보고하면 `.tsbuildinfo`가 낡은 것이다.
+`incremental: true`라서 생기는 일이니 `backend/dist`를 지우고 다시 돌린다.
+
+### 테스트
+
+`nest g`가 생성하는 스캐폴드 스펙 18개와 스캐폴드 e2e를 제거했다. 전부
+`expect(x).toBeDefined()` 뿐이라 회귀를 잡지 못하는데, jest가 `src/...` 절대경로를
+해석하지 못해 import 단계에서 죽고 있었다. 초록인지 빨간지가 아무것도 의미하지
+않는 상태였다.
+
+지금은 `table-engine.spec.ts` 하나로 시작해 티켓마다 실제 회귀 테스트를 쌓는다.
+버그 수정은 실패하는 테스트로 문제를 재현한 뒤 고친다.
+
+`src/...` 절대경로는 jest `moduleNameMapper`로 해석한다 (코드베이스에 43곳).
 
 ## 작업 규칙
 
