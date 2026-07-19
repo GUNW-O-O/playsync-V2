@@ -79,6 +79,74 @@ export function calculatePrizes(
  * 분배율에서 파생된 값이라 "몫이 있는가"와 "인 더 머니인가"가 같은 질문이기
  * 때문이다. 두 군데서 판정하면 어긋날 수 있다.
  */
+/**
+ * 상금을 지급한다. **돈이 대회 밖으로 나가는 유일한 지점이다.**
+ *
+ * 세 가지가 한 트랜잭션에 묶여야 한다.
+ *
+ * - 참가자 행의 순위·상태·금액 (대회 기록)
+ * - 유저 포인트 (실제로 쓸 수 있는 돈)
+ * - 거래 내역 (왜 올랐는지 설명하는 근거)
+ *
+ * 예전에는 첫 줄만 있었다. 참가비는 포인트에서 빠지는데 상금은 참가자 행에
+ * 숫자로만 적혀서, 대회를 열 때마다 시스템이 포인트를 삼켰다.
+ * `TransactionType.PRIZE`가 스키마에 있는데 쓰는 코드가 없던 것이 그 증거다.
+ *
+ * **멱등이어야 한다.** 재시도가 붙은 뒤로 중복 도착은 정상 경로고(N-7),
+ * 카운터와 달리 돈은 두 번 들어가면 되돌릴 근거가 없다. 이미 지급된
+ * (`AWARDED`) 행은 건너뛴다 — 판정을 코드가 아니라 `where` 조건으로 DB에
+ * 맡기는 것이 멱등성의 전부다.
+ *
+ * @returns 실제로 지급한 인원 수. 0이면 전부 이미 지급된 것이다.
+ */
+export async function awardPrize(
+  tx: PrizeTx,
+  tournamentId: string,
+  awards: { userId: string; place: number; amount: number }[],
+  description: string,
+): Promise<number> {
+  let paid = 0;
+
+  for (const { userId, place, amount } of awards) {
+    const changed = await tx.tournamentParticipation.updateMany({
+      where: {
+        tournamentId,
+        userId,
+        status: { notIn: ['ELIMINATED', 'AWARDED'] },
+      },
+      data: {
+        finalPlace: place,
+        status: amount > 0 ? 'AWARDED' : 'ELIMINATED',
+        prizeAmount: amount,
+      },
+    });
+
+    // 이미 처리된 사람이다. 포인트도 내역도 건드리지 않는다.
+    if (changed.count === 0) continue;
+    paid += changed.count;
+
+    // 상금권 밖은 기록만 남기고 돈은 움직이지 않는다.
+    if (amount <= 0) continue;
+
+    await tx.user.update({
+      where: { id: userId },
+      data: { points: { increment: amount } },
+    });
+    await tx.pointTransaction.create({
+      data: { userId, amount, type: 'PRIZE', tournamentId, description },
+    });
+  }
+
+  return paid;
+}
+
+/** `awardPrize`가 쓰는 트랜잭션 클라이언트의 최소 형태. */
+export interface PrizeTx {
+  tournamentParticipation: { updateMany(args: unknown): Promise<{ count: number }> };
+  user: { update(args: unknown): Promise<unknown> };
+  pointTransaction: { create(args: unknown): Promise<unknown> };
+}
+
 export function prizeFor(pool: number, payouts: unknown, place: number): number {
   if (!Array.isArray(payouts) || payouts.length === 0) return 0;
   return calculatePrizes(pool, payouts as PrizePayout[]).get(place) ?? 0;

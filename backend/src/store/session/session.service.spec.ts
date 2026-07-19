@@ -202,6 +202,101 @@ describe('SessionService HTTP 에러 타입', () => {
   });
 });
 
+describe('SessionService.completeSession — 정산 게이트', () => {
+  /**
+   * 대회를 닫는 것은 **되돌릴 수 없는 일**이다. 테이블과 딜러 세션을 지우고
+   * Redis를 비운다. 그 뒤에는 누가 몇 등이었는지, 얼마를 받아야 했는지
+   * 재구성할 근거가 남지 않는다.
+   *
+   * 그래서 정산이 끝난 뒤에만 닫힌다. 걷은 참가비(`totalBuyinAmount`)와 나간
+   * 상금의 합이 같아야 한다 — 대회 하나의 회계가 맞아떨어졌다는 뜻이다.
+   *
+   * 마무리가 수동인 것은 설계다. ICM 찹으로 끝나는 대회가 있어서 최후 1인이
+   * 나오기 전에 관리자가 정산할 수 있어야 한다. 이 게이트는 그 자유를 막지
+   * 않는다 — 어떻게 나눴든 **합이 맞으면** 통과한다.
+   */
+
+  const setup = (opts: { pool: number; prizes: number[]; status?: TournamentStatus }) => {
+    const prisma = {
+      tournament: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 't1',
+          status: opts.status ?? TournamentStatus.ONGOING,
+          totalBuyinAmount: opts.pool,
+        }),
+        update: jest.fn(),
+      },
+      tournamentParticipation: {
+        findMany: jest.fn().mockResolvedValue(
+          opts.prizes.map((prizeAmount, i) => ({ userId: `u${i}`, prizeAmount })),
+        ),
+      },
+      table: { findMany: jest.fn().mockResolvedValue([{ id: 'table-1' }]) },
+      $transaction: jest.fn(),
+    };
+    const redis = { deleteTournament: jest.fn() };
+    return {
+      service: new SessionService(prisma as any, redis as any),
+      prisma,
+      redis,
+    };
+  };
+
+  it('상금이 한 푼도 안 나갔으면 닫지 않는다', async () => {
+    const { service, prisma, redis } = setup({ pool: 30000, prizes: [0, 0, 0] });
+
+    await expect(service.completeSession('t1')).rejects.toThrow(ConflictException);
+
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(redis.deleteTournament).not.toHaveBeenCalled();
+  });
+
+  it('덜 나갔으면 얼마가 남았는지 알려준다', async () => {
+    // 운영자가 화면에서 뭘 해야 하는지 알아야 한다. "닫을 수 없습니다"만으로는
+    // 다시 누르는 것 말고 할 수 있는 일이 없다.
+    const { service } = setup({ pool: 30000, prizes: [18000] });
+
+    await expect(service.completeSession('t1')).rejects.toThrow(/12000/);
+  });
+
+  it('더 나갔어도 닫지 않는다', async () => {
+    // 초과 지급은 부족보다 나쁘다. 이미 나간 돈이라 회수할 근거가 없다.
+    const { service, prisma } = setup({ pool: 30000, prizes: [40000] });
+
+    await expect(service.completeSession('t1')).rejects.toThrow(ConflictException);
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('합이 맞으면 닫는다 — 어떻게 나눴든 상관없다', async () => {
+    // 찹으로 3등분한 대회도 통과해야 한다. 분배율대로인지 묻지 않는다.
+    const { service, prisma, redis } = setup({ pool: 30000, prizes: [10000, 10000, 10000] });
+
+    await service.completeSession('t1');
+
+    expect(prisma.$transaction).toHaveBeenCalled();
+    expect(redis.deleteTournament).toHaveBeenCalled();
+  });
+
+  it('이미 닫힌 대회를 또 닫지 않는다', async () => {
+    const { service, prisma } = setup({
+      pool: 30000, prizes: [30000], status: TournamentStatus.FINISHED,
+    });
+
+    await expect(service.completeSession('t1')).rejects.toThrow(ConflictException);
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('없는 대회는 404다', async () => {
+    const prisma = {
+      tournament: { findUnique: jest.fn().mockResolvedValue(null) },
+      $transaction: jest.fn(),
+    };
+    const service = new SessionService(prisma as any, {} as any);
+
+    await expect(service.completeSession('없는-대회')).rejects.toThrow(NotFoundException);
+  });
+});
+
 describe('SessionService.startSession', () => {
   /**
    * T16. `initializeGame`은 준비, `startSession`은 실제 시작이라는 구분이 원래
