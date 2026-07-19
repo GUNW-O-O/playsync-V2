@@ -147,6 +147,32 @@ describe('DealerService 동시성', () => {
     expect(chipTotal(state)).toBe(30000);
   });
 
+  it('딜러가 현재 턴인 플레이어를 폴드시키면 실제로 폴드된다', async () => {
+    // 자리를 비운 사람을 건너뛰라고 만든 기능인데, 정작 그 사람 차례일 때
+    // 엔진이 아무 일도 하지 않았다. 딜러 화면에서는 턴이 넘어가 성공처럼 보인다.
+    await redis.set(stateKey, JSON.stringify(makeState({ currentTurnSeatIndex: 0 })));
+
+    await dealer.handleDealerAction(TOURNAMENT, TABLE, 'alice', 'FOLD');
+
+    const state: TableState = JSON.parse((await redis.get(stateKey))!);
+    expect(state.players[0]!.hasFolded).toBe(true);
+    expect(chipTotal(state)).toBe(30000);
+  });
+
+  it('쇼다운 전에는 정산을 거부한다', async () => {
+    // 페이즈 게이팅이 딜러 콘솔 UI에만 있었다. 같은 망의 단말이 WS를 직접
+    // 열면 플랍에서도 승자를 확정할 수 있다.
+    await redis.set(stateKey, JSON.stringify(makeState({ phase: GamePhase.FLOP, pot: 1000 })));
+
+    await expect(dealer.resolveWinners(TABLE, TOURNAMENT, ['alice'])).rejects.toThrow(
+      '쇼다운 상태가 아닙니다.',
+    );
+
+    const state: TableState = JSON.parse((await redis.get(stateKey))!);
+    expect(state.phase).toBe(GamePhase.FLOP);
+    expect(state.pot).toBe(1000);
+  });
+
   it('핸드 시작이 겹쳐도 블라인드가 두 번 걷히지 않는다', async () => {
     await redis.set(stateKey, JSON.stringify(makeState({ phase: GamePhase.WAITING })));
 
