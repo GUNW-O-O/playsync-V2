@@ -10,6 +10,22 @@ import { PlaysyncService } from 'src/playsync/playsync.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 
+/**
+ * 이 테이블의 Redis 스냅샷이 없다.
+ *
+ * 딜러 경로의 실패는 상태코드가 아니라 **메시지**로 나간다
+ * (`{ event: 'error', data: e.message }`). 그래서 문자열 자체가 안내다.
+ *
+ * 예전에는 스냅샷 없음과 토너먼트 정보 없음이 똑같이 '예기치 못한 오류가
+ * 발생했습니다.'였다. 둘은 딜러가 할 일이 다르다 — 스냅샷이 없으면 이 테이블은
+ * 더 진행할 수 없어 운영자를 불러야 하고, 토너먼트 정보가 없으면 대회 자체의
+ * 문제다. 같은 문자열이면 딜러는 그냥 다시 누르고, 로그에도 구분이 남지 않는다.
+ *
+ * 상수인 이유는 여섯 곳이 같은 원인이기 때문이다. 원인이 같으면 문구도 같아야
+ * 하고, 한 곳만 고쳐 어긋나는 일이 없어야 한다.
+ */
+const SNAPSHOT_MISSING = '테이블 상태를 찾을 수 없습니다. 진행을 멈추고 운영자에게 알려주세요.';
+
 @Injectable()
 export class DealerService {
   constructor(
@@ -33,7 +49,9 @@ export class DealerService {
         throw new UnauthorizedException('인증 정보가 올바르지 않습니다.');
       }
       if (!tournament.dealerSession) {
-        throw new ConflictException('예기치 못한 오류가 발생했습니다.')
+        // OTP는 맞았는데 딜러 세션이 없다. 인증 실패가 아니라 대회 준비가
+        // 덜 된 상태라, 딜러가 OTP를 다시 입력해도 달라지지 않는다.
+        throw new ConflictException('딜러 세션이 준비되지 않았습니다. 상점에 문의해주세요.')
       }
 
 
@@ -107,7 +125,7 @@ export class DealerService {
   async handleDealerAction(tournamentId: string, tableId: string, targetUserId: string, type: 'FOLD' | 'KICK') {
     return this.redis.withTableLock(tableId, async () => {
       const state = await this.redis.getSnapShot(tableId);
-      if (!state) throw new Error('예기치 못한 오류가 발생했습니다.')
+      if (!state) throw new Error(SNAPSHOT_MISSING);
       const engine = new TableEngine(state);
       const targetIdx = state.players.findIndex(p => p?.id === targetUserId);
 
@@ -163,14 +181,14 @@ export class DealerService {
    */
   async resolveWinners(tableId: string, tournamentId: string, winnerUserIds: string[]) {
     const tournamentInfo = await this.redis.getTournamentDashboard(tournamentId);
-    if (!tournamentInfo) throw new Error('예기치 못한 오류가 발생했습니다.');
+    if (!tournamentInfo) throw new Error('토너먼트 정보를 찾을 수 없습니다. 대회 상태를 확인해야 합니다.');
     // TODO : 보드하이 무승부로직
     if (winnerUserIds.length === 0) throw new Error("유효한 승자가 없습니다.");
 
     // 1. 팟 분배
     const brokePlayerIds = await this.redis.withTableLock(tableId, async () => {
       const state = await this.redis.getSnapShot(tableId);
-      if (!state) throw new Error('예기치 못한 오류가 발생했습니다.');
+      if (!state) throw new Error(SNAPSHOT_MISSING);
 
       const engine = new TableEngine(state);
       await engine.resolveWinner(winnerUserIds);
@@ -201,7 +219,7 @@ export class DealerService {
     // 3. 탈락 확정 — 락 안. 스냅샷은 아직 HAND_END다.
     await this.redis.withTableLock(tableId, async () => {
       const state = await this.redis.getSnapShot(tableId);
-      if (!state) throw new Error('예기치 못한 오류가 발생했습니다.');
+      if (!state) throw new Error(SNAPSHOT_MISSING);
 
       // 리바인으로 살아난 사람은 여기서 이미 스택이 있다.
       const eliminatedPlayers = state.players
@@ -228,7 +246,7 @@ export class DealerService {
     // 길이 있어야 한다 — `retryCheckpoint`가 그것이다.
     if (!synced) {
       const failed = await this.redis.getSnapShot(tableId);
-      if (!failed) throw new Error('예기치 못한 오류가 발생했습니다.');
+      if (!failed) throw new Error(SNAPSHOT_MISSING);
       return failed;
     }
 
@@ -251,7 +269,7 @@ export class DealerService {
     const synced = await this.playsync.checkpointTableToDb(tableId);
     if (!synced) {
       const failed = await this.redis.getSnapShot(tableId);
-      if (!failed) throw new Error('예기치 못한 오류가 발생했습니다.');
+      if (!failed) throw new Error(SNAPSHOT_MISSING);
       return failed;
     }
     return this.finishHand(tableId);
@@ -261,7 +279,7 @@ export class DealerService {
   private finishHand(tableId: string) {
     return this.redis.withTableLock(tableId, async () => {
       const state = await this.redis.getSnapShot(tableId);
-      if (!state) throw new Error('예기치 못한 오류가 발생했습니다.');
+      if (!state) throw new Error(SNAPSHOT_MISSING);
 
       delete state.dbSyncStatus;
       await new TableEngine(state).initTable();

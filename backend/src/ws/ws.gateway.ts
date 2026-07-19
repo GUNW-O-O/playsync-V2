@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { JwtService } from '@nestjs/jwt';
 import { ConnectedSocket, MessageBody, OnGatewayConnection, OnGatewayDisconnect, SubscribeMessage, WebSocketGateway } from '@nestjs/websockets';
@@ -23,6 +24,7 @@ function allowedOrigins(): string[] {
   path: '/playsync',
 })
 export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
+  private readonly logger = new Logger(WsGateway.name);
 
   // 토너먼트 전체 (예매, 공지용)
   private tournamentSessions = new Map<string, Set<WebSocket>>();
@@ -128,7 +130,9 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
 
     } catch (err) {
-      console.error('연결 거부:', err.message);
+      // 거부된 접속은 보안 신호다. 잘못된 토큰과 허용되지 않은 출처가
+      // 여기로 모인다.
+      this.logger.warn(`연결 거부: ${err.message}`);
       client.close(1008, '인증 실패');
     }
   }
@@ -144,8 +148,6 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       sessions?.delete(client);
       if (sessions?.size === 0) {
         this.tableSessions.delete(tableId);
-      } else {
-        console.log(`User left Table ${tableId}`);
       }
     }
     if (tournamentId && this.tournamentSessions.has(tournamentId)) {
@@ -153,8 +155,6 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       sessions?.delete(client);
       if (sessions?.size === 0) {
         this.tournamentSessions.delete(tournamentId);
-      } else {
-        console.log(`User left Tournament Room ${tournamentId}`);
       }
     }
   }

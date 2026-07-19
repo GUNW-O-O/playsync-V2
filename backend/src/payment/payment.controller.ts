@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, NotFoundException, Get, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { PaymentService } from './payment.service';
 import { PayMentDto } from 'shared/dto/payment.dto';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
@@ -10,14 +10,14 @@ export class PaymentController {
   @Get('/stores')
   async searchStore(@Query('id') id: string) {
     const res = await this.paymentService.searchStore(id);
-    if (!res) throw new Error('가맹점 없음');
+    if (!res) throw new NotFoundException('가맹점을 찾을 수 없습니다.');
     return res;
   }
 
   @Get('/stores/:storeId')
   async findAvailableSessions(@Param('storeId') storeId: string) {
     const data = await this.paymentService.getStoreAvailableSessions(storeId);
-    if (!data) throw new Error('세션 없음');
+    if (!data) throw new NotFoundException('세션을 찾을 수 없습니다.');
     return data.map(({ dealerOtp, ...rest }) => rest);
   }
 

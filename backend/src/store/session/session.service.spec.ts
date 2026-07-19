@@ -1,4 +1,5 @@
-import { GameType } from '@prisma/client';
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import { GameType, TournamentStatus } from '@prisma/client';
 import { CreateTournamentDto } from 'shared/dto/tournament.dto';
 import { SessionService } from './session.service';
 
@@ -84,5 +85,55 @@ describe('SessionService.createSession', () => {
 
     expect(prisma.$transaction).not.toHaveBeenCalled();
     expect(tournamentCreate).not.toHaveBeenCalled();
+  });
+
+  it('거부는 400이지 500이 아니다', async () => {
+    // T11. `throw new Error`는 HTTP 경로에서 전부 500이 된다. 500은 "서버가
+    // 고장났다"는 뜻이라 상점 운영자는 자기가 뭘 잘못 넣었는지 알 수 없고,
+    // 프론트도 재시도할 요청과 고쳐서 보낼 요청을 구분할 수 없다.
+    const { service } = setup();
+
+    await expect(service.createSession(baseDto())).rejects.toThrow(BadRequestException);
+  });
+});
+
+describe('SessionService HTTP 에러 타입', () => {
+  // T11. 이 서비스는 상점 관리 화면이 REST로 부른다. 던지는 예외의 종류가
+  // 그대로 상태 코드가 되고, 그게 사용자에게 보이는 안내를 가른다.
+  //
+  // DB 없이 검증할 수 있는 이유는 전부 "거부"라서다 — 트랜잭션까지 가지 않는다.
+
+  const setup = (overrides: Record<string, unknown> = {}) => {
+    const prisma = {
+      tournament: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        update: jest.fn(),
+      },
+      $transaction: jest.fn(),
+      ...overrides,
+    };
+    return new SessionService(prisma as any, { setSeatBitmap: jest.fn() } as any);
+  };
+
+  it('없는 세션에 테이블을 추가하면 404다', async () => {
+    // 오타 난 id로 요청한 것과 서버가 죽은 것은 다른 일이다. 500이면 운영자가
+    // 계속 재시도하고, 로그에는 같은 스택만 쌓인다.
+    await expect(setup().createTable('없는-토너먼트')).rejects.toThrow(NotFoundException);
+  });
+
+  it('종료된 세션을 수정하려 하면 409다', async () => {
+    // 요청 자체는 올바른 형식이고, 대상의 현재 상태가 거부 이유다. 400이 아니라
+    // 409여야 프론트가 "지금은 안 된다"로 안내할 수 있다.
+    const service = setup({
+      tournament: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 't1',
+          status: TournamentStatus.FINISHED,
+        }),
+        update: jest.fn(),
+      },
+    });
+
+    await expect(service.updateSession('t1', {} as any)).rejects.toThrow(ConflictException);
   });
 });

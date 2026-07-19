@@ -40,7 +40,6 @@ export class PlaysyncService {
     if (!tableState) throw new Error(`TableState ${tableId} not found`);
     if (userId !== null && userId !== undefined) {
       const seatIndex = tableState.players.findIndex(p => p?.id === userId);
-      console.log(seatIndex)
       return { tableState, seatIndex };
     } else {
       return { tableState, seatIndex: -1 }
@@ -195,7 +194,10 @@ export class PlaysyncService {
       const oldJob = await this.timeoutQueue.getJob(`${tableId}-${epoch}`);
       if (oldJob) await oldJob.remove();
     } catch (e) {
-      console.log('타임아웃 제거 실패');
+      // 제거 실패는 치명적이지 않다 — 세대(timerEpoch)가 다르면 잡이 스스로
+      // 폐기되므로 잘못된 타임아웃이 발화하지는 않는다. 다만 큐에 쓰레기가
+      // 쌓이는 신호이므로 남긴다.
+      this.logger.warn(`타임아웃 잡 제거 실패 (table=${tableId}, epoch=${epoch}): ${e.message}`);
     }
   }
 
@@ -416,7 +418,9 @@ export class PlaysyncService {
         tournamentId, tableId, userId, entryFee, startStack, tournamentName,
       );
     } catch (error) {
-      console.error('리바인 트랜잭션 실패:', error.message);
+      // 참가자는 리바인 팝업에서 수락했는데 돈이 빠지지 않았다. 스택도 안 늘어
+      // 정합성은 맞지만, 왜 안 됐는지는 여기 말고 남는 곳이 없다.
+      this.logger.error(`리바인 트랜잭션 실패 (table=${tableId}, user=${userId}): ${error.message}`);
       return 0;
     }
     if (resultStack <= 0) return 0;
@@ -467,7 +471,7 @@ export class PlaysyncService {
       const handler = (accept: boolean) => settle(accept);
 
       const timer = setTimeout(() => {
-        console.log(`[TIMEOUT] 유저 ${userId} 리바인 시간초과`);
+        this.logger.log(`리바인 응답 시간초과 (user=${userId})`);
         settle(false);
       }, timeoutMs);
 
@@ -485,7 +489,7 @@ export class PlaysyncService {
           tournamentName,
         });
       } catch (error) {
-        console.error('리바인 팝업 전송 실패:', error.message);
+        this.logger.warn(`리바인 팝업 전송 실패 (user=${userId}): ${error.message}`);
         settle(false);
       }
     });

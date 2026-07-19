@@ -1,3 +1,4 @@
+import { ConflictException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { TournamentStatus } from '@prisma/client';
 import Redis from 'ioredis';
@@ -58,10 +59,13 @@ describe('PaymentService.joinSessionWithSeat', () => {
    *     실패는 콜백이 이미 전부 실행된 뒤라, 그때 쓴 스냅샷만 롤백되지 않고
    *     살아남는다 — DB에 없는 사람이 자리를 차지한다.
    */
-  function makeService(failAt?: 'write' | 'commit') {
+  function makeService(failAt?: 'write' | 'commit' | 'seatTaken') {
     const tx = {
       tablePlayer: {
-        findUnique: async () => null,
+        // 'seatTaken': 좌석 락은 통과했는데 DB에는 이미 사람이 있는 경우.
+        // 락과 DB가 어긋난 상태라 정상 경로로는 만들 수 없고, 그래서 여기의
+        // 백스톱이 실제로 무엇을 던지는지는 스텁으로만 확인할 수 있다.
+        findUnique: async () => (failAt === 'seatTaken' ? { id: 'someone' } : null),
         create: async () => ({}),
       },
       tournamentParticipation: { create: async () => ({}) },
@@ -208,6 +212,31 @@ describe('PaymentService.joinSessionWithSeat', () => {
       expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
       const state: TableState = JSON.parse((await redis.get(stateKey))!);
       expect(state.players.filter(p => p !== null)).toHaveLength(1);
+    });
+
+    it('경합에서 진 쪽은 409로 거절된다', async () => {
+      // 이 경로는 이미 좌석 락이 ConflictException으로 막고 있다(T6). 아래
+      // 백스톱 테스트와 짝을 이뤄, 같은 상황이 어느 층에서 걸리든 참가자가
+      // 받는 안내가 같다는 것을 고정한다.
+      const service = makeService();
+
+      const results = await Promise.allSettled([
+        service.joinSessionWithSeat(dto(5), 'alice'),
+        service.joinSessionWithSeat(dto(5), 'bob'),
+      ]);
+
+      const rejected = results.find(r => r.status === 'rejected') as PromiseRejectedResult;
+      expect(rejected.reason).toBeInstanceOf(ConflictException);
+    });
+
+    it('락을 통과해도 DB에 이미 사람이 있으면 409로 거절된다', async () => {
+      // T11. 좌석 중복은 참가자가 결제 화면에서 실제로 마주치는 상황이다.
+      // 500이면 프론트가 "다른 자리를 고르세요"와 "서버가 죽었다"를 구분할 수
+      // 없어 재시도를 권하게 되고, 참가자는 계속 같은 자리를 누른다.
+      const service = makeService('seatTaken');
+
+      await expect(service.joinSessionWithSeat(dto(6), 'alice'))
+        .rejects.toThrow(ConflictException);
     });
   });
 });
