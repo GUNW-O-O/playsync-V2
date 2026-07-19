@@ -946,3 +946,52 @@ describe('T8 - nextPhase 인덱스 방어', () => {
     );
   });
 });
+
+describe('TableEngine 쇼다운 진입', () => {
+  // 쇼다운에 가는 길이 두 개인데 결과가 달랐다.
+  //
+  //  - `act()`의 지름길(전원 올인 등): `currentTurnSeatIndex = -1`을 명시한다.
+  //  - `nextPhase()`로 RIVER가 끝난 경우: 다음 페이즈를 배정하면서 턴도 무조건
+  //    다시 계산해 **살아있는 좌석**이 남는다.
+  //
+  // 쇼다운인데 상태는 누군가의 차례라고 말한다. T8 가드가 액션은 막으므로 칩이
+  // 움직이진 않지만, 그 상태가 태블릿으로 브로드캐스트되고 타임아웃 잡도
+  // 행동할 수 없는 사람에게 걸린다 — 딜러가 승자를 입력하는 동안 남의 화면에
+  // 카운트다운이 돈다.
+  //
+  // 시나리오 테스트가 잡은 것이다. 두 경로를 각각 보는 단위 테스트로는 각자
+  // 옳아 보인다.
+
+  function riverState(): TableState {
+    const players = [
+      makePlayer('p1', 0, 700, { totalContributed: 300, hasChecked: true }),
+      makePlayer('p2', 1, 700, { totalContributed: 300, hasChecked: true }),
+    ];
+    return makeState(players, {
+      phase: GamePhase.RIVER,
+      pot: potOf(players),
+      currentTurnSeatIndex: 0,
+      currentBet: 0,
+    });
+  }
+
+  it('리버가 끝나 쇼다운으로 가면 차례가 없다', () => {
+    const state = riverState();
+
+    new TableEngine(state).nextPhase();
+
+    expect(state.phase).toBe(GamePhase.SHOWDOWN);
+    expect(state.currentTurnSeatIndex).toBe(-1);
+  });
+
+  it('베팅 라운드로 넘어갈 때는 차례를 배정한다', () => {
+    // 위 수정이 모든 전환의 턴 배정을 죽이면 안 된다.
+    const state = riverState();
+    state.phase = GamePhase.FLOP;
+
+    new TableEngine(state).nextPhase();
+
+    expect(state.phase).toBe(GamePhase.TURN);
+    expect(state.currentTurnSeatIndex).not.toBe(-1);
+  });
+});
