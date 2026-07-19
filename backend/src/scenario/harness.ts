@@ -119,7 +119,8 @@ export async function setupTournament(
     startStack: SCENARIO.startStack,
     entryFee: SCENARIO.entryFee,
     rebuyUntil: opts.rebuyUntil ?? 5,
-    itmCount: 1,
+    // 상금 분배율은 대회 생성 시 상점이 정한다. itmCount는 여기서 파생된다.
+    prizePayouts: [{ place: 1, percent: 100 }],
     // 착석 자체가 등록이라 열려 있어야 한다. 리바인 가능 여부도 이 값이 정하므로
     // 리바인을 보지 않는 시나리오는 착석을 마친 뒤 닫는다(`closeRegistration`).
     isRegistrationOpen: opts.registrationOpen ?? true,

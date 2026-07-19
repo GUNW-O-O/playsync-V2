@@ -253,6 +253,12 @@ describe('RedisService.checkAndSyncBlindLevel — 등록 마감', () => {
         entryFee: 10000,
         startStack: 30000,
         itmCount: 3,
+        prizePool: 90000,
+        prizes: [
+          { place: 1, percent: 50, amount: 45000 },
+          { place: 2, percent: 30, amount: 27000 },
+          { place: 3, percent: 20, amount: 18000 },
+        ],
       },
       {
         isBreak: false,

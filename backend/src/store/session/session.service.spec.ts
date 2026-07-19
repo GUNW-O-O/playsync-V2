@@ -22,8 +22,12 @@ describe('SessionService.createSession', () => {
     startStack: 30000,
     entryFee: 10000,
     rebuyUntil: 5,
-    itmCount: 3,
     isRegistrationOpen: true,
+    prizePayouts: [
+      { place: 1, percent: 50 },
+      { place: 2, percent: 30 },
+      { place: 3, percent: 20 },
+    ],
   });
 
   const setup = () => {
@@ -95,6 +99,66 @@ describe('SessionService.createSession', () => {
 
     await expect(service.createSession(baseDto())).rejects.toThrow(BadRequestException);
   });
+
+  describe('상금 분배율', () => {
+    // 상금은 참가비에서 나온다. 비율을 대회마다 상점이 정하므로, 코드가
+    // 기본값을 지어내면 아무도 합의하지 않은 비율로 돈이 나간다.
+
+    it('분배율을 그대로 저장한다', async () => {
+      const { service, tournamentCreate } = setup();
+
+      await service.createSession({ ...baseDto(), blindId: 'blind-1' });
+
+      expect(tournamentCreate.mock.calls[0][0].data.prizePayouts).toEqual([
+        { place: 1, percent: 50 },
+        { place: 2, percent: 30 },
+        { place: 3, percent: 20 },
+      ]);
+    });
+
+    it('itmCount는 분배율에서 파생된다', async () => {
+      // 따로 받으면 둘이 어긋날 수 있다. itmCount 5에 분배율 3개면 4·5위는
+      // 인 더 머니인데 받을 몫이 없다 — 어느 쪽이 맞는지 코드가 못 정한다.
+      const { service, tournamentCreate } = setup();
+
+      await service.createSession({
+        ...baseDto(),
+        blindId: 'blind-1',
+        prizePayouts: [
+          { place: 1, percent: 60 },
+          { place: 2, percent: 40 },
+        ],
+      });
+
+      expect(tournamentCreate.mock.calls[0][0].data.itmCount).toBe(2);
+    });
+
+    it('합이 100이 아니면 트랜잭션까지 가지 않고 400이다', async () => {
+      const { service, prisma } = setup();
+
+      await expect(service.createSession({
+        ...baseDto(),
+        blindId: 'blind-1',
+        prizePayouts: [{ place: 1, percent: 90 }],
+      })).rejects.toThrow(BadRequestException);
+
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('분배율이 아예 없으면 거부한다', async () => {
+      // 기본값을 두지 않는다. 대회를 못 만드는 편이, 모르는 비율로 돈이
+      // 나가는 것보다 낫다.
+      const { service, prisma } = setup();
+
+      await expect(service.createSession({
+        ...baseDto(),
+        blindId: 'blind-1',
+        prizePayouts: [],
+      })).rejects.toThrow(BadRequestException);
+
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe('SessionService HTTP 에러 타입', () => {
@@ -163,6 +227,8 @@ describe('SessionService.startSession', () => {
     avgStack: 10000,
     startStack: 10000,
     itmCount: 3,
+    totalBuyinAmount: 6000,
+    prizePayouts: [{ place: 1, percent: 100 }],
     blindStructure: { structure: [{ lv: 1, sb: 100, ante: false, duration: 20 }] },
     tables,
   });
@@ -285,6 +351,8 @@ describe('SessionService 시작 최소 인원', () => {
           avgStack: 10000,
           startStack: 10000,
           itmCount: 3,
+          totalBuyinAmount: 1000 * totalPlayers,
+          prizePayouts: [{ place: 1, percent: 100 }],
           blindStructure: { structure: [{ lv: 1, sb: 100, ante: false, duration: 20 }] },
           tables: [],
         }),
