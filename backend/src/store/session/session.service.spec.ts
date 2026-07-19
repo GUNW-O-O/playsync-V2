@@ -260,3 +260,74 @@ describe('SessionService.startSession', () => {
     expect(written).toEqual([blindField.startedAt]);
   });
 });
+
+describe('SessionService 시작 최소 인원', () => {
+  /**
+   * 코드에 박힌 2는 제품 규칙이 아니라 **수동 테스트 편의**였다. 크롬 창을
+   * 6개 띄우고 각각 로그인하는 데 드는 시간이 커서 임의로 낮춰둔 값이다.
+   *
+   * 그래서 2를 6으로 바꾸는 것은 답이 아니다. 로컬에서 다시 못 돌리게 된다.
+   * 환경으로 빼되 **기본값은 운영 규칙(6)**이어야 한다 — 기본값을 테스트
+   * 편의값으로 두면 설정을 빠뜨린 배포가 조용히 2로 뜬다. T10의
+   * `JWT_SECRET='super-secret'`과 같은 실수다.
+   */
+  const setup = (totalPlayers: number) => {
+    const prisma = {
+      tournament: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 't1',
+          name: 'T',
+          isRegistrationOpen: true,
+          totalPlayers,
+          activePlayers: totalPlayers,
+          entryFee: 1000,
+          rebuyUntil: 5,
+          avgStack: 10000,
+          startStack: 10000,
+          itmCount: 3,
+          blindStructure: { structure: [{ lv: 1, sb: 100, ante: false, duration: 20 }] },
+          tables: [],
+        }),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      $transaction: jest.fn(async (fn: any) =>
+        typeof fn === 'function'
+          ? fn({
+              tournament: { update: jest.fn().mockResolvedValue({ id: 't1' }) },
+              tournamentParticipation: { updateMany: jest.fn() },
+            })
+          : undefined,
+      ),
+    };
+    const redis = {
+      getSnapShot: jest.fn(),
+      setTournamentMeta: jest.fn().mockResolvedValue(undefined),
+      saveInitialTableSnapshots: jest.fn().mockResolvedValue(undefined),
+    };
+    return new SessionService(prisma as any, redis as any);
+  };
+
+  afterEach(() => {
+    delete process.env.MIN_PLAYERS_TO_START;
+  });
+
+  it('기본값은 6이다', async () => {
+    await expect(setup(5).startSession('t1')).rejects.toThrow(ConflictException);
+    await expect(setup(6).startSession('t1')).resolves.toBeDefined();
+  });
+
+  it('환경변수가 기본값을 이기고, 호출 시점에 읽는다', async () => {
+    // 낮추는 쪽은 수동 테스트용이다 — 크롬 창을 두 개만 띄우고 돌리기 위한 것.
+    process.env.MIN_PLAYERS_TO_START = '2';
+    await expect(setup(2).startSession('t1')).resolves.toBeDefined();
+
+    // 올리는 쪽까지 봐야 값을 실제로 읽는지 알 수 있다. 낮추는 쪽만 보면
+    // 하드코딩된 2와 결과가 같아 변화를 못 본다.
+    process.env.MIN_PLAYERS_TO_START = '9';
+    await expect(setup(3).startSession('t1')).rejects.toThrow(ConflictException);
+
+    // 모듈 로드 시점에 고정하면 테스트가 값을 바꿀 수 없다 — `rebuyTimeoutMs`와
+    // 같은 이유로 호출 시점에 읽는다. 이 describe가 값을 바꿔가며 도는 것 자체가
+    // 그 검증이다.
+  });
+});

@@ -14,6 +14,24 @@ import { GamePhase, TableState } from 'src/game-engine/types';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 
+/**
+ * 대회를 시작할 수 있는 최소 인원.
+ *
+ * 코드에는 2가 박혀 있었는데 제품 규칙이 아니라 **수동 테스트 편의**였다.
+ * 크롬 창을 6개 띄우고 각각 로그인하는 데 드는 시간 때문에 낮춰둔 값이다.
+ *
+ * 그래서 2를 6으로 바꾸는 것은 답이 아니다 — 로컬에서 다시 못 돌리게 된다.
+ * 환경으로 빼되 **기본값은 운영 규칙**이어야 한다. 기본값을 테스트 편의값으로
+ * 두면 설정을 빠뜨린 배포가 조용히 2로 뜬다. T10의 `JWT_SECRET='super-secret'`과
+ * 같은 실수다.
+ *
+ * 호출 시점에 읽는 것은 `rebuyTimeoutMs`와 같은 이유다 — 모듈 로드 시점에
+ * 고정하면 테스트가 값을 바꿀 수 없다.
+ */
+function minPlayersToStart(): number {
+  return Number(process.env.MIN_PLAYERS_TO_START ?? 6);
+}
+
 @Injectable()
 export class SessionService {
   constructor(
@@ -234,8 +252,11 @@ export class SessionService {
       blindStructure: blindStructure,
     }
 
-    if (game.totalPlayers < 2) {
-      throw new ConflictException('시작하기에 충분한 인원이 아닙니다.')
+    const minPlayers = minPlayersToStart();
+    if (game.totalPlayers < minPlayers) {
+      throw new ConflictException(
+        `시작하기에 충분한 인원이 아닙니다. (${game.totalPlayers}/${minPlayers}명)`,
+      )
     }
 
     const seatedTables = game.tables.filter(t => t.tablePlayers.length > 0);
