@@ -178,12 +178,17 @@ export class DealerService {
    *    받으므로 이 구간에 다음 핸드가 시작되지 않는다.
    * 3. 탈락 확정과 초기화 — 락 안. 스냅샷을 **다시 읽는다.** 2단계 동안 각 리바인이
    *    자기 락을 잡고 스택을 반영했으므로, 1단계의 객체는 이미 낡았다.
+   *
+   * @param winnerGroups 동점 그룹의 배열. 순서가 순위다.
+   *   `[['a','b'], ['c']]` = a와 b가 공동 1위, c가 3위.
+   *   보드 하이면 살아남은 전원이 한 그룹에 들어간다.
    */
-  async resolveWinners(tableId: string, tournamentId: string, winnerUserIds: string[]) {
+  async resolveWinners(tableId: string, tournamentId: string, winnerGroups: string[][]) {
     const tournamentInfo = await this.redis.getTournamentDashboard(tournamentId);
     if (!tournamentInfo) throw new Error('토너먼트 정보를 찾을 수 없습니다. 대회 상태를 확인해야 합니다.');
-    // TODO : 보드하이 무승부로직
-    if (winnerUserIds.length === 0) throw new Error("유효한 승자가 없습니다.");
+    if (winnerGroups.length === 0 || winnerGroups.some(g => g.length === 0)) {
+      throw new Error("유효한 승자가 없습니다.");
+    }
 
     // 1. 팟 분배
     const brokePlayerIds = await this.redis.withTableLock(tableId, async () => {
@@ -191,7 +196,7 @@ export class DealerService {
       if (!state) throw new Error(SNAPSHOT_MISSING);
 
       const engine = new TableEngine(state);
-      await engine.resolveWinner(winnerUserIds);
+      await engine.resolveWinner(winnerGroups);
       await this.redis.saveSnapShot(tableId, state);
 
       return state.players

@@ -172,7 +172,7 @@ describe('DealerService 동시성', () => {
     // 열면 플랍에서도 승자를 확정할 수 있다.
     await redis.set(stateKey, JSON.stringify(makeState({ phase: GamePhase.FLOP, pot: 1000 })));
 
-    await expect(dealer.resolveWinners(TABLE, TOURNAMENT, ['alice'])).rejects.toThrow(
+    await expect(dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']])).rejects.toThrow(
       '쇼다운 상태가 아닙니다.',
     );
 
@@ -263,7 +263,7 @@ describe('DealerService 동시성', () => {
       await redis.set(stateKey, JSON.stringify(makeState({ phase: GamePhase.SHOWDOWN })));
 
       await expect(
-        dealer.resolveWinners(TABLE, TOURNAMENT, ['alice']),
+        dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]),
       ).rejects.toThrow(/토너먼트 정보/);
     });
   });
@@ -309,7 +309,7 @@ describe('DealerService 동시성', () => {
       const before = chipTotal(state);
 
       await expect(
-        dealer.resolveWinners(TABLE, TOURNAMENT, ['carol']),
+        dealer.resolveWinners(TABLE, TOURNAMENT, [['carol']]),
       ).rejects.toThrow(/지명되지 않은 팟/);
 
       const saved: TableState = JSON.parse((await redis.get(stateKey))!);
@@ -326,7 +326,7 @@ describe('DealerService 동시성', () => {
         lockHeld = await redis.exists(`lock:table:state:${TABLE}`);
       });
 
-      await dealer.resolveWinners(TABLE, TOURNAMENT, ['alice']);
+      await dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
 
       expect(lockHeld).toBe(1);
     });
@@ -343,7 +343,7 @@ describe('DealerService 동시성', () => {
         return 0;
       });
 
-      await dealer.resolveWinners(TABLE, TOURNAMENT, ['alice']);
+      await dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
 
       expect(playsync.processRebuy).toHaveBeenCalledTimes(1);
       expect(lockDuringRebuy).toBe(0);
@@ -363,7 +363,7 @@ describe('DealerService 동시성', () => {
         return 0;
       });
 
-      await dealer.resolveWinners(TABLE, TOURNAMENT, ['alice']);
+      await dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
 
       expect(startRejected).toBe(true);
       expect(phaseDuringRebuy).toBe(GamePhase.HAND_END);
@@ -372,7 +372,7 @@ describe('DealerService 동시성', () => {
     it('정산이 끝나면 WAITING으로 돌아간다', async () => {
       await redis.set(stateKey, JSON.stringify(showdownState()));
 
-      await dealer.resolveWinners(TABLE, TOURNAMENT, ['alice']);
+      await dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
 
       const state: TableState = JSON.parse((await redis.get(stateKey))!);
       expect(state.phase).toBe(GamePhase.WAITING);
@@ -387,7 +387,7 @@ describe('DealerService 동시성', () => {
       await redis.set(stateKey, JSON.stringify(showdownState()));
       jest.spyOn(playsync, 'syncTableInventoryToDb').mockResolvedValue(false);
 
-      await dealer.resolveWinners(TABLE, TOURNAMENT, ['alice']);
+      await dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
 
       const state: TableState = JSON.parse((await redis.get(stateKey))!);
       expect(state.phase).toBe(GamePhase.HAND_END);
@@ -403,7 +403,7 @@ describe('DealerService 동시성', () => {
       const broadcasts: TableState[] = [];
       emitter.on('game.state.updated', (p: { state: TableState }) => broadcasts.push(p.state));
 
-      await dealer.resolveWinners(TABLE, TOURNAMENT, ['alice']);
+      await dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
 
       const state: TableState = JSON.parse((await redis.get(stateKey))!);
       expect(state.dbSyncStatus).toBe('FAILED');
@@ -421,7 +421,7 @@ describe('DealerService 동시성', () => {
         return false;
       });
 
-      await dealer.resolveWinners(TABLE, TOURNAMENT, ['alice']);
+      await dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
 
       expect(lockDuringRetry.length).toBeGreaterThan(1);
       expect(lockDuringRetry.every(held => held === 0)).toBe(true);
@@ -434,7 +434,7 @@ describe('DealerService 동시성', () => {
         .mockResolvedValueOnce(false)
         .mockResolvedValue(true);
 
-      await dealer.resolveWinners(TABLE, TOURNAMENT, ['alice']);
+      await dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
 
       const state: TableState = JSON.parse((await redis.get(stateKey))!);
       expect(state.phase).toBe(GamePhase.WAITING);
@@ -445,7 +445,7 @@ describe('DealerService 동시성', () => {
       // 멈추는 것 자체는 올바른 안전 상태다. 문제는 거기서 나올 방법이 없는 것.
       await redis.set(stateKey, JSON.stringify(showdownState()));
       jest.spyOn(playsync, 'syncTableInventoryToDb').mockResolvedValue(false);
-      await dealer.resolveWinners(TABLE, TOURNAMENT, ['alice']);
+      await dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
 
       jest.spyOn(playsync, 'syncTableInventoryToDb').mockResolvedValue(true);
       await dealer.retryCheckpoint(TABLE);
@@ -476,7 +476,7 @@ describe('DealerService 동시성', () => {
         eliminatedIds = players.map(p => p.id);
       });
 
-      await dealer.resolveWinners(TABLE, TOURNAMENT, ['alice']);
+      await dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
 
       expect(eliminatedIds).toEqual([]);
       const state: TableState = JSON.parse((await redis.get(stateKey))!);
