@@ -655,3 +655,194 @@ describe('TableEngine 사이드팟 정산', () => {
     expect(totalChips(state)).toBe(before - 400); // 100~300층 400이 사라진다
   });
 });
+
+describe('T8 - 딜러 강제 진행', () => {
+  it('블라인드로 전원이 올인되면 시작 즉시 쇼다운으로 간다', async () => {
+    // P2-6(a): 액션 가능자가 0명인 채로 PRE_FLOP에 머무르면, 누구도 act()를
+    // 호출할 수 없으므로 페이즈를 넘길 트리거가 영영 오지 않는다.
+    // 진행 판정은 act() 안에만 있고 startPreFlop에는 없었다.
+    const state = makeState([makePlayer('p1', 0, 100), makePlayer('p2', 1, 200)], {
+      buttonUser: 1,
+      smallBlind: 100,
+    });
+
+    new TableEngine(state).startPreFlop();
+
+    expect(state.currentTurnSeatIndex).toBe(-1);
+    expect(state.phase).toBe(GamePhase.SHOWDOWN);
+    expect(state.sidePots.length).toBeGreaterThan(0);
+  });
+
+  it('한 명 빼고 전원이 올인이고 콜이 맞았으면 시작 즉시 쇼다운으로 간다', async () => {
+    // BB가 올인되고 SB는 칩이 남았지만 이미 콜된 상태.
+    const state = makeState(
+      [makePlayer('p1', 0, 200), makePlayer('p2', 1, 5000), makePlayer('p3', 2, 5000)],
+      { buttonUser: 2, smallBlind: 100 },
+    );
+    const before = totalChips(state);
+
+    new TableEngine(state).startPreFlop();
+
+    // 액션 가능자가 2명이므로 쇼다운이 아니다. 정상 진행이어야 한다.
+    expect(state.phase).toBe(GamePhase.PRE_FLOP);
+    expect(totalChips(state)).toBe(before);
+  });
+
+  it('딜러가 현재 턴인 플레이어를 폴드시키면 실제로 폴드된다', async () => {
+    // P2-6(b): DEALER_FOLD가 "턴이 아닌 사람" 분기에만 있어서, 정작 자리를
+    // 비운 사람의 차례일 때 아무 일도 일어나지 않았다. 딜러 화면에서는
+    // 턴이 넘어가 성공한 것처럼 보인다.
+    const state = makeState(
+      [
+        makePlayer('afk', 0, 1000),
+        makePlayer('p2', 1, 1000, { hasChecked: true }),
+        makePlayer('p3', 2, 1000, { hasChecked: true }),
+      ],
+      { phase: GamePhase.FLOP, currentTurnSeatIndex: 0, currentBet: 0 },
+    );
+    const engine = new TableEngine(state);
+
+    await engine.act(0, ActionType.DEALER_FOLD);
+
+    expect(state.players[0]!.hasFolded).toBe(true);
+  });
+
+  it('딜러가 현재 턴인 플레이어를 폴드시키면 라운드가 진행된다', async () => {
+    // 폴드가 안 되면 hasChecked도 false로 남아 shouldGoToNextPhase가
+    // 영영 참이 되지 않는다 — 남은 두 명은 그를 계속 기다린다.
+    const state = makeState(
+      [
+        makePlayer('afk', 0, 1000),
+        makePlayer('p2', 1, 1000, { hasChecked: true }),
+        makePlayer('p3', 2, 1000, { hasChecked: true }),
+      ],
+      { phase: GamePhase.FLOP, currentTurnSeatIndex: 0, currentBet: 0 },
+    );
+
+    await new TableEngine(state).act(0, ActionType.DEALER_FOLD);
+
+    expect(state.phase).toBe(GamePhase.TURN);
+  });
+
+  it('딜러가 현재 턴인 플레이어를 킥하면 실제로 폴드된다', async () => {
+    const state = makeState(
+      [
+        makePlayer('afk', 0, 1000),
+        makePlayer('p2', 1, 1000, { hasChecked: true }),
+        makePlayer('p3', 2, 1000, { hasChecked: true }),
+      ],
+      { phase: GamePhase.FLOP, currentTurnSeatIndex: 0, currentBet: 0 },
+    );
+
+    await new TableEngine(state).act(0, ActionType.DEALER_KICK);
+
+    expect(state.players[0]!.hasFolded).toBe(true);
+  });
+
+  it('딜러 폴드로 한 명만 남으면 쇼다운으로 간다', async () => {
+    const state = makeState(
+      [makePlayer('afk', 0, 1000), makePlayer('p2', 1, 1000, { hasChecked: true })],
+      { phase: GamePhase.FLOP, currentTurnSeatIndex: 0, currentBet: 0 },
+    );
+
+    await new TableEngine(state).act(0, ActionType.DEALER_FOLD);
+
+    expect(state.phase).toBe(GamePhase.SHOWDOWN);
+  });
+
+  it('딜러 폴드는 칩 총량을 바꾸지 않는다', async () => {
+    const state = makeState(
+      [
+        makePlayer('afk', 0, 900, { bet: 100, totalContributed: 100 }),
+        makePlayer('p2', 1, 900, { bet: 100, totalContributed: 100, hasChecked: true }),
+        makePlayer('p3', 2, 900, { bet: 100, totalContributed: 100, hasChecked: true }),
+      ],
+      { phase: GamePhase.FLOP, currentTurnSeatIndex: 0, currentBet: 100, pot: 300 },
+    );
+    const before = totalChips(state);
+
+    await new TableEngine(state).act(0, ActionType.DEALER_FOLD);
+
+    expect(totalChips(state)).toBe(before);
+  });
+});
+
+describe('T8 - resolveWinner 페이즈 가드', () => {
+  function showdownState() {
+    return makeState(
+      [
+        makePlayer('p1', 0, 0, { totalContributed: 500, isAllIn: true }),
+        makePlayer('p2', 1, 0, { totalContributed: 500, isAllIn: true }),
+      ],
+      { phase: GamePhase.SHOWDOWN, pot: 1000, currentBet: 500 },
+    );
+  }
+
+  it('쇼다운에서는 정산된다', async () => {
+    const state = showdownState();
+    const before = totalChips(state);
+
+    await new TableEngine(state).resolveWinner(['p1']);
+
+    expect(state.players[0]!.stack).toBe(1000);
+    expect(totalChips(state)).toBe(before);
+  });
+
+  it('쇼다운 전에는 정산을 거부한다', async () => {
+    // P2-6(c): 페이즈 게이팅이 딜러 콘솔 UI에만 있었다. 같은 망의 단말이
+    // WS를 직접 열면 플랍에서 승자를 확정할 수 있다.
+    const state = makeState(
+      [
+        makePlayer('p1', 0, 500, { totalContributed: 500 }),
+        makePlayer('p2', 1, 500, { totalContributed: 500 }),
+      ],
+      { phase: GamePhase.FLOP, pot: 1000, currentBet: 500 },
+    );
+
+    await expect(new TableEngine(state).resolveWinner(['p1'])).rejects.toThrow(
+      '쇼다운 상태가 아닙니다.',
+    );
+    expect(state.pot).toBe(1000);
+  });
+
+  it('정산을 두 번 호출해도 칩이 늘어나지 않는다', async () => {
+    // 정산 후 totalContributed가 남아 있어, 두 번째 호출이 사이드팟을
+    // 다시 만들어 없는 칩을 지급했다. HAND_END 가드가 이걸 막는다.
+    const state = showdownState();
+    const before = totalChips(state);
+    const engine = new TableEngine(state);
+
+    await engine.resolveWinner(['p1']);
+    await expect(engine.resolveWinner(['p1'])).rejects.toThrow('쇼다운 상태가 아닙니다.');
+
+    expect(totalChips(state)).toBe(before);
+  });
+});
+
+describe('T8 - nextPhase 인덱스 방어', () => {
+  it('HAND_END에서는 딜러 폴드도 거부한다', async () => {
+    // 정산이 끝나 리바인 응답을 기다리는 구간이다. 여기서 액션을 받으면
+    // phases.indexOf(HAND_END)가 -1이라 nextPhase가 phases[0]인 PRE_FLOP을
+    // 배정했다 — 블라인드 없는 유령 핸드가 열린다.
+    const state = makeState(
+      [makePlayer('p1', 0, 1000), makePlayer('p2', 1, 1000, { hasChecked: true })],
+      { phase: GamePhase.HAND_END, currentTurnSeatIndex: 0, currentBet: 0 },
+    );
+
+    await expect(new TableEngine(state).act(0, ActionType.DEALER_FOLD)).rejects.toThrow(
+      '액션할 수 있는 상태가 아닙니다.',
+    );
+    expect(state.phase).toBe(GamePhase.HAND_END);
+  });
+
+  it('WAITING에서는 액션을 거부한다', async () => {
+    const state = makeState([makePlayer('p1', 0, 1000), makePlayer('p2', 1, 1000)], {
+      phase: GamePhase.WAITING,
+      currentTurnSeatIndex: 0,
+    });
+
+    await expect(new TableEngine(state).act(0, ActionType.CHECK)).rejects.toThrow(
+      '액션할 수 있는 상태가 아닙니다.',
+    );
+  });
+});

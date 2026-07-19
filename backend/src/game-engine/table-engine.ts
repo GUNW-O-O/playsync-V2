@@ -10,18 +10,27 @@ export class TableEngine {
     if (!player) {
       throw new Error("유효하지 않은 플레이어");
     }
-    if (this.state.currentTurnSeatIndex !== playerIndex) {
-      switch (action) {
-        case ActionType.DEALER_FOLD:
-        case ActionType.DEALER_KICK:
-          player.hasFolded = true;
-      }
-      if (this.shouldGoToShowdown()) {
-        this.state.phase = GamePhase.SHOWDOWN;
-      }
-      return this.state;
+    // 베팅 라운드가 아니면 어떤 액션도 유효하지 않다. WAITING은 아직 딜이
+    // 시작되지 않았고, HAND_END는 정산이 끝나 리바인 응답을 기다리는 중이며,
+    // SHOWDOWN은 딜러의 승자 입력만 남은 상태다.
+    const bettingPhases = [GamePhase.PRE_FLOP, GamePhase.FLOP, GamePhase.TURN, GamePhase.RIVER];
+    if (!bettingPhases.includes(this.state.phase)) {
+      throw new Error('액션할 수 있는 상태가 아닙니다.');
     }
-    if (!player.hasFolded && this.state.currentTurnSeatIndex === playerIndex) {
+
+    const isDealerAction =
+      action === ActionType.DEALER_FOLD || action === ActionType.DEALER_KICK;
+    const isPlayerTurn = this.state.currentTurnSeatIndex === playerIndex;
+
+    // 딜러 액션은 턴과 무관하다. 자리를 비운 사람을 건너뛰라고 만든 기능이니
+    // 오히려 그 사람 차례일 때 쓰인다. 예전에는 "턴이 아닌 사람" 분기 안에만
+    // 케이스가 있어서, 정작 대상이 현재 턴이면 아래 switch로 떨어졌고 거기엔
+    // 케이스가 없어 아무 일도 일어나지 않았다 — 턴만 넘어가 성공처럼 보였다.
+    if (isDealerAction) {
+      player.hasFolded = true;
+    } else if (!isPlayerTurn) {
+      return this.state;
+    } else if (!player.hasFolded) {
       switch (action) {
         case ActionType.FOLD:
           player.hasFolded = true;
@@ -60,13 +69,16 @@ export class TableEngine {
           break;
       }
     }
-    const nextTurn = this.getNextTurnSeatIndex();
     if (this.shouldGoToShowdown()) {
       this.calculateSidePots();
       this.state.phase = GamePhase.SHOWDOWN;
       this.state.currentTurnSeatIndex = -1;
       return this.state;
     }
+
+    // 턴이 아닌 사람을 딜러가 접은 경우 턴은 그대로 둔다. 지금 액션을 기다리는
+    // 사람에게서 차례를 빼앗으면 그가 영영 행동하지 못한다.
+    const nextTurn = isPlayerTurn ? this.getNextTurnSeatIndex() : this.state.currentTurnSeatIndex;
 
     if (this.shouldGoToNextPhase(nextTurn)) {
       this.nextPhase();
@@ -96,6 +108,10 @@ export class TableEngine {
   public nextPhase() {
     const phases = [GamePhase.PRE_FLOP, GamePhase.FLOP, GamePhase.TURN, GamePhase.RIVER, GamePhase.SHOWDOWN];
     const currentIndex = phases.indexOf(this.state.phase);
+    // WAITING/HAND_END은 베팅 라운드가 아니라 indexOf가 -1이다. 그대로 두면
+    // -1 < 4가 참이라 phases[0]인 PRE_FLOP이 배정된다 — 블라인드도 안 걷고
+    // 핸드가 시작된 것처럼 보인다. 딜러 폴드가 이 상태에서도 불릴 수 있다.
+    if (currentIndex === -1) return;
     this.calculateSidePots();
     if (currentIndex < phases.length - 1) {
       this.state.phase = phases[currentIndex + 1];
@@ -159,6 +175,15 @@ export class TableEngine {
   }
 
   public async resolveWinner(winnerIds: string[]) {
+    // 페이즈 게이팅이 딜러 콘솔 UI에만 있었다. UI의 제약은 서버의 제약이 아니다 —
+    // 같은 망의 단말이 WS를 직접 열면 플랍에서도 승자를 확정할 수 있었다.
+    //
+    // 우회가 아니어도 터진다. 정산은 totalContributed로 사이드팟을 다시 만드는데
+    // 그 값은 initTable 전까지 남아 있다. 딜러가 두 번 누르면 같은 팟이 두 번
+    // 지급됐다(1000 -> 2000). HAND_END로 넘어간 뒤에는 이 가드가 막는다.
+    if (this.state.phase !== GamePhase.SHOWDOWN) {
+      throw new Error('쇼다운 상태가 아닙니다.');
+    }
     this.refundUncalledBets();
     this.calculateSidePots();
     for (const pot of this.state.sidePots) {
@@ -327,6 +352,17 @@ export class TableEngine {
     this.state.currentTurnSeatIndex = this.findNextActiveSeat((bbIdx + 1) % this.state.players.length);
 
     this.state.phase = GamePhase.PRE_FLOP;
+
+    // 블라인드만으로 승부가 결정난 경우 여기서 바로 쇼다운으로 넘긴다.
+    //
+    // 진행 판정은 act() 안에만 있었다. 그런데 블라인드로 전원이 올인되면
+    // 액션할 수 있는 사람이 없어 act()가 불릴 일이 없다 — 페이즈를 넘길
+    // 트리거가 영영 오지 않고 PRE_FLOP에 멈춘다.
+    if (this.shouldGoToShowdown()) {
+      this.calculateSidePots();
+      this.state.phase = GamePhase.SHOWDOWN;
+      this.state.currentTurnSeatIndex = -1;
+    }
   }
 
   private payBlind(sbIdx: number, bbIdx: number, amount: number) {
