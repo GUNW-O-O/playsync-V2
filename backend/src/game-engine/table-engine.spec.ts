@@ -470,17 +470,31 @@ describe('TableEngine 사이드팟 계산', () => {
     expect(pots[0].amount).toBe(900);
   });
 
-  it('폴드한 플레이어도 자격자 목록에는 남는다', () => {
-    // 현재 동작 서술. `calculateSidePots`는 totalContributed > 0만 보고 hasFolded를
-    // 보지 않는다. 승자는 계산되지 않고 딜러가 지명하므로 폴드한 사람이 지급
-    // 대상이 되지는 않지만, 목록 자체는 "승자 자격"이 아니라 "칩을 낸 사람"이다.
-    // 자격 판정을 이 목록에만 의존하는 코드가 생기면 폴드한 사람이 팟을 가져간다.
+  it('폴드한 플레이어는 자격자 목록에서 빠진다', () => {
+    // T15. 폴드는 이 핸드를 포기하는 것이다. 낸 칩은 팟에 남지만 가져갈 자격은
+    // 사라진다. 이 목록이 곧 `resolveWinner`의 자격 판정이라, 여기 남아 있으면
+    // 딜러가 폴드한 사람을 잘못 찍는 순간 그대로 지급된다.
     const pots = sidePotsOf([
       makePlayer('folded', 0, 700, { totalContributed: 300, hasFolded: true }),
       makePlayer('p2', 1, 700, { totalContributed: 300 }),
     ]);
 
-    expect(pots[0].relevantPlayerIds).toContain('folded');
+    expect(pots[0].relevantPlayerIds).toEqual(['p2']);
+  });
+
+  it('폴드한 플레이어의 기여액은 층을 만들지 않는다', () => {
+    // 층을 나누는 기준은 "얼마까지 가져갈 자격이 있나"다. 폴드한 사람에게는 그
+    // 값이 없으므로 100에서 층이 갈릴 이유가 없다. 갈리면 자격자가 없는 팟이
+    // 생기고, 그게 증발의 씨앗이다.
+    const pots = sidePotsOf([
+      makePlayer('folded', 0, 700, { totalContributed: 100, hasFolded: true }),
+      makePlayer('p2', 1, 700, { totalContributed: 300 }),
+      makePlayer('p3', 2, 700, { totalContributed: 300 }),
+    ]);
+
+    expect(pots).toHaveLength(1);
+    expect(pots[0].amount).toBe(700); // 폴드한 100도 팟에 남는다
+    expect(pots[0].relevantPlayerIds).toEqual(['p2', 'p3']);
   });
 });
 
@@ -631,12 +645,27 @@ describe('TableEngine 사이드팟 정산', () => {
     expect(totalChips(state)).toBe(before);
   });
 
-  it('자격자가 아무도 승자로 지명되지 않은 팟은 증발한다', async () => {
-    // 현재 동작 서술이자 알려진 구멍이다. 딜러가 1등만 찍고 넘어가면, 그 1등이
-    // 자격 없는 상위 팟은 지급되지 않은 채 `state.pot = 0`으로 지워진다.
-    // 숏스택이 이기고 나머지 둘의 승부를 안 찍는 것은 흔한 조작 실수라
-    // 실제로 도달 가능한 경로다. 이 티켓은 테스트만 추가하므로 고치지 않고
-    // 고정만 해둔다 — 수정이 들어오면 이 테스트가 깨지면서 드러난다.
+  it('자격자가 있는 팟에 지명이 없으면 정산을 거부한다', async () => {
+    // T15. 예전에는 조용히 건너뛴 뒤 `state.pot = 0`으로 지워 400이 증발했다.
+    // 숏스택이 이겼을 때 1등만 찍고 나머지 둘의 승부를 안 찍는 것은 흔한 조작
+    // 실수라 실제로 도달한다. 서버가 승부를 추측하면 안 되므로 딜러에게 되묻는다.
+    const players = [
+      makePlayer('short', 0, 0, { totalContributed: 100, isAllIn: true }),
+      makePlayer('p2', 1, 700, { totalContributed: 300 }),
+      makePlayer('p3', 2, 700, { totalContributed: 300 }),
+    ];
+    const state = makeState(players, {
+      phase: GamePhase.SHOWDOWN,
+      pot: potOf(players),
+      currentTurnSeatIndex: -1,
+    });
+
+    await expect(new TableEngine(state).resolveWinner(['short'])).rejects.toThrow();
+  });
+
+  it('거부된 정산은 칩도 페이즈도 건드리지 않는다', async () => {
+    // 지급 루프를 돌면서 검증하면 앞쪽 팟은 이미 나간 뒤다. 카드가 실물이라
+    // 되돌릴 근거가 테이블 위에 없으므로, 한 칩이라도 움직이기 전에 막아야 한다.
     const players = [
       makePlayer('short', 0, 0, { totalContributed: 100, isAllIn: true }),
       makePlayer('p2', 1, 700, { totalContributed: 300 }),
@@ -649,10 +678,81 @@ describe('TableEngine 사이드팟 정산', () => {
     });
     const before = totalChips(state);
 
-    await new TableEngine(state).resolveWinner(['short']);
+    await expect(new TableEngine(state).resolveWinner(['short'])).rejects.toThrow();
+
+    expect(totalChips(state)).toBe(before);
+    expect(state.players[0]!.stack).toBe(0);
+    expect(state.pot).toBe(700);
+    expect(state.phase).toBe(GamePhase.SHOWDOWN); // 딜러가 다시 찍을 수 있어야 한다
+  });
+
+  it('2등까지 지명하면 숏스택은 자기 층만, 나머지는 위층을 가져간다', async () => {
+    // 위 거부에서 딜러가 빠져나오는 정상 경로. 올인 100은 900이 아니라 300이
+    // 상한이고, 100~300층 400은 p2·p3 중 이긴 쪽 것이다.
+    const players = [
+      makePlayer('short', 0, 0, { totalContributed: 100, isAllIn: true }),
+      makePlayer('p2', 1, 700, { totalContributed: 300 }),
+      makePlayer('p3', 2, 700, { totalContributed: 300 }),
+    ];
+    const state = makeState(players, {
+      phase: GamePhase.SHOWDOWN,
+      pot: potOf(players),
+      currentTurnSeatIndex: -1,
+    });
+    const before = totalChips(state);
+
+    await new TableEngine(state).resolveWinner(['short', 'p2']);
 
     expect(state.players[0]!.stack).toBe(300);
-    expect(totalChips(state)).toBe(before - 400); // 100~300층 400이 사라진다
+    expect(state.players[1]!.stack).toBe(1100); // 700 + 100~300층 400
+    expect(state.players[2]!.stack).toBe(700);
+    expect(totalChips(state)).toBe(before);
+  });
+
+  it('폴드한 플레이어만 지명하면 정산을 거부한다', async () => {
+    // 폴드한 사람은 어느 팟의 자격자도 아니므로 매칭이 0건이 된다. 예전에는
+    // 자격자 목록에 남아 있어 그대로 900이 지급됐다.
+    const players = [
+      makePlayer('folded', 0, 700, { totalContributed: 300, hasFolded: true }),
+      makePlayer('p2', 1, 700, { totalContributed: 300 }),
+      makePlayer('p3', 2, 700, { totalContributed: 300 }),
+    ];
+    const state = makeState(players, {
+      phase: GamePhase.SHOWDOWN,
+      pot: potOf(players),
+      currentTurnSeatIndex: -1,
+    });
+    const before = totalChips(state);
+
+    await expect(new TableEngine(state).resolveWinner(['folded'])).rejects.toThrow();
+
+    expect(state.players[0]!.stack).toBe(700);
+    expect(totalChips(state)).toBe(before);
+  });
+
+  it('거부 후 다시 지명하면 정상 정산된다', async () => {
+    // 막다른 골목이 되면 안 된다. 거부는 되돌리는 것이 아니라 다시 묻는 것이다.
+    // 환급이 이미 돌았더라도 두 번 돌지 않아야 한다.
+    const players = [
+      makePlayer('short', 0, 0, { totalContributed: 100, isAllIn: true }),
+      makePlayer('p2', 1, 700, { totalContributed: 300 }),
+      makePlayer('p3', 2, 700, { totalContributed: 300 }),
+    ];
+    const state = makeState(players, {
+      phase: GamePhase.SHOWDOWN,
+      pot: potOf(players),
+      currentTurnSeatIndex: -1,
+    });
+    const before = totalChips(state);
+    const engine = new TableEngine(state);
+
+    await expect(engine.resolveWinner(['short'])).rejects.toThrow();
+    await engine.resolveWinner(['short', 'p3']);
+
+    expect(state.players[0]!.stack).toBe(300);
+    expect(state.players[2]!.stack).toBe(1100);
+    expect(totalChips(state)).toBe(before);
+    expect(state.phase).toBe(GamePhase.HAND_END);
   });
 });
 

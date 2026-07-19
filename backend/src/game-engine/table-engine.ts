@@ -128,26 +128,53 @@ export class TableEngine {
   }
 
   // --- 사이드 팟 계산 로직 ---
+  /**
+   * 사이드팟은 두 가지를 동시에 정한다 — **얼마인가**와 **누가 가져갈 수 있나**.
+   * 이 둘의 모집단이 다르다.
+   *
+   * - 금액: 칩을 낸 사람 전부. 폴드한 사람 것도 포함된다. 홀덤에서 폴드는 낸
+   *   칩을 포기하는 것이지 돌려받는 게 아니라, 그 칩은 팟에 남아 승자에게 간다.
+   * - 자격: 폴드하지 않은 사람만. 폴드는 이 핸드를 포기한 것이므로 가져갈 자격이
+   *   없다.
+   *
+   * 그래서 **층을 나누는 기준도 폴드하지 않은 사람의 기여액**이다. 층이란 "여기까지
+   * 가져갈 자격이 있다"는 선인데, 폴드한 사람에게는 그 선이 존재하지 않는다.
+   * 예전에는 이 구분 없이 기여자 전원으로 층을 나눠, 폴드한 사람이 자격자 목록에
+   * 남고 딜러가 잘못 찍으면 그대로 지급됐다.
+   *
+   * 마지막 층은 구간으로 자르지 않고 **남은 전부**를 담는다. 분기가 아니라 식의
+   * 형태라서 `sum(sidePots) === pot`이 구조적으로 성립한다 — 어떤 기여액 조합이
+   * 와도 팟에 담기지 않고 남는 칩이 생길 수 없다.
+   */
   private calculateSidePots() {
     this.state.sidePots = [];
-    const participants = this.state.players
-      .filter((p): p is TablePlayer => p !== null && p.totalContributed > 0)
-      .sort((a, b) => a.totalContributed - b.totalContributed);
+    const contributors = this.state.players
+      .filter((p): p is TablePlayer => p !== null && p.totalContributed > 0);
+
+    // 층의 경계는 폴드하지 않은 사람의 기여액뿐이다.
+    const levels = [...new Set(
+      contributors.filter(p => !p.hasFolded).map(p => p.totalContributed)
+    )].sort((a, b) => a - b);
 
     let lastLevel = 0;
-    for (const p of participants) {
-      const contribution = p.totalContributed;
-      if (contribution > lastLevel) {
-        const amountPerPlayer = contribution - lastLevel;
-        const eligiblePlayers = participants.filter(pl => pl.totalContributed >= contribution);
+    levels.forEach((level, index) => {
+      const isTopLevel = index === levels.length - 1;
+      // 각 기여자가 이 구간에 얹은 금액. 자기 기여액을 넘는 만큼은 못 낸다.
+      const amount = contributors.reduce((sum, p) => {
+        const capped = isTopLevel
+          ? p.totalContributed              // 마지막 층은 남은 전부를 흡수한다
+          : Math.min(p.totalContributed, level);
+        return sum + Math.max(0, capped - lastLevel);
+      }, 0);
 
-        this.state.sidePots.push({
-          amount: amountPerPlayer * eligiblePlayers.length,
-          relevantPlayerIds: eligiblePlayers.map(pl => pl.id)
-        });
-        lastLevel = contribution;
-      }
-    }
+      this.state.sidePots.push({
+        amount,
+        relevantPlayerIds: contributors
+          .filter(p => !p.hasFolded && p.totalContributed >= level)
+          .map(p => p.id),
+      });
+      lastLevel = level;
+    });
   }
   private refundUncalledBets() {
     const activePlayers = this.state.players.filter((p): p is TablePlayer => p !== null && p.totalContributed > 0);
@@ -184,21 +211,44 @@ export class TableEngine {
     if (this.state.phase !== GamePhase.SHOWDOWN) {
       throw new Error('쇼다운 상태가 아닙니다.');
     }
+    // 환급은 검증보다 앞이다. 환급 금액이 기여액을 낮추고, 그 값으로 층이 갈려
+    // 자격이 정해지기 때문이다. 두 번 돌아도 안전하다 — 환급 후에는 최고액과
+    // 차순위가 같아져 `highest > secondHighest`가 거짓이 된다.
     this.refundUncalledBets();
     this.calculateSidePots();
-    for (const pot of this.state.sidePots) {
-      // winnerIds는 클릭 순서대로임 (0번 인덱스가 1등)
-      // 이 사이드팟에 지분이 있는 사람들 중 가장 높은 순위의 사람 한 명을 찾음
-      const potWinnerId = winnerIds.find(id => pot.relevantPlayerIds.includes(id));
 
-      if (potWinnerId) {
-        const share = pot.amount;
-        const p = this.state.players.find(pl => pl?.id === potWinnerId);
-        if (p) {
-          p.stack += share;
-          console.log(`사이드팟 ${share}을(를) 유저 ${p.id}에게 지급`);
-        }
-      }
+    // winnerIds는 클릭 순서대로다 (0번 인덱스가 1등).
+    // 각 팟은 자격자 중 가장 높은 순위 한 명에게 간다.
+    const claims = this.state.sidePots.map(pot => ({
+      pot,
+      winnerId: winnerIds.find(id => pot.relevantPlayerIds.includes(id)),
+    }));
+
+    // **지급 전에 전부 검증한다.** 예전에는 루프를 돌며 지급하다가 지명이 없는
+    // 팟을 조용히 건너뛰고 `state.pot = 0`으로 지웠다 — 그 팟의 칩이 증발했다.
+    // 숏스택이 이겼을 때 1등만 찍고 나머지의 승부를 안 찍는 것은 흔한 조작
+    // 실수라 실제로 도달한다.
+    //
+    // 서버가 승부를 추측하면 안 된다. 승자는 계산되지 않고 딜러가 입력하는
+    // 값이므로, 비어 있으면 되묻는 것이 이 도메인에서 유일하게 옳은 처리다.
+    // 한 칩이라도 움직이기 전에 막아야 한다 — 카드가 실물이라 잘못 나간 지급을
+    // 되돌릴 근거가 테이블 위에 남지 않는다.
+    //
+    // 자격자가 아예 없는 팟은 만들어질 수 없다. 층이 생기려면 누가 베팅하고 누가
+    // 콜해야 하는데, 콜 없이 폴드로 끝난 베팅은 `refundUncalledBets`가 회수한다.
+    // 그래서 폴백 분기를 두지 않는다 — 일어날 수 없는 경우에 코드를 붙이면
+    // 검증할 수도 없고 홀덤 규칙으로 오해받는다.
+    const unclaimed = claims.filter(c => !c.winnerId);
+    if (unclaimed.length > 0) {
+      const detail = unclaimed
+        .map(c => `${c.pot.amount}(자격: ${c.pot.relevantPlayerIds.join(', ')})`)
+        .join(' / ');
+      throw new Error(`승자가 지명되지 않은 팟이 있습니다: ${detail}`);
+    }
+
+    for (const { pot, winnerId } of claims) {
+      const p = this.state.players.find(pl => pl?.id === winnerId);
+      if (p) p.stack += pot.amount;
     }
     this.state.pot = 0;
     this.state.sidePots = [];
