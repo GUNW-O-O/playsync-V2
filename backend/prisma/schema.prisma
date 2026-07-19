@@ -109,7 +109,11 @@ model Tournament {
   blindStructure BlindStructure @relation(fields: [blindId], references: [id])
   entryFee       Int            @default(0)
   startStack     Int            @default(0)
-  itmCount       Int            @default(3)
+  itmCount       Int            @default(3) // prizePayouts.length에서 파생된다
+
+  // 상금 분배율. [{place:1, percent:50}, ...] 이고 percent 합이 100이다.
+  // 대회 생성 시 상점이 정한다 — 코드가 정할 수 있는 값이 아니라 기본값이 없다.
+  prizePayouts Json @default("[]")
 
   // 실시간 전광판용 데이터
   rebuyUntil         Int     @default(0)

@@ -332,13 +332,26 @@ export class TableEngine {
   }
 
   // 공통 베팅 처리 (bet, totalContributed 동시 업데이트)
+  /**
+   * 칩이 스택에서 팟으로 옮겨 가는 **유일한 지점**이다. 상한도 여기서 건다.
+   *
+   * 콜과 레이즈는 호출 전에 금액을 맞춰 오지만 블라인드와 앤티는 그렇지 않다.
+   * 블라인드는 시간에 따라 오르고 스택은 줄어드니, 대회 종반에는 반드시
+   * 블라인드가 누군가의 스택을 넘는다 — 예외가 아니라 정상 경로다.
+   *
+   * 상한이 없으면 잔고가 음수가 되고, 올인 판정이 `=== 0`이라 음수는 올인으로도
+   * 잡히지 않는다. 행동할 수 없는 사람이 행동 대기자로 남아 라운드가 영영
+   * 닫히지 않고, 그 순간 칩 총량도 어긋난다.
+   */
   private executeBet(player: TablePlayer, amount: number) {
-    player.stack -= amount;
-    player.bet += amount;
-    player.totalContributed += amount;
-    this.state.pot += amount;
+    const actual = Math.min(player.stack, amount);
 
-    if (player.stack === 0) {
+    player.stack -= actual;
+    player.bet += actual;
+    player.totalContributed += actual;
+    this.state.pot += actual;
+
+    if (player.stack <= 0) {
       player.isAllIn = true;
     }
   }

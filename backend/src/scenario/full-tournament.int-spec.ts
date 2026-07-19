@@ -192,7 +192,8 @@ describe('시나리오 — 대회 하나를 끝까지', () => {
       startStack: START_STACK,
       entryFee: ENTRY_FEE,
       rebuyUntil: 5,
-      itmCount: 1,
+      // 상금 분배율은 대회 생성 시 상점이 정한다. itmCount는 여기서 파생된다.
+    prizePayouts: [{ place: 1, percent: 100 }],
       isRegistrationOpen: true,
       blindId: BLIND,
     } as never);

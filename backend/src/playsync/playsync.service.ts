@@ -10,6 +10,7 @@ import { ActionType, GamePhase, TablePlayer, TableState } from 'src/game-engine/
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { retryAsync } from 'src/common/retry';
+import { prizeFor } from './prize';
 
 /** 한 턴에 주어지는 시간. 잡의 delay와 state.actionDeadline이 같은 값을 써야 한다. */
 const TURN_TIMEOUT_MS = 30000;
@@ -295,8 +296,17 @@ export class PlaysyncService {
     if (players.length === 0) return;
     const playerIds = players.map(p => p.id);
     const result = await this.prisma.$transaction(async (tx) => {
-      const isInTheMoney = tournamentInfo.itmCount >= tournamentInfo.activePlayer;
       const eliminatedRank = tournamentInfo.activePlayer;
+
+      // 풀과 분배율은 DB에서 읽는다. Redis 대시보드에도 totalBuyinAmount가
+      // 있지만 그건 화면용 파생값이고, **돈의 진실은 DB다.** 리바인으로
+      // 풀이 커지는 것도 여기에 반영돼 있다.
+      const { totalBuyinAmount, prizePayouts } = await tx.tournament.findUniqueOrThrow({
+        where: { id: tournamentId },
+        select: { totalBuyinAmount: true, prizePayouts: true },
+      });
+      const prize = prizeFor(totalBuyinAmount, prizePayouts, eliminatedRank);
+      const isInTheMoney = prize > 0;
 
       // 이미 탈락한 사람은 제외하고 센다. 카운터를 `playerIds.length`가 아니라
       // **실제로 상태가 바뀐 행 수**로 줄이는 것이 멱등성의 전부다.
@@ -313,7 +323,7 @@ export class PlaysyncService {
         data: {
           finalPlace: eliminatedRank,
           status: (isInTheMoney ? 'AWARDED' : 'ELIMINATED'),
-          prizeAmount: (isInTheMoney ? 1000 : 0),
+          prizeAmount: prize,
         }
       });
       // 삭제는 원래 멱등이라 조건을 더할 필요가 없다.
@@ -367,6 +377,11 @@ export class PlaysyncService {
     });
     if (!user) throw new Error('유저 없음.');
     await this.prisma.$transaction(async (tx) => {
+      const { totalBuyinAmount, prizePayouts } = await tx.tournament.findUniqueOrThrow({
+        where: { id: tournamentId },
+        select: { totalBuyinAmount: true, prizePayouts: true },
+      });
+
       await tx.tournamentParticipation.update({
         where: {
           tournamentId_userId:
@@ -375,7 +390,7 @@ export class PlaysyncService {
         data: {
           finalPlace: 1,
           status: 'AWARDED',
-          prizeAmount: 3000,
+          prizeAmount: prizeFor(totalBuyinAmount, prizePayouts, 1),
         },
       });
     });

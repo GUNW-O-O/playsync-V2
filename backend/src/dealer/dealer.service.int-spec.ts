@@ -92,6 +92,8 @@ describe('DealerService 동시성', () => {
       entryFee: 1000,
       startStack: 10000,
       itmCount: 1,
+      prizePool: 3000,
+      prizes: [{ place: 1, percent: 100, amount: 3000 }],
     };
     await redisService.setTournamentMeta(TOURNAMENT, dashboard, blind);
   }

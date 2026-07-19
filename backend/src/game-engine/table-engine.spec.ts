@@ -995,3 +995,94 @@ describe('TableEngine 쇼다운 진입', () => {
     expect(state.currentTurnSeatIndex).not.toBe(-1);
   });
 });
+
+describe('블라인드가 스택보다 클 때', () => {
+  /**
+   * 대회 종반에 반드시 오는 상황이다. 블라인드는 시간에 따라 오르고 스택은
+   * 줄어드니, 언젠가 블라인드가 누군가의 스택을 넘는다. 그 사람은 **가진
+   * 만큼만 내고 올인**이 되어야 한다.
+   *
+   * 예전에는 `executeBet`이 스택을 확인하지 않고 그대로 빼서 잔고가 음수가
+   * 됐다. 게다가 올인 판정이 `stack === 0`이라 음수는 올인으로도 잡히지
+   * 않는다 — 행동할 수 없는 사람이 행동 대기자로 남아 **라운드가 영영 닫히지
+   * 않는다.** 칩 총량도 그 순간 어긋난다.
+   *
+   * T18의 대회 진행 시나리오가 잡아낸 것이 이 자리다.
+   */
+
+  it('블라인드를 다 낼 수 없으면 가진 만큼만 내고 올인이다', async () => {
+    // 블라인드 400/800인데 150밖에 없다. 버튼이 먼저 한 칸 돌아 short가
+    // 버튼(헤즈업에서는 SB)이 되므로 400을 내야 하는 자리다.
+    const state = makeState(
+      [makePlayer('rich', 0, 50000), makePlayer('short', 1, 150)],
+      { buttonUser: 0, smallBlind: 400 },
+    );
+
+    new TableEngine(state).startPreFlop();
+
+    const short = state.players[1]!;
+    expect(short.stack).toBe(0);
+    expect(short.bet).toBe(150);
+    expect(short.isAllIn).toBe(true);
+  });
+
+  it('BB 자리에서도 마찬가지다', async () => {
+    // 버튼이 돌아 rich가 버튼(SB)이 되고 short가 BB다. 내야 할 800보다
+    // 스택이 작다.
+    const state = makeState(
+      [makePlayer('short', 0, 150), makePlayer('rich', 1, 50000)],
+      { buttonUser: 0, smallBlind: 400 },
+    );
+
+    new TableEngine(state).startPreFlop();
+
+    const short = state.players[0]!;
+    expect(short.stack).toBe(0);
+    expect(short.bet).toBe(150);
+    expect(short.isAllIn).toBe(true);
+  });
+
+  it('앤티와 블라인드를 합쳐도 스택을 넘지 않는다', async () => {
+    // 앤티가 먼저 빠지고 그 다음 블라인드다. 두 번 빼는 동안 어느 쪽도
+    // 스택을 넘으면 안 된다.
+    const state = makeState(
+      [makePlayer('rich', 0, 50000), makePlayer('short', 1, 300)],
+      { buttonUser: 0, smallBlind: 400, ante: true },
+    );
+
+    new TableEngine(state).startPreFlop();
+
+    expect(state.players[1]!.stack).toBe(0);
+    expect(state.players[1]!.isAllIn).toBe(true);
+  });
+
+  it('칩 총량이 보존된다', async () => {
+    const state = makeState(
+      [makePlayer('rich', 0, 50000), makePlayer('short', 1, 300)],
+      { buttonUser: 0, smallBlind: 400, ante: true },
+    );
+    const before = totalChips(state);
+
+    new TableEngine(state).startPreFlop();
+
+    expect(totalChips(state)).toBe(before);
+  });
+
+  it('블라인드로 올인된 사람에게는 차례가 오지 않는다', async () => {
+    // 올인으로 잡히지 않으면 findNextActiveSeat이 그를 고르고, 그는 아무것도
+    // 할 수 없으니 테이블이 멈춘다.
+    const state = makeState(
+      [
+        makePlayer('p0', 0, 50000),
+        makePlayer('p1', 1, 50000),
+        makePlayer('short', 2, 150),
+      ],
+      { buttonUser: 0, smallBlind: 400 },
+    );
+
+    new TableEngine(state).startPreFlop();
+
+    expect(state.players[2]!.isAllIn).toBe(true);
+    expect(state.currentTurnSeatIndex).not.toBe(2);
+  });
+});
