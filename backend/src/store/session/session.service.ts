@@ -156,20 +156,44 @@ export class SessionService {
     await this.redis.setSeatBitmap(tournamentId, newTable.id);
   }
 
-  // 세션 시작
+  /**
+   * 대회를 실제로 시작한다.
+   *
+   * 두 단계의 성격이 다르다. `initializeGame`은 **준비** — 게임 상태를 Redis에
+   * 올리는 일이고, 이 시점에는 아직 아무도 그것을 보지 않는다. 그래서 실패해도
+   * 되돌릴 것이 없다. 여기 커밋이 **시작** — 웹이 읽는 것은 DB이므로, 참가자
+   * 눈에 "시작했다"가 보이는 순간이 바로 이 한 줄이다.
+   *
+   * 순서가 이 방향이어야 하는 이유: 반대면 Redis가 실패했을 때 DB만 진행 중으로
+   * 남고 되돌릴 수 없다 — 이미 커밋된 뒤다. 참가자에게는 시작한 것으로 보이는데
+   * 실제 게임 상태는 어디에도 없다.
+   *
+   * 예전에는 `initializeGame`이 `startedAt`과 참가자 `PLAYING`을 먼저 커밋하고
+   * Redis를 나중에 썼다. 준비 단계가 시작 사실을 써버린 셈이다.
+   *
+   * 실패하면 `PENDING`으로 남으므로 **시작 버튼을 다시 누르는 것이 곧 재시도**다.
+   * T9처럼 별도의 재시도 명령이 필요 없는 것은, 준비 단계가 전부 덮어쓰기라
+   * 몇 번을 돌려도 같은 결과이기 때문이다.
+   */
   async startSession(id: string) {
-    await this.initializeGame(id);
-    return await this.prismaService.tournament.update({
-      where: {
-        id: id,
-      },
-      data: {
-        status: TournamentStatus.ONGOING,
-        startedAt: new Date(),
-      },
+    const { startedAt } = await this.initializeGame(id);
+
+    return await this.prismaService.$transaction(async (tx) => {
+      await tx.tournamentParticipation.updateMany({
+        where: { tournamentId: id },
+        data: { status: PlayerStatus.PLAYING },
+      });
+      // startedAt은 준비 단계가 정한 값을 그대로 쓴다. 여기서 다시 찍으면
+      // Redis의 블라인드 기준 시각과 어긋난다 — 블라인드 레벨은 startedAt으로
+      // 부터의 경과 시간으로 계산되므로, DB를 읽는 쪽은 다른 레벨을 얻는다.
+      return await tx.tournament.update({
+        where: { id },
+        data: { status: TournamentStatus.ONGOING, startedAt },
+      });
     });
   }
 
+  /** 게임 상태를 Redis에 올린다. 아직 시작이 아니다 — 커밋은 호출자가 한다. */
   private async initializeGame(id: string) {
     // 1. DB에서 세션과 모든 테이블/플레이어 정보를 한 번에 가져옴
     const game = await this.prismaService.tournament.findUnique({
@@ -213,35 +237,38 @@ export class SessionService {
     if (game.totalPlayers < 2) {
       throw new ConflictException('시작하기에 충분한 인원이 아닙니다.')
     }
-    await this.prismaService.$transaction(async (tx) => {
-      await tx.tournament.update({
-        where: { id },
-        data: { startedAt: startedAt }
-      });
-      await tx.tournamentParticipation.updateMany({
-        where: { tournamentId: id },
-        data: { status: PlayerStatus.PLAYING }
-      });
-    });
 
-    const tableStates = game.tables
-      .filter(t => t.tablePlayers.length > 0)
-      .map(async t => {
+    const seatedTables = game.tables.filter(t => t.tablePlayers.length > 0);
+
+    // 사람이 앉은 테이블에 스냅샷이 없으면 **거부한다.** 예전에는 `return null`로
+    // 조용히 빼고 진행했다 — 그 테이블만 상태 없이 시작되고, DB에는 사람이
+    // 앉아 있는데 딜러는 첫 액션에서 '테이블 상태를 찾을 수 없습니다'를 이유도
+    // 모른 채 본다. 게다가 전부 빠져도 대회는 시작됐다.
+    const tableStates = await Promise.all(
+      seatedTables.map(async t => {
         const randomCnt = Math.floor(Math.random() * t.tablePlayers.length);
         const btnIdx = t.tablePlayers[randomCnt].seatPosition;
 
-        let initialState = await this.redis.getSnapShot(t.id);
-        if (!initialState) return null;
-        initialState!.buttonUser = btnIdx;
+        const initialState = await this.redis.getSnapShot(t.id);
+        if (!initialState) return { tableId: t.id, state: null };
+        initialState.buttonUser = btnIdx;
         return { tableId: t.id, state: initialState };
-      });
-    const resolvedTableStates = await Promise.all(tableStates);
-    const validTableStates = resolvedTableStates.filter(state => state !== null);
+      }),
+    );
 
-    if (validTableStates.length > 0) {
-      await this.redis.setTournamentMeta(id, dashboard, blindField);
-      await this.redis.saveInitialTableSnapshots(validTableStates as any);
+    const missing = tableStates.filter(t => t.state === null).map(t => t.tableId);
+    if (missing.length > 0) {
+      throw new ConflictException(
+        `테이블 상태가 준비되지 않아 시작할 수 없습니다: ${missing.join(', ')}`,
+      );
     }
+
+    await this.redis.setTournamentMeta(id, dashboard, blindField);
+    await this.redis.saveInitialTableSnapshots(
+      tableStates as { tableId: string; state: TableState }[],
+    );
+
+    return { startedAt };
   }
 
   // 세션 완료

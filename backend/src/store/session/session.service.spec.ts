@@ -137,3 +137,126 @@ describe('SessionService HTTP 에러 타입', () => {
     await expect(service.updateSession('t1', {} as any)).rejects.toThrow(ConflictException);
   });
 });
+
+describe('SessionService.startSession', () => {
+  /**
+   * T16. `initializeGame`은 준비, `startSession`은 실제 시작이라는 구분이 원래
+   * 의도였다. 그런데 준비 단계가 DB에 "시작했다"를 커밋하고 있었다 —
+   * `startedAt` 기록과 참가자 `PLAYING` 전환.
+   *
+   * 순서가 뒤집혀 있으면 Redis가 실패했을 때 DB만 "진행 중"으로 남고 되돌릴 수
+   * 없다. 이미 커밋된 뒤다. 웹이 읽는 것은 DB이므로, 참가자에게는 시작한 것으로
+   * 보이는데 실제 게임 상태는 어디에도 없다.
+   *
+   * 되돌릴 수 있는 일(Redis)을 먼저 하고 커밋을 마지막에 한다. 그러면 커밋
+   * 한 번이 "시작했다"는 단일 순간이 되고, 그 전에 실패하면 PENDING으로 남아
+   * 시작 버튼을 다시 누르는 것이 곧 재시도가 된다.
+   */
+  const gameRow = (tables: unknown[]) => ({
+    id: 't1',
+    name: 'T',
+    isRegistrationOpen: true,
+    totalPlayers: 6,
+    activePlayers: 6,
+    entryFee: 1000,
+    rebuyUntil: 5,
+    avgStack: 10000,
+    startStack: 10000,
+    itmCount: 3,
+    blindStructure: { structure: [{ lv: 1, sb: 100, ante: false, duration: 20 }] },
+    tables,
+  });
+
+  const setup = (opts: { tables?: unknown[]; snapshot?: unknown; redisFails?: boolean } = {}) => {
+    const tables = opts.tables ?? [{ id: 'table-1', tablePlayers: [{ seatPosition: 0 }] }];
+
+    const update = jest.fn().mockResolvedValue({});
+    const prisma = {
+      tournament: { findUnique: jest.fn().mockResolvedValue(gameRow(tables)), update },
+      $transaction: jest.fn(async (fn: any) =>
+        typeof fn === 'function'
+          ? fn({ tournament: { update }, tournamentParticipation: { updateMany: jest.fn() } })
+          : undefined,
+      ),
+    };
+
+    const setTournamentMeta = jest.fn().mockResolvedValue(undefined);
+    const saveInitialTableSnapshots = jest.fn(async () => {
+      if (opts.redisFails) throw new Error('테이블 상태 저장에 실패했습니다: table-1');
+    });
+    const redis = {
+      getSnapShot: jest.fn().mockResolvedValue(
+        'snapshot' in opts ? opts.snapshot : { players: [], buttonUser: 0 },
+      ),
+      setTournamentMeta,
+      saveInitialTableSnapshots,
+    };
+
+    const service = new SessionService(prisma as any, redis as any);
+    return { service, prisma, update, setTournamentMeta, saveInitialTableSnapshots };
+  };
+
+  it('사람이 앉은 테이블에 스냅샷이 없으면 시작을 거부한다', async () => {
+    // 조용히 빼고 진행하면 그 테이블만 상태 없이 시작한다. DB에는 사람이 앉아
+    // 있고 PLAYING인데, 딜러는 첫 액션에서 '테이블 상태를 찾을 수 없습니다'를
+    // 이유도 모른 채 본다.
+    const { service } = setup({ snapshot: null });
+
+    await expect(service.startSession('t1')).rejects.toThrow();
+  });
+
+  it('거부되면 DB에 아무것도 커밋하지 않는다', async () => {
+    // 예전에는 스냅샷이 하나도 없어도 startSession이 성공을 반환하고 ONGOING이
+    // 됐다. 대시보드도 블라인드도 없는 채로 시작된 대회가 남는다.
+    const { service, prisma, update } = setup({ snapshot: null });
+
+    await expect(service.startSession('t1')).rejects.toThrow();
+
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('Redis 저장이 실패하면 DB 커밋이 일어나지 않는다', async () => {
+    // 순서의 요점. Redis는 아직 아무도 보지 않는 상태라 실패해도 되돌릴 것이
+    // 없다. 커밋이 뒤에 있어야 이 성질이 성립한다.
+    const { service, prisma, update } = setup({ redisFails: true });
+
+    await expect(service.startSession('t1')).rejects.toThrow(/저장에 실패/);
+
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('Redis 준비가 끝난 뒤에야 DB를 커밋한다', async () => {
+    // 웹이 읽는 것은 DB다. 참가자에게 "시작했다"가 보이는 시점이 실제 게임
+    // 상태가 존재하는 시점보다 앞서면 안 된다.
+    const order: string[] = [];
+    const { service, prisma, setTournamentMeta, saveInitialTableSnapshots } = setup();
+    setTournamentMeta.mockImplementation(async () => { order.push('meta'); });
+    saveInitialTableSnapshots.mockImplementation(async () => { order.push('snapshots'); });
+    prisma.$transaction.mockImplementation(async () => { order.push('commit'); });
+
+    await service.startSession('t1');
+
+    expect(order).toEqual(['meta', 'snapshots', 'commit']);
+  });
+
+  it('Redis 블라인드 기준 시각과 DB의 startedAt이 같다', async () => {
+    // 블라인드 레벨은 startedAt으로부터의 경과 시간으로 계산된다. 예전에는
+    // initializeGame과 startSession이 각각 시각을 찍어 둘이 어긋났다. 지금은
+    // Redis만 읽어서 티가 안 나지만, 복구 경로가 DB의 startedAt을 읽는 순간
+    // 다른 레벨이 나온다.
+    const { service, update, setTournamentMeta } = setup();
+
+    await service.startSession('t1');
+
+    const blindField = setTournamentMeta.mock.calls[0][2];
+    const written = update.mock.calls
+      .map(c => c[0].data.startedAt)
+      .filter(Boolean)
+      .map((d: Date) => new Date(d).getTime());
+
+    // 하나여야 한다. 두 번 찍으면 그 자체가 어긋남이다.
+    expect(written).toEqual([blindField.startedAt]);
+  });
+});
