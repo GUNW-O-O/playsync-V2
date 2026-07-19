@@ -25,7 +25,8 @@ export function middleware(request: NextRequest): NextResponse {
 
   if (!session) {
     const loginUrl = new URL('/login', request.url);
-    loginUrl.searchParams.set('next', pathname);
+    // 쿼리까지 담아야 로그인 후 원래 보던 화면 그대로 돌아온다.
+    loginUrl.searchParams.set('next', `${pathname}${request.nextUrl.search}`);
     return NextResponse.redirect(loginUrl);
   }
 
@@ -39,6 +40,12 @@ export function middleware(request: NextRequest): NextResponse {
   return NextResponse.next();
 }
 
+// 미들웨어는 next.config의 rewrite보다 먼저 돈다. /api를 빼지 않으면 미인증
+// 로그인 요청이 여기서 307로 잡히고, 307은 메서드를 보존하므로 클라이언트는
+// JSON 대신 로그인 페이지 HTML을 받는다. 로그인 자체가 성립하지 않는다.
+//
+// 확장자가 있는 경로는 public/의 정적 파일이다. 가드에 걸리면 로그인 화면의
+// 이미지마다 307이 돌아온다.
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+  matcher: ['/((?!api(?:/|$)|_next/static|_next/image|favicon.ico|.*\\.).*)'],
 };
