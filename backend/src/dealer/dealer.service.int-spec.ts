@@ -263,6 +263,32 @@ describe('DealerService 동시성', () => {
       jest.restoreAllMocks();
     });
 
+    it('지명되지 않은 팟이 있으면 스냅샷을 건드리지 않고 거절한다', async () => {
+      // T15. 엔진이 던지는 것과, 그 예외가 저장 전에 나가는 것은 다른 문제다.
+      // 스냅샷이 이미 저장된 뒤라면 딜러가 다시 찍을 상태 자체가 사라진다.
+      const state = makeState({
+        phase: GamePhase.SHOWDOWN,
+        pot: 700,
+        currentTurnSeatIndex: -1,
+        players: [
+          makePlayer('alice', 0, { totalContributed: 300 }),
+          makePlayer('bob', 1, { totalContributed: 300 }),
+          makePlayer('carol', 2, { stack: 0, isAllIn: true, totalContributed: 100 }),
+        ],
+      });
+      await redis.set(stateKey, JSON.stringify(state));
+      const before = chipTotal(state);
+
+      await expect(
+        dealer.resolveWinners(TABLE, TOURNAMENT, ['carol']),
+      ).rejects.toThrow(/지명되지 않은 팟/);
+
+      const saved: TableState = JSON.parse((await redis.get(stateKey))!);
+      expect(saved.phase).toBe(GamePhase.SHOWDOWN);
+      expect(saved.pot).toBe(700);
+      expect(chipTotal(saved)).toBe(before);
+    });
+
     it('탈락 확정과 초기화는 락 안에서 한다', async () => {
       await redis.set(stateKey, JSON.stringify(showdownState()));
 
