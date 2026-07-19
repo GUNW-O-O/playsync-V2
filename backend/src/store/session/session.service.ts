@@ -5,12 +5,13 @@ import {
   InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
-import { PlayerStatus, TournamentStatus } from '@prisma/client';
+import { PlayerStatus, Prisma, TournamentStatus } from '@prisma/client';
 import { CreateBlindStructureDto } from 'shared/dto/blind-structure.dto';
 import { CreateTournamentDto, UpdateTournamentDto } from 'shared/dto/tournament.dto';
 import { BlindField, Dashboard } from 'shared/types/tournamentMeta';
 import { getCurrentBlindLevel, parseBlindStructure } from 'shared/util/util';
 import { GamePhase, TableState } from 'src/game-engine/types';
+import { parsePayouts, PrizePayout } from 'src/playsync/prize';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 
@@ -30,6 +31,21 @@ import { RedisService } from 'src/redis/redis.service';
  */
 function minPlayersToStart(): number {
   return Number(process.env.MIN_PLAYERS_TO_START ?? 6);
+}
+
+/**
+ * 대회를 시작하려면 상금 분배율이 있어야 한다.
+ *
+ * 생성 경로는 이미 막고 있지만, 컬럼 기본값이 `[]`라 그 이전에 만들어진 행은
+ * 비어 있을 수 있다. 시작한 뒤에 발견하면 이미 사람이 다 앉은 뒤고, 더 나쁘게는
+ * 상금을 지급하는 순간까지 아무도 모른다.
+ */
+function startablePayouts(raw: unknown): PrizePayout[] {
+  try {
+    return parsePayouts((raw ?? []) as PrizePayout[]);
+  } catch (e) {
+    throw new BadRequestException(`상금 분배율이 올바르지 않습니다: ${(e as Error).message}`);
+  }
 }
 
 @Injectable()
@@ -113,6 +129,15 @@ export class SessionService {
       })
       blindId = newBlind.id;
     }
+    // 분배율은 트랜잭션 밖에서 검증한다. 합이 100이 아닌 대회는 지급하는
+    // 순간에야 어긋남이 드러나는데, 그때는 이미 돈이 나간 뒤다.
+    let payouts: PrizePayout[];
+    try {
+      payouts = parsePayouts((dto.prizePayouts ?? []) as PrizePayout[]);
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    }
+
     const sessionInfo = await this.prismaService.$transaction(async (tx) => {
       // 1. 기본 게임 세션 생성 (블라인드 구조 연결 및 OTP 생성 포함)
       const session = await tx.tournament.create({
@@ -120,7 +145,8 @@ export class SessionService {
           name: dto.name,
           type: dto.type,
           storeId: dto.storeId,
-          itmCount: dto.itmCount,
+          itmCount: payouts.length,
+          prizePayouts: payouts as unknown as Prisma.InputJsonValue,
           blindId: blindId,
           dealerOtp: Math.floor(1000 + Math.random() * 9000), // 4자리 OTP [cite: 9]
           startStack: dto.startStack,
@@ -235,13 +261,20 @@ export class SessionService {
       isRegistrationOpen: game.isRegistrationOpen,
       totalPlayer: game.totalPlayers,
       activePlayer: game.activePlayers,
-      totalBuyinAmount: game.entryFee * game.totalPlayers,
+      // DB가 누적한 값을 그대로 쓴다. `entryFee * totalPlayers`로 다시 계산하면
+      // 같은 금액을 두 방식으로 구하는 셈이라, 참가 경로가 하나라도 달라지면
+      // 전광판과 지급이 어긋난다.
+      totalBuyinAmount: game.totalBuyinAmount,
       rebuyUntil: game.rebuyUntil,
       avgStack: game.avgStack,
       entryFee: game.entryFee,
       tournamentName: game.name,
       startStack: game.startStack,
       itmCount: game.itmCount,
+      prizePool: game.totalBuyinAmount,
+      // 금액은 여기서 굳히지 않는다. Redis에서 읽을 때 그때의 풀로 파생된다 —
+      // 리바인으로 풀이 커지면 전광판이 따라 올라야 하기 때문이다.
+      prizes: startablePayouts(game.prizePayouts).map(p => ({ ...p, amount: 0 })),
     }
     const blindField: BlindField = {
       isBreak: false,
@@ -293,7 +326,42 @@ export class SessionService {
   }
 
   // 세션 완료
+  /**
+   * 대회를 닫는다. **되돌릴 수 없다** — 테이블과 딜러 세션을 지우고 Redis를
+   * 비우므로, 그 뒤에는 누가 몇 등이었고 얼마를 받아야 했는지 재구성할 근거가
+   * 남지 않는다.
+   *
+   * 그래서 정산이 끝난 뒤에만 닫힌다. 걷은 참가비와 나간 상금의 합이 같아야
+   * 한다 — 대회 하나의 회계가 맞아떨어졌다는 뜻이다.
+   *
+   * 마무리가 수동인 것은 설계다. ICM 찹으로 끝나는 대회가 있어 최후 1인이
+   * 나오기 전에 관리자가 정산할 수 있어야 한다. 이 게이트는 그 자유를 막지
+   * 않는다 — 어떻게 나눴든 합만 맞으면 통과한다.
+   */
   async completeSession(id: string) {
+    const tournament = await this.prismaService.tournament.findUnique({
+      where: { id },
+    });
+    if (!tournament) throw new NotFoundException('세션을 찾을 수 없습니다.');
+    if (tournament.status === TournamentStatus.FINISHED) {
+      throw new ConflictException('이미 종료된 세션입니다.');
+    }
+
+    const participations = await this.prismaService.tournamentParticipation.findMany({
+      where: { tournamentId: id },
+      select: { prizeAmount: true },
+    });
+    const paid = participations.reduce((sum, p) => sum + p.prizeAmount, 0);
+    const remaining = tournament.totalBuyinAmount - paid;
+
+    if (remaining !== 0) {
+      throw new ConflictException(
+        remaining > 0
+          ? `상금 정산이 끝나지 않았습니다. ${remaining} 남았습니다.`
+          : `지급된 상금이 참가비 총액보다 ${-remaining} 많습니다.`,
+      );
+    }
+
     const tables = await this.prismaService.table.findMany({
       where : { tournamentId : id }
     });
@@ -336,9 +404,20 @@ export class SessionService {
       blindId: dto.blindId,
       startStack: dto.startStack,
       rebuyUntil: dto.rebuyUntil,
-      itmCount: dto.itmCount,
       entryFee: dto.entryFee,
     };
+
+    // 수정 경로에도 같은 검증이 걸려야 한다. 생성만 막으면 만든 뒤에 고쳐서
+    // 합이 100이 아닌 대회를 만들 수 있다.
+    if (dto.prizePayouts) {
+      try {
+        const payouts = parsePayouts(dto.prizePayouts as PrizePayout[]);
+        updateData.prizePayouts = payouts as unknown as Prisma.InputJsonValue;
+        updateData.itmCount = payouts.length;
+      } catch (e) {
+        throw new BadRequestException((e as Error).message);
+      }
+    }
     return await this.prismaService.tournament.update({
       where: {
         id: id,

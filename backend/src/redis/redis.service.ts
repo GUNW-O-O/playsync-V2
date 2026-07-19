@@ -2,6 +2,7 @@ import { Inject, Injectable } from "@nestjs/common";
 import Redis from "ioredis";
 import { PayMentDto } from "shared/dto/payment.dto";
 import { BlindField, Dashboard, FullTournamentInfo } from "shared/types/tournamentMeta";
+import { calculatePrizes, PrizePayout } from "src/playsync/prize";
 import { UserInfo } from "shared/types/userInfo";
 import { getCurrentBlindLevel } from "shared/util/util";
 import { TableState } from "src/game-engine/types";
@@ -170,6 +171,12 @@ export class RedisService {
       'rebuyUntil', dashboard.rebuyUntil,
       'avgStack', dashboard.avgStack,
       'itmCount', dashboard.itmCount,
+      // 비율만 저장한다. 금액은 totalBuyinAmount에서 매번 파생시킨다 — 금액을
+      // 저장하면 리바인마다 두 값을 같이 갱신해야 하고, 하나만 갱신되는 순간
+      // 전광판이 틀어진다.
+      'prizePayouts', JSON.stringify(
+        dashboard.prizes.map(({ place, percent }) => ({ place, percent })),
+      ),
       // BlindField는 객체로 유지
       'blindField', JSON.stringify(blindField)
     );
@@ -185,8 +192,16 @@ export class RedisService {
     if (!raw || Object.keys(raw).length === 0) return null;
     if (!blindField) return null;
 
+    const pool = parseInt(raw.totalBuyinAmount || '0');
+    const payouts: PrizePayout[] = raw.prizePayouts ? JSON.parse(raw.prizePayouts) : [];
+    const amounts = payouts.length > 0
+      ? calculatePrizes(pool, payouts)
+      : new Map<number, number>();
+
     return {
       dashboard: {
+        prizePool: pool,
+        prizes: payouts.map(p => ({ ...p, amount: amounts.get(p.place) ?? 0 })),
         isRegistrationOpen: raw.isRegistrationOpen === '1',
         totalPlayer: parseInt(raw.totalPlayer || '0'),
         activePlayer: parseInt(raw.activePlayer || '0'),

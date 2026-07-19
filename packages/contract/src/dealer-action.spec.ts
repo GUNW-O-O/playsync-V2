@@ -10,8 +10,8 @@ describe("DealerActionSchema", () => {
 
     it("RESOLVE_WINNERS는 승자 목록을 받는다", () => {
       // 카드는 실물이므로 승자는 계산되지 않고 딜러가 입력한다.
-      // 목록의 순서가 곧 순위다.
-      const input = { action: "RESOLVE_WINNERS", winnerUserIds: ["alice", "bob"] };
+      // 그룹의 순서가 곧 순위이고, 한 그룹 안은 동점이다.
+      const input = { action: "RESOLVE_WINNERS", winnerGroups: [["alice"], ["bob"]] };
       expect(DealerActionSchema.parse(input)).toEqual(input);
     });
 
@@ -34,7 +34,37 @@ describe("DealerActionSchema", () => {
 
     it("빈 승자 목록을 거부한다", () => {
       expect(
-        DealerActionSchema.safeParse({ action: "RESOLVE_WINNERS", winnerUserIds: [] }).success,
+        DealerActionSchema.safeParse({ action: "RESOLVE_WINNERS", winnerGroups: [] }).success,
+      ).toBe(false);
+    });
+
+    it("동점 그룹으로 승자를 받는다", () => {
+      // 보드 하이면 살아남은 전원이 팟을 나눈다. 순위 배열로는 표현할 방법이
+      // 없어서 먼저 찍힌 사람이 전부 가져갔다.
+      const input = {
+        action: "RESOLVE_WINNERS",
+        winnerGroups: [["a", "b"], ["c"]],
+      };
+      expect(DealerActionSchema.parse(input)).toEqual(input);
+    });
+
+    it("빈 동점 그룹을 거부한다", () => {
+      // [[]]는 "1위가 아무도 없다"가 되어 그 팟이 갈 곳을 잃는다.
+      expect(
+        DealerActionSchema.safeParse({
+          action: "RESOLVE_WINNERS",
+          winnerGroups: [[]],
+        }).success,
+      ).toBe(false);
+    });
+
+    it("평면 배열은 거부한다", () => {
+      // 예전 형태다. 조용히 통과하면 한 명이 팟을 다 가져간다.
+      expect(
+        DealerActionSchema.safeParse({
+          action: "RESOLVE_WINNERS",
+          winnerGroups: ["a", "b"],
+        }).success,
       ).toBe(false);
     });
 

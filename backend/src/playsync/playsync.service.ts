@@ -10,6 +10,7 @@ import { ActionType, GamePhase, TablePlayer, TableState } from 'src/game-engine/
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { retryAsync } from 'src/common/retry';
+import { awardPrize, prizeFor } from './prize';
 
 /** 한 턴에 주어지는 시간. 잡의 delay와 state.actionDeadline이 같은 값을 써야 한다. */
 const TURN_TIMEOUT_MS = 30000;
@@ -295,27 +296,31 @@ export class PlaysyncService {
     if (players.length === 0) return;
     const playerIds = players.map(p => p.id);
     const result = await this.prisma.$transaction(async (tx) => {
-      const isInTheMoney = tournamentInfo.itmCount >= tournamentInfo.activePlayer;
       const eliminatedRank = tournamentInfo.activePlayer;
 
-      // 이미 탈락한 사람은 제외하고 센다. 카운터를 `playerIds.length`가 아니라
-      // **실제로 상태가 바뀐 행 수**로 줄이는 것이 멱등성의 전부다.
+      // 풀과 분배율은 DB에서 읽는다. Redis 대시보드에도 totalBuyinAmount가
+      // 있지만 그건 화면용 파생값이고, **돈의 진실은 DB다.** 리바인으로
+      // 풀이 커지는 것도 여기에 반영돼 있다.
+      const { totalBuyinAmount, prizePayouts } = await tx.tournament.findUniqueOrThrow({
+        where: { id: tournamentId },
+        select: { totalBuyinAmount: true, prizePayouts: true },
+      });
+      const prize = prizeFor(totalBuyinAmount, prizePayouts, eliminatedRank);
+
+      // 상태 전환·포인트·거래 내역이 한 곳에서 함께 일어난다. 기록만 되고
+      // 돈이 안 나가는 창을 만들지 않기 위해서다.
       //
       // 같은 탈락이 두 번 도착하는 것은 예외가 아니라 정상 경로다 — 재시도를
-      // 붙이는 순간 중복은 보장된다(at-least-once). 지금까지 안 터진 이유는
-      // 재시도가 없었기 때문이지 중복이 불가능해서가 아니다.
-      const changed = await tx.tournamentParticipation.updateMany({
-        where: {
-          tournamentId,
-          userId: { in: playerIds },
-          status: { notIn: ['ELIMINATED', 'AWARDED'] },
-        },
-        data: {
-          finalPlace: eliminatedRank,
-          status: (isInTheMoney ? 'AWARDED' : 'ELIMINATED'),
-          prizeAmount: (isInTheMoney ? 1000 : 0),
-        }
-      });
+      // 붙이는 순간 중복은 보장된다(at-least-once). 카운터를 `playerIds.length`가
+      // 아니라 **실제로 바뀐 행 수**로 줄이는 것이 멱등성의 전부다.
+      const changedCount = await awardPrize(
+        tx,
+        tournamentId,
+        playerIds.map(userId => ({ userId, place: eliminatedRank, amount: prize })),
+        `${eliminatedRank}위 상금`,
+      );
+      const changed = { count: changedCount };
+
       // 삭제는 원래 멱등이라 조건을 더할 필요가 없다.
       await tx.tablePlayer.deleteMany({
         where: {
@@ -367,17 +372,21 @@ export class PlaysyncService {
     });
     if (!user) throw new Error('유저 없음.');
     await this.prisma.$transaction(async (tx) => {
-      await tx.tournamentParticipation.update({
-        where: {
-          tournamentId_userId:
-            { tournamentId: tournamentId, userId: user.userId }
-        },
-        data: {
-          finalPlace: 1,
-          status: 'AWARDED',
-          prizeAmount: 3000,
-        },
+      const { totalBuyinAmount, prizePayouts } = await tx.tournament.findUniqueOrThrow({
+        where: { id: tournamentId },
+        select: { totalBuyinAmount: true, prizePayouts: true },
       });
+
+      await awardPrize(
+        tx,
+        tournamentId,
+        [{
+          userId: user.userId,
+          place: 1,
+          amount: prizeFor(totalBuyinAmount, prizePayouts, 1),
+        }],
+        '우승 상금',
+      );
     });
   }
 

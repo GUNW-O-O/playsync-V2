@@ -122,8 +122,17 @@ export class TableEngine {
         }
       });
       this.state.currentBet = 0;
-      // 첫 액션 유저는 버튼 다음 사람 (SB 위치부터 탐색)
-      this.state.currentTurnSeatIndex = this.findNextActiveSeat((this.state.buttonUser + 1) % this.state.players.length);
+      // 쇼다운에는 차례가 없다. 여기서 좌석을 배정하면 딜러가 승자를 입력하는
+      // 동안 남의 화면에 카운트다운이 돈다 — T8 가드가 액션은 막지만, 잘못된
+      // 상태가 태블릿으로 브로드캐스트되고 타임아웃 잡도 걸린다.
+      //
+      // `act()`의 올인 지름길은 이미 -1을 넣고 있었다. 쇼다운에 이르는 두 경로가
+      // 서로 다른 상태를 만들고 있던 것이다.
+      this.state.currentTurnSeatIndex =
+        this.state.phase === GamePhase.SHOWDOWN
+          ? -1
+          // 첫 액션 유저는 버튼 다음 사람 (SB 위치부터 탐색)
+          : this.findNextActiveSeat((this.state.buttonUser + 1) % this.state.players.length);
     }
   }
 
@@ -200,7 +209,17 @@ export class TableEngine {
     }
   }
 
-  public async resolveWinner(winnerIds: string[]) {
+  /**
+   * @param rankedWinners 동점 그룹의 배열. 순서가 순위다.
+   *   `[['a','b'], ['c']]` = a와 b가 공동 1위, c가 3위.
+   *
+   *   순위 배열(`['a','b']`)이 아니라 그룹 배열인 이유는 **보드 하이** 때문이다.
+   *   커뮤니티 카드가 그대로 모두의 최고 핸드가 되면 살아남은 전원이 팟을
+   *   나눠 갖는데, 순위 배열로는 그걸 표현할 방법이 아예 없었다. 팟마다
+   *   `find`로 한 명을 골랐으니 먼저 찍힌 사람이 전부 가져갔다 — 칩 총량은
+   *   맞아서 어떤 불변식도 울지 않는, 조용히 틀리는 종류의 버그였다.
+   */
+  public async resolveWinner(rankedWinners: string[][]) {
     // 페이즈 게이팅이 딜러 콘솔 UI에만 있었다. UI의 제약은 서버의 제약이 아니다 —
     // 같은 망의 단말이 WS를 직접 열면 플랍에서도 승자를 확정할 수 있었다.
     //
@@ -216,12 +235,15 @@ export class TableEngine {
     this.refundUncalledBets();
     this.calculateSidePots();
 
-    // winnerIds는 클릭 순서대로다 (0번 인덱스가 1등).
-    // 각 팟은 자격자 중 가장 높은 순위 한 명에게 간다.
-    const claims = this.state.sidePots.map(pot => ({
-      pot,
-      winnerId: winnerIds.find(id => pot.relevantPlayerIds.includes(id)),
-    }));
+    // 각 팟은 **가장 높은 순위 그룹 중 그 팟의 자격자들**에게 간다.
+    // 동점 그룹 안에서 자격이 갈릴 수 있다 — 아래층은 셋이 나누고 위층은
+    // 그중 둘만 나누는 식이다.
+    const claims = this.state.sidePots.map(pot => {
+      const group = rankedWinners
+        .map(tier => tier.filter(id => pot.relevantPlayerIds.includes(id)))
+        .find(eligible => eligible.length > 0);
+      return { pot, winners: group };
+    });
 
     // **지급 전에 전부 검증한다.** 예전에는 루프를 돌며 지급하다가 지명이 없는
     // 팟을 조용히 건너뛰고 `state.pot = 0`으로 지웠다 — 그 팟의 칩이 증발했다.
@@ -237,7 +259,7 @@ export class TableEngine {
     // 콜해야 하는데, 콜 없이 폴드로 끝난 베팅은 `refundUncalledBets`가 회수한다.
     // 그래서 폴백 분기를 두지 않는다 — 일어날 수 없는 경우에 코드를 붙이면
     // 검증할 수도 없고 홀덤 규칙으로 오해받는다.
-    const unclaimed = claims.filter(c => !c.winnerId);
+    const unclaimed = claims.filter(c => !c.winners);
     if (unclaimed.length > 0) {
       const detail = unclaimed
         .map(c => `${c.pot.amount}(자격: ${c.pot.relevantPlayerIds.join(', ')})`)
@@ -245,9 +267,8 @@ export class TableEngine {
       throw new Error(`승자가 지명되지 않은 팟이 있습니다: ${detail}`);
     }
 
-    for (const { pot, winnerId } of claims) {
-      const p = this.state.players.find(pl => pl?.id === winnerId);
-      if (p) p.stack += pot.amount;
+    for (const { pot, winners } of claims) {
+      this.splitPot(pot.amount, winners!);
     }
     this.state.pot = 0;
     this.state.sidePots = [];
@@ -323,13 +344,26 @@ export class TableEngine {
   }
 
   // 공통 베팅 처리 (bet, totalContributed 동시 업데이트)
+  /**
+   * 칩이 스택에서 팟으로 옮겨 가는 **유일한 지점**이다. 상한도 여기서 건다.
+   *
+   * 콜과 레이즈는 호출 전에 금액을 맞춰 오지만 블라인드와 앤티는 그렇지 않다.
+   * 블라인드는 시간에 따라 오르고 스택은 줄어드니, 대회 종반에는 반드시
+   * 블라인드가 누군가의 스택을 넘는다 — 예외가 아니라 정상 경로다.
+   *
+   * 상한이 없으면 잔고가 음수가 되고, 올인 판정이 `=== 0`이라 음수는 올인으로도
+   * 잡히지 않는다. 행동할 수 없는 사람이 행동 대기자로 남아 라운드가 영영
+   * 닫히지 않고, 그 순간 칩 총량도 어긋난다.
+   */
   private executeBet(player: TablePlayer, amount: number) {
-    player.stack -= amount;
-    player.bet += amount;
-    player.totalContributed += amount;
-    this.state.pot += amount;
+    const actual = Math.min(player.stack, amount);
 
-    if (player.stack === 0) {
+    player.stack -= actual;
+    player.bet += actual;
+    player.totalContributed += actual;
+    this.state.pot += actual;
+
+    if (player.stack <= 0) {
       player.isAllIn = true;
     }
   }
@@ -411,6 +445,37 @@ export class TableEngine {
       this.calculateSidePots();
       this.state.phase = GamePhase.SHOWDOWN;
       this.state.currentTurnSeatIndex = -1;
+    }
+  }
+
+  /**
+   * 팟 하나를 동점자들에게 나눈다.
+   *
+   * 나눠떨어지지 않을 때 나머지 칩을 **버튼 다음 자리부터 시계 방향으로**
+   * 한 칩씩 준다. 홀덤 표준이고, 그냥 버리면 증발이며, 정하지 않으면 딜러마다
+   * 달라진다. 이 규칙 덕분에 `나눠준 합 === pot`이 구조적으로 성립한다.
+   */
+  private splitPot(amount: number, winnerIds: string[]) {
+    const seats = winnerIds
+      .map(id => this.state.players.findIndex(p => p?.id === id))
+      .filter(seat => seat !== -1);
+    if (seats.length === 0) return;
+
+    const share = Math.floor(amount / seats.length);
+    let remainder = amount - share * seats.length;
+
+    // 버튼 다음 자리를 첫 수령자로 두고 시계 방향으로 정렬한다.
+    const total = this.state.players.length;
+    const order = [...seats].sort((a, b) => {
+      const da = (a - this.state.buttonUser - 1 + total) % total;
+      const db = (b - this.state.buttonUser - 1 + total) % total;
+      return da - db;
+    });
+
+    for (const seat of order) {
+      const extra = remainder > 0 ? 1 : 0;
+      remainder -= extra;
+      this.state.players[seat]!.stack += share + extra;
     }
   }
 

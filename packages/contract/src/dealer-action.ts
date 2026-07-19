@@ -17,8 +17,17 @@ export const DealerActionSchema = z.discriminatedUnion("action", [
   z
     .object({
       action: z.literal("RESOLVE_WINNERS"),
-      // 순서가 곧 순위다. 사이드팟 분배가 이 순서를 그대로 쓴다.
-      winnerUserIds: z.array(userId).min(1),
+      // 동점 그룹의 배열이고 순서가 곧 순위다.
+      // `[["a","b"], ["c"]]` = a와 b가 공동 1위, c가 3위.
+      //
+      // 평면 배열이 아닌 이유는 **보드 하이** 때문이다. 커뮤니티 카드가 그대로
+      // 모두의 최고 핸드가 되면 살아남은 전원이 팟을 나눠 갖는데, 순위 배열로는
+      // 그걸 표현할 방법이 아예 없었다 — 먼저 찍힌 사람이 전부 가져갔고 칩
+      // 총량은 맞아서 아무 불변식도 울지 않았다.
+      //
+      // 안쪽 `.min(1)`이 필요한 이유: `[[]]`는 "1위가 아무도 없다"가 되어 그
+      // 팟이 갈 곳을 잃는다.
+      winnerGroups: z.array(z.array(userId).min(1)).min(1),
     })
     .strict(),
   z.object({ action: z.literal("DEALER_FOLD"), targetUserId: userId }).strict(),

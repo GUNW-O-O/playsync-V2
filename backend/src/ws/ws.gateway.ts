@@ -279,7 +279,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       case 'START_PRE_FLOP':
         return this.dealer.startPreFlop(tournamentId, tableId);
       case 'RESOLVE_WINNERS':
-        return this.dealer.resolveWinners(tableId, tournamentId, action.winnerUserIds);
+        return this.dealer.resolveWinners(tableId, tournamentId, action.winnerGroups);
       case 'DEALER_FOLD':
         return this.dealer.handleDealerAction(tournamentId, tableId, action.targetUserId, 'FOLD');
       case 'DEALER_KICK':

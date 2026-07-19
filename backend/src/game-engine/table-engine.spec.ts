@@ -197,7 +197,7 @@ describe('TableEngine 핸드 종료', () => {
     const state = showdownState();
     const before = totalChips(state);
 
-    await new TableEngine(state).resolveWinner(['winner']);
+    await new TableEngine(state).resolveWinner([['winner']]);
 
     expect(state.players[0]!.stack).toBe(1000);
     expect(state.pot).toBe(0);
@@ -209,7 +209,7 @@ describe('TableEngine 핸드 종료', () => {
     // 시작할 수 있게 되어, 리바인 중인 플레이어를 두고 판이 돈다.
     const state = showdownState();
 
-    await new TableEngine(state).resolveWinner(['winner']);
+    await new TableEngine(state).resolveWinner([['winner']]);
 
     expect(state.phase).toBe(GamePhase.HAND_END);
   });
@@ -518,7 +518,7 @@ describe('TableEngine 미콜 베팅 환급', () => {
     // 잡혀 다른 사람의 지분까지 뒤틀린다.
     const state = uncalledState();
 
-    await new TableEngine(state).resolveWinner(['bettor']);
+    await new TableEngine(state).resolveWinner([['bettor']]);
 
     expect(state.players[0]!.stack).toBe(10300); // 9000 + 환급 700 + 팟 600
   });
@@ -527,7 +527,7 @@ describe('TableEngine 미콜 베팅 환급', () => {
     // 스택에만 더하고 팟에서 빼지 않으면 칩이 복제된다.
     const state = uncalledState();
 
-    await new TableEngine(state).resolveWinner(['bettor']);
+    await new TableEngine(state).resolveWinner([['bettor']]);
 
     expect(state.pot).toBe(0);
     expect(totalChips(state)).toBe(20000);
@@ -538,7 +538,7 @@ describe('TableEngine 미콜 베팅 환급', () => {
     // 위층 700은 자격자가 혼자라 존재할 이유가 없는 팟이 된다.
     const state = uncalledState();
 
-    await new TableEngine(state).resolveWinner(['bettor']);
+    await new TableEngine(state).resolveWinner([['bettor']]);
 
     expect(state.players[0]!.totalContributed).toBe(300);
   });
@@ -555,7 +555,7 @@ describe('TableEngine 미콜 베팅 환급', () => {
       currentTurnSeatIndex: -1,
     });
 
-    await new TableEngine(state).resolveWinner(['p1']);
+    await new TableEngine(state).resolveWinner([['p1']]);
 
     expect(state.players[0]!.stack).toBe(1300); // 700 + 팟 600, 환급 없음
   });
@@ -570,7 +570,7 @@ describe('TableEngine 미콜 베팅 환급', () => {
       currentTurnSeatIndex: -1,
     });
 
-    await new TableEngine(state).resolveWinner(['lonely']);
+    await new TableEngine(state).resolveWinner([['lonely']]);
 
     expect(state.players[0]!.stack).toBe(10000);
     expect(state.players[0]!.totalContributed).toBe(0);
@@ -580,7 +580,7 @@ describe('TableEngine 미콜 베팅 환급', () => {
     const state = uncalledState();
     const before = totalChips(state);
 
-    await new TableEngine(state).resolveWinner(['bettor']);
+    await new TableEngine(state).resolveWinner([['bettor']]);
 
     expect(totalChips(state)).toBe(before);
   });
@@ -600,7 +600,7 @@ describe('TableEngine 사이드팟 정산', () => {
       currentTurnSeatIndex: -1,
     });
 
-    await new TableEngine(state).resolveWinner(['short', 'deep']);
+    await new TableEngine(state).resolveWinner([['short'], ['deep']]);
 
     expect(state.players[0]!.stack).toBe(300); // 전원이 겨룬 100층
     expect(state.players[2]!.stack).toBe(1100); // 700 + 100~300층 400
@@ -621,7 +621,7 @@ describe('TableEngine 사이드팟 정산', () => {
     });
     const before = totalChips(state);
 
-    await new TableEngine(state).resolveWinner(['short', 'deep']);
+    await new TableEngine(state).resolveWinner([['short'], ['deep']]);
 
     expect(totalChips(state)).toBe(before);
   });
@@ -639,7 +639,7 @@ describe('TableEngine 사이드팟 정산', () => {
     });
     const before = totalChips(state);
 
-    await new TableEngine(state).resolveWinner(['winner']);
+    await new TableEngine(state).resolveWinner([['winner']]);
 
     expect(state.players[1]!.stack).toBe(1600); // 700 + 팟 900
     expect(totalChips(state)).toBe(before);
@@ -660,7 +660,7 @@ describe('TableEngine 사이드팟 정산', () => {
       currentTurnSeatIndex: -1,
     });
 
-    await expect(new TableEngine(state).resolveWinner(['short'])).rejects.toThrow();
+    await expect(new TableEngine(state).resolveWinner([['short']])).rejects.toThrow();
   });
 
   it('거부된 정산은 칩도 페이즈도 건드리지 않는다', async () => {
@@ -678,7 +678,7 @@ describe('TableEngine 사이드팟 정산', () => {
     });
     const before = totalChips(state);
 
-    await expect(new TableEngine(state).resolveWinner(['short'])).rejects.toThrow();
+    await expect(new TableEngine(state).resolveWinner([['short']])).rejects.toThrow();
 
     expect(totalChips(state)).toBe(before);
     expect(state.players[0]!.stack).toBe(0);
@@ -701,7 +701,7 @@ describe('TableEngine 사이드팟 정산', () => {
     });
     const before = totalChips(state);
 
-    await new TableEngine(state).resolveWinner(['short', 'p2']);
+    await new TableEngine(state).resolveWinner([['short'], ['p2']]);
 
     expect(state.players[0]!.stack).toBe(300);
     expect(state.players[1]!.stack).toBe(1100); // 700 + 100~300층 400
@@ -724,7 +724,7 @@ describe('TableEngine 사이드팟 정산', () => {
     });
     const before = totalChips(state);
 
-    await expect(new TableEngine(state).resolveWinner(['folded'])).rejects.toThrow();
+    await expect(new TableEngine(state).resolveWinner([['folded']])).rejects.toThrow();
 
     expect(state.players[0]!.stack).toBe(700);
     expect(totalChips(state)).toBe(before);
@@ -746,8 +746,8 @@ describe('TableEngine 사이드팟 정산', () => {
     const before = totalChips(state);
     const engine = new TableEngine(state);
 
-    await expect(engine.resolveWinner(['short'])).rejects.toThrow();
-    await engine.resolveWinner(['short', 'p3']);
+    await expect(engine.resolveWinner([['short']])).rejects.toThrow();
+    await engine.resolveWinner([['short'], ['p3']]);
 
     expect(state.players[0]!.stack).toBe(300);
     expect(state.players[2]!.stack).toBe(1100);
@@ -882,7 +882,7 @@ describe('T8 - resolveWinner 페이즈 가드', () => {
     const state = showdownState();
     const before = totalChips(state);
 
-    await new TableEngine(state).resolveWinner(['p1']);
+    await new TableEngine(state).resolveWinner([['p1']]);
 
     expect(state.players[0]!.stack).toBe(1000);
     expect(totalChips(state)).toBe(before);
@@ -899,7 +899,7 @@ describe('T8 - resolveWinner 페이즈 가드', () => {
       { phase: GamePhase.FLOP, pot: 1000, currentBet: 500 },
     );
 
-    await expect(new TableEngine(state).resolveWinner(['p1'])).rejects.toThrow(
+    await expect(new TableEngine(state).resolveWinner([['p1']])).rejects.toThrow(
       '쇼다운 상태가 아닙니다.',
     );
     expect(state.pot).toBe(1000);
@@ -912,8 +912,8 @@ describe('T8 - resolveWinner 페이즈 가드', () => {
     const before = totalChips(state);
     const engine = new TableEngine(state);
 
-    await engine.resolveWinner(['p1']);
-    await expect(engine.resolveWinner(['p1'])).rejects.toThrow('쇼다운 상태가 아닙니다.');
+    await engine.resolveWinner([['p1']]);
+    await expect(engine.resolveWinner([['p1']])).rejects.toThrow('쇼다운 상태가 아닙니다.');
 
     expect(totalChips(state)).toBe(before);
   });
@@ -944,5 +944,279 @@ describe('T8 - nextPhase 인덱스 방어', () => {
     await expect(new TableEngine(state).act(0, ActionType.CHECK)).rejects.toThrow(
       '액션할 수 있는 상태가 아닙니다.',
     );
+  });
+});
+
+describe('TableEngine 쇼다운 진입', () => {
+  // 쇼다운에 가는 길이 두 개인데 결과가 달랐다.
+  //
+  //  - `act()`의 지름길(전원 올인 등): `currentTurnSeatIndex = -1`을 명시한다.
+  //  - `nextPhase()`로 RIVER가 끝난 경우: 다음 페이즈를 배정하면서 턴도 무조건
+  //    다시 계산해 **살아있는 좌석**이 남는다.
+  //
+  // 쇼다운인데 상태는 누군가의 차례라고 말한다. T8 가드가 액션은 막으므로 칩이
+  // 움직이진 않지만, 그 상태가 태블릿으로 브로드캐스트되고 타임아웃 잡도
+  // 행동할 수 없는 사람에게 걸린다 — 딜러가 승자를 입력하는 동안 남의 화면에
+  // 카운트다운이 돈다.
+  //
+  // 시나리오 테스트가 잡은 것이다. 두 경로를 각각 보는 단위 테스트로는 각자
+  // 옳아 보인다.
+
+  function riverState(): TableState {
+    const players = [
+      makePlayer('p1', 0, 700, { totalContributed: 300, hasChecked: true }),
+      makePlayer('p2', 1, 700, { totalContributed: 300, hasChecked: true }),
+    ];
+    return makeState(players, {
+      phase: GamePhase.RIVER,
+      pot: potOf(players),
+      currentTurnSeatIndex: 0,
+      currentBet: 0,
+    });
+  }
+
+  it('리버가 끝나 쇼다운으로 가면 차례가 없다', () => {
+    const state = riverState();
+
+    new TableEngine(state).nextPhase();
+
+    expect(state.phase).toBe(GamePhase.SHOWDOWN);
+    expect(state.currentTurnSeatIndex).toBe(-1);
+  });
+
+  it('베팅 라운드로 넘어갈 때는 차례를 배정한다', () => {
+    // 위 수정이 모든 전환의 턴 배정을 죽이면 안 된다.
+    const state = riverState();
+    state.phase = GamePhase.FLOP;
+
+    new TableEngine(state).nextPhase();
+
+    expect(state.phase).toBe(GamePhase.TURN);
+    expect(state.currentTurnSeatIndex).not.toBe(-1);
+  });
+});
+
+describe('블라인드가 스택보다 클 때', () => {
+  /**
+   * 대회 종반에 반드시 오는 상황이다. 블라인드는 시간에 따라 오르고 스택은
+   * 줄어드니, 언젠가 블라인드가 누군가의 스택을 넘는다. 그 사람은 **가진
+   * 만큼만 내고 올인**이 되어야 한다.
+   *
+   * 예전에는 `executeBet`이 스택을 확인하지 않고 그대로 빼서 잔고가 음수가
+   * 됐다. 게다가 올인 판정이 `stack === 0`이라 음수는 올인으로도 잡히지
+   * 않는다 — 행동할 수 없는 사람이 행동 대기자로 남아 **라운드가 영영 닫히지
+   * 않는다.** 칩 총량도 그 순간 어긋난다.
+   *
+   * T18의 대회 진행 시나리오가 잡아낸 것이 이 자리다.
+   */
+
+  it('블라인드를 다 낼 수 없으면 가진 만큼만 내고 올인이다', async () => {
+    // 블라인드 400/800인데 150밖에 없다. 버튼이 먼저 한 칸 돌아 short가
+    // 버튼(헤즈업에서는 SB)이 되므로 400을 내야 하는 자리다.
+    const state = makeState(
+      [makePlayer('rich', 0, 50000), makePlayer('short', 1, 150)],
+      { buttonUser: 0, smallBlind: 400 },
+    );
+
+    new TableEngine(state).startPreFlop();
+
+    const short = state.players[1]!;
+    expect(short.stack).toBe(0);
+    expect(short.bet).toBe(150);
+    expect(short.isAllIn).toBe(true);
+  });
+
+  it('BB 자리에서도 마찬가지다', async () => {
+    // 버튼이 돌아 rich가 버튼(SB)이 되고 short가 BB다. 내야 할 800보다
+    // 스택이 작다.
+    const state = makeState(
+      [makePlayer('short', 0, 150), makePlayer('rich', 1, 50000)],
+      { buttonUser: 0, smallBlind: 400 },
+    );
+
+    new TableEngine(state).startPreFlop();
+
+    const short = state.players[0]!;
+    expect(short.stack).toBe(0);
+    expect(short.bet).toBe(150);
+    expect(short.isAllIn).toBe(true);
+  });
+
+  it('앤티와 블라인드를 합쳐도 스택을 넘지 않는다', async () => {
+    // 앤티가 먼저 빠지고 그 다음 블라인드다. 두 번 빼는 동안 어느 쪽도
+    // 스택을 넘으면 안 된다.
+    const state = makeState(
+      [makePlayer('rich', 0, 50000), makePlayer('short', 1, 300)],
+      { buttonUser: 0, smallBlind: 400, ante: true },
+    );
+
+    new TableEngine(state).startPreFlop();
+
+    expect(state.players[1]!.stack).toBe(0);
+    expect(state.players[1]!.isAllIn).toBe(true);
+  });
+
+  it('칩 총량이 보존된다', async () => {
+    const state = makeState(
+      [makePlayer('rich', 0, 50000), makePlayer('short', 1, 300)],
+      { buttonUser: 0, smallBlind: 400, ante: true },
+    );
+    const before = totalChips(state);
+
+    new TableEngine(state).startPreFlop();
+
+    expect(totalChips(state)).toBe(before);
+  });
+
+  it('블라인드로 올인된 사람에게는 차례가 오지 않는다', async () => {
+    // 올인으로 잡히지 않으면 findNextActiveSeat이 그를 고르고, 그는 아무것도
+    // 할 수 없으니 테이블이 멈춘다.
+    const state = makeState(
+      [
+        makePlayer('p0', 0, 50000),
+        makePlayer('p1', 1, 50000),
+        makePlayer('short', 2, 150),
+      ],
+      { buttonUser: 0, smallBlind: 400 },
+    );
+
+    new TableEngine(state).startPreFlop();
+
+    expect(state.players[2]!.isAllIn).toBe(true);
+    expect(state.currentTurnSeatIndex).not.toBe(2);
+  });
+});
+
+describe('동점 — 보드 하이와 찹', () => {
+  /**
+   * 보드 하이. 커뮤니티 카드 다섯 장이 그대로 모두의 최고 핸드가 되는 경우이고,
+   * 실제 테이블에서 드물지 않다. 이때 팟은 살아남은 전원이 나눠 갖는다.
+   *
+   * 예전에는 표현할 방법 자체가 없었다. `winnerIds`가 순위 배열이고 팟마다
+   * `find`로 **한 명**을 골랐다 — 먼저 찍힌 사람이 전부 가져갔다. 칩 총량은
+   * 맞으니 어떤 불변식도 울지 않는다. 조용히 틀린 사람에게 나간다.
+   *
+   * 그래서 입력을 순위 배열이 아니라 **동점 그룹의 배열**로 바꾼다.
+   * `[['a','b'], ['c']]` = a와 b가 공동 1위, c가 3위.
+   */
+
+  it('둘이 동점이면 팟을 반씩 나눈다', async () => {
+    const players = [
+      makePlayer('a', 0, 0, { totalContributed: 500 }),
+      makePlayer('b', 1, 0, { totalContributed: 500 }),
+    ];
+    const state = makeState(players, {
+      phase: GamePhase.SHOWDOWN,
+      pot: potOf(players),
+      currentTurnSeatIndex: -1,
+    });
+
+    await new TableEngine(state).resolveWinner([['a', 'b']]);
+
+    expect(state.players[0]!.stack).toBe(500);
+    expect(state.players[1]!.stack).toBe(500);
+    expect(state.pot).toBe(0);
+  });
+
+  it('보드 하이로 셋이 동점이면 셋이 나눈다', async () => {
+    const players = [
+      makePlayer('a', 0, 0, { totalContributed: 300 }),
+      makePlayer('b', 1, 0, { totalContributed: 300 }),
+      makePlayer('c', 2, 0, { totalContributed: 300 }),
+    ];
+    const state = makeState(players, {
+      phase: GamePhase.SHOWDOWN,
+      pot: potOf(players),
+      currentTurnSeatIndex: -1,
+    });
+
+    await new TableEngine(state).resolveWinner([['a', 'b', 'c']]);
+
+    expect(state.players.map(p => p!.stack)).toEqual([300, 300, 300]);
+  });
+
+  it('나눠떨어지지 않으면 버튼 다음 자리부터 한 칩씩 준다', async () => {
+    // 홀덤 표준이다. 버리면 증발이고, 정하지 않으면 딜러마다 달라진다.
+    //
+    // 홀수 팟을 만들려면 기여액이 어긋나야 하는데, 살아남은 사람끼리 어긋나면
+    // 사이드팟이 갈려서 애초에 나눌 일이 없다. 폴드한 사람이 남긴 칩이
+    // 그래서 이 상황을 만드는 실제 경로다.
+    const players = [
+      makePlayer('btn', 0, 0, { totalContributed: 1, hasFolded: true }),
+      makePlayer('next', 1, 0, { totalContributed: 300 }),
+      makePlayer('last', 2, 0, { totalContributed: 300 }),
+    ];
+    const state = makeState(players, {
+      phase: GamePhase.SHOWDOWN,
+      pot: potOf(players),   // 601
+      buttonUser: 0,
+      currentTurnSeatIndex: -1,
+    });
+
+    await new TableEngine(state).resolveWinner([['next', 'last']]);
+
+    // 601 / 2 = 300 씩, 나머지 1은 버튼 다음(1번)에게.
+    expect(state.players[1]!.stack).toBe(301);
+    expect(state.players[2]!.stack).toBe(300);
+    expect(totalChips(state)).toBe(601);
+  });
+
+  it('동점 분배에서도 칩 총량이 보존된다', async () => {
+    const players = [
+      makePlayer('a', 0, 0, { totalContributed: 334 }),
+      makePlayer('b', 1, 0, { totalContributed: 333 }),
+      makePlayer('c', 2, 0, { totalContributed: 333 }),
+    ];
+    const state = makeState(players, {
+      phase: GamePhase.SHOWDOWN,
+      pot: potOf(players),
+      currentTurnSeatIndex: -1,
+    });
+    const before = totalChips(state);
+
+    await new TableEngine(state).resolveWinner([['a', 'b', 'c']]);
+
+    expect(totalChips(state)).toBe(before);
+  });
+
+  it('사이드팟마다 동점이 따로 적용된다', async () => {
+    // 아래층은 셋이 동점, 위층은 둘만 자격이 있다.
+    const players = [
+      makePlayer('short', 0, 0, { totalContributed: 100, isAllIn: true }),
+      makePlayer('mid', 1, 0, { totalContributed: 300, isAllIn: true }),
+      makePlayer('deep', 2, 0, { totalContributed: 300 }),
+    ];
+    const state = makeState(players, {
+      phase: GamePhase.SHOWDOWN,
+      pot: potOf(players),
+      buttonUser: 0,
+      currentTurnSeatIndex: -1,
+    });
+
+    // 전원 동점. short는 1층(300)만 가져갈 자격이 있다.
+    await new TableEngine(state).resolveWinner([['short', 'mid', 'deep']]);
+
+    // 1층 300을 셋이 100씩. 2층 400은 자격자 둘이 200씩.
+    expect(state.players[0]!.stack).toBe(100);
+    expect(state.players[1]!.stack).toBe(300);
+    expect(state.players[2]!.stack).toBe(300);
+    expect(totalChips(state)).toBe(700);
+  });
+
+  it('동점 그룹이 하나뿐인 단독 승자도 그대로 동작한다', async () => {
+    const players = [
+      makePlayer('winner', 0, 0, { totalContributed: 500 }),
+      makePlayer('loser', 1, 0, { totalContributed: 500 }),
+    ];
+    const state = makeState(players, {
+      phase: GamePhase.SHOWDOWN,
+      pot: potOf(players),
+      currentTurnSeatIndex: -1,
+    });
+
+    await new TableEngine(state).resolveWinner([['winner']]);
+
+    expect(state.players[0]!.stack).toBe(1000);
+    expect(state.players[1]!.stack).toBe(0);
   });
 });
