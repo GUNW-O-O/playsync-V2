@@ -1,0 +1,49 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { Suspense } from 'react';
+import { http, HttpResponse } from 'msw';
+import { server } from '@/mocks/server';
+
+const push = vi.fn();
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push }),
+}));
+
+process.env.NEXT_PUBLIC_BACKEND_URL = 'http://backend.test';
+
+// import는 vi.mock 호이스팅 뒤에 평가돼야 한다.
+const DealerAuthPage = (await import('./page')).default;
+
+// 인증 성공 후 딜러가 가야 할 곳은 게임 화면이다. 그 화면은 /table/[tableId]로
+// 옮겨졌고 /playsync는 사라졌다.
+describe('딜러 인증 화면', () => {
+  beforeEach(() => {
+    push.mockClear();
+    vi.stubGlobal('alert', vi.fn());
+    server.use(
+      http.get('http://backend.test/dealer/:id', () =>
+        HttpResponse.json({ name: '테스트 대회', tables: [{ id: 'tbl-7', tableOrder: 1 }] }),
+      ),
+      http.post('http://backend.test/dealer/auth', () =>
+        HttpResponse.json({ accessToken: 'dealer-token' }),
+      ),
+    );
+  });
+
+  it('인증에 성공하면 그 테이블의 게임 화면으로 보낸다', async () => {
+    await act(async () => {
+      render(
+        <Suspense>
+          <DealerAuthPage params={Promise.resolve({ id: 'trnmt-1' })} />
+        </Suspense>,
+      );
+    });
+
+    await screen.findByText('테스트 대회');
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'tbl-7' } });
+    fireEvent.change(screen.getByPlaceholderText('4자리 OTP 입력'), { target: { value: '1234' } });
+    fireEvent.click(screen.getByRole('button', { name: '인증' }));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith('/table/tbl-7'));
+  });
+});

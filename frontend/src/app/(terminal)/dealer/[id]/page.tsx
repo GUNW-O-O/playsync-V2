@@ -50,7 +50,7 @@ export default function DealerAuthPage({ params }: { params: Promise<{ id: strin
         // secure: true
       });
       alert(`인증 성공 tableId: ${selectedTable}`);
-      router.push(`/playsync/${selectedTable}`);
+      router.push(`/table/${selectedTable}`);
     } else {
       alert('인증 실패: OTP를 확인하세요.');
     }

@@ -2,9 +2,13 @@
 
 import { useEffect, useState, useRef, use } from 'react';
 
-export default function TournamentDashboard({ params }: { params: Promise<{ id: string }> }) {
+export default function TournamentDashboard({
+  params,
+}: {
+  params: Promise<{ storeId: string; tournamentId: string }>;
+}) {
   const resolvedParams = use(params);
-  const tournamentId = resolvedParams.id;
+  const tournamentId = resolvedParams.tournamentId;
   const [data, setData] = useState<any>(null);
   const [timeLeft, setTimeLeft] = useState<number>(0);
   const timerRef = useRef<NodeJS.Timeout | null>(null);

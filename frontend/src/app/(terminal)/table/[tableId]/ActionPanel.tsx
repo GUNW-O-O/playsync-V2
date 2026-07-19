@@ -44,7 +44,9 @@ function PlayerSection({ state, mySeatIndex, onAction, rebuyData, onRebuyRespons
 
   const handleExit = () => {
     onRebuyResponse(false);
-    router.push('/playsync');
+    // 단말은 테이블에 고정돼 있다. 리바인을 거절하면 좌석만 풀리므로 화면을
+    // 옮기지 않고, 서버가 빈 좌석 상태를 다시 내려주도록 새로고침한다.
+    router.refresh();
   };
 
   if (rebuyData) {
