@@ -119,13 +119,28 @@ export class DealerService {
       } else if (type === 'KICK') {
         await engine.act(targetIdx, ActionType.DEALER_KICK);
         await this.redis.setUserContext(tournamentId, targetUserId, tableId, targetIdx, 'KICKED');
-        await this.prisma.tournamentParticipation.update({
-          where: { tournamentId_userId: { tournamentId: tournamentId, userId: targetUserId } },
-          data: { status: 'ELIMINATED' }
-        });
-        await this.prisma.tournament.update({
-          where: { id: tournamentId },
-          data: { activePlayers: { decrement: 1 } }
+
+        // 상태 변경과 카운터 감소가 한 트랜잭션이어야 한다. 따로 두면 두 번째가
+        // 실패했을 때 탈락했는데 인원수는 그대로인 상태가 남는다.
+        //
+        // 그리고 `decrement: 1`은 멱등이 아니다. 딜러가 킥을 두 번 누르면 두 번
+        // 준다. 이미 탈락한 사람은 `where`에서 걸러 **실제로 바뀐 행 수만큼만**
+        // 줄인다.
+        await this.prisma.$transaction(async (tx) => {
+          const changed = await tx.tournamentParticipation.updateMany({
+            where: {
+              tournamentId,
+              userId: targetUserId,
+              status: { notIn: ['ELIMINATED', 'AWARDED'] },
+            },
+            data: { status: 'ELIMINATED' }
+          });
+          if (changed.count > 0) {
+            await tx.tournament.update({
+              where: { id: tournamentId },
+              data: { activePlayers: { decrement: changed.count } }
+            });
+          }
         });
       }
 
