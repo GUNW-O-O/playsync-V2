@@ -239,6 +239,33 @@ describe('DealerService 동시성', () => {
     });
   });
 
+  describe('실패 원인 구분', () => {
+    // T11. 딜러 경로의 실패는 HTTP 상태코드가 아니라 **메시지**로 나간다
+    // (`{ event: 'error', data: e.message }`). 그런데 스냅샷 없음과 토너먼트
+    // 정보 없음이 똑같이 '예기치 못한 오류가 발생했습니다.'였다.
+    //
+    // 이 둘은 딜러가 할 일이 다르다. 스냅샷이 없으면 이 테이블은 더 진행할 수
+    // 없어 운영자를 불러야 하고, 토너먼트 정보가 없으면 대회 자체의 문제다.
+    // 같은 문자열이면 딜러는 그냥 다시 누르고, 로그에도 구분이 남지 않는다.
+
+    it('스냅샷이 없으면 테이블 상태 문제라고 알린다', async () => {
+      await redis.del(stateKey);
+
+      await expect(
+        dealer.handleDealerAction(TOURNAMENT, TABLE, 'alice', 'FOLD'),
+      ).rejects.toThrow(/테이블 상태/);
+    });
+
+    it('토너먼트 정보가 없으면 스냅샷 문제와 다르게 알린다', async () => {
+      await flushTestRedis(redis); // 대시보드까지 지운다
+      await redis.set(stateKey, JSON.stringify(makeState({ phase: GamePhase.SHOWDOWN })));
+
+      await expect(
+        dealer.resolveWinners(TABLE, TOURNAMENT, ['alice']),
+      ).rejects.toThrow(/토너먼트 정보/);
+    });
+  });
+
   describe('승자 정산', () => {
     /** carol이 올인해서 지고 스택 0으로 남은 판. */
     function showdownState() {

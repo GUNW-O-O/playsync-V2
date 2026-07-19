@@ -1,4 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  InternalServerErrorException,
+  NotFoundException,
+} from '@nestjs/common';
 import { PlayerStatus, TournamentStatus } from '@prisma/client';
 import { CreateBlindStructureDto } from 'shared/dto/blind-structure.dto';
 import { CreateTournamentDto, UpdateTournamentDto } from 'shared/dto/tournament.dto';
@@ -73,7 +79,7 @@ export class SessionService {
     // startSession의 blindStructure.structure 접근에서 죽었다 — 참가자가
     // 다 앉은 다음에. 기본값을 고치는 대신 입구에서 거부한다.
     if (!dto.blindId && !blindStructure) {
-      throw new Error('블라인드 구조 정보가 필요합니다.');
+      throw new BadRequestException('블라인드 구조 정보가 필요합니다.');
     }
 
     // dto.blindId(기존 구조 재사용)가 우선이고, 없을 때만 새로 만든다.
@@ -126,7 +132,7 @@ export class SessionService {
       });
       return updatedSession;
     });
-    if (!sessionInfo) throw new Error('세션 생성 실패');
+    if (!sessionInfo) throw new InternalServerErrorException('세션을 만들지 못했습니다.');
     await this.redis.setSeatBitmap(sessionInfo.id, sessionInfo.tables[0].id);
   }
 
@@ -135,7 +141,7 @@ export class SessionService {
       where: { id: tournamentId },
       include: { tables: true, dealerSession: true },
     });
-    if (!tournament) throw new Error('세션 없음');
+    if (!tournament) throw new NotFoundException('세션을 찾을 수 없습니다.');
     const tableCount = tournament.tables.length;
     const newTable = await this.prismaService.$transaction(async (tx) => {
       const table = await tx.table.create({
@@ -179,7 +185,7 @@ export class SessionService {
     });
 
     const startedAt = new Date();
-    if (!game) throw new Error("세션 없음");
+    if (!game) throw new NotFoundException('세션을 찾을 수 없습니다.');
     const blindStructure = parseBlindStructure(game.blindStructure.structure);
     const blindInfo = getCurrentBlindLevel(blindStructure, startedAt.getTime());
 
@@ -205,7 +211,7 @@ export class SessionService {
     }
 
     if (game.totalPlayers < 2) {
-      throw new Error('시작하기에 충분한 인원이 아닙니다.')
+      throw new ConflictException('시작하기에 충분한 인원이 아닙니다.')
     }
     await this.prismaService.$transaction(async (tx) => {
       await tx.tournament.update({
@@ -275,7 +281,7 @@ export class SessionService {
   async updateSession(id: string, dto: UpdateTournamentDto) {
     const session = await this.getGameSession(id);
     if (session?.status === TournamentStatus.FINISHED) {
-      throw new Error('종료된 세션은 수정할 수 없습니다.');
+      throw new ConflictException('종료된 세션은 수정할 수 없습니다.');
     }
     const updateData: any = {
       name: dto.name,

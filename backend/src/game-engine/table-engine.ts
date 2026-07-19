@@ -195,7 +195,6 @@ export class TableEngine {
           overachiever.stack += refundAmount;
           overachiever.totalContributed -= refundAmount;
           this.state.pot -= refundAmount;
-          console.log(`[환급] ${overachiever.nickname}에게 콜되지 않은 금액 ${refundAmount} 반환`);
         }
       }
     }

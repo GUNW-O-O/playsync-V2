@@ -95,7 +95,7 @@ export class PaymentService {
             }
           }
         });
-        if (exsitingPlayer) throw new Error('이미 플레이어가 존재하는 좌석입니다');
+        if (exsitingPlayer) throw new ConflictException('이미 다른 참가자가 앉은 좌석입니다.');
         await this.user.paymentPoint(tx, userId, dto.tournamentId, session.name, session.entryFee);
         await tx.tournamentParticipation.create({
           data: {
