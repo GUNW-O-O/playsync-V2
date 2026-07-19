@@ -340,7 +340,7 @@ describe('시나리오 — 대회 하나를 끝까지', () => {
     const stackBefore = winner.stack;
     const pot = before.pot;
 
-    await dealer.resolveWinners(tableId, tournamentId, [winner.id]);
+    await dealer.resolveWinners(tableId, tournamentId, [[winner.id]]);
 
     const state = await checkInvariants('정산');
     expect(state.players[seatOf(state, winner.id)]!.stack).toBe(stackBefore + pot);

@@ -261,6 +261,105 @@ describe('상금 지급', () => {
     });
   });
 
+  describe('실지급', () => {
+    /**
+     * 상금이 **참가자 행에 적히는 것**과 **유저가 쓸 수 있게 되는 것**은 다르다.
+     *
+     * 참가비는 포인트에서 빠진다(`joinSessionWithSeat`, `executeRebuyTransaction`).
+     * 상금이 포인트로 돌아오지 않으면 대회를 열 때마다 시스템이 포인트를
+     * 삼킨다. `TransactionType.PRIZE`가 스키마에 있는데 쓰는 코드가 없었던
+     * 것이 그 증거다.
+     */
+
+    async function pointsOf(userId: string) {
+      return (await prisma.user.findUniqueOrThrow({ where: { id: userId } })).points;
+    }
+
+    it('상금만큼 포인트가 오른다', async () => {
+      const before = await pointsOf('carol');
+
+      await playsync.eliminatePlayer(
+        TOURNAMENT, TABLE, [makePlayer('carol', 2)], dashboard(3),
+      );
+
+      expect(await pointsOf('carol')).toBe(before + INITIAL_POOL * 0.2);
+    });
+
+    it('PRIZE 거래 내역이 남는다', async () => {
+      // 잔고만 올리면 왜 올랐는지 설명할 근거가 없다. 참가비(BUY_IN)와
+      // 리바인(REBUY)은 이미 내역을 남긴다.
+      await playsync.eliminatePlayer(
+        TOURNAMENT, TABLE, [makePlayer('carol', 2)], dashboard(3),
+      );
+
+      const rows = await prisma.pointTransaction.findMany({
+        where: { userId: 'carol', type: 'PRIZE' },
+      });
+      expect(rows).toHaveLength(1);
+      expect(rows[0].amount).toBe(INITIAL_POOL * 0.2);
+      expect(rows[0].tournamentId).toBe(TOURNAMENT);
+    });
+
+    it('상금권 밖이면 포인트도 내역도 없다', async () => {
+      const before = await pointsOf('dave');
+
+      await playsync.eliminatePlayer(
+        TOURNAMENT, TABLE, [makePlayer('dave', 3)], dashboard(4),
+      );
+
+      expect(await pointsOf('dave')).toBe(before);
+      expect(await prisma.pointTransaction.count({
+        where: { userId: 'dave', type: 'PRIZE' },
+      })).toBe(0);
+    });
+
+    it('우승 상금도 포인트로 들어온다', async () => {
+      await prisma.tournamentParticipation.updateMany({
+        where: { tournamentId: TOURNAMENT, userId: { in: ['bob', 'carol', 'dave'] } },
+        data: { status: 'ELIMINATED' },
+      });
+      const before = await pointsOf('alice');
+
+      await playsync.tournamentFinished(TOURNAMENT);
+
+      expect(await pointsOf('alice')).toBe(before + INITIAL_POOL * 0.5);
+    });
+
+    it('중복 도착에도 두 번 들어가지 않는다', async () => {
+      // 카운터가 두 번 줄어드는 것과 달리 돈은 되돌릴 근거가 없다.
+      const before = await pointsOf('carol');
+      const broke = [makePlayer('carol', 2)];
+
+      await playsync.eliminatePlayer(TOURNAMENT, TABLE, broke, dashboard(3));
+      await playsync.eliminatePlayer(TOURNAMENT, TABLE, broke, dashboard(3));
+
+      expect(await pointsOf('carol')).toBe(before + INITIAL_POOL * 0.2);
+      expect(await prisma.pointTransaction.count({
+        where: { userId: 'carol', type: 'PRIZE' },
+      })).toBe(1);
+    });
+
+    it('대회가 끝나면 나간 포인트가 전부 돌아온다', async () => {
+      // **이 대회의 회계가 맞는가.** 참가비로 걷은 만큼이 상금으로 나가야
+      // 한다. 한쪽만 도는 동안은 아무도 눈치채지 못한다.
+      const totalBefore = await totalPoints();
+
+      await playsync.eliminatePlayer(TOURNAMENT, TABLE, [makePlayer('dave', 3)], dashboard(4));
+      await playsync.eliminatePlayer(TOURNAMENT, TABLE, [makePlayer('carol', 2)], dashboard(3));
+      await playsync.eliminatePlayer(TOURNAMENT, TABLE, [makePlayer('bob', 1)], dashboard(2));
+
+      // 참가비는 이 테스트의 seedDb가 이미 걷은 것으로 두고 있으므로,
+      // 지급된 총액이 곧 풀 전체여야 한다.
+      expect(`총 포인트 ${await totalPoints()}`)
+        .toBe(`총 포인트 ${totalBefore + INITIAL_POOL}`);
+    });
+
+    async function totalPoints() {
+      const users = await prisma.user.findMany({ where: { id: { in: USERS } } });
+      return users.reduce((sum, u) => sum + u.points, 0);
+    }
+  });
+
   it('같은 탈락이 두 번 도착해도 상금을 두 번 주지 않는다', async () => {
     // 재시도가 붙는 순간 중복 도착은 정상 경로다(N-7). 카운터와 달리 상금은
     // 돈이라, 두 번 들어가면 되돌릴 근거가 없다.

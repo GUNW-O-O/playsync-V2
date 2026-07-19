@@ -112,7 +112,7 @@ describe('시나리오 — 올인과 사이드팟', () => {
     // T15. 숏스택이 이겼을 때 1등만 찍고 나머지 둘의 승부를 안 찍는 것은 흔한
     // 조작 실수다. 예전에는 그 팟이 조용히 증발했다.
     await expect(
-      h.dealer.resolveWinners(h.tableId, h.tournamentId, ['short']),
+      h.dealer.resolveWinners(h.tableId, h.tournamentId, [['short']]),
     ).rejects.toThrow(/지명되지 않은 팟/);
 
     // 거부는 아무것도 건드리지 않는다. 딜러가 다시 찍을 수 있어야 한다.
@@ -124,7 +124,7 @@ describe('시나리오 — 올인과 사이드팟', () => {
   it('6. 자격 없는 사람을 상위 팟 승자로 지명해도 그 팟은 여전히 미지명이다', async () => {
     // short는 2층의 자격자가 아니다. 순서를 바꿔 넣어도 2층은 채워지지 않는다.
     await expect(
-      h.dealer.resolveWinners(h.tableId, h.tournamentId, ['short', 'short']),
+      h.dealer.resolveWinners(h.tableId, h.tournamentId, [['short'], ['short']]),
     ).rejects.toThrow(/지명되지 않은 팟/);
 
     await checkInvariants(h, '중복 지명 거부 후', chips);
@@ -133,7 +133,7 @@ describe('시나리오 — 올인과 사이드팟', () => {
   it('7. 순위대로 지명하면 층마다 알맞은 사람에게 간다', async () => {
     // 올인 100은 900을 가져갈 수 없고 자기 층만 가져간다 — 사이드팟이
     // 존재하는 이유 그 자체다. 남은 층은 그 아래 순위가 가져간다.
-    await h.dealer.resolveWinners(h.tableId, h.tournamentId, ['short', 'mid']);
+    await h.dealer.resolveWinners(h.tableId, h.tournamentId, [['short'], ['mid']]);
 
     const state = await checkInvariants(h, '정산', chips);
     expect(state.players[h.seatOf(state, 'short')]!.stack).toBe(3000);

@@ -79,7 +79,7 @@ describe('시나리오 — 탈락과 리바인', () => {
       where: { id: 'loser' },
     })).points;
 
-    await h.dealer.resolveWinners(h.tableId, h.tournamentId, ['winner']);
+    await h.dealer.resolveWinners(h.tableId, h.tournamentId, [['winner']]);
     stop();
 
     // 리바인만큼 테이블 위 칩이 늘어난다. 유일하게 정당한 증가다.
@@ -130,7 +130,7 @@ describe('시나리오 — 탈락과 리바인', () => {
     await playHandWhereLoserBusts();
 
     const stop = answerRebuy(false);
-    await h.dealer.resolveWinners(h.tableId, h.tournamentId, ['winner']);
+    await h.dealer.resolveWinners(h.tableId, h.tournamentId, [['winner']]);
     stop();
 
     const row = await h.prisma.tournamentParticipation.findFirstOrThrow({

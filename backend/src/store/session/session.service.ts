@@ -326,7 +326,42 @@ export class SessionService {
   }
 
   // 세션 완료
+  /**
+   * 대회를 닫는다. **되돌릴 수 없다** — 테이블과 딜러 세션을 지우고 Redis를
+   * 비우므로, 그 뒤에는 누가 몇 등이었고 얼마를 받아야 했는지 재구성할 근거가
+   * 남지 않는다.
+   *
+   * 그래서 정산이 끝난 뒤에만 닫힌다. 걷은 참가비와 나간 상금의 합이 같아야
+   * 한다 — 대회 하나의 회계가 맞아떨어졌다는 뜻이다.
+   *
+   * 마무리가 수동인 것은 설계다. ICM 찹으로 끝나는 대회가 있어 최후 1인이
+   * 나오기 전에 관리자가 정산할 수 있어야 한다. 이 게이트는 그 자유를 막지
+   * 않는다 — 어떻게 나눴든 합만 맞으면 통과한다.
+   */
   async completeSession(id: string) {
+    const tournament = await this.prismaService.tournament.findUnique({
+      where: { id },
+    });
+    if (!tournament) throw new NotFoundException('세션을 찾을 수 없습니다.');
+    if (tournament.status === TournamentStatus.FINISHED) {
+      throw new ConflictException('이미 종료된 세션입니다.');
+    }
+
+    const participations = await this.prismaService.tournamentParticipation.findMany({
+      where: { tournamentId: id },
+      select: { prizeAmount: true },
+    });
+    const paid = participations.reduce((sum, p) => sum + p.prizeAmount, 0);
+    const remaining = tournament.totalBuyinAmount - paid;
+
+    if (remaining !== 0) {
+      throw new ConflictException(
+        remaining > 0
+          ? `상금 정산이 끝나지 않았습니다. ${remaining} 남았습니다.`
+          : `지급된 상금이 참가비 총액보다 ${-remaining} 많습니다.`,
+      );
+    }
+
     const tables = await this.prismaService.table.findMany({
       where : { tournamentId : id }
     });

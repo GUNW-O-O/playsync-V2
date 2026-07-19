@@ -10,7 +10,7 @@ import { ActionType, GamePhase, TablePlayer, TableState } from 'src/game-engine/
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { retryAsync } from 'src/common/retry';
-import { prizeFor } from './prize';
+import { awardPrize, prizeFor } from './prize';
 
 /** 한 턴에 주어지는 시간. 잡의 delay와 state.actionDeadline이 같은 값을 써야 한다. */
 const TURN_TIMEOUT_MS = 30000;
@@ -306,26 +306,21 @@ export class PlaysyncService {
         select: { totalBuyinAmount: true, prizePayouts: true },
       });
       const prize = prizeFor(totalBuyinAmount, prizePayouts, eliminatedRank);
-      const isInTheMoney = prize > 0;
 
-      // 이미 탈락한 사람은 제외하고 센다. 카운터를 `playerIds.length`가 아니라
-      // **실제로 상태가 바뀐 행 수**로 줄이는 것이 멱등성의 전부다.
+      // 상태 전환·포인트·거래 내역이 한 곳에서 함께 일어난다. 기록만 되고
+      // 돈이 안 나가는 창을 만들지 않기 위해서다.
       //
       // 같은 탈락이 두 번 도착하는 것은 예외가 아니라 정상 경로다 — 재시도를
-      // 붙이는 순간 중복은 보장된다(at-least-once). 지금까지 안 터진 이유는
-      // 재시도가 없었기 때문이지 중복이 불가능해서가 아니다.
-      const changed = await tx.tournamentParticipation.updateMany({
-        where: {
-          tournamentId,
-          userId: { in: playerIds },
-          status: { notIn: ['ELIMINATED', 'AWARDED'] },
-        },
-        data: {
-          finalPlace: eliminatedRank,
-          status: (isInTheMoney ? 'AWARDED' : 'ELIMINATED'),
-          prizeAmount: prize,
-        }
-      });
+      // 붙이는 순간 중복은 보장된다(at-least-once). 카운터를 `playerIds.length`가
+      // 아니라 **실제로 바뀐 행 수**로 줄이는 것이 멱등성의 전부다.
+      const changedCount = await awardPrize(
+        tx,
+        tournamentId,
+        playerIds.map(userId => ({ userId, place: eliminatedRank, amount: prize })),
+        `${eliminatedRank}위 상금`,
+      );
+      const changed = { count: changedCount };
+
       // 삭제는 원래 멱등이라 조건을 더할 필요가 없다.
       await tx.tablePlayer.deleteMany({
         where: {
@@ -382,17 +377,16 @@ export class PlaysyncService {
         select: { totalBuyinAmount: true, prizePayouts: true },
       });
 
-      await tx.tournamentParticipation.update({
-        where: {
-          tournamentId_userId:
-            { tournamentId: tournamentId, userId: user.userId }
-        },
-        data: {
-          finalPlace: 1,
-          status: 'AWARDED',
-          prizeAmount: prizeFor(totalBuyinAmount, prizePayouts, 1),
-        },
-      });
+      await awardPrize(
+        tx,
+        tournamentId,
+        [{
+          userId: user.userId,
+          place: 1,
+          amount: prizeFor(totalBuyinAmount, prizePayouts, 1),
+        }],
+        '우승 상금',
+      );
     });
   }
 

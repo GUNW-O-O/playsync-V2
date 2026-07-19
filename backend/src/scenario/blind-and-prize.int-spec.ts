@@ -186,7 +186,7 @@ describe('시나리오 — 블라인드 상승과 상금 지급', () => {
       if (state.phase === GamePhase.WAITING) return;
       if (state.phase === GamePhase.SHOWDOWN) {
         const alive = state.players.filter(p => p && !p.hasFolded).map(p => p!.id);
-        await h.dealer.resolveWinners(h.tableId, h.tournamentId, alive.slice(0, 1));
+        await h.dealer.resolveWinners(h.tableId, h.tournamentId, [alive.slice(0, 1)]);
         continue;
       }
 
@@ -264,7 +264,7 @@ describe('시나리오 — 블라인드 상승과 상금 지급', () => {
         .map(p => p!.id);
       if (winners.length === 0) continue; // 희생자가 이긴 판. 다음 판으로.
 
-      await h.dealer.resolveWinners(h.tableId, h.tournamentId, winners.slice(0, 1));
+      await h.dealer.resolveWinners(h.tableId, h.tournamentId, [winners.slice(0, 1)]);
     }
 
     throw new Error(`${victim}을(를) 탈락시키지 못했다`);
