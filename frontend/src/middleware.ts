@@ -45,7 +45,11 @@ export function middleware(request: NextRequest): NextResponse {
 // JSON 대신 로그인 페이지 HTML을 받는다. 로그인 자체가 성립하지 않는다.
 //
 // 확장자가 있는 경로는 public/의 정적 파일이다. 가드에 걸리면 로그인 화면의
-// 이미지마다 307이 돌아온다.
+// 이미지마다 307이 돌아온다. 다만 확장자 판정은 끝에 붙들어 둔다 — `.*\.`이면
+// 경로 어디든 점 하나로 가드가 통째로 빠지고, slug나 닉네임이 URL에 들어오는
+// 순간 그대로 열린다.
 export const config = {
-  matcher: ['/((?!api(?:/|$)|_next/static|_next/image|favicon.ico|.*\\.).*)'],
+  matcher: [
+    '/((?!api(?:/|$)|_next/static|_next/image|favicon.ico|[^/]+\\.[a-zA-Z0-9]+$).*)',
+  ],
 };

@@ -90,6 +90,8 @@ describe('역할 가드', () => {
 // 미들웨어는 next.config의 rewrite보다 먼저 돈다. matcher가 /api를 잡으면
 // 미인증 로그인 요청이 로그인 페이지로 307되고, 307은 메서드를 보존하므로
 // 클라이언트는 JSON 대신 HTML을 받는다. 로그인 자체가 불가능해진다.
+// 여기서 손으로 컴파일한 RegExp는 근사치다. Next는 matcher를 path-to-regexp로
+// 컴파일하므로 이 테스트는 Next의 실제 동작이 아니라 의도를 고정한다.
 describe('matcher', () => {
   const matches = (pathname: string) =>
     new RegExp(`^${config.matcher[0]}$`).test(pathname);
@@ -99,13 +101,35 @@ describe('matcher', () => {
   });
 
   it('확장자가 있는 정적 파일은 잡지 않는다', () => {
-    expect([matches('/file.svg'), matches('/robots.txt')]).toEqual([
-      false,
-      false,
-    ]);
+    expect([
+      matches('/file.svg'),
+      matches('/logo.svg'),
+      matches('/robots.txt'),
+      matches('/favicon.ico'),
+    ]).toEqual([false, false, false, false]);
+  });
+
+  it('_next 내부 경로는 잡지 않는다', () => {
+    expect([
+      matches('/_next/static/chunks/main.js'),
+      matches('/_next/image'),
+    ]).toEqual([false, false]);
   });
 
   it('보호 대상 페이지는 잡는다', () => {
-    expect([matches('/stores/s1'), matches('/admin')]).toEqual([true, true]);
+    expect([
+      matches('/stores/s1'),
+      matches('/admin'),
+      matches('/tournaments'),
+    ]).toEqual([true, true, true]);
+  });
+
+  // 동적 세그먼트에 점이 들어가도 가드는 돌아야 한다. 지금은 cuid라 점이 없지만
+  // 상점 slug나 닉네임이 URL에 들어오는 순간 가드가 통째로 사라진다.
+  it('동적 세그먼트에 점이 있어도 잡는다', () => {
+    expect([matches('/stores/my.store'), matches('/admin/users/a.b')]).toEqual([
+      true,
+      true,
+    ]);
   });
 });
