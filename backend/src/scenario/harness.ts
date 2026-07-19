@@ -70,7 +70,13 @@ let handles: {
  */
 export async function setupTournament(
   players: string[],
-  opts: { registrationOpen?: boolean; rebuyUntil?: number } = {},
+  opts: {
+    registrationOpen?: boolean;
+    rebuyUntil?: number;
+    /** 레벨 상승을 보는 시나리오만 여러 레벨을 넣는다. */
+    blindStructure?: { lv: number; sb: number; ante: boolean; duration: number }[];
+    prizePayouts?: { place: number; percent: number }[];
+  } = {},
 ): Promise<Harness> {
   const redis = createTestRedis();
   const queueConnection = createTestRedis({ maxRetriesPerRequest: null });
@@ -108,7 +114,8 @@ export async function setupTournament(
   await prisma.blindStructure.create({
     data: {
       id: SCENARIO.blind, name: '기본', storeId: SCENARIO.store,
-      structure: [{ lv: 1, sb: 100, ante: false, duration: 60 }],
+      structure: opts.blindStructure
+        ?? [{ lv: 1, sb: 100, ante: false, duration: 60 }],
     },
   });
 
@@ -120,7 +127,7 @@ export async function setupTournament(
     entryFee: SCENARIO.entryFee,
     rebuyUntil: opts.rebuyUntil ?? 5,
     // 상금 분배율은 대회 생성 시 상점이 정한다. itmCount는 여기서 파생된다.
-    prizePayouts: [{ place: 1, percent: 100 }],
+    prizePayouts: opts.prizePayouts ?? [{ place: 1, percent: 100 }],
     // 착석 자체가 등록이라 열려 있어야 한다. 리바인 가능 여부도 이 값이 정하므로
     // 리바인을 보지 않는 시나리오는 착석을 마친 뒤 닫는다(`closeRegistration`).
     isRegistrationOpen: opts.registrationOpen ?? true,
