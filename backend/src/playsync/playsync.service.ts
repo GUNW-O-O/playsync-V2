@@ -1,5 +1,5 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PlayerStatus, TransactionType } from '@prisma/client';
 import { Queue } from 'bullmq';
@@ -9,6 +9,7 @@ import { TableEngine } from 'src/game-engine/table-engine';
 import { ActionType, GamePhase, TablePlayer, TableState } from 'src/game-engine/types';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
+import { retryAsync } from 'src/common/retry';
 
 /** 한 턴에 주어지는 시간. 잡의 delay와 state.actionDeadline이 같은 값을 써야 한다. */
 const TURN_TIMEOUT_MS = 30000;
@@ -25,6 +26,8 @@ function rebuyTimeoutMs(): number {
 
 @Injectable()
 export class PlaysyncService {
+  private readonly logger = new Logger(PlaysyncService.name);
+
   constructor(
     @InjectQueue('player-timeout') private timeoutQueue: Queue,
     private readonly redis: RedisService,
@@ -196,15 +199,92 @@ export class PlaysyncService {
     }
   }
 
-  public async syncTableInventoryToDb(state: TableState) {
+  /**
+   * 핸드 종료 시점의 스택을 DB에 남긴다. 이 트랜잭션이 체크포인트다.
+   *
+   * 예전에는 `await this.prisma.$transaction(updates) ? true : false`였다.
+   * `$transaction`은 성공하면 결과 **배열**을 주고 실패하면 던지므로, 이 식은
+   * 배열의 truthy 여부를 물은 것이고 항상 `true`였다. 호출자의
+   * `if (!isTxSuccess) throw`는 도달할 수 없는 죽은 분기였다 — DB가 실패해도
+   * 정산은 성공으로 끝나고 다음 핸드로 넘어갔다.
+   */
+  public async syncTableInventoryToDb(state: TableState): Promise<boolean> {
     const updates = state.players
       .filter(p => p !== null)
       .map(p => this.prisma.tablePlayer.updateMany({
         where: { userId: p.id, tableId: p.tableId },
         data: { currentStack: p.stack }
       }));
-    const success = await this.prisma.$transaction(updates) ? true : false;
-    return success;
+    try {
+      await this.prisma.$transaction(updates);
+      return true;
+    } catch (error) {
+      this.logger.error(`[체크포인트] 테이블 스택 동기화 실패`, error);
+      return false;
+    }
+  }
+
+  /**
+   * 체크포인트를 찍고, 실패하면 유한 재시도한다.
+   *
+   * **락을 잡지 않는다.** 백오프까지 포함하면 수 초가 될 수 있는데 테이블 락의
+   * TTL은 5초다. 락 안에 두면 TTL이 먼저 만료돼 남이 잡은 락을 해제하게 된다.
+   * 대신 페이즈가 문지기다 — 이 구간의 스냅샷은 `HAND_END`이고, `startPreFlop`은
+   * `WAITING`만 받으며 `act()`는 베팅 라운드가 아닌 페이즈를 거부한다(T8).
+   * 테이블은 진짜로 정지해 있다.
+   *
+   * 첫 시도가 성공하면 아무 표시도 남기지 않는다. 정상 경로에서 "재시도 중"이
+   * 한 번 깜빡이는 것을 피하려는 것이다.
+   */
+  public async checkpointTableToDb(tableId: string): Promise<boolean> {
+    const attempts = Number(process.env.DB_SYNC_RETRY_ATTEMPTS ?? 4);
+    const baseMs = Number(process.env.DB_SYNC_RETRY_BASE_MS ?? 200);
+
+    const result = await retryAsync(
+      async () => {
+        const state = await this.redis.getSnapShot(tableId);
+        if (!state) throw new Error('테이블을 찾을 수 없습니다.');
+        const ok = await this.syncTableInventoryToDb(state);
+        if (!ok) throw new Error('DB 동기화 실패');
+        return true;
+      },
+      {
+        attempts,
+        baseMs,
+        maxMs: 3000,
+        // 첫 실패를 확인한 뒤에만 표시가 나간다.
+        onRetry: async (attempt, delayMs) => {
+          this.logger.warn(
+            `[체크포인트] 테이블 ${tableId} 재시도 ${attempt}/${attempts - 1}, ${Math.round(delayMs)}ms 후`,
+          );
+          await this.markDbSyncStatus(tableId, 'RETRYING');
+        },
+      },
+    );
+
+    if (!result.ok) {
+      await this.markDbSyncStatus(tableId, 'FAILED');
+      return false;
+    }
+    return true;
+  }
+
+  /** 스냅샷의 체크포인트 상태만 바꾸고 테이블 전원에게 쏜다. */
+  public async markDbSyncStatus(tableId: string, status: 'RETRYING' | 'FAILED' | null) {
+    const state = await this.redis.withTableLock(tableId, async () => {
+      const snapshot = await this.redis.getSnapShot(tableId);
+      if (!snapshot) return null;
+      if (status === null) {
+        delete snapshot.dbSyncStatus;
+      } else {
+        snapshot.dbSyncStatus = status;
+      }
+      await this.redis.saveSnapShot(tableId, snapshot);
+      return snapshot;
+    });
+    if (state) {
+      this.eventEmitter.emit('game.state.updated', { tableId, state });
+    }
   }
 
 
@@ -215,10 +295,18 @@ export class PlaysyncService {
     const result = await this.prisma.$transaction(async (tx) => {
       const isInTheMoney = tournamentInfo.itmCount >= tournamentInfo.activePlayer;
       const eliminatedRank = tournamentInfo.activePlayer;
-      await tx.tournamentParticipation.updateMany({
+
+      // 이미 탈락한 사람은 제외하고 센다. 카운터를 `playerIds.length`가 아니라
+      // **실제로 상태가 바뀐 행 수**로 줄이는 것이 멱등성의 전부다.
+      //
+      // 같은 탈락이 두 번 도착하는 것은 예외가 아니라 정상 경로다 — 재시도를
+      // 붙이는 순간 중복은 보장된다(at-least-once). 지금까지 안 터진 이유는
+      // 재시도가 없었기 때문이지 중복이 불가능해서가 아니다.
+      const changed = await tx.tournamentParticipation.updateMany({
         where: {
           tournamentId,
-          userId: { in: playerIds }
+          userId: { in: playerIds },
+          status: { notIn: ['ELIMINATED', 'AWARDED'] },
         },
         data: {
           finalPlace: eliminatedRank,
@@ -226,30 +314,44 @@ export class PlaysyncService {
           prizeAmount: (isInTheMoney ? 1000 : 0),
         }
       });
+      // 삭제는 원래 멱등이라 조건을 더할 필요가 없다.
       await tx.tablePlayer.deleteMany({
         where: {
           tableId,
           userId: { in: playerIds }
         }
       });
-      await tx.tournament.update({
-        where: { id: tournamentId },
-        data: { activePlayers: { decrement: playerIds.length } }
-      });
-      return { success: true, eliCount: playerIds.length }
-    });
-    if (result.success) {
-      const activePlayerCount = await this.redis.eliminatedPlayer(tournamentId, tournamentInfo.startStack, tournamentInfo.entryFee, result.eliCount);
-      await Promise.all(
-        players.map(player => {
-          this.redis.updateSeatBitmap(tournamentId, tableId, player.seatIndex, false);
-          this.redis.deleteUserContext(tournamentId, player.id);
-        }
-        )
-      );
-      if (activePlayerCount <= 1) {
-        await this.tournamentFinished(tournamentId)
+      if (changed.count > 0) {
+        await tx.tournament.update({
+          where: { id: tournamentId },
+          data: { activePlayers: { decrement: changed.count } }
+        });
       }
+      return { eliCount: changed.count }
+    });
+
+    // 중복 도착이면 여기서 끝난다. Redis 카운터도 건드리지 않는다.
+    if (result.eliCount === 0) return;
+
+    const activePlayerCount = await this.redis.eliminatedPlayer(tournamentId, tournamentInfo.startStack, tournamentInfo.entryFee, result.eliCount);
+
+    // 화살표 본문이 블록인데 `return`이 없어 `map`이 `undefined[]`를 만들었다.
+    // `Promise.all([undefined, undefined])`는 즉시 resolve되므로, `await`가
+    // 붙어 있어도 실제로는 fire-and-forget이었다 — 정리가 실패해도 성공으로
+    // 끝나고 rejection은 아무도 안 받는다. 좌석 비트가 켜진 채, userContext가
+    // 남은 채 조용히 넘어간다.
+    //
+    // 여기는 DB 커밋 **이후**라 체크포인트를 위협하지 않는다. DB가 진실이고
+    // 이 둘은 파생 표시다. 그래서 차단이 아니라 실패를 올려 보이게만 한다.
+    await Promise.all(
+      players.flatMap(player => [
+        this.redis.updateSeatBitmap(tournamentId, tableId, player.seatIndex, false),
+        this.redis.deleteUserContext(tournamentId, player.id),
+      ])
+    );
+
+    if (activePlayerCount <= 1) {
+      await this.tournamentFinished(tournamentId)
     }
   }
 

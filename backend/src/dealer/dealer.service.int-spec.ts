@@ -25,6 +25,7 @@ describe('DealerService 동시성', () => {
   let redisService: RedisService;
   let dealer: DealerService;
   let playsync: PlaysyncService;
+  let emitter: EventEmitter2;
 
   const TABLE = 'table-1';
   const TOURNAMENT = 'tournament-1';
@@ -104,9 +105,14 @@ describe('DealerService 동시성', () => {
     queueConnection = createTestRedis({ maxRetriesPerRequest: null });
     queue = new Queue('player-timeout', { connection: queueConnection });
 
+    // 재시도 간격을 줄여 테스트가 실제 백오프를 기다리지 않게 한다.
+    process.env.DB_SYNC_RETRY_ATTEMPTS = '3';
+    process.env.DB_SYNC_RETRY_BASE_MS = '5';
+
     redisService = new RedisService(redis);
     const prisma = {} as PrismaService;
-    playsync = new PlaysyncService(queue, redisService, prisma, new EventEmitter2());
+    emitter = new EventEmitter2();
+    playsync = new PlaysyncService(queue, redisService, prisma, emitter);
     dealer = new DealerService(
       queue,
       prisma,
@@ -316,6 +322,82 @@ describe('DealerService 동시성', () => {
       const state: TableState = JSON.parse((await redis.get(stateKey))!);
       expect(state.phase).toBe(GamePhase.WAITING);
       expect(state.pot).toBe(0);
+    });
+
+    it('체크포인트가 실패하면 다음 핸드로 넘어가지 않는다', async () => {
+      // 핸드 경계에서 진실의 원천이 교대한다. DB 트랜잭션이 성공한 시점까지는
+      // DB가 원천이고, initTable이 WAITING으로 넘기는 순간부터 Redis 스냅샷이
+      // 원천이다. 체크포인트가 안 찍혔는데 넘기면 복구 지점이 한 핸드 뒤로
+      // 남는다 — 카드가 실물이라 되돌릴 근거가 테이블 위에 없다.
+      await redis.set(stateKey, JSON.stringify(showdownState()));
+      jest.spyOn(playsync, 'syncTableInventoryToDb').mockResolvedValue(false);
+
+      await dealer.resolveWinners(TABLE, TOURNAMENT, ['alice']);
+
+      const state: TableState = JSON.parse((await redis.get(stateKey))!);
+      expect(state.phase).toBe(GamePhase.HAND_END);
+    });
+
+    it('체크포인트 실패가 테이블 전원에게 전파된다', async () => {
+      // 딜러만 아는 것으로는 부족하다. 플레이어 태블릿에도 "다음 진행에 문제가
+      // 있다"가 보여야 한다. 재접속한 단말도 같은 것을 봐야 하므로 별도
+      // 이벤트가 아니라 스냅샷의 필드로 둔다.
+      await redis.set(stateKey, JSON.stringify(showdownState()));
+      jest.spyOn(playsync, 'syncTableInventoryToDb').mockResolvedValue(false);
+
+      const broadcasts: TableState[] = [];
+      emitter.on('game.state.updated', (p: { state: TableState }) => broadcasts.push(p.state));
+
+      await dealer.resolveWinners(TABLE, TOURNAMENT, ['alice']);
+
+      const state: TableState = JSON.parse((await redis.get(stateKey))!);
+      expect(state.dbSyncStatus).toBe('FAILED');
+      expect(broadcasts.some(s => s.dbSyncStatus === 'RETRYING')).toBe(true);
+    });
+
+    it('체크포인트 재시도는 락 밖에서 한다', async () => {
+      // 재시도는 백오프 때문에 수 초가 될 수 있고 락 TTL은 5초다. 락 안에 두면
+      // TTL이 먼저 만료돼 남이 잡은 락을 해제하게 된다.
+      await redis.set(stateKey, JSON.stringify(showdownState()));
+
+      const lockDuringRetry: number[] = [];
+      jest.spyOn(playsync, 'syncTableInventoryToDb').mockImplementation(async () => {
+        lockDuringRetry.push(await redis.exists(`lock:table:state:${TABLE}`));
+        return false;
+      });
+
+      await dealer.resolveWinners(TABLE, TOURNAMENT, ['alice']);
+
+      expect(lockDuringRetry.length).toBeGreaterThan(1);
+      expect(lockDuringRetry.every(held => held === 0)).toBe(true);
+    });
+
+    it('재시도가 성공하면 표시를 지우고 다음 핸드로 넘어간다', async () => {
+      await redis.set(stateKey, JSON.stringify(showdownState()));
+      jest
+        .spyOn(playsync, 'syncTableInventoryToDb')
+        .mockResolvedValueOnce(false)
+        .mockResolvedValue(true);
+
+      await dealer.resolveWinners(TABLE, TOURNAMENT, ['alice']);
+
+      const state: TableState = JSON.parse((await redis.get(stateKey))!);
+      expect(state.phase).toBe(GamePhase.WAITING);
+      expect(state.dbSyncStatus).toBeUndefined();
+    });
+
+    it('딜러가 실패한 체크포인트를 다시 시도할 수 있다', async () => {
+      // 멈추는 것 자체는 올바른 안전 상태다. 문제는 거기서 나올 방법이 없는 것.
+      await redis.set(stateKey, JSON.stringify(showdownState()));
+      jest.spyOn(playsync, 'syncTableInventoryToDb').mockResolvedValue(false);
+      await dealer.resolveWinners(TABLE, TOURNAMENT, ['alice']);
+
+      jest.spyOn(playsync, 'syncTableInventoryToDb').mockResolvedValue(true);
+      await dealer.retryCheckpoint(TABLE);
+
+      const state: TableState = JSON.parse((await redis.get(stateKey))!);
+      expect(state.phase).toBe(GamePhase.WAITING);
+      expect(state.dbSyncStatus).toBeUndefined();
     });
 
     it('리바인으로 살아난 플레이어는 탈락시키지 않는다', async () => {
