@@ -23,6 +23,10 @@ export const DealerActionSchema = z.discriminatedUnion("action", [
     .strict(),
   z.object({ action: z.literal("DEALER_FOLD"), targetUserId: userId }).strict(),
   z.object({ action: z.literal("DEALER_KICK"), targetUserId: userId }).strict(),
+  // 핸드 종료 체크포인트(DB 동기화)가 재시도까지 실패했을 때의 탈출구.
+  // 멈춘 것 자체는 올바른 안전 상태이므로 되돌리는 명령이 아니라, 막다른
+  // 골목을 없애는 명령이다.
+  z.object({ action: z.literal("RETRY_CHECKPOINT") }).strict(),
 ]);
 
 export type DealerAction = z.infer<typeof DealerActionSchema>;

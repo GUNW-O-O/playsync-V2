@@ -1,5 +1,5 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PlayerStatus, TransactionType } from '@prisma/client';
 import { Queue } from 'bullmq';
@@ -9,6 +9,7 @@ import { TableEngine } from 'src/game-engine/table-engine';
 import { ActionType, GamePhase, TablePlayer, TableState } from 'src/game-engine/types';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
+import { retryAsync } from 'src/common/retry';
 
 /** 한 턴에 주어지는 시간. 잡의 delay와 state.actionDeadline이 같은 값을 써야 한다. */
 const TURN_TIMEOUT_MS = 30000;
@@ -25,6 +26,8 @@ function rebuyTimeoutMs(): number {
 
 @Injectable()
 export class PlaysyncService {
+  private readonly logger = new Logger(PlaysyncService.name);
+
   constructor(
     @InjectQueue('player-timeout') private timeoutQueue: Queue,
     private readonly redis: RedisService,
@@ -196,15 +199,92 @@ export class PlaysyncService {
     }
   }
 
-  public async syncTableInventoryToDb(state: TableState) {
+  /**
+   * 핸드 종료 시점의 스택을 DB에 남긴다. 이 트랜잭션이 체크포인트다.
+   *
+   * 예전에는 `await this.prisma.$transaction(updates) ? true : false`였다.
+   * `$transaction`은 성공하면 결과 **배열**을 주고 실패하면 던지므로, 이 식은
+   * 배열의 truthy 여부를 물은 것이고 항상 `true`였다. 호출자의
+   * `if (!isTxSuccess) throw`는 도달할 수 없는 죽은 분기였다 — DB가 실패해도
+   * 정산은 성공으로 끝나고 다음 핸드로 넘어갔다.
+   */
+  public async syncTableInventoryToDb(state: TableState): Promise<boolean> {
     const updates = state.players
       .filter(p => p !== null)
       .map(p => this.prisma.tablePlayer.updateMany({
         where: { userId: p.id, tableId: p.tableId },
         data: { currentStack: p.stack }
       }));
-    const success = await this.prisma.$transaction(updates) ? true : false;
-    return success;
+    try {
+      await this.prisma.$transaction(updates);
+      return true;
+    } catch (error) {
+      this.logger.error(`[체크포인트] 테이블 스택 동기화 실패`, error);
+      return false;
+    }
+  }
+
+  /**
+   * 체크포인트를 찍고, 실패하면 유한 재시도한다.
+   *
+   * **락을 잡지 않는다.** 백오프까지 포함하면 수 초가 될 수 있는데 테이블 락의
+   * TTL은 5초다. 락 안에 두면 TTL이 먼저 만료돼 남이 잡은 락을 해제하게 된다.
+   * 대신 페이즈가 문지기다 — 이 구간의 스냅샷은 `HAND_END`이고, `startPreFlop`은
+   * `WAITING`만 받으며 `act()`는 베팅 라운드가 아닌 페이즈를 거부한다(T8).
+   * 테이블은 진짜로 정지해 있다.
+   *
+   * 첫 시도가 성공하면 아무 표시도 남기지 않는다. 정상 경로에서 "재시도 중"이
+   * 한 번 깜빡이는 것을 피하려는 것이다.
+   */
+  public async checkpointTableToDb(tableId: string): Promise<boolean> {
+    const attempts = Number(process.env.DB_SYNC_RETRY_ATTEMPTS ?? 4);
+    const baseMs = Number(process.env.DB_SYNC_RETRY_BASE_MS ?? 200);
+
+    const result = await retryAsync(
+      async () => {
+        const state = await this.redis.getSnapShot(tableId);
+        if (!state) throw new Error('테이블을 찾을 수 없습니다.');
+        const ok = await this.syncTableInventoryToDb(state);
+        if (!ok) throw new Error('DB 동기화 실패');
+        return true;
+      },
+      {
+        attempts,
+        baseMs,
+        maxMs: 3000,
+        // 첫 실패를 확인한 뒤에만 표시가 나간다.
+        onRetry: async (attempt, delayMs) => {
+          this.logger.warn(
+            `[체크포인트] 테이블 ${tableId} 재시도 ${attempt}/${attempts - 1}, ${Math.round(delayMs)}ms 후`,
+          );
+          await this.markDbSyncStatus(tableId, 'RETRYING');
+        },
+      },
+    );
+
+    if (!result.ok) {
+      await this.markDbSyncStatus(tableId, 'FAILED');
+      return false;
+    }
+    return true;
+  }
+
+  /** 스냅샷의 체크포인트 상태만 바꾸고 테이블 전원에게 쏜다. */
+  public async markDbSyncStatus(tableId: string, status: 'RETRYING' | 'FAILED' | null) {
+    const state = await this.redis.withTableLock(tableId, async () => {
+      const snapshot = await this.redis.getSnapShot(tableId);
+      if (!snapshot) return null;
+      if (status === null) {
+        delete snapshot.dbSyncStatus;
+      } else {
+        snapshot.dbSyncStatus = status;
+      }
+      await this.redis.saveSnapShot(tableId, snapshot);
+      return snapshot;
+    });
+    if (state) {
+      this.eventEmitter.emit('game.state.updated', { tableId, state });
+    }
   }
 
 

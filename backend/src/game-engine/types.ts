@@ -73,6 +73,16 @@ export interface TableState {
    * 두 번 배달될 수도 있다.
    */
   timerEpoch?: number;
+  /**
+   * 핸드 종료 체크포인트(DB 동기화)의 상태.
+   *
+   * 별도 이벤트가 아니라 스냅샷 필드인 이유: 딜러만이 아니라 테이블 전원이
+   * 알아야 하고, 재접속한 단말도 같은 것을 봐야 한다. 스냅샷은 Redis에
+   * 저장되고 재연결 시 그대로 렌더되므로 기존 브로드캐스트 경로를 그대로 탄다.
+   *
+   * 정상 진행 중에는 없다(`undefined`). 재시도에 들어갈 때만 나타난다.
+   */
+  dbSyncStatus?: 'RETRYING' | 'FAILED';
   tournamentId: string;
 }
 

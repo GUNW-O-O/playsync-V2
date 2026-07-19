@@ -198,8 +198,8 @@ export class DealerService {
       );
     }
 
-    // 3. 탈락 확정 + 다음 핸드 준비
-    return this.redis.withTableLock(tableId, async () => {
+    // 3. 탈락 확정 — 락 안. 스냅샷은 아직 HAND_END다.
+    await this.redis.withTableLock(tableId, async () => {
       const state = await this.redis.getSnapShot(tableId);
       if (!state) throw new Error('예기치 못한 오류가 발생했습니다.');
 
@@ -208,10 +208,62 @@ export class DealerService {
         .filter((p): p is TablePlayer => p != null && p.stack <= 0);
 
       await this.playsync.eliminatePlayer(tournamentId, tableId, eliminatedPlayers, tournamentInfo);
+      await this.redis.saveSnapShot(tableId, state);
+    });
 
-      const isTxSuccess = await this.playsync.syncTableInventoryToDb(state);
-      if (!isTxSuccess) throw new Error('DB 동기화 실패');
+    // 4. 체크포인트 — **락 밖.** 재시도가 백오프까지 포함하면 수 초가 되는데
+    //    락 TTL은 5초다. 리바인 대기를 락 밖으로 뺀 것과 같은 이유다.
+    //    HAND_END가 그동안 문지기 역할을 계속한다.
+    const synced = await this.playsync.checkpointTableToDb(tableId);
 
+    // 5. 다음 핸드 준비 — 락 안.
+    //
+    // 체크포인트가 실패했으면 여기로 오지 않는다. 핸드 경계에서 진실의 원천이
+    // 교대하기 때문이다 — DB 트랜잭션이 성공한 시점까지는 DB가 원천이고,
+    // initTable이 WAITING으로 넘기는 순간부터 Redis 스냅샷이 원천이다.
+    // 체크포인트 없이 넘기면 복구 지점이 한 핸드 뒤에 남는데, 카드가 실물이라
+    // 되돌릴 근거가 테이블 위에 없다.
+    //
+    // 그래서 HAND_END에 멈추는 것은 버그가 아니라 안전 상태다. 대신 나올
+    // 길이 있어야 한다 — `retryCheckpoint`가 그것이다.
+    if (!synced) {
+      const failed = await this.redis.getSnapShot(tableId);
+      if (!failed) throw new Error('예기치 못한 오류가 발생했습니다.');
+      return failed;
+    }
+
+    return this.finishHand(tableId);
+  }
+
+  /**
+   * 실패한 체크포인트를 딜러가 다시 시도한다.
+   *
+   * 멈추는 것 자체는 올바른 동작이므로 되돌리는 기능이 아니다. 막다른 골목을
+   * 없애는 기능이다.
+   */
+  async retryCheckpoint(tableId: string) {
+    const state = await this.redis.getSnapShot(tableId);
+    if (!state) throw new Error('테이블을 찾을 수 없습니다.');
+    if (state.phase !== GamePhase.HAND_END || state.dbSyncStatus !== 'FAILED') {
+      throw new Error('재시도할 체크포인트가 없습니다.');
+    }
+
+    const synced = await this.playsync.checkpointTableToDb(tableId);
+    if (!synced) {
+      const failed = await this.redis.getSnapShot(tableId);
+      if (!failed) throw new Error('예기치 못한 오류가 발생했습니다.');
+      return failed;
+    }
+    return this.finishHand(tableId);
+  }
+
+  /** 체크포인트가 찍힌 뒤에만 부른다. 원천이 Redis로 넘어가는 지점. */
+  private finishHand(tableId: string) {
+    return this.redis.withTableLock(tableId, async () => {
+      const state = await this.redis.getSnapShot(tableId);
+      if (!state) throw new Error('예기치 못한 오류가 발생했습니다.');
+
+      delete state.dbSyncStatus;
       await new TableEngine(state).initTable();
       await this.redis.saveSnapShot(tableId, state);
       return state;
