@@ -122,8 +122,17 @@ export class TableEngine {
         }
       });
       this.state.currentBet = 0;
-      // 첫 액션 유저는 버튼 다음 사람 (SB 위치부터 탐색)
-      this.state.currentTurnSeatIndex = this.findNextActiveSeat((this.state.buttonUser + 1) % this.state.players.length);
+      // 쇼다운에는 차례가 없다. 여기서 좌석을 배정하면 딜러가 승자를 입력하는
+      // 동안 남의 화면에 카운트다운이 돈다 — T8 가드가 액션은 막지만, 잘못된
+      // 상태가 태블릿으로 브로드캐스트되고 타임아웃 잡도 걸린다.
+      //
+      // `act()`의 올인 지름길은 이미 -1을 넣고 있었다. 쇼다운에 이르는 두 경로가
+      // 서로 다른 상태를 만들고 있던 것이다.
+      this.state.currentTurnSeatIndex =
+        this.state.phase === GamePhase.SHOWDOWN
+          ? -1
+          // 첫 액션 유저는 버튼 다음 사람 (SB 위치부터 탐색)
+          : this.findNextActiveSeat((this.state.buttonUser + 1) % this.state.players.length);
     }
   }
 
