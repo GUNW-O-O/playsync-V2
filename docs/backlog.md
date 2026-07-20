@@ -172,7 +172,7 @@ private tableSessions = new Map<string, Set<WebSocket>>();
 
 | | |
 |---|---|
-| [`README.md`](./README.md) | 도메인 전제와 구조 |
+| [`../README.md`](../README.md) | 도메인 전제와 구조 |
 | [`fixlist.md`](./fixlist.md) | 1단계 발견 대장 (완료) |
 | [`tickets.md`](./tickets.md) | 1단계 작업 기록 T1~T21 (완료) |
 | [`tickets-next.md`](./tickets-next.md) | 2단계 작업 기록 T22~ |

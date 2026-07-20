@@ -2,3 +2,4 @@ docs/etc
 
 # monorepo root
 node_modules/
+.claude/
