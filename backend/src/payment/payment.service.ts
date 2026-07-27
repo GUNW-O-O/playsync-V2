@@ -42,9 +42,8 @@ export class PaymentService {
   }
 
   async getTournamentInfo(tournamentId: string) {
-    const data = await this.session.getGameSession(tournamentId);
-    if (!data) throw new ConflictException('잘못된 세션 ID 입니다.');
-    const tournament = data;
+    const tournament = await this.session.getGameSession(tournamentId);
+    if (!tournament) throw new ConflictException('잘못된 세션 ID 입니다.');
     let seatStatus = await this.redisService.getTournamentTables(tournamentId);
     if (!seatStatus || seatStatus.length === 0) {
       const session = await this.prismaService.tournament.findUnique({

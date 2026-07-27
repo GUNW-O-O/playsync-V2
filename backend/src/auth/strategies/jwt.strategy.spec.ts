@@ -37,7 +37,7 @@ describe('JwtStrategy', () => {
     return new JwtStrategyCtor();
   }
 
-  it('DEALER 페이로드의 tokenVersion을 req.user로 그대로 내보낸다', async () => {
+  it('DEALER 페이로드를 req.user 모양 그대로 내보낸다', async () => {
     const strategy = loadStrategy();
 
     const result = await strategy.validate({
@@ -48,6 +48,17 @@ describe('JwtStrategy', () => {
       tokenVersion: 3,
     });
 
-    expect(result.tokenVersion).toBe(3);
+    // 필드 하나가 아니라 객체 전체를 단언한다. `tokenVersion`만 보면 바로 옆의
+    // `sub` → `id` 개명이 무방비로 남는다 — `dealer.controller.ts`가
+    // `req.user.id`를 `refreshToken`의 `sub`로 넘기므로, 그 줄이 사라지거나
+    // 플레이어 분기처럼 `userId`로 "정리"되면 모든 갱신이 영구 403이 된다.
+    // 그리고 그 회귀도 단위·통합 전체가 초록인 채로 지나간다.
+    expect(result).toEqual({
+      id: 'session-1',
+      tournamentId: 'tournament-1',
+      tableId: 'table-1',
+      tokenVersion: 3,
+      role: Role.DEALER,
+    });
   });
 });
