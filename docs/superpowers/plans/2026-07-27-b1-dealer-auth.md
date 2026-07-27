@@ -149,23 +149,37 @@ git commit -m "feat: 딜러 OTP를 6자리 문자열과 bcrypt 해시로 다루�
 
 ---
 
-### Task 2: 스키마를 해시로 바꾸고 생성 경로를 옮긴다
+### Task 2: OTP를 해시 기반 인증으로 전환한다
 
 **Files:**
 - Modify: `backend/prisma/schema.prisma:126` (`dealerOtp Int` → `dealerOtpHash String`), `:193-200` (`DealerSession`에 `tokenVersion`)
 - Modify: `backend/src/store/session/session.service.ts:151`
 - Modify: `backend/src/dealer/dealer.controller.ts:16`, `backend/src/payment/payment.service.ts:45`, `backend/src/payment/payment.controller.ts:21`
-- Modify: `backend/src/dealer/dealer.service.ts:48`
-- Test: `backend/src/store/session/session.service.int-spec.ts` (기존 파일이 있으면 추가, 없으면 생성)
+- Modify: `backend/src/dealer/dealer.service.ts:39-87`
+- Modify: `backend/shared/dto/dealer.dto.ts`
+- Create: `backend/src/dealer/otp-attempts.ts`
+- Test: `backend/src/store/session/session.service.int-spec.ts` (생성), `backend/src/dealer/dealer.int-spec.ts` (생성)
 
 **Interfaces:**
-- Consumes: Task 1의 `generateDealerOtp`, `hashDealerOtp`
+- Consumes: Task 1의 `generateDealerOtp`, `hashDealerOtp`, `verifyDealerOtp`
 - Produces:
   - `Tournament.dealerOtpHash: string` — 응답에 담아서는 안 되는 값
-  - `DealerSession.tokenVersion: number` — Task 4가 쓴다
+  - `DealerSession.tokenVersion: number` — Task 3이 쓴다
   - `SessionService.createSession(...)`의 반환에 `dealerOtp: string`이 **한 번만** 실린다 (평문. 이후로는 어디에도 남지 않는다)
+  - `OtpAttempts.assertNotLocked(tournamentId: string): Promise<void>` — 잠겨 있으면 던진다
+  - `OtpAttempts.recordFailure(tournamentId: string): Promise<number>` — 증가 후 횟수 반환
+  - `OtpAttempts.clear(tournamentId: string): Promise<void>`
+  - 상수 `MAX_ATTEMPTS = 5`, `LOCK_SECONDS = 300`
+  - 딜러 토큰 페이로드에 `tokenVersion` 클레임이 실린다
 
-**왜 이 셋을 한 태스크로 묶나.** 컬럼 이름이 바뀌면 그 컬럼을 구조분해로 빼던 세 곳이 컴파일되지 않는다. 나눠 커밋하면 중간 상태에서 타입 체크가 깨진다.
+**왜 이만큼을 한 태스크로 묶나.** 두 가지가 강제한다.
+
+컬럼 이름이 바뀌면 그것을 구조분해로 빼던 세 곳과 대조하던 한 곳이 컴파일되지 않는다.
+그런데 **대조를 뺀 채로 커밋하면 그 커밋에서는 아무 OTP나 통과한다.** 스키마 전환과
+대조 교체를 가르면 인증이 없는 상태가 git 히스토리에 남고, 그 사이에서 멈추면
+실제로 열린 서버가 된다. 그래서 컬럼 교체부터 해시 대조·잠금까지가 한 커밋이다.
+
+대가는 태스크가 커진다는 것이다. 대신 **어느 중간 상태에서도 인증이 약해지지 않는다.**
 
 - [ ] **Step 1: 실패하는 테스트를 쓴다**
 
@@ -277,60 +291,9 @@ const dealerOtpHash = await hashDealerOtp(dealerOtp);
     return data;
 ```
 
-`backend/src/dealer/dealer.service.ts:48`의 대조는 이 태스크에서 임시로 컴파일만 되게 둔다. Task 3이 제대로 고친다:
+`backend/src/dealer/dealer.service.ts:48`의 대조는 **이 태스크의 Step 10에서 해시 대조로 교체된다.** 컬럼이 없어졌다고 대조를 지운 채로 두지 않는다 — 그 상태의 커밋은 아무 OTP나 통과하는 서버다. Step 5부터 Step 10까지는 한 커밋으로 묶여 나간다.
 
-```ts
-      if (!tournament) {
-        throw new UnauthorizedException('인증 정보가 올바르지 않습니다.');
-      }
-```
-
-> **주의:** 이 상태에서는 **OTP 대조가 사라져 아무 값이나 통과한다.** Task 3이 곧바로 이어져야 한다. 커밋 메시지에 그 사실을 적는다.
-
-- [ ] **Step 6: 프론트가 이 필드를 읽는지 확인한다**
-
-Run: `git grep -n "dealerOtp" -- frontend packages` (루트에서)
-Expected: 결과가 있으면 그 자리도 함께 고친다. 없으면 다음 단계로.
-
-- [ ] **Step 7: 타입 체크와 테스트**
-
-Run: `npm run typecheck`
-Expected: 에러 0
-
-Run: `npm run test:int -w backend -- session.service`
-Expected: PASS
-
-- [ ] **Step 8: 커밋**
-
-```bash
-git add backend/prisma backend/src/store/session backend/src/dealer backend/src/payment
-git commit -m "refactor: 딜러 OTP를 해시 컬럼으로 옮기고 수동 제거 세 곳을 없앤다
-
-컬럼이 dealerOtpHash로 바뀌어 조회 결과에 OTP가 아예 없다. 응답마다 손으로
-빼던 세 곳이 필요 없어졌다.
-
-대조 로직은 이 커밋에서 비어 있다. 다음 커밋이 해시 대조로 채운다."
-```
-
----
-
-### Task 3: 해시 대조와 실패 시도 제한
-
-**Files:**
-- Create: `backend/src/dealer/otp-attempts.ts`
-- Modify: `backend/src/dealer/dealer.service.ts:39-87`
-- Modify: `backend/shared/dto/dealer.dto.ts`
-- Test: `backend/src/dealer/dealer.int-spec.ts` (생성)
-
-**Interfaces:**
-- Consumes: Task 1의 `verifyDealerOtp`, Task 2의 `Tournament.dealerOtpHash`
-- Produces:
-  - `OtpAttempts.assertNotLocked(tournamentId: string): Promise<void>` — 잠겨 있으면 던진다
-  - `OtpAttempts.recordFailure(tournamentId: string): Promise<number>` — 증가 후 횟수 반환
-  - `OtpAttempts.clear(tournamentId: string): Promise<void>`
-  - 상수 `MAX_ATTEMPTS = 5`, `LOCK_SECONDS = 300`
-
-- [ ] **Step 1: 실패하는 테스트를 쓴다**
+- [ ] **Step 6: 로그인 쪽 실패하는 테스트를 쓴다**
 
 `backend/src/dealer/dealer.int-spec.ts`:
 
@@ -404,12 +367,12 @@ describe('딜러 로그인', () => {
 
 `seedTournament()`은 `createTestPrisma()`로 상점·블라인드·대회·딜러 세션·테이블을 만들고 평문 OTP를 함께 돌려주는 헬퍼다. `backend/src/scenario/harness.ts`에 이미 대회를 심는 코드가 있으므로 먼저 읽고 그 형태를 따른다.
 
-- [ ] **Step 2: 실패를 확인한다**
+- [ ] **Step 7: 실패를 확인한다**
 
 Run: `npm run test:int -w backend -- dealer.int-spec`
-Expected: FAIL — 잠금 테스트에서 `ForbiddenException`이 아니라 성공한다 (Task 2가 대조를 비워 뒀으므로 첫 테스트도 실패한다)
+Expected: FAIL — 잠금 테스트가 `ForbiddenException` 대신 성공한다. `seedTournament`가 `dealerOtpHash`를 심으므로 컴파일 단계에서 먼저 죽을 수도 있다. 어느 쪽이든 빨간불을 눈으로 확인하고 넘어간다.
 
-- [ ] **Step 3: 카운터를 만든다**
+- [ ] **Step 8: 카운터를 만든다**
 
 `backend/src/dealer/otp-attempts.ts`:
 
@@ -467,9 +430,9 @@ export class OtpAttempts {
 }
 ```
 
-`backend/src/dealer/dealer.module.ts`의 `providers`에 `OtpAttempts`를, `exports`에도 추가한다 — Task 5의 `SessionService`가 같은 인스턴스를 쓴다. `'REDIS_CLIENT'` 토큰을 제공하는 모듈(`backend/src/redis/redis.module.ts`)이 `DealerModule`에 import돼 있는지 확인한다.
+`backend/src/dealer/dealer.module.ts`의 `providers`에 `OtpAttempts`를, `exports`에도 추가한다 — Task 4의 `SessionService`가 같은 인스턴스를 쓴다. `'REDIS_CLIENT'` 토큰을 제공하는 모듈(`backend/src/redis/redis.module.ts`)이 `DealerModule`에 import돼 있는지 확인한다.
 
-- [ ] **Step 4: DTO를 문자열로 바꾼다**
+- [ ] **Step 9: DTO를 문자열로 바꾼다**
 
 `backend/shared/dto/dealer.dto.ts`:
 
@@ -491,7 +454,7 @@ export class DealerDto {
 }
 ```
 
-- [ ] **Step 5: 대조를 채운다**
+- [ ] **Step 10: 대조를 해시 비교로 교체한다**
 
 `backend/src/dealer/dealer.service.ts`의 `loginDealer`. 잠금 확인과 해시 대조는 **트랜잭션 밖**에서 한다 — bcrypt와 Redis 왕복을 트랜잭션 안에 넣을 이유가 없다:
 
@@ -544,25 +507,46 @@ export class DealerDto {
   }
 ```
 
-- [ ] **Step 6: 통과를 확인한다**
+- [ ] **Step 11: 프론트가 이 필드를 읽는지 확인한다**
 
-Run: `npm run test:int -w backend -- dealer.int-spec`
-Expected: PASS, 4 tests
+Run: `git grep -n "dealerOtp" -- frontend packages` (루트에서)
+Expected: 결과가 있으면 그 자리도 함께 고친다. 없으면 다음 단계로.
 
-- [ ] **Step 7: 초록이 거짓말인지 확인한다**
+- [ ] **Step 12: 타입 체크와 테스트**
 
-`otp-attempts.ts`의 `assertNotLocked` 본문을 임시로 `return;`으로 바꾼다.
+Run: `npm run typecheck`
+Expected: 에러 0
 
-Run: `npm run test:int -w backend -- dealer.int-spec`
-Expected: FAIL — 잠금 테스트 둘이 빨간불
+Run: `npm run test:int -w backend -- "(session.service|dealer.int-spec)"`
+Expected: PASS — session 2개 + dealer 4개
 
-되돌린다: `git checkout backend/src/dealer/otp-attempts.ts`
+- [ ] **Step 13: 초록이 거짓말인지 확인한다**
 
-- [ ] **Step 8: 커밋**
+두 번 되돌려 본다. 하나는 잠금, 하나는 대조다.
+
+1. `otp-attempts.ts`의 `assertNotLocked` 본문을 임시로 `return;`으로 바꾼다.
+   Run: `npm run test:int -w backend -- dealer.int-spec`
+   Expected: FAIL — 잠금 테스트 둘이 빨간불
+   되돌린다: `git checkout backend/src/dealer/otp-attempts.ts`
+2. `dealer.service.ts`의 `verifyDealerOtp(...)` 호출을 임시로 `true`로 바꾼다.
+   Run: `npm run test:int -w backend -- dealer.int-spec`
+   Expected: FAIL — 틀린 OTP가 거부되지 않아 첫 테스트가 빨간불
+   되돌린다: `git checkout backend/src/dealer/dealer.service.ts`
+
+- [ ] **Step 14: 커밋**
+
+한 커밋으로 나간다. 컬럼 교체와 대조 교체를 가르면 그 사이 커밋에서 아무 OTP나 통과한다.
 
 ```bash
-git add backend/src/dealer backend/shared/dto/dealer.dto.ts
-git commit -m "feat: 딜러 OTP를 해시로 대조하고 실패 5회에 5분 잠근다
+git add backend/prisma backend/src/store/session backend/src/dealer backend/src/payment backend/shared/dto/dealer.dto.ts
+git commit -m "feat: 딜러 OTP를 해시 인증으로 바꾸고 실패 5회에 5분 잠근다
+
+저장을 dealerOtpHash로 옮기면서 대조도 같은 커밋에서 bcrypt 비교로
+교체한다. 컬럼만 먼저 옮기면 대조가 비는 커밋이 생기고, 그 커밋의 서버는
+아무 OTP나 통과한다.
+
+응답마다 손으로 OTP를 빼던 세 곳은 필요 없어져 지웠다. 조회 결과에 그
+필드가 애초에 없다.
 
 잠금은 대회 단위다. IP 단위는 주소를 바꾸면 빠져나가고, 계정 단위는 OTP를
 넣기 전에 신원이 없어 걸 수 없다."
@@ -570,7 +554,7 @@ git commit -m "feat: 딜러 OTP를 해시로 대조하고 실패 5회에 5분 �
 
 ---
 
-### Task 4: 딜러 토큰 갱신
+### Task 3: 딜러 토큰 갱신
 
 **Files:**
 - Modify: `backend/src/dealer/dealer.service.ts`
@@ -579,7 +563,7 @@ git commit -m "feat: 딜러 OTP를 해시로 대조하고 실패 5회에 5분 �
 - Test: `backend/src/dealer/dealer.int-spec.ts`
 
 **Interfaces:**
-- Consumes: Task 2의 `DealerSession.tokenVersion`, Task 3이 토큰에 넣은 `tokenVersion` 클레임
+- Consumes: Task 2의 `DealerSession.tokenVersion`과 토큰에 실린 `tokenVersion` 클레임
 - Produces:
   - `DealerService.refreshToken(payload: { sub: string; tournamentId: string; tableId: string; tokenVersion: number }): Promise<{ accessToken: string }>`
   - `POST /dealer/refresh` — `JwtAuthGuard` 뒤. 본문 없음, 현재 토큰이 자격이다
@@ -738,7 +722,7 @@ git commit -m "feat: 딜러 토큰 갱신을 대회 상태와 세션 버전에 �
 
 ---
 
-### Task 5: OTP 재발급과 딜러 내보내기
+### Task 4: OTP 재발급과 딜러 내보내기
 
 **Files:**
 - Modify: `backend/src/store/session/session.service.ts`
@@ -746,7 +730,7 @@ git commit -m "feat: 딜러 토큰 갱신을 대회 상태와 세션 버전에 �
 - Test: `backend/src/store/session/session.service.int-spec.ts`
 
 **Interfaces:**
-- Consumes: Task 1의 `generateDealerOtp`/`hashDealerOtp`, Task 3의 `OtpAttempts.clear`, Task 4의 `tokenVersion`
+- Consumes: Task 1의 `generateDealerOtp`/`hashDealerOtp`, Task 2의 `OtpAttempts.clear`, Task 3의 `tokenVersion`
 - Produces:
   - `SessionService.reissueDealerOtp(tournamentId: string): Promise<{ dealerOtp: string }>`
   - `SessionService.revokeDealerSession(tournamentId: string): Promise<void>`
@@ -884,7 +868,7 @@ git commit -m "feat: OTP 재발급과 딜러 내보내기
 
 ---
 
-### Task 6: 전체 검증과 문서
+### Task 5: 전체 검증과 문서
 
 **Files:**
 - Modify: `docs/tickets-next.md` (T23 항목 추가, 진행 현황 표 갱신)
