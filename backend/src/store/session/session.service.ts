@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   InternalServerErrorException,
   NotFoundException,
@@ -10,6 +11,8 @@ import { CreateBlindStructureDto } from 'shared/dto/blind-structure.dto';
 import { CreateTournamentDto, UpdateTournamentDto } from 'shared/dto/tournament.dto';
 import { BlindField, Dashboard } from 'shared/types/tournamentMeta';
 import { getCurrentBlindLevel, parseBlindStructure } from 'shared/util/util';
+import { generateDealerOtp, hashDealerOtp } from 'src/dealer/dealer-otp';
+import { OtpAttempts } from 'src/dealer/otp-attempts';
 import { GamePhase, TableState } from 'src/game-engine/types';
 import { parsePayouts, PrizePayout } from 'src/playsync/prize';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -53,11 +56,15 @@ export class SessionService {
   constructor(
     private prismaService: PrismaService,
     private redis: RedisService,
+    private otpAttempts: OtpAttempts,
   ) { };
 
+  // dealerOtpHash는 어느 조회 경로에도 담아 보내지 않는다 — 해시라도 값이
+  // 새어 나가면 오프라인 무차별 대입을 시도할 수 있다.
   async getGameSession(id: string) {
     return await this.prismaService.tournament.findUnique({
       where: { id },
+      omit: { dealerOtpHash: true },
       include: {
         tables: true,
         tornamentParticipations: true,
@@ -67,7 +74,7 @@ export class SessionService {
     });
   }
 
-  
+
   // 딜러인증시 테이블도 포함
   async getGameSessionWithTables(tournamentId: string) {
     return await this.prismaService.tournament.findUnique({
@@ -77,18 +84,20 @@ export class SessionService {
           in: [TournamentStatus.ONGOING, TournamentStatus.PENDING],
         }
       },
+      omit: { dealerOtpHash: true },
       include: {
         tables: true,
       },
     });
   }
-  
+
   // 해당 매장의 전체 토너먼트 정보
   async getStoreAllSessions(storeId: string) {
     return await this.prismaService.tournament.findMany({
       where: {
         storeId: storeId,
       },
+      omit: { dealerOtpHash: true },
       orderBy: {
         createdAt: 'desc',
       },
@@ -138,6 +147,11 @@ export class SessionService {
       throw new BadRequestException((e as Error).message);
     }
 
+    // 트랜잭션 진입 전에 뽑아 둔다. bcrypt 해싱은 CPU 작업이라 트랜잭션 안에서
+    // 돌리면 그동안 DB 커넥션을 잡은 채 기다린다.
+    const dealerOtp = generateDealerOtp();
+    const dealerOtpHash = await hashDealerOtp(dealerOtp);
+
     const sessionInfo = await this.prismaService.$transaction(async (tx) => {
       // 1. 기본 게임 세션 생성 (블라인드 구조 연결 및 OTP 생성 포함)
       const session = await tx.tournament.create({
@@ -148,7 +162,7 @@ export class SessionService {
           itmCount: payouts.length,
           prizePayouts: payouts as unknown as Prisma.InputJsonValue,
           blindId: blindId,
-          dealerOtp: Math.floor(1000 + Math.random() * 9000), // 4자리 OTP [cite: 9]
+          dealerOtpHash,
           startStack: dto.startStack,
           avgStack: dto.startStack,
           entryFee: dto.entryFee,
@@ -170,6 +184,7 @@ export class SessionService {
       });
       const updatedSession = await tx.tournament.findUnique({
         where: { id: session.id },
+        omit: { dealerOtpHash: true },
         include: {
           tables: true,
         }
@@ -178,6 +193,10 @@ export class SessionService {
     });
     if (!sessionInfo) throw new InternalServerErrorException('세션을 만들지 못했습니다.');
     await this.redis.setSeatBitmap(sessionInfo.id, sessionInfo.tables[0].id);
+
+    // 평문은 여기 한 번만 실린다. 저장은 해시로만 했으므로 이후로는 어디에도
+    // 남지 않는다 — 상점 콘솔이 이 응답을 보여주는 것이 유일한 열람 경로다.
+    return { ...sessionInfo, dealerOtp };
   }
 
   async createTable(tournamentId: string) {
@@ -233,6 +252,7 @@ export class SessionService {
       return await tx.tournament.update({
         where: { id },
         data: { status: TournamentStatus.ONGOING, startedAt },
+        omit: { dealerOtpHash: true },
       });
     });
   }
@@ -393,6 +413,87 @@ export class SessionService {
     await this.redis.deleteTournament(id, tableIds);
   }
 
+  /**
+   * 상점 소유권 확인.
+   *
+   * 재발급은 평문 OTP를 응답에 실어 돌려주고, 내보내기는 딜러 세션을 끊는다.
+   * 둘 다 강한 동작이라 역할만 확인하고 지나가면 다른 상점 관리자가 남의
+   * 대회의 딜러 접근권을 만들거나 끊을 수 있다.
+   *
+   * 컨트롤러가 아니라 `reissueDealerOtp`/`revokeDealerSession` 각각의 첫
+   * 문장으로 둔다 — 컨트롤러에만 있으면 그 한 줄이 지워져도 서비스 메서드를
+   * 직접 부르는 어떤 테스트도, 어떤 다른 호출부도 잡아내지 못한다. 이 검사가
+   * 우회 불가능해야 값을 만든다. `store.service.ts`의 `updateStore`/
+   * `removeStore`가 `getStoreDetail`을 내부에서 부르는 것과 같은 자리다.
+   *
+   * `PATCH /store/sessions/:id` 등 기존 경로에는 이 검사가 없다. 그건 이
+   * 태스크 이전부터 있던 별도 항목이라 여기서 같이 고치지 않는다.
+   */
+  async assertTournamentOwnership(tournamentId: string, ownerId: string): Promise<void> {
+    const tournament = await this.prismaService.tournament.findUnique({
+      where: { id: tournamentId },
+      select: { store: { select: { ownerId: true } } },
+    });
+    if (!tournament) throw new NotFoundException('세션을 찾을 수 없습니다.');
+    if (tournament.store.ownerId !== ownerId) {
+      throw new ForbiddenException('본인의 매장이 아닙니다.');
+    }
+  }
+
+  /**
+   * 태블릿이 토큰을 잃었을 때 쓰는 탈출구다. 해시로 저장하므로 원본을 다시
+   * 보여줄 방법이 없고, 대신 새로 발급한다.
+   *
+   * 이미 붙어 있는 딜러는 끊지 않는다 — 그들은 갱신으로 살아 있고, 갱신은
+   * OTP가 아니라 tokenVersion을 본다.
+   */
+  async reissueDealerOtp(tournamentId: string, ownerId: string): Promise<{ dealerOtp: string }> {
+    await this.assertTournamentOwnership(tournamentId, ownerId);
+
+    const dealerOtp = generateDealerOtp();
+    const dealerOtpHash = await hashDealerOtp(dealerOtp);
+
+    await this.prismaService.tournament.update({
+      where: { id: tournamentId },
+      data: { dealerOtpHash },
+    });
+
+    // 재발급은 잠금을 푼다. 잠긴 원인이 남의 오타였다면 상점이 여기서 풀 수
+    // 있어야 하고, 공격자였다면 값이 이미 바뀌어 카운터가 의미 없다.
+    await this.otpAttempts.clear(tournamentId);
+
+    return { dealerOtp };
+  }
+
+  /**
+   * 붙어 있는 딜러를 끊는다. 남은 토큰은 만료(최대 1시간)까지 살아 있다.
+   *
+   * 소유권 확인이 먼저라, 없는 tournamentId를 넘기면 여기서 404로 걸린다
+   * (예전에는 검사가 없어 `dealerSession.update`가 P2025를 던지고 그걸
+   * 조용히 삼켜 존재하지도 않는 대회에 대해 성공을 돌려줬다).
+   *
+   * 실재하는 대회인데 딜러 세션 행이 없는 경우는 남아 있다 —
+   * `completeSession`이 대회를 닫으며 테이블과 함께 이미 지운 경우다. 그때는
+   * 끊을 대상이 없다는 것 자체가 목표 상태(붙어 있는 딜러 없음)가 이미
+   * 달성돼 있다는 뜻이라, 상점 콘솔에서 "내보내기"를 누른 사람이 500을 볼
+   * 이유가 없다 — 조용히 성공으로 둔다.
+   */
+  async revokeDealerSession(tournamentId: string, ownerId: string): Promise<void> {
+    await this.assertTournamentOwnership(tournamentId, ownerId);
+
+    try {
+      await this.prismaService.dealerSession.update({
+        where: { tournamentId },
+        data: { tokenVersion: { increment: 1 } },
+      });
+    } catch (e) {
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2025') {
+        return;
+      }
+      throw e;
+    }
+  }
+
   // 세션 수정
   async updateSession(id: string, dto: UpdateTournamentDto) {
     const session = await this.getGameSession(id);
@@ -423,6 +524,7 @@ export class SessionService {
         id: id,
       },
       data: updateData,
+      omit: { dealerOtpHash: true },
     });
   }
 

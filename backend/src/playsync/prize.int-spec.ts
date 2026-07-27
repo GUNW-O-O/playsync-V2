@@ -79,7 +79,8 @@ describe('상금 지급', () => {
     await prisma.tournament.create({
       data: {
         id: TOURNAMENT, name: 'T', blindId: blind.id, storeId: store.id,
-        dealerOtp: 1234, entryFee: ENTRY_FEE, startStack: 10000,
+        dealerOtpHash: 'unused-hash', // 이 스펙은 로그인 경로를 검증하지 않는다.
+        entryFee: ENTRY_FEE, startStack: 10000,
         itmCount: PAYOUTS.length, prizePayouts: PAYOUTS,
         totalBuyinAmount: INITIAL_POOL,
         activePlayers: USERS.length, totalPlayers: USERS.length,

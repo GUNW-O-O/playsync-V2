@@ -1,9 +1,11 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { ConflictException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { Role } from '@prisma/client';
+import { Role, TournamentStatus } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { DealerDto } from 'shared/dto/dealer.dto';
+import { verifyDealerOtp } from 'src/dealer/dealer-otp';
+import { OtpAttempts } from 'src/dealer/otp-attempts';
 import { TableEngine } from 'src/game-engine/table-engine';
 import { ActionType, GamePhase, TablePlayer } from 'src/game-engine/types';
 import { PlaysyncService } from 'src/playsync/playsync.service';
@@ -34,56 +36,131 @@ export class DealerService {
     private redis: RedisService,
     private playsync: PlaysyncService,
     private jwtService: JwtService,
+    private otpAttempts: OtpAttempts,
   ) { }
 
   async loginDealer(dto: DealerDto) {
-    return await this.prisma.$transaction(async (tx) => {
-      // 1. 세션 및 OTP 검증 (기존 로직)
-      const tournament = await tx.tournament.findUnique({
-        where: { id: dto.tournamentId },
-        include: {
-          dealerSession: true,
-        }
-      });
-      if (!tournament || tournament.dealerOtp !== dto.otp) {
-        throw new UnauthorizedException('인증 정보가 올바르지 않습니다.');
-      }
-      if (!tournament.dealerSession) {
-        // OTP는 맞았는데 딜러 세션이 없다. 인증 실패가 아니라 대회 준비가
-        // 덜 된 상태라, 딜러가 OTP를 다시 입력해도 달라지지 않는다.
-        throw new ConflictException('딜러 세션이 준비되지 않았습니다. 상점에 문의해주세요.')
-      }
+    // 슬롯 예약이 곧 게이트다. 반드시 bcrypt **앞**이어야 한다 — 뒤로 가면
+    // 대조 한 라운드(~80ms)만큼 창이 열려, 그 사이 동시에 들어온 요청이 전부
+    // 한도를 지나쳐 스레드풀까지 함께 태운다.
+    await this.otpAttempts.reserveAttempt(dto.tournamentId);
 
+    const tournament = await this.prisma.tournament.findUnique({
+      where: { id: dto.tournamentId },
+      include: { dealerSession: true },
+    });
+
+    // 대회가 없을 때와 OTP가 틀렸을 때의 응답을 가르지 않는다. 가르면
+    // 존재하는 대회 id를 훑을 수 있다.
+    const ok =
+      tournament !== null &&
+      (await verifyDealerOtp(dto.otp, tournament.dealerOtpHash));
+
+    // 실패해도 여기서 셀 것이 없다. 슬롯은 이미 위에서 소비했다.
+    if (!ok) {
+      throw new UnauthorizedException('인증 정보가 올바르지 않습니다.');
+    }
+
+    // 끝난 대회의 OTP는 더 이상 유효하지 않다.
+    if (tournament.status === TournamentStatus.FINISHED) {
+      throw new ForbiddenException('종료된 대회입니다.');
+    }
+
+    if (!tournament.dealerSession) {
+      // OTP는 맞았는데 딜러 세션이 없다. 인증 실패가 아니라 대회 준비가
+      // 덜 된 상태라, 딜러가 OTP를 다시 입력해도 달라지지 않는다.
+      throw new ConflictException(
+        '딜러 세션이 준비되지 않았습니다. 상점에 문의해주세요.',
+      );
+    }
+
+    const issued = await this.prisma.$transaction(async (tx) => {
+      // dto.tableId가 이 대회 소속인지 상태와 무관하게 먼저 확인한다. 이전에는
+      // ONGOING일 때만 조회해서, 그 밖의 상태(PENDING·SYNCING)에서는 다른
+      // 대회의 테이블 id를 그대로 서명해 버렸다 — 위협모델 관찰 5.
+      const table = await tx.table.findUnique({
+        where: { tournamentId_id: { tournamentId: dto.tournamentId, id: dto.tableId } },
+        include: { tablePlayers: true }
+      });
+
+      if (!table) {
+        throw new ForbiddenException('이 대회에 속하지 않은 테이블입니다.');
+      }
 
       if (tournament.status === 'ONGOING') {
-        const table = await tx.table.findUnique({
-          where: { tournamentId_id: { tournamentId: dto.tournamentId, id: dto.tableId } },
-          include: { tablePlayers: true }
+        // 참가자 상태 변경
+        const userIds = table.tablePlayers.map(p => p.userId);
+        await tx.tournamentParticipation.updateMany({
+          where: {
+            userId: { in: userIds },
+            tournamentId: dto.tournamentId,
+            status: 'WAITING'
+          },
+          data: { status: 'PLAYING' }
         });
-
-        if (table) {
-          // 참가자 상태 변경
-          const userIds = table.tablePlayers.map(p => p.userId);
-          await tx.tournamentParticipation.updateMany({
-            where: {
-              userId: { in: userIds },
-              tournamentId: dto.tournamentId,
-              status: 'WAITING'
-            },
-            data: { status: 'PLAYING' }
-          });
-        }
       }
       const accessToken = {
-        sub: tournament.dealerSession.id,
+        sub: tournament.dealerSession!.id,
         tournamentId: dto.tournamentId,
         tableId: dto.tableId,
         role: Role.DEALER,
+        tokenVersion: tournament.dealerSession!.tokenVersion,
       }
       return {
         accessToken: this.jwtService.sign(accessToken)
       }
     });
+
+    // 카운터는 **토큰이 실제로 나간 뒤에** 지운다. OTP는 맞았지만 tableId가 남의
+    // 것이라 위에서 403이 나가는 요청까지 리셋해 줄 이유가 없다.
+    await this.otpAttempts.clear(dto.tournamentId);
+
+    return issued;
+  }
+
+  /**
+   * 갱신은 새 권한을 만들지 않는다.
+   *
+   * sub는 기존 토큰에서 그대로 옮긴다. tableId는 클라이언트가 보낸 값을 쓰되,
+   * 이 세션(대회) 소속 테이블인지 확인한 뒤에만 서명한다 — 검증 없이 그대로
+   * 옮기면 갱신이 다른 대회의 테이블로 넘어가는 권한 상승 경로가 된다.
+   */
+  async refreshToken(payload: {
+    sub: string;
+    tournamentId: string;
+    tableId: string;
+    tokenVersion: number;
+  }) {
+    const session = await this.prisma.dealerSession.findUnique({
+      where: { id: payload.sub },
+      include: {
+        tournament: { select: { status: true } },
+        tables: { select: { id: true } },
+      },
+    });
+
+    if (!session || session.tournamentId !== payload.tournamentId) {
+      throw new ForbiddenException('갱신할 수 없는 세션입니다.');
+    }
+    if (session.tournament.status === TournamentStatus.FINISHED) {
+      throw new ForbiddenException('종료된 대회입니다.');
+    }
+    if (session.tokenVersion !== payload.tokenVersion) {
+      throw new ForbiddenException('만료된 딜러 세션입니다.');
+    }
+    if (!session.tables.some((t) => t.id === payload.tableId)) {
+      throw new ForbiddenException('이 세션에 속하지 않은 테이블입니다.');
+    }
+
+    return {
+      accessToken: this.jwtService.sign({
+        sub: session.id,
+        tournamentId: session.tournamentId,
+        tableId: payload.tableId,
+        role: Role.DEALER,
+        tokenVersion: session.tokenVersion,
+      }),
+    };
   }
 
   async startPreFlop(tournamentId: string, tableId: string) {

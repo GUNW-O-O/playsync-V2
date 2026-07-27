@@ -123,7 +123,8 @@ model Tournament {
   totalPlayers       Int     @default(0)
   avgStack           Int     @default(0)
 
-  dealerOtp Int
+  // 평문은 생성·재발급 응답에 한 번만 실린다. 저장은 해시로만 한다.
+  dealerOtpHash String
 
   storeId                 String
   store                   Store                     @relation(fields: [storeId], references: [id], onDelete: Cascade)
@@ -193,6 +194,10 @@ model TournamentParticipation {
 model DealerSession {
   // 토너먼트id 로 otp 인증후 맞으면 반환 로컬스토리지에 저장.
   id String @id @default(uuid())
+
+  // 상점이 딜러를 내보내면 올라간다. 갱신이 이 값을 대조하므로 기존 토큰은
+  // 남은 만료 시간(최대 1시간) 안에 소멸한다.
+  tokenVersion Int @default(0)
 
   tournamentId String     @unique
   tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)

@@ -33,6 +33,8 @@ export class PaymentService {
           in: [TournamentStatus.ONGOING, TournamentStatus.PENDING],
         }
       },
+      // 참가자용 조회다. 해시라도 응답에 실으면 안 된다.
+      omit: { dealerOtpHash: true },
       orderBy: {
         createdAt: 'desc',
       },
@@ -40,9 +42,8 @@ export class PaymentService {
   }
 
   async getTournamentInfo(tournamentId: string) {
-    const data = await this.session.getGameSession(tournamentId);
-    if (!data) throw new ConflictException('잘못된 세션 ID 입니다.');
-    const { dealerOtp, ...tournament } = data;
+    const tournament = await this.session.getGameSession(tournamentId);
+    if (!tournament) throw new ConflictException('잘못된 세션 ID 입니다.');
     let seatStatus = await this.redisService.getTournamentTables(tournamentId);
     if (!seatStatus || seatStatus.length === 0) {
       const session = await this.prismaService.tournament.findUnique({

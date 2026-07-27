@@ -18,7 +18,7 @@ export class PaymentController {
   async findAvailableSessions(@Param('storeId') storeId: string) {
     const data = await this.paymentService.getStoreAvailableSessions(storeId);
     if (!data) throw new NotFoundException('세션을 찾을 수 없습니다.');
-    return data.map(({ dealerOtp, ...rest }) => rest);
+    return data;
   }
 
   @Get(':id')

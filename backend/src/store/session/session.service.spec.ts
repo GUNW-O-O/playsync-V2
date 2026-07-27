@@ -51,7 +51,7 @@ describe('SessionService.createSession', () => {
     };
     const redis = { setSeatBitmap: jest.fn().mockResolvedValue(undefined) };
 
-    const service = new SessionService(prisma as any, redis as any);
+    const service = new SessionService(prisma as any, redis as any, {} as any);
     return { service, prisma, redis, tournamentCreate, blindCreate };
   };
 
@@ -176,7 +176,7 @@ describe('SessionService HTTP 에러 타입', () => {
       $transaction: jest.fn(),
       ...overrides,
     };
-    return new SessionService(prisma as any, { setSeatBitmap: jest.fn() } as any);
+    return new SessionService(prisma as any, { setSeatBitmap: jest.fn() } as any, {} as any);
   };
 
   it('없는 세션에 테이블을 추가하면 404다', async () => {
@@ -236,7 +236,7 @@ describe('SessionService.completeSession — 정산 게이트', () => {
     };
     const redis = { deleteTournament: jest.fn() };
     return {
-      service: new SessionService(prisma as any, redis as any),
+      service: new SessionService(prisma as any, redis as any, {} as any),
       prisma,
       redis,
     };
@@ -291,7 +291,7 @@ describe('SessionService.completeSession — 정산 게이트', () => {
       tournament: { findUnique: jest.fn().mockResolvedValue(null) },
       $transaction: jest.fn(),
     };
-    const service = new SessionService(prisma as any, {} as any);
+    const service = new SessionService(prisma as any, {} as any, {} as any);
 
     await expect(service.completeSession('없는-대회')).rejects.toThrow(NotFoundException);
   });
@@ -353,7 +353,7 @@ describe('SessionService.startSession', () => {
       saveInitialTableSnapshots,
     };
 
-    const service = new SessionService(prisma as any, redis as any);
+    const service = new SessionService(prisma as any, redis as any, {} as any);
     return { service, prisma, update, setTournamentMeta, saveInitialTableSnapshots };
   };
 
@@ -467,7 +467,7 @@ describe('SessionService 시작 최소 인원', () => {
       setTournamentMeta: jest.fn().mockResolvedValue(undefined),
       saveInitialTableSnapshots: jest.fn().mockResolvedValue(undefined),
     };
-    return new SessionService(prisma as any, redis as any);
+    return new SessionService(prisma as any, redis as any, {} as any);
   };
 
   afterEach(() => {

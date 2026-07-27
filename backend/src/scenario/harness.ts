@@ -4,6 +4,7 @@ import { PrismaClient } from '@prisma/client';
 import { Queue } from 'bullmq';
 import Redis from 'ioredis';
 import { DealerService } from 'src/dealer/dealer.service';
+import { OtpAttempts } from 'src/dealer/otp-attempts';
 import { GamePhase, TableState } from 'src/game-engine/types';
 import { PaymentService } from 'src/payment/payment.service';
 import { PlaysyncService } from 'src/playsync/playsync.service';
@@ -91,11 +92,13 @@ export async function setupTournament(
   const emitter = new EventEmitter2();
   const redisService = new RedisService(redis);
   const playsync = new PlaysyncService(queue, redisService, prismaService, emitter);
-  const session = new SessionService(prismaService, redisService);
+  const otpAttempts = new OtpAttempts(redis);
+  const session = new SessionService(prismaService, redisService, otpAttempts);
   const user = new UserService(prismaService);
   const payment = new PaymentService(user, session, prismaService, redisService, emitter);
   const dealer = new DealerService(
     queue, prismaService, redisService, playsync, {} as JwtService,
+    otpAttempts,
   );
 
   // 시작 최소 인원은 운영 기본값이 6이다. 시나리오는 인원을 자유롭게 잡아야

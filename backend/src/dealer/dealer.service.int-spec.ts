@@ -2,6 +2,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Queue } from 'bullmq';
 import Redis from 'ioredis';
 import { DealerService } from './dealer.service';
+import { OtpAttempts } from './otp-attempts';
 import { PlaysyncService } from 'src/playsync/playsync.service';
 import { RedisService } from 'src/redis/redis.service';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -121,6 +122,7 @@ describe('DealerService 동시성', () => {
       redisService,
       playsync,
       {} as JwtService,
+      new OtpAttempts(redis),
     );
   });
 
