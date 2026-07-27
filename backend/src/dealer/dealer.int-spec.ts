@@ -189,6 +189,17 @@ describe('딜러 로그인', () => {
       dealerService.loginDealer({ tournamentId, tableId, otp }),
     ).resolves.toBeDefined();
   });
+
+  it('다른 대회의 테이블로는 로그인할 수 없다', async () => {
+    const a = await seedTournament();
+    const b = await seedTournament();
+
+    // otp는 a 것이 맞지만 tableId가 b 소속이다 — 이걸 그대로 서명하면
+    // 다른 대회의 테이블로 인증받는 경로가 열린다.
+    await expect(
+      dealerService.loginDealer({ tournamentId: a.tournamentId, tableId: b.tableId, otp: a.otp }),
+    ).rejects.toThrow(ForbiddenException);
+  });
 });
 
 /**
@@ -236,14 +247,20 @@ describe('딜러 토큰 갱신', () => {
     await expect(dealerService.refreshToken(payload)).rejects.toThrow(ForbiddenException);
   });
 
-  it('갱신된 토큰은 원래 토큰과 같은 테이블을 가리킨다', async () => {
-    const { tournamentId, tableId, otp } = await seedTournament({ status: 'ONGOING' });
-    const { accessToken } = await dealerService.loginDealer({ tournamentId, tableId, otp });
+  it('다른 대회의 테이블로는 갱신되지 않는다', async () => {
+    const a = await seedTournament({ status: 'ONGOING' });
+    const b = await seedTournament({ status: 'ONGOING' });
+    const { accessToken } = await dealerService.loginDealer({
+      tournamentId: a.tournamentId,
+      tableId: a.tableId,
+      otp: a.otp,
+    });
     const payload = jwtService.verify(accessToken);
 
-    const refreshed = await dealerService.refreshToken(payload);
-
-    // 갱신이 테이블을 바꿀 수 있으면 갱신 자체가 권한 상승 경로가 된다.
-    expect(jwtService.verify(refreshed.accessToken).tableId).toBe(tableId);
+    // payload.tableId를 검증 없이 그대로 서명하면, 다른 대회의 테이블 id를
+    // 실어 보내는 것만으로 그 테이블 딜러가 되는 권한 상승 경로가 된다.
+    await expect(
+      dealerService.refreshToken({ ...payload, tableId: b.tableId }),
+    ).rejects.toThrow(ForbiddenException);
   });
 });

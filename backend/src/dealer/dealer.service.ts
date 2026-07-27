@@ -74,24 +74,29 @@ export class DealerService {
     await this.otpAttempts.clear(dto.tournamentId);
 
     return this.prisma.$transaction(async (tx) => {
-      if (tournament.status === 'ONGOING') {
-        const table = await tx.table.findUnique({
-          where: { tournamentId_id: { tournamentId: dto.tournamentId, id: dto.tableId } },
-          include: { tablePlayers: true }
-        });
+      // dto.tableId가 이 대회 소속인지 상태와 무관하게 먼저 확인한다. 이전에는
+      // ONGOING일 때만 조회해서, 그 밖의 상태(PENDING·SYNCING)에서는 다른
+      // 대회의 테이블 id를 그대로 서명해 버렸다 — 위협모델 관찰 5.
+      const table = await tx.table.findUnique({
+        where: { tournamentId_id: { tournamentId: dto.tournamentId, id: dto.tableId } },
+        include: { tablePlayers: true }
+      });
 
-        if (table) {
-          // 참가자 상태 변경
-          const userIds = table.tablePlayers.map(p => p.userId);
-          await tx.tournamentParticipation.updateMany({
-            where: {
-              userId: { in: userIds },
-              tournamentId: dto.tournamentId,
-              status: 'WAITING'
-            },
-            data: { status: 'PLAYING' }
-          });
-        }
+      if (!table) {
+        throw new ForbiddenException('이 대회에 속하지 않은 테이블입니다.');
+      }
+
+      if (tournament.status === 'ONGOING') {
+        // 참가자 상태 변경
+        const userIds = table.tablePlayers.map(p => p.userId);
+        await tx.tournamentParticipation.updateMany({
+          where: {
+            userId: { in: userIds },
+            tournamentId: dto.tournamentId,
+            status: 'WAITING'
+          },
+          data: { status: 'PLAYING' }
+        });
       }
       const accessToken = {
         sub: tournament.dealerSession!.id,
@@ -109,8 +114,9 @@ export class DealerService {
   /**
    * 갱신은 새 권한을 만들지 않는다.
    *
-   * tableId와 sub를 기존 토큰에서 그대로 옮긴다. 클라이언트가 보낸 값을 하나라도
-   * 받으면 갱신이 "아무 테이블 딜러가 되는 경로"가 된다.
+   * sub는 기존 토큰에서 그대로 옮긴다. tableId는 클라이언트가 보낸 값을 쓰되,
+   * 이 세션(대회) 소속 테이블인지 확인한 뒤에만 서명한다 — 검증 없이 그대로
+   * 옮기면 갱신이 다른 대회의 테이블로 넘어가는 권한 상승 경로가 된다.
    */
   async refreshToken(payload: {
     sub: string;
@@ -120,7 +126,10 @@ export class DealerService {
   }) {
     const session = await this.prisma.dealerSession.findUnique({
       where: { id: payload.sub },
-      include: { tournament: { select: { status: true } } },
+      include: {
+        tournament: { select: { status: true } },
+        tables: { select: { id: true } },
+      },
     });
 
     if (!session || session.tournamentId !== payload.tournamentId) {
@@ -131,6 +140,9 @@ export class DealerService {
     }
     if (session.tokenVersion !== payload.tokenVersion) {
       throw new ForbiddenException('만료된 딜러 세션입니다.');
+    }
+    if (!session.tables.some((t) => t.id === payload.tableId)) {
+      throw new ForbiddenException('이 세션에 속하지 않은 테이블입니다.');
     }
 
     return {
