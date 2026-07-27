@@ -40,7 +40,10 @@ export class DealerService {
   ) { }
 
   async loginDealer(dto: DealerDto) {
-    await this.otpAttempts.assertNotLocked(dto.tournamentId);
+    // 슬롯 예약이 곧 게이트다. 반드시 bcrypt **앞**이어야 한다 — 뒤로 가면
+    // 대조 한 라운드(~80ms)만큼 창이 열려, 그 사이 동시에 들어온 요청이 전부
+    // 한도를 지나쳐 스레드풀까지 함께 태운다.
+    await this.otpAttempts.reserveAttempt(dto.tournamentId);
 
     const tournament = await this.prisma.tournament.findUnique({
       where: { id: dto.tournamentId },
@@ -53,8 +56,8 @@ export class DealerService {
       tournament !== null &&
       (await verifyDealerOtp(dto.otp, tournament.dealerOtpHash));
 
+    // 실패해도 여기서 셀 것이 없다. 슬롯은 이미 위에서 소비했다.
     if (!ok) {
-      await this.otpAttempts.recordFailure(dto.tournamentId);
       throw new UnauthorizedException('인증 정보가 올바르지 않습니다.');
     }
 
@@ -71,9 +74,7 @@ export class DealerService {
       );
     }
 
-    await this.otpAttempts.clear(dto.tournamentId);
-
-    return this.prisma.$transaction(async (tx) => {
+    const issued = await this.prisma.$transaction(async (tx) => {
       // dto.tableId가 이 대회 소속인지 상태와 무관하게 먼저 확인한다. 이전에는
       // ONGOING일 때만 조회해서, 그 밖의 상태(PENDING·SYNCING)에서는 다른
       // 대회의 테이블 id를 그대로 서명해 버렸다 — 위협모델 관찰 5.
@@ -109,6 +110,12 @@ export class DealerService {
         accessToken: this.jwtService.sign(accessToken)
       }
     });
+
+    // 카운터는 **토큰이 실제로 나간 뒤에** 지운다. OTP는 맞았지만 tableId가 남의
+    // 것이라 위에서 403이 나가는 요청까지 리셋해 줄 이유가 없다.
+    await this.otpAttempts.clear(dto.tournamentId);
+
+    return issued;
   }
 
   /**

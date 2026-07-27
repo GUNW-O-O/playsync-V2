@@ -12,7 +12,7 @@ import { SessionService } from 'src/store/session/session.service';
 import { closeTestPrisma, createTestPrisma, truncateAll } from '../../test/helpers/prisma';
 import { createTestRedis, flushTestRedis } from '../../test/helpers/redis';
 import { DealerService } from './dealer.service';
-import { OtpAttempts } from './otp-attempts';
+import { LOCK_SECONDS, MAX_ATTEMPTS, OtpAttempts } from './otp-attempts';
 
 /**
  * 딜러 로그인과 토큰 갱신.
@@ -188,6 +188,58 @@ describe('딜러 로그인', () => {
     await expect(
       dealerService.loginDealer({ tournamentId, tableId, otp }),
     ).resolves.toBeDefined();
+  });
+
+  /**
+   * 순차 5회가 아니라 **동시 버스트**를 본다.
+   *
+   * 카운터를 읽고(GET) → bcrypt를 돌리고(~80ms) → 그 뒤에 증가(INCR)하면, 읽기와
+   * 증가 사이가 bcrypt 한 라운드만큼 벌어진다. 그 창에 들어온 요청은 전부 같은
+   * 값을 읽으므로 한도가 "창당 5회"가 아니라 "순차 5회 + 무제한 동시 버스트
+   * 1회"가 된다. 10^6 공간에 10^4짜리 버스트면 완전 열거가 잠금 창 100번으로
+   * 내려온다. 게다가 cost 10짜리 bcrypt가 libuv 스레드풀(기본 4개)에 줄을 서서,
+   * 버스트 한 번이 진행 중인 딜러의 게임 조작까지 멈춘다.
+   *
+   * 그래서 단언 대상은 카운터의 최종값이 아니다 — 게이트가 증가 자체가 되면
+   * 카운터는 공격자가 보낸 만큼 올라간다(그건 정상이다). 봐야 할 것은 **몇 개가
+   * 자격 검사에 닿았는가**다. 게이트에서 걸리면 403, bcrypt까지 가서 틀리면
+   * 401이라 401의 개수가 곧 그 숫자다.
+   */
+  it('동시 버스트가 와도 창당 MAX_ATTEMPTS개만 자격 검사에 닿는다', async () => {
+    const { tournamentId, tableId } = await seedTournament();
+    const BURST = 50;
+
+    // 배열을 먼저 다 만들어 넘긴다. 루프 안에서 await하면 순차 실행이 되어
+    // 검증 대상인 동시성 자체가 사라진다.
+    const settled = await Promise.allSettled(
+      Array.from({ length: BURST }, () =>
+        dealerService.loginDealer({ tournamentId, tableId, otp: '000000' }),
+      ),
+    );
+
+    expect(settled.every((r) => r.status === 'rejected')).toBe(true);
+
+    const reachedCredentialCheck = settled.filter(
+      (r) => r.status === 'rejected' && r.reason instanceof UnauthorizedException,
+    ).length;
+
+    // 상한만 보면 "게이트가 전부 막는" 퇴화 구현도 통과한다. INCR이 원자적이라
+    // 1~5를 받은 다섯 개가 정확히 통과하므로 등호로 못 박는다.
+    expect(reachedCredentialCheck).toBe(MAX_ATTEMPTS);
+  });
+
+  it('실패 카운터에 TTL이 붙는다 — 없으면 대회가 영구 잠긴다', async () => {
+    const { tournamentId, tableId } = await seedTournament();
+
+    await expect(
+      dealerService.loginDealer({ tournamentId, tableId, otp: '000000' }),
+    ).rejects.toThrow(UnauthorizedException);
+
+    // TTL이 없으면 -1이 나온다. 그 상태로 5회가 차면 대회가 영구히 잠기고,
+    // 탈출구인 재발급은 아직 화면이 없다.
+    const ttl = await redis.ttl(`dealer:otp:fail:${tournamentId}`);
+    expect(ttl).toBeGreaterThan(0);
+    expect(ttl).toBeLessThanOrEqual(LOCK_SECONDS);
   });
 
   it('다른 대회의 테이블로는 로그인할 수 없다', async () => {
