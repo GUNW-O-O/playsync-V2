@@ -41,9 +41,38 @@ describe('딜러 인증 화면', () => {
 
     await screen.findByText('테스트 대회');
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'tbl-7' } });
-    fireEvent.change(screen.getByPlaceholderText('4자리 OTP 입력'), { target: { value: '1234' } });
+    fireEvent.change(screen.getByPlaceholderText('6자리 OTP 입력'), { target: { value: '012345' } });
     fireEvent.click(screen.getByRole('button', { name: '인증' }));
 
     await waitFor(() => expect(push).toHaveBeenCalledWith('/table/tbl-7'));
+  });
+
+  it('OTP를 숫자가 아니라 문자열로 보낸다', async () => {
+    // 백엔드 DTO가 `@Matches(/^[0-9]{6}$/)`로 문자열만 받는다. 앞자리 0이
+    // 유효한 값인데 숫자로 보내면 그 자리가 사라진다 — 이 케이스가 정확히
+    // 그렇다. Number()로 보내던 예전 코드는 여기서 400을 받았다.
+    let sentBody: unknown;
+    server.use(
+      http.post('http://backend.test/dealer/auth', async ({ request }) => {
+        sentBody = await request.json();
+        return HttpResponse.json({ accessToken: 'dealer-token' });
+      }),
+    );
+
+    await act(async () => {
+      render(
+        <Suspense>
+          <DealerAuthPage params={Promise.resolve({ id: 'trnmt-1' })} />
+        </Suspense>,
+      );
+    });
+
+    await screen.findByText('테스트 대회');
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'tbl-7' } });
+    fireEvent.change(screen.getByPlaceholderText('6자리 OTP 입력'), { target: { value: '012345' } });
+    fireEvent.click(screen.getByRole('button', { name: '인증' }));
+
+    await waitFor(() => expect(sentBody).toMatchObject({ otp: '012345' }));
+    expect((sentBody as { otp: unknown }).otp).toBe('012345');
   });
 });

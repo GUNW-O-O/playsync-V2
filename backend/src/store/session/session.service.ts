@@ -249,6 +249,7 @@ export class SessionService {
       return await tx.tournament.update({
         where: { id },
         data: { status: TournamentStatus.ONGOING, startedAt },
+        omit: { dealerOtpHash: true },
       });
     });
   }
@@ -439,6 +440,7 @@ export class SessionService {
         id: id,
       },
       data: updateData,
+      omit: { dealerOtpHash: true },
     });
   }
 

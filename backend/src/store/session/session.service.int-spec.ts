@@ -90,4 +90,39 @@ describe('SessionService.createSession — OTP 해시 통합', () => {
     expect(fetched).not.toHaveProperty('dealerOtp');
     expect(fetched).not.toHaveProperty('dealerOtpHash');
   });
+
+  /**
+   * 조회(getGameSession 등)만 막으면 충분하지 않다. `PATCH /store/sessions/:id`와
+   * `PATCH /store/sessions/:id/start`는 각각 updateSession·startSession의
+   * 반환값을 컨트롤러가 그대로 응답으로 내보낸다(session.controller.ts:28,33).
+   * 이 두 쓰기 경로가 각자 `tournament.update()`를 부르므로, getGameSession의
+   * omit과는 별개로 여기도 omit이 있어야 한다.
+   */
+  describe('쓰기 경로도 해시를 담아 보내지 않는다', () => {
+    it('대회 시작 응답에 해시가 없다', async () => {
+      const created = await sessionService.createSession(makeCreateDto());
+
+      // 시작 최소 인원 게이트를 우회한다 — 여기서 보는 것은 게임 시작
+      // 로직이 아니라 응답에 해시가 실리는지 여부다.
+      process.env.MIN_PLAYERS_TO_START = '0';
+      try {
+        const started = await sessionService.startSession(created.id);
+        expect(started).not.toHaveProperty('dealerOtp');
+        expect(started).not.toHaveProperty('dealerOtpHash');
+      } finally {
+        delete process.env.MIN_PLAYERS_TO_START;
+      }
+    });
+
+    it('대회 수정 응답에 해시가 없다', async () => {
+      const created = await sessionService.createSession(makeCreateDto());
+
+      const updated = await sessionService.updateSession(created.id, {
+        name: '이름 변경',
+      });
+
+      expect(updated).not.toHaveProperty('dealerOtp');
+      expect(updated).not.toHaveProperty('dealerOtpHash');
+    });
+  });
 });

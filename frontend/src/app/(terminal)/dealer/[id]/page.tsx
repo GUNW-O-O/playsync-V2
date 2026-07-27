@@ -37,7 +37,7 @@ export default function DealerAuthPage({ params }: { params: Promise<{ id: strin
       body: JSON.stringify({
         tournamentId: tournamentId,
         tableId: selectedTable,
-        otp: Number(otp)
+        otp: otp
       })
     });
 
@@ -78,8 +78,10 @@ export default function DealerAuthPage({ params }: { params: Promise<{ id: strin
         </select>
 
       <input
-        type="number"
-        placeholder="4자리 OTP 입력"
+        type="text"
+        inputMode="numeric"
+        maxLength={6}
+        placeholder="6자리 OTP 입력"
         value={otp}
         onChange={(e) => setOtp(e.target.value)}
         className="w-full p-3 border rounded-xl text-center text-2xl tracking-widest"
