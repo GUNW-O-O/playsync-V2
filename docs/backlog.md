@@ -132,6 +132,30 @@ scenario/full-flow.int-spec.ts        참가 전후 포인트 총합 일치
 
 B5·B6 뒤.
 
+### B7에서 미룬 것 (T22 앱 셸 리뷰)
+
+셸을 세우는 과정에서 나왔지만 화면이 생긴 뒤라야 판단이 되는 것들이다.
+
+- **env가 하나도 설정되지 않는다.** 리포에 `.env*`도 `.env.example`도 없는데
+  `BACKEND_URL`, `NEXT_PUBLIC_BACKEND_URL`, `NEXT_PUBLIC_API_BASE`를 다섯 곳이
+  읽는다. fetch URL이 문자 그대로 `undefined/...`로 나간다. 게다가
+  `auth/action.ts`의 기본값이 `http://localhost:3001.com` — **오타난 호스트라
+  로그인이 DNS에서 죽는다.** 설정된 적이 없으니 이 기본값이 실제 실행되는 값이다.
+- **인증 경로 규약이 둘이다.** 목업 핸들러는 `/api/auth/login`을 가로채고
+  `next.config.ts`가 그걸 백엔드로 rewrite하는데, 실존하는 로그인 코드는
+  `${BACKEND_URL}/auth/login`으로 rewrite를 통째로 우회한다. `apiFetch`는
+  프로덕션 호출자가 0개다. B6에서 하나로 합친다.
+- **WS 핸드셰이크가 httpOnly 토큰을 흘린다.** 좌석 태블릿 서버 컴포넌트가
+  `accessToken` 쿠키를 읽어 클라이언트 prop으로 넘기고, 그게 WS 쿼리스트링에
+  실린다. httpOnly를 건 이유를 정면으로 무효화한다. **B1과 같은 문제**이므로
+  위협 모델이 나온 뒤 함께 처리한다.
+- **Next 16이 `middleware`를 `proxy`로 바꾼다.** 지금은 경고만 뜨고 빌드는
+  통과한다. 파일명 변경이라 미들웨어 테스트와 함께 움직여야 해 별건으로 둔다.
+- **전광판이 콘솔 레이아웃의 `nav`를 물려받는다.** 명세는 크롬 없는 전체화면을
+  요구한다. 전광판을 소유한 후속 계획에서 레이아웃을 가른다.
+- **역할 불일치 404가 빈 본문이다.** 상태 코드는 맞아 정보 노출 요건은
+  충족하지만 백지가 뜬다. `/_not-found`가 생겼으므로 rewrite가 가능해졌다.
+
 ## B8 — 다중 테이블과 밸런싱
 
 `SessionService.manualMovingPlayer()`가 스텁이다(본문이 주석 두 줄).
