@@ -106,6 +106,44 @@ export class DealerService {
     });
   }
 
+  /**
+   * 갱신은 새 권한을 만들지 않는다.
+   *
+   * tableId와 sub를 기존 토큰에서 그대로 옮긴다. 클라이언트가 보낸 값을 하나라도
+   * 받으면 갱신이 "아무 테이블 딜러가 되는 경로"가 된다.
+   */
+  async refreshToken(payload: {
+    sub: string;
+    tournamentId: string;
+    tableId: string;
+    tokenVersion: number;
+  }) {
+    const session = await this.prisma.dealerSession.findUnique({
+      where: { id: payload.sub },
+      include: { tournament: { select: { status: true } } },
+    });
+
+    if (!session || session.tournamentId !== payload.tournamentId) {
+      throw new ForbiddenException('갱신할 수 없는 세션입니다.');
+    }
+    if (session.tournament.status === TournamentStatus.FINISHED) {
+      throw new ForbiddenException('종료된 대회입니다.');
+    }
+    if (session.tokenVersion !== payload.tokenVersion) {
+      throw new ForbiddenException('만료된 딜러 세션입니다.');
+    }
+
+    return {
+      accessToken: this.jwtService.sign({
+        sub: session.id,
+        tournamentId: session.tournamentId,
+        tableId: payload.tableId,
+        role: Role.DEALER,
+        tokenVersion: session.tokenVersion,
+      }),
+    };
+  }
+
   async startPreFlop(tournamentId: string, tableId: string) {
     return this.redis.withTableLock(tableId, async () => {
       const blind = await this.redis.checkAndSyncBlindLevel(tournamentId);
