@@ -4,6 +4,7 @@ import { PrismaClient } from '@prisma/client';
 import { Queue } from 'bullmq';
 import Redis from 'ioredis';
 import { DealerService } from 'src/dealer/dealer.service';
+import { OtpAttempts } from 'src/dealer/otp-attempts';
 import { GamePhase, TablePlayer, TableState } from 'src/game-engine/types';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
@@ -106,7 +107,7 @@ describe('탈락 처리 멱등성', () => {
         name: 'T',
         blindId: blind.id,
         storeId: store.id,
-        dealerOtp: 1234,
+        dealerOtpHash: 'unused-hash', // 이 스펙은 로그인 경로를 검증하지 않는다.
         entryFee: 1000,
         startStack: 10000,
         itmCount: 1,
@@ -168,6 +169,7 @@ describe('탈락 처리 멱등성', () => {
       redisService,
       playsync,
       {} as JwtService,
+      new OtpAttempts(redis),
     );
   });
 

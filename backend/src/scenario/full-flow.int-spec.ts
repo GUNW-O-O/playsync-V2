@@ -5,6 +5,7 @@ import { Queue } from 'bullmq';
 import Redis from 'ioredis';
 import { AuthService } from 'src/auth/auth.service';
 import { DealerService } from 'src/dealer/dealer.service';
+import { OtpAttempts } from 'src/dealer/otp-attempts';
 import { GamePhase, TableState } from 'src/game-engine/types';
 import { PaymentService } from 'src/payment/payment.service';
 import { PlaysyncService } from 'src/playsync/playsync.service';
@@ -70,6 +71,8 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
   let tournamentId: string;
   let tableId: string;
   let storeId: string;
+  /** 생성 응답에만 실리는 평문 OTP. 저장은 해시로만 하므로 여기서 잡아 둔다. */
+  let dealerOtp: string;
 
   // ── 가짜 소켓 ────────────────────────────────────────────
   // 진짜인 것은 게이트웨이·서비스·DB·Redis다. 소켓은 전송 계층이라
@@ -142,7 +145,9 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
     playsync = new PlaysyncService(queue, redisService, prismaService, emitter);
     session = new SessionService(prismaService, redisService);
     payment = new PaymentService(userService, session, prismaService, redisService, emitter);
-    dealer = new DealerService(queue, prismaService, redisService, playsync, jwt);
+    dealer = new DealerService(
+      queue, prismaService, redisService, playsync, jwt, new OtpAttempts(redis),
+    );
     gateway = new WsGateway(dealer, playsync, redisService, jwt, emitter);
 
     // 세 명으로 진행한다. 운영 기본값은 6이고 그 규칙은 T16이 따로 검증한다.
@@ -222,7 +227,7 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
       },
     });
 
-    await session.createSession({
+    const result = await session.createSession({
       name: '전체 플로우 대회',
       type: 'TOURNAMENT',
       storeId,
@@ -233,6 +238,7 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
       isRegistrationOpen: true,
       blindId: blind.id,
     } as never);
+    dealerOtp = result.dealerOtp;
 
     const created = await prisma.tournament.findFirstOrThrow({ where: { storeId } });
     tournamentId = created.id;
@@ -290,11 +296,9 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
   });
 
   it('10. 딜러가 OTP로 로그인해 토큰을 받는다', async () => {
-    const t = await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } });
-
     const { accessToken } = await dealer.loginDealer({
-      tournamentId, tableId, otp: t.dealerOtp,
-    } as never);
+      tournamentId, tableId, otp: dealerOtp,
+    });
     dealerToken = accessToken;
 
     const payload = jwt.verify(accessToken) as { role: string; tableId: string };
@@ -305,7 +309,7 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
 
   it('11. 틀린 OTP는 거부한다', async () => {
     await expect(
-      dealer.loginDealer({ tournamentId, tableId, otp: 9999 } as never),
+      dealer.loginDealer({ tournamentId, tableId, otp: '999999' }),
     ).rejects.toThrow(/인증 정보/);
   });
 

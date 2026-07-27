@@ -10,6 +10,7 @@ import { CreateBlindStructureDto } from 'shared/dto/blind-structure.dto';
 import { CreateTournamentDto, UpdateTournamentDto } from 'shared/dto/tournament.dto';
 import { BlindField, Dashboard } from 'shared/types/tournamentMeta';
 import { getCurrentBlindLevel, parseBlindStructure } from 'shared/util/util';
+import { generateDealerOtp, hashDealerOtp } from 'src/dealer/dealer-otp';
 import { GamePhase, TableState } from 'src/game-engine/types';
 import { parsePayouts, PrizePayout } from 'src/playsync/prize';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -55,9 +56,12 @@ export class SessionService {
     private redis: RedisService,
   ) { };
 
+  // dealerOtpHash는 어느 조회 경로에도 담아 보내지 않는다 — 해시라도 값이
+  // 새어 나가면 오프라인 무차별 대입을 시도할 수 있다.
   async getGameSession(id: string) {
     return await this.prismaService.tournament.findUnique({
       where: { id },
+      omit: { dealerOtpHash: true },
       include: {
         tables: true,
         tornamentParticipations: true,
@@ -67,7 +71,7 @@ export class SessionService {
     });
   }
 
-  
+
   // 딜러인증시 테이블도 포함
   async getGameSessionWithTables(tournamentId: string) {
     return await this.prismaService.tournament.findUnique({
@@ -77,18 +81,20 @@ export class SessionService {
           in: [TournamentStatus.ONGOING, TournamentStatus.PENDING],
         }
       },
+      omit: { dealerOtpHash: true },
       include: {
         tables: true,
       },
     });
   }
-  
+
   // 해당 매장의 전체 토너먼트 정보
   async getStoreAllSessions(storeId: string) {
     return await this.prismaService.tournament.findMany({
       where: {
         storeId: storeId,
       },
+      omit: { dealerOtpHash: true },
       orderBy: {
         createdAt: 'desc',
       },
@@ -138,6 +144,11 @@ export class SessionService {
       throw new BadRequestException((e as Error).message);
     }
 
+    // 트랜잭션 진입 전에 뽑아 둔다. bcrypt 해싱은 CPU 작업이라 트랜잭션 안에서
+    // 돌리면 그동안 DB 커넥션을 잡은 채 기다린다.
+    const dealerOtp = generateDealerOtp();
+    const dealerOtpHash = await hashDealerOtp(dealerOtp);
+
     const sessionInfo = await this.prismaService.$transaction(async (tx) => {
       // 1. 기본 게임 세션 생성 (블라인드 구조 연결 및 OTP 생성 포함)
       const session = await tx.tournament.create({
@@ -148,7 +159,7 @@ export class SessionService {
           itmCount: payouts.length,
           prizePayouts: payouts as unknown as Prisma.InputJsonValue,
           blindId: blindId,
-          dealerOtp: Math.floor(1000 + Math.random() * 9000), // 4자리 OTP [cite: 9]
+          dealerOtpHash,
           startStack: dto.startStack,
           avgStack: dto.startStack,
           entryFee: dto.entryFee,
@@ -170,6 +181,7 @@ export class SessionService {
       });
       const updatedSession = await tx.tournament.findUnique({
         where: { id: session.id },
+        omit: { dealerOtpHash: true },
         include: {
           tables: true,
         }
@@ -178,6 +190,10 @@ export class SessionService {
     });
     if (!sessionInfo) throw new InternalServerErrorException('세션을 만들지 못했습니다.');
     await this.redis.setSeatBitmap(sessionInfo.id, sessionInfo.tables[0].id);
+
+    // 평문은 여기 한 번만 실린다. 저장은 해시로만 했으므로 이후로는 어디에도
+    // 남지 않는다 — 상점 콘솔이 이 응답을 보여주는 것이 유일한 열람 경로다.
+    return { ...sessionInfo, dealerOtp };
   }
 
   async createTable(tournamentId: string) {

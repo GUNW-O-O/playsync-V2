@@ -13,8 +13,7 @@ export class DealerController {
   async getTournamentWithTables(@Param('id') tournamentId: string) {
     const data = await this.sessionService.getGameSessionWithTables(tournamentId);
     if (!data) throw new NotFoundException('세션을 찾을 수 없습니다.');
-    const {dealerOtp, ...rest} = data;
-    return rest;
+    return data;
   }
 
 

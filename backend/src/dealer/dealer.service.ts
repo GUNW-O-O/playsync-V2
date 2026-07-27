@@ -1,9 +1,11 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { ConflictException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { Role } from '@prisma/client';
+import { Role, TournamentStatus } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { DealerDto } from 'shared/dto/dealer.dto';
+import { verifyDealerOtp } from 'src/dealer/dealer-otp';
+import { OtpAttempts } from 'src/dealer/otp-attempts';
 import { TableEngine } from 'src/game-engine/table-engine';
 import { ActionType, GamePhase, TablePlayer } from 'src/game-engine/types';
 import { PlaysyncService } from 'src/playsync/playsync.service';
@@ -34,27 +36,44 @@ export class DealerService {
     private redis: RedisService,
     private playsync: PlaysyncService,
     private jwtService: JwtService,
+    private otpAttempts: OtpAttempts,
   ) { }
 
   async loginDealer(dto: DealerDto) {
-    return await this.prisma.$transaction(async (tx) => {
-      // 1. 세션 및 OTP 검증 (기존 로직)
-      const tournament = await tx.tournament.findUnique({
-        where: { id: dto.tournamentId },
-        include: {
-          dealerSession: true,
-        }
-      });
-      if (!tournament || tournament.dealerOtp !== dto.otp) {
-        throw new UnauthorizedException('인증 정보가 올바르지 않습니다.');
-      }
-      if (!tournament.dealerSession) {
-        // OTP는 맞았는데 딜러 세션이 없다. 인증 실패가 아니라 대회 준비가
-        // 덜 된 상태라, 딜러가 OTP를 다시 입력해도 달라지지 않는다.
-        throw new ConflictException('딜러 세션이 준비되지 않았습니다. 상점에 문의해주세요.')
-      }
+    await this.otpAttempts.assertNotLocked(dto.tournamentId);
 
+    const tournament = await this.prisma.tournament.findUnique({
+      where: { id: dto.tournamentId },
+      include: { dealerSession: true },
+    });
 
+    // 대회가 없을 때와 OTP가 틀렸을 때의 응답을 가르지 않는다. 가르면
+    // 존재하는 대회 id를 훑을 수 있다.
+    const ok =
+      tournament !== null &&
+      (await verifyDealerOtp(dto.otp, tournament.dealerOtpHash));
+
+    if (!ok) {
+      await this.otpAttempts.recordFailure(dto.tournamentId);
+      throw new UnauthorizedException('인증 정보가 올바르지 않습니다.');
+    }
+
+    // 끝난 대회의 OTP는 더 이상 유효하지 않다.
+    if (tournament.status === TournamentStatus.FINISHED) {
+      throw new ForbiddenException('종료된 대회입니다.');
+    }
+
+    if (!tournament.dealerSession) {
+      // OTP는 맞았는데 딜러 세션이 없다. 인증 실패가 아니라 대회 준비가
+      // 덜 된 상태라, 딜러가 OTP를 다시 입력해도 달라지지 않는다.
+      throw new ConflictException(
+        '딜러 세션이 준비되지 않았습니다. 상점에 문의해주세요.',
+      );
+    }
+
+    await this.otpAttempts.clear(dto.tournamentId);
+
+    return this.prisma.$transaction(async (tx) => {
       if (tournament.status === 'ONGOING') {
         const table = await tx.table.findUnique({
           where: { tournamentId_id: { tournamentId: dto.tournamentId, id: dto.tableId } },
@@ -75,10 +94,11 @@ export class DealerService {
         }
       }
       const accessToken = {
-        sub: tournament.dealerSession.id,
+        sub: tournament.dealerSession!.id,
         tournamentId: dto.tournamentId,
         tableId: dto.tableId,
         role: Role.DEALER,
+        tokenVersion: tournament.dealerSession!.tokenVersion,
       }
       return {
         accessToken: this.jwtService.sign(accessToken)

@@ -4,6 +4,7 @@ import { PrismaClient } from '@prisma/client';
 import { Queue } from 'bullmq';
 import Redis from 'ioredis';
 import { DealerService } from 'src/dealer/dealer.service';
+import { OtpAttempts } from 'src/dealer/otp-attempts';
 import { ActionType, GamePhase, TableState } from 'src/game-engine/types';
 import { PaymentService } from 'src/payment/payment.service';
 import { PlaysyncService } from 'src/playsync/playsync.service';
@@ -153,6 +154,7 @@ describe('시나리오 — 대회 하나를 끝까지', () => {
     payment = new PaymentService(user, session, prismaService, redisService, emitter);
     dealer = new DealerService(
       queue, prismaService, redisService, playsync, {} as JwtService,
+      new OtpAttempts(redis),
     );
 
     // 리바인 팝업은 사람의 응답을 기다린다. 장애 없는 해피패스만 보는
