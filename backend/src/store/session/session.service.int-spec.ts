@@ -253,11 +253,11 @@ describe('SessionService — 딜러 OTP 재발급과 내보내기', () => {
   }
 
   it('OTP를 재발급하면 옛 OTP는 막히고 새 OTP가 통과한다', async () => {
-    const { tournamentId, tableId, otp: oldOtp } = await seedTournament({
+    const { tournamentId, tableId, otp: oldOtp, ownerId } = await seedTournament({
       status: TournamentStatus.ONGOING,
     });
 
-    const { dealerOtp: newOtp } = await sessionService.reissueDealerOtp(tournamentId);
+    const { dealerOtp: newOtp } = await sessionService.reissueDealerOtp(tournamentId, ownerId);
 
     expect(newOtp).not.toBe(oldOtp);
     await expect(
@@ -269,7 +269,7 @@ describe('SessionService — 딜러 OTP 재발급과 내보내기', () => {
   });
 
   it('재발급은 잠금을 푼다', async () => {
-    const { tournamentId, tableId } = await seedTournament({ status: TournamentStatus.ONGOING });
+    const { tournamentId, tableId, ownerId } = await seedTournament({ status: TournamentStatus.ONGOING });
 
     for (let i = 0; i < 5; i++) {
       await expect(
@@ -277,7 +277,7 @@ describe('SessionService — 딜러 OTP 재발급과 내보내기', () => {
       ).rejects.toThrow(UnauthorizedException);
     }
 
-    const { dealerOtp } = await sessionService.reissueDealerOtp(tournamentId);
+    const { dealerOtp } = await sessionService.reissueDealerOtp(tournamentId, ownerId);
 
     await expect(
       dealerService.loginDealer({ tournamentId, tableId, otp: dealerOtp }),
@@ -285,43 +285,94 @@ describe('SessionService — 딜러 OTP 재발급과 내보내기', () => {
   });
 
   it('재발급은 이미 붙어 있는 딜러를 끊지 않는다', async () => {
-    const { tournamentId, tableId, otp } = await seedTournament({ status: TournamentStatus.ONGOING });
+    const { tournamentId, tableId, otp, ownerId } = await seedTournament({ status: TournamentStatus.ONGOING });
     const { accessToken } = await dealerService.loginDealer({ tournamentId, tableId, otp });
     const payload = jwtService.verify(accessToken);
 
-    await sessionService.reissueDealerOtp(tournamentId);
+    await sessionService.reissueDealerOtp(tournamentId, ownerId);
 
     await expect(dealerService.refreshToken(payload)).resolves.toBeDefined();
   });
 
   it('내보내기는 붙어 있는 딜러의 갱신을 막는다', async () => {
-    const { tournamentId, tableId, otp } = await seedTournament({ status: TournamentStatus.ONGOING });
+    const { tournamentId, tableId, otp, ownerId } = await seedTournament({ status: TournamentStatus.ONGOING });
     const { accessToken } = await dealerService.loginDealer({ tournamentId, tableId, otp });
     const payload = jwtService.verify(accessToken);
 
-    await sessionService.revokeDealerSession(tournamentId);
+    await sessionService.revokeDealerSession(tournamentId, ownerId);
 
     await expect(dealerService.refreshToken(payload)).rejects.toThrow(ForbiddenException);
   });
 
   /**
    * 재발급은 평문 OTP를 응답에 실어 돌려준다. 역할만 확인하고 지나가면 다른
-   * 상점 관리자가 남의 대회의 딜러 접근권을 만들어낼 수 있다 — Task 2 리뷰가
-   * `PATCH /store/sessions/:id`에서 발견한 것과 같은 구멍이 여기서는 평문
-   * OTP 유출로 더 나쁘게 재현된다.
+   * 상점 관리자가 남의 대회의 딜러 접근권을 만들어낼 수 있다.
+   *
+   * 소유권 검사는 `reissueDealerOtp`/`revokeDealerSession` 각각의 첫
+   * 문장이다(컨트롤러가 아니라). 그래서 아래 테스트들은 헬퍼
+   * `assertTournamentOwnership`이 아니라 **실제 진입점**을 직접 호출해
+   * 우회가 불가능함을 검증한다 — 이 검사를 서비스 메서드에서 지우면
+   * 아래 두 테스트가 곧바로 빨간불이 된다(리뷰 대응, 아래 리포트의
+   * deliberate-revert 참고).
    */
-  describe('상점 소유권', () => {
-    it('다른 상점 소유자가 확인하면 거부한다', async () => {
+  describe('상점 소유권 — 우회 불가능', () => {
+    it('다른 상점 소유자가 재발급을 호출하면 거부한다', async () => {
       const { tournamentId } = await seedTournament();
       const intruder = await prisma.user.create({
-        data: { nickname: '다른-상점주', password: 'x', role: 'STORE_ADMIN' },
+        data: { nickname: '다른-상점주-1', password: 'x', role: 'STORE_ADMIN' },
       });
 
       await expect(
-        sessionService.assertTournamentOwnership(tournamentId, intruder.id),
+        sessionService.reissueDealerOtp(tournamentId, intruder.id),
       ).rejects.toThrow(ForbiddenException);
     });
 
+    it('다른 상점 소유자가 내보내기를 호출하면 거부한다', async () => {
+      const { tournamentId } = await seedTournament();
+      const intruder = await prisma.user.create({
+        data: { nickname: '다른-상점주-2', password: 'x', role: 'STORE_ADMIN' },
+      });
+
+      await expect(
+        sessionService.revokeDealerSession(tournamentId, intruder.id),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('본인 소유면 재발급이 통과한다', async () => {
+      const { tournamentId, ownerId } = await seedTournament();
+
+      const result = await sessionService.reissueDealerOtp(tournamentId, ownerId);
+
+      expect(result.dealerOtp).toMatch(/^[0-9]{6}$/);
+    });
+
+    it('없는 대회에 재발급을 호출하면 404다', async () => {
+      await expect(
+        sessionService.reissueDealerOtp('없는-대회', '아무개'),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    /**
+     * 이월 minor: 소유권 검사가 없던 시절에는 없는 tournamentId로
+     * 내보내기를 불러도 `dealerSession.update`가 P2025를 던지고 그걸
+     * 조용히 삼켜 "성공"을 돌려줬다 — 존재하지도 않는 대회에 대해서다.
+     * 소유권 검사를 먼저 걸면서 이 경우는 이제 404로 막힌다(실재하는
+     * 대회인데 딜러 세션 행만 없는 경우와는 다른 경로 — 그건 아래
+     * describe에서 별도로 검증한다).
+     */
+    it('없는 대회에 내보내기를 호출하면 404다 — 예전에는 조용히 성공했다', async () => {
+      await expect(
+        sessionService.revokeDealerSession('없는-대회', '아무개'),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  /**
+   * 소유권 검사가 통과한 **뒤에도** `assertTournamentOwnership` 자체가
+   * 정확히 무엇을 판정하는지는 직접 확인할 가치가 있다 — 헬퍼 하나가 두
+   * 진입점의 첫 문장이라, 여기서 확인하면 둘 다에 대해 확인한 셈이다.
+   */
+  describe('assertTournamentOwnership', () => {
     it('본인 소유면 통과한다', async () => {
       const { tournamentId, ownerId } = await seedTournament();
 
@@ -339,20 +390,23 @@ describe('SessionService — 딜러 OTP 재발급과 내보내기', () => {
 
   /**
    * `completeSession`이 대회를 닫으며 `DealerSession` 행을 지운다. 그 뒤에
-   * 상점이 내보내기를 눌러도(오조작이든 뒤늦은 클릭이든) 500을 보면 안 된다 —
-   * 끊을 대상이 이미 없다는 것은 목표 상태(붙어 있는 딜러 없음)가 이미
-   * 달성돼 있다는 뜻이다.
+   * 상점(진짜 소유자)이 내보내기를 눌러도(오조작이든 뒤늦은 클릭이든) 500을
+   * 보면 안 된다 — 끊을 대상이 이미 없다는 것은 목표 상태(붙어 있는 딜러
+   * 없음)가 이미 달성돼 있다는 뜻이다. 대회 자체는 여전히 존재하므로
+   * 소유권 검사는 통과하고, 그 다음 단계에서만 no-op이 된다.
    */
   describe('내보내기 — 딜러 세션이 없는 경우', () => {
     it('딜러 세션 행이 없어도 500이 아니다', async () => {
-      const { tournamentId } = await seedTournament();
+      const { tournamentId, ownerId } = await seedTournament();
       // Table.dealerId가 DealerSession을 RESTRICT로 참조해서, 딜러 세션을
       // 먼저 지우려면 테이블부터 없어야 한다 — completeSession이 실제로
       // 하는 순서(테이블 삭제 → 딜러 세션 삭제) 그대로다.
       await prisma.table.deleteMany({ where: { tournamentId } });
       await prisma.dealerSession.delete({ where: { tournamentId } });
 
-      await expect(sessionService.revokeDealerSession(tournamentId)).resolves.toBeUndefined();
+      await expect(
+        sessionService.revokeDealerSession(tournamentId, ownerId),
+      ).resolves.toBeUndefined();
     });
   });
 });

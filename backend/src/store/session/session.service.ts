@@ -418,8 +418,13 @@ export class SessionService {
    *
    * 재발급은 평문 OTP를 응답에 실어 돌려주고, 내보내기는 딜러 세션을 끊는다.
    * 둘 다 강한 동작이라 역할만 확인하고 지나가면 다른 상점 관리자가 남의
-   * 대회의 딜러 접근권을 만들거나 끊을 수 있다 — 그래서 이 두 엔드포인트
-   * 앞에서만 호출자의 소유권을 확인한다.
+   * 대회의 딜러 접근권을 만들거나 끊을 수 있다.
+   *
+   * 컨트롤러가 아니라 `reissueDealerOtp`/`revokeDealerSession` 각각의 첫
+   * 문장으로 둔다 — 컨트롤러에만 있으면 그 한 줄이 지워져도 서비스 메서드를
+   * 직접 부르는 어떤 테스트도, 어떤 다른 호출부도 잡아내지 못한다. 이 검사가
+   * 우회 불가능해야 값을 만든다. `store.service.ts`의 `updateStore`/
+   * `removeStore`가 `getStoreDetail`을 내부에서 부르는 것과 같은 자리다.
    *
    * `PATCH /store/sessions/:id` 등 기존 경로에는 이 검사가 없다. 그건 이
    * 태스크 이전부터 있던 별도 항목이라 여기서 같이 고치지 않는다.
@@ -442,7 +447,9 @@ export class SessionService {
    * 이미 붙어 있는 딜러는 끊지 않는다 — 그들은 갱신으로 살아 있고, 갱신은
    * OTP가 아니라 tokenVersion을 본다.
    */
-  async reissueDealerOtp(tournamentId: string): Promise<{ dealerOtp: string }> {
+  async reissueDealerOtp(tournamentId: string, ownerId: string): Promise<{ dealerOtp: string }> {
+    await this.assertTournamentOwnership(tournamentId, ownerId);
+
     const dealerOtp = generateDealerOtp();
     const dealerOtpHash = await hashDealerOtp(dealerOtp);
 
@@ -461,12 +468,19 @@ export class SessionService {
   /**
    * 붙어 있는 딜러를 끊는다. 남은 토큰은 만료(최대 1시간)까지 살아 있다.
    *
-   * 딜러 세션 행이 없을 수 있다 — `completeSession`이 대회를 닫으며 테이블과
-   * 함께 이미 지운 경우다. 그때는 끊을 대상이 없다는 것 자체가 목표 상태
-   * (붙어 있는 딜러 없음)가 이미 달성돼 있다는 뜻이라, 상점 콘솔에서
-   * "내보내기"를 누른 사람이 500을 볼 이유가 없다 — 조용히 성공으로 둔다.
+   * 소유권 확인이 먼저라, 없는 tournamentId를 넘기면 여기서 404로 걸린다
+   * (예전에는 검사가 없어 `dealerSession.update`가 P2025를 던지고 그걸
+   * 조용히 삼켜 존재하지도 않는 대회에 대해 성공을 돌려줬다).
+   *
+   * 실재하는 대회인데 딜러 세션 행이 없는 경우는 남아 있다 —
+   * `completeSession`이 대회를 닫으며 테이블과 함께 이미 지운 경우다. 그때는
+   * 끊을 대상이 없다는 것 자체가 목표 상태(붙어 있는 딜러 없음)가 이미
+   * 달성돼 있다는 뜻이라, 상점 콘솔에서 "내보내기"를 누른 사람이 500을 볼
+   * 이유가 없다 — 조용히 성공으로 둔다.
    */
-  async revokeDealerSession(tournamentId: string): Promise<void> {
+  async revokeDealerSession(tournamentId: string, ownerId: string): Promise<void> {
+    await this.assertTournamentOwnership(tournamentId, ownerId);
+
     try {
       await this.prismaService.dealerSession.update({
         where: { tournamentId },
