@@ -1,0 +1,109 @@
+import { z } from "zod";
+
+/**
+ * 테이블 스냅샷의 **공개형**. `renderGame`으로 나가는 것이 전부 여기 있다.
+ *
+ * 아웃바운드라 `.strict()`를 걸지 않는다. zod 기본 스트립이 목적이다 —
+ * 백엔드 `TableState`에 필드를 추가해도 여기 없으면 조용히 제거되므로
+ * 내부 값이 자동으로 새지 않는다. `.strict()`를 걸면 그 순간 백엔드가
+ * 필드를 하나 늘릴 때마다 브로드캐스트가 통째로 죽는다.
+ *
+ * 카드가 없는 것은 누락이 아니다. 이 시스템은 오프라인 홀덤을 다루고
+ * 카드는 사람 딜러가 실물로 딜링한다. 덱도 홀카드도 커뮤니티 카드도
+ * 서버에 존재하지 않는다.
+ */
+
+/**
+ * 핸드의 진행 단계.
+ *
+ * 백엔드 `game-engine/types.ts`의 것을 값까지 그대로 미러링한다. 지금
+ * 와이어에 `phase: 1`처럼 숫자가 흐르고 있어, 스키마가 그 형식을 바꾸면
+ * 계약이 아니라 변환이 된다.
+ *
+ * **같은 파일의 `ActionType`은 이미 문자열로 옮겼다** — 숫자 enum은 로그를
+ * 읽을 수 없고, 중간에 멤버를 끼워 넣으면 뒤가 한 칸씩 밀려 다른 값이 되기
+ * 때문이다. `GamePhase`에는 그 문제가 그대로 남아 있다. 문자열 마이그레이션은
+ * 백엔드와 함께 움직여야 해서 별건으로 둔다.
+ */
+export enum GamePhase {
+  WAITING,
+  PRE_FLOP,
+  FLOP,
+  TURN,
+  RIVER,
+  SHOWDOWN,
+  HAND_END,
+}
+
+export const GamePhaseSchema = z.enum(GamePhase);
+
+/** 칩은 정수다. 소수가 통과하면 사이드팟 분배에서 조용히 어긋난다. */
+const chips = z.int().min(0);
+
+const userId = z.string().min(1);
+
+/**
+ * 좌석에 앉은 사람.
+ *
+ * 백엔드 `TablePlayer`의 `tableId`는 여기 없다. 좌석마다 같은 값이 반복되는데
+ * 스냅샷 자체가 이미 그 테이블이다.
+ */
+export const TablePlayerSchema = z.object({
+  id: userId,
+  nickname: z.string(),
+  seatIndex: z.int().min(0),
+  stack: chips,
+  bet: chips,
+  hasFolded: z.boolean(),
+  hasChecked: z.boolean(),
+  isAllIn: z.boolean(),
+  totalContributed: chips,
+});
+
+export type TablePlayer = z.infer<typeof TablePlayerSchema>;
+
+/** 올인이 갈라놓은 팟 하나와, 거기에 자격이 있는 사람들. */
+export const SidePotSchema = z.object({
+  amount: chips,
+  relevantPlayerIds: z.array(userId),
+});
+
+export type SidePot = z.infer<typeof SidePotSchema>;
+
+export const TableStateSchema = z.object({
+  phase: GamePhaseSchema,
+  /** 인덱스가 곧 좌석 번호다. 빈 자리는 `null`이라 걸러내면 번호가 밀린다. */
+  players: z.array(TablePlayerSchema.nullable()),
+  buttonUser: z.int(),
+  /** 차례가 없을 때가 있다 — 쇼다운에는 아무도 행동하지 않는다. */
+  currentTurnSeatIndex: z.int(),
+  pot: chips,
+  sidePots: z.array(SidePotSchema),
+  currentBet: chips,
+  smallBlind: chips,
+  ante: z.boolean(),
+  actionDeadline: z.int().optional(),
+  /**
+   * 핸드 종료 체크포인트(DB 동기화)의 상태. 정상 진행 중에는 없다.
+   *
+   * 별도 이벤트가 아니라 스냅샷 필드인 것은 설계다 — 딜러만이 아니라 테이블
+   * 전원이 알아야 하고, 재접속한 단말도 같은 것을 봐야 한다.
+   */
+  dbSyncStatus: z.enum(["RETRYING", "FAILED"]).optional(),
+  tournamentId: z.string().min(1),
+});
+
+export type TableState = z.infer<typeof TableStateSchema>;
+
+/**
+ * 브로드캐스트 봉투.
+ *
+ * 이벤트 이름을 리터럴로 박아야 클라이언트가 `renderSeatList`, `REBUY_PROMPT`와
+ * 갈라낼 수 있다. 셋은 페이로드가 서로 다르다.
+ */
+export const RenderGameEventSchema = z.object({
+  event: z.literal("renderGame"),
+  data: TableStateSchema,
+});
+
+export type RenderGameEvent = z.infer<typeof RenderGameEventSchema>;
