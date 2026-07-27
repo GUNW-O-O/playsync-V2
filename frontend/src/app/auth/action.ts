@@ -3,7 +3,7 @@
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 
-const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001.com';
+const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
 
 // [회원가입 Action]
 export async function handleRegister(formData: FormData) {
