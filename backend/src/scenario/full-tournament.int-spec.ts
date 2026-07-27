@@ -149,12 +149,13 @@ describe('시나리오 — 대회 하나를 끝까지', () => {
     const emitter = new EventEmitter2();
     redisService = new RedisService(redis);
     playsync = new PlaysyncService(queue, redisService, prismaService, emitter);
-    session = new SessionService(prismaService, redisService);
+    const otpAttempts = new OtpAttempts(redis);
+    session = new SessionService(prismaService, redisService, otpAttempts);
     user = new UserService(prismaService);
     payment = new PaymentService(user, session, prismaService, redisService, emitter);
     dealer = new DealerService(
       queue, prismaService, redisService, playsync, {} as JwtService,
-      new OtpAttempts(redis),
+      otpAttempts,
     );
 
     // 리바인 팝업은 사람의 응답을 기다린다. 장애 없는 해피패스만 보는

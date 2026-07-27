@@ -143,10 +143,11 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
     userService = new UserService(prismaService);
     auth = new AuthService(prismaService, userService, jwt);
     playsync = new PlaysyncService(queue, redisService, prismaService, emitter);
-    session = new SessionService(prismaService, redisService);
+    const otpAttempts = new OtpAttempts(redis);
+    session = new SessionService(prismaService, redisService, otpAttempts);
     payment = new PaymentService(userService, session, prismaService, redisService, emitter);
     dealer = new DealerService(
-      queue, prismaService, redisService, playsync, jwt, new OtpAttempts(redis),
+      queue, prismaService, redisService, playsync, jwt, otpAttempts,
     );
     gateway = new WsGateway(dealer, playsync, redisService, jwt, emitter);
 

@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   InternalServerErrorException,
   NotFoundException,
@@ -11,6 +12,7 @@ import { CreateTournamentDto, UpdateTournamentDto } from 'shared/dto/tournament.
 import { BlindField, Dashboard } from 'shared/types/tournamentMeta';
 import { getCurrentBlindLevel, parseBlindStructure } from 'shared/util/util';
 import { generateDealerOtp, hashDealerOtp } from 'src/dealer/dealer-otp';
+import { OtpAttempts } from 'src/dealer/otp-attempts';
 import { GamePhase, TableState } from 'src/game-engine/types';
 import { parsePayouts, PrizePayout } from 'src/playsync/prize';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -54,6 +56,7 @@ export class SessionService {
   constructor(
     private prismaService: PrismaService,
     private redis: RedisService,
+    private otpAttempts: OtpAttempts,
   ) { };
 
   // dealerOtpHash는 어느 조회 경로에도 담아 보내지 않는다 — 해시라도 값이
@@ -408,6 +411,73 @@ export class SessionService {
       });
     });
     await this.redis.deleteTournament(id, tableIds);
+  }
+
+  /**
+   * 상점 소유권 확인.
+   *
+   * 재발급은 평문 OTP를 응답에 실어 돌려주고, 내보내기는 딜러 세션을 끊는다.
+   * 둘 다 강한 동작이라 역할만 확인하고 지나가면 다른 상점 관리자가 남의
+   * 대회의 딜러 접근권을 만들거나 끊을 수 있다 — 그래서 이 두 엔드포인트
+   * 앞에서만 호출자의 소유권을 확인한다.
+   *
+   * `PATCH /store/sessions/:id` 등 기존 경로에는 이 검사가 없다. 그건 이
+   * 태스크 이전부터 있던 별도 항목이라 여기서 같이 고치지 않는다.
+   */
+  async assertTournamentOwnership(tournamentId: string, ownerId: string): Promise<void> {
+    const tournament = await this.prismaService.tournament.findUnique({
+      where: { id: tournamentId },
+      select: { store: { select: { ownerId: true } } },
+    });
+    if (!tournament) throw new NotFoundException('세션을 찾을 수 없습니다.');
+    if (tournament.store.ownerId !== ownerId) {
+      throw new ForbiddenException('본인의 매장이 아닙니다.');
+    }
+  }
+
+  /**
+   * 태블릿이 토큰을 잃었을 때 쓰는 탈출구다. 해시로 저장하므로 원본을 다시
+   * 보여줄 방법이 없고, 대신 새로 발급한다.
+   *
+   * 이미 붙어 있는 딜러는 끊지 않는다 — 그들은 갱신으로 살아 있고, 갱신은
+   * OTP가 아니라 tokenVersion을 본다.
+   */
+  async reissueDealerOtp(tournamentId: string): Promise<{ dealerOtp: string }> {
+    const dealerOtp = generateDealerOtp();
+    const dealerOtpHash = await hashDealerOtp(dealerOtp);
+
+    await this.prismaService.tournament.update({
+      where: { id: tournamentId },
+      data: { dealerOtpHash },
+    });
+
+    // 재발급은 잠금을 푼다. 잠긴 원인이 남의 오타였다면 상점이 여기서 풀 수
+    // 있어야 하고, 공격자였다면 값이 이미 바뀌어 카운터가 의미 없다.
+    await this.otpAttempts.clear(tournamentId);
+
+    return { dealerOtp };
+  }
+
+  /**
+   * 붙어 있는 딜러를 끊는다. 남은 토큰은 만료(최대 1시간)까지 살아 있다.
+   *
+   * 딜러 세션 행이 없을 수 있다 — `completeSession`이 대회를 닫으며 테이블과
+   * 함께 이미 지운 경우다. 그때는 끊을 대상이 없다는 것 자체가 목표 상태
+   * (붙어 있는 딜러 없음)가 이미 달성돼 있다는 뜻이라, 상점 콘솔에서
+   * "내보내기"를 누른 사람이 500을 볼 이유가 없다 — 조용히 성공으로 둔다.
+   */
+  async revokeDealerSession(tournamentId: string): Promise<void> {
+    try {
+      await this.prismaService.dealerSession.update({
+        where: { tournamentId },
+        data: { tokenVersion: { increment: 1 } },
+      });
+    } catch (e) {
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2025') {
+        return;
+      }
+      throw e;
+    }
   }
 
   // 세션 수정

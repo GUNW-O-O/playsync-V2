@@ -1,5 +1,12 @@
-import { GameType, PrismaClient } from '@prisma/client';
+import { ForbiddenException, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { JwtService } from '@nestjs/jwt';
+import { GameType, PrismaClient, TournamentStatus } from '@prisma/client';
+import { Queue } from 'bullmq';
 import { CreateTournamentDto } from 'shared/dto/tournament.dto';
+import { DealerService } from 'src/dealer/dealer.service';
+import { OtpAttempts } from 'src/dealer/otp-attempts';
+import { PlaysyncService } from 'src/playsync/playsync.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import Redis from 'ioredis';
@@ -36,7 +43,11 @@ describe('SessionService.createSession — OTP 해시 통합', () => {
     await flushTestRedis(redis);
 
     const redisService = new RedisService(redis);
-    sessionService = new SessionService(prisma as unknown as PrismaService, redisService);
+    sessionService = new SessionService(
+      prisma as unknown as PrismaService,
+      redisService,
+      new OtpAttempts(redis),
+    );
 
     const owner = await prisma.user.create({
       data: { nickname: 'owner', password: 'x', role: 'STORE_ADMIN' },
@@ -123,6 +134,225 @@ describe('SessionService.createSession — OTP 해시 통합', () => {
 
       expect(updated).not.toHaveProperty('dealerOtp');
       expect(updated).not.toHaveProperty('dealerOtpHash');
+    });
+  });
+});
+
+/**
+ * 상점 콘솔의 두 탈출구 — 재발급과 내보내기.
+ *
+ * 재발급은 태블릿이 토큰을 잃었을 때 다시 들어오라는 뜻이고, 이미 붙어 있는
+ * 딜러는 끊지 않는다(갱신이 계속 통과한다). 내보내기는 반대로 붙어 있는
+ * 쪽을 끊는다. 한 버튼으로 묶으면 태블릿 하나가 재부팅됐다고 나머지 테이블
+ * 딜러가 전부 튕긴다 — 그래서 둘을 분리해 각각 검증한다.
+ *
+ * `dealer.int-spec.ts`의 배선을 그대로 옮겨 왔다(그 파일은 건드리지 않는다).
+ * DealerService까지 진짜로 띄우는 이유: 재발급/내보내기가 실제로 로그인·갱신
+ * 경로에 어떤 영향을 주는지가 검증 대상이라서다.
+ */
+describe('SessionService — 딜러 OTP 재발급과 내보내기', () => {
+  const SECRET = 'test-only-not-a-real-secret';
+
+  let prisma: PrismaClient;
+  let redis: Redis;
+  let queueConnection: Redis;
+  let queue: Queue;
+  let sessionService: SessionService;
+  let dealerService: DealerService;
+  let jwtService: JwtService;
+  let seq = 0;
+
+  beforeAll(() => {
+    prisma = createTestPrisma();
+    redis = createTestRedis();
+    queueConnection = createTestRedis({ maxRetriesPerRequest: null });
+    queue = new Queue('player-timeout', { connection: queueConnection });
+  });
+
+  afterAll(async () => {
+    await queue.close();
+    await queueConnection.quit();
+    await redis.quit();
+    await closeTestPrisma(prisma);
+  });
+
+  beforeEach(async () => {
+    await truncateAll(prisma);
+    await flushTestRedis(redis);
+    seq = 0;
+
+    const prismaService = prisma as unknown as PrismaService;
+    const redisService = new RedisService(redis);
+    const emitter = new EventEmitter2();
+    const playsync = new PlaysyncService(queue, redisService, prismaService, emitter);
+    // 재발급이 잠금을 풀고, 로그인이 잠금을 걸고, 내보내기가 tokenVersion을
+    // 올린다 — 셋 다 같은 Redis 백엔드를 보므로 인스턴스를 굳이 공유할
+    // 필요는 없지만(REDIS_CLIENT가 진짜 상태를 들고 있다), session.module.ts와
+    // 같은 배선을 재현하기 위해 하나만 만들어 둘 다에 넘긴다.
+    const otpAttempts = new OtpAttempts(redis);
+    sessionService = new SessionService(prismaService, redisService, otpAttempts);
+    jwtService = new JwtService({ secret: SECRET });
+    dealerService = new DealerService(
+      queue,
+      prismaService,
+      redisService,
+      playsync,
+      jwtService,
+      otpAttempts,
+    );
+  });
+
+  /** 대회 하나를 세우고 평문 OTP와 매장주 id를 함께 돌려준다. */
+  async function seedTournament({ status }: { status?: TournamentStatus } = {}) {
+    seq += 1;
+    const n = seq;
+
+    const owner = await prisma.user.create({
+      data: { nickname: `owner-${n}`, password: 'x', role: 'STORE_ADMIN' },
+    });
+    const store = await prisma.store.create({
+      data: { name: `상점-${n}`, ownerId: owner.id },
+    });
+    const blind = await prisma.blindStructure.create({
+      data: {
+        name: `블라인드-${n}`,
+        storeId: store.id,
+        structure: [{ lv: 1, sb: 100, ante: false, duration: 20 }],
+      },
+    });
+
+    const created = await sessionService.createSession({
+      name: `대회-${n}`,
+      type: GameType.TOURNAMENT,
+      storeId: store.id,
+      blindId: blind.id,
+      startStack: 10000,
+      entryFee: 1000,
+      rebuyUntil: 5,
+      isRegistrationOpen: true,
+      prizePayouts: [{ place: 1, percent: 100 }],
+    } as CreateTournamentDto);
+
+    const table = await prisma.table.findFirstOrThrow({
+      where: { tournamentId: created.id },
+    });
+
+    if (status) {
+      await prisma.tournament.update({
+        where: { id: created.id },
+        data: { status },
+      });
+    }
+
+    return {
+      tournamentId: created.id,
+      tableId: table.id,
+      otp: created.dealerOtp,
+      ownerId: owner.id,
+    };
+  }
+
+  it('OTP를 재발급하면 옛 OTP는 막히고 새 OTP가 통과한다', async () => {
+    const { tournamentId, tableId, otp: oldOtp } = await seedTournament({
+      status: TournamentStatus.ONGOING,
+    });
+
+    const { dealerOtp: newOtp } = await sessionService.reissueDealerOtp(tournamentId);
+
+    expect(newOtp).not.toBe(oldOtp);
+    await expect(
+      dealerService.loginDealer({ tournamentId, tableId, otp: oldOtp }),
+    ).rejects.toThrow(UnauthorizedException);
+    await expect(
+      dealerService.loginDealer({ tournamentId, tableId, otp: newOtp }),
+    ).resolves.toBeDefined();
+  });
+
+  it('재발급은 잠금을 푼다', async () => {
+    const { tournamentId, tableId } = await seedTournament({ status: TournamentStatus.ONGOING });
+
+    for (let i = 0; i < 5; i++) {
+      await expect(
+        dealerService.loginDealer({ tournamentId, tableId, otp: '000000' }),
+      ).rejects.toThrow(UnauthorizedException);
+    }
+
+    const { dealerOtp } = await sessionService.reissueDealerOtp(tournamentId);
+
+    await expect(
+      dealerService.loginDealer({ tournamentId, tableId, otp: dealerOtp }),
+    ).resolves.toBeDefined();
+  });
+
+  it('재발급은 이미 붙어 있는 딜러를 끊지 않는다', async () => {
+    const { tournamentId, tableId, otp } = await seedTournament({ status: TournamentStatus.ONGOING });
+    const { accessToken } = await dealerService.loginDealer({ tournamentId, tableId, otp });
+    const payload = jwtService.verify(accessToken);
+
+    await sessionService.reissueDealerOtp(tournamentId);
+
+    await expect(dealerService.refreshToken(payload)).resolves.toBeDefined();
+  });
+
+  it('내보내기는 붙어 있는 딜러의 갱신을 막는다', async () => {
+    const { tournamentId, tableId, otp } = await seedTournament({ status: TournamentStatus.ONGOING });
+    const { accessToken } = await dealerService.loginDealer({ tournamentId, tableId, otp });
+    const payload = jwtService.verify(accessToken);
+
+    await sessionService.revokeDealerSession(tournamentId);
+
+    await expect(dealerService.refreshToken(payload)).rejects.toThrow(ForbiddenException);
+  });
+
+  /**
+   * 재발급은 평문 OTP를 응답에 실어 돌려준다. 역할만 확인하고 지나가면 다른
+   * 상점 관리자가 남의 대회의 딜러 접근권을 만들어낼 수 있다 — Task 2 리뷰가
+   * `PATCH /store/sessions/:id`에서 발견한 것과 같은 구멍이 여기서는 평문
+   * OTP 유출로 더 나쁘게 재현된다.
+   */
+  describe('상점 소유권', () => {
+    it('다른 상점 소유자가 확인하면 거부한다', async () => {
+      const { tournamentId } = await seedTournament();
+      const intruder = await prisma.user.create({
+        data: { nickname: '다른-상점주', password: 'x', role: 'STORE_ADMIN' },
+      });
+
+      await expect(
+        sessionService.assertTournamentOwnership(tournamentId, intruder.id),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('본인 소유면 통과한다', async () => {
+      const { tournamentId, ownerId } = await seedTournament();
+
+      await expect(
+        sessionService.assertTournamentOwnership(tournamentId, ownerId),
+      ).resolves.toBeUndefined();
+    });
+
+    it('없는 대회면 404다', async () => {
+      await expect(
+        sessionService.assertTournamentOwnership('없는-대회', '아무개'),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  /**
+   * `completeSession`이 대회를 닫으며 `DealerSession` 행을 지운다. 그 뒤에
+   * 상점이 내보내기를 눌러도(오조작이든 뒤늦은 클릭이든) 500을 보면 안 된다 —
+   * 끊을 대상이 이미 없다는 것은 목표 상태(붙어 있는 딜러 없음)가 이미
+   * 달성돼 있다는 뜻이다.
+   */
+  describe('내보내기 — 딜러 세션이 없는 경우', () => {
+    it('딜러 세션 행이 없어도 500이 아니다', async () => {
+      const { tournamentId } = await seedTournament();
+      // Table.dealerId가 DealerSession을 RESTRICT로 참조해서, 딜러 세션을
+      // 먼저 지우려면 테이블부터 없어야 한다 — completeSession이 실제로
+      // 하는 순서(테이블 삭제 → 딜러 세션 삭제) 그대로다.
+      await prisma.table.deleteMany({ where: { tournamentId } });
+      await prisma.dealerSession.delete({ where: { tournamentId } });
+
+      await expect(sessionService.revokeDealerSession(tournamentId)).resolves.toBeUndefined();
     });
   });
 });

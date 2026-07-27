@@ -1,5 +1,5 @@
 // src/store/session/session.controller.ts
-import { Controller, Get, Post, Patch, Body, Param, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Body, Param, Req, UseGuards } from '@nestjs/common';
 import { SessionService } from './session.service';
 import { RolesGuard } from 'src/auth/guard/roles.guard';
 import { Role } from '@prisma/client';
@@ -36,5 +36,21 @@ export class SessionController {
   @Patch(':id/complete')
   async complete(@Param('id') id: string) {
     return await this.sessionService.completeSession(id);
+  }
+
+  // 재발급/내보내기는 다른 상점의 대회를 건드릴 수 없어야 한다 — 재발급은
+  // 평문 OTP를 응답에 실어 돌려주므로 역할만 확인하고 지나가면 그대로
+  // 남의 대회 딜러 접근권을 만들어내는 경로가 된다.
+  @Post(':id/dealer-otp/reissue')
+  async reissueDealerOtp(@Req() req, @Param('id') tournamentId: string) {
+    await this.sessionService.assertTournamentOwnership(tournamentId, req.user.userId);
+    return await this.sessionService.reissueDealerOtp(tournamentId);
+  }
+
+  @Post(':id/dealer-session/revoke')
+  async revokeDealerSession(@Req() req, @Param('id') tournamentId: string) {
+    await this.sessionService.assertTournamentOwnership(tournamentId, req.user.userId);
+    await this.sessionService.revokeDealerSession(tournamentId);
+    return { ok: true };
   }
 }

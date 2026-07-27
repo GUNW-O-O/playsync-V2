@@ -58,7 +58,7 @@ beforeEach(async () => {
   const emitter = new EventEmitter2();
   const playsync = new PlaysyncService(queue, redisService, prismaService, emitter);
   const otpAttempts = new OtpAttempts(redis);
-  sessionService = new SessionService(prismaService, redisService);
+  sessionService = new SessionService(prismaService, redisService, otpAttempts);
   jwtService = new JwtService({ secret: SECRET });
   dealerService = new DealerService(
     queue,
