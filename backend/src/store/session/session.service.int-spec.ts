@@ -52,6 +52,7 @@ describe('SessionService.createSession — OTP 해시 통합', () => {
       prisma as unknown as PrismaService,
       redisService,
       new OtpAttempts(redis),
+      new EventEmitter2(),
     );
 
     const owner = await prisma.user.create({
@@ -195,7 +196,7 @@ describe('SessionService — 딜러 OTP 재발급과 내보내기', () => {
     // 필요는 없지만(REDIS_CLIENT가 진짜 상태를 들고 있다), session.module.ts와
     // 같은 배선을 재현하기 위해 하나만 만들어 둘 다에 넘긴다.
     const otpAttempts = new OtpAttempts(redis);
-    sessionService = new SessionService(prismaService, redisService, otpAttempts);
+    sessionService = new SessionService(prismaService, redisService, otpAttempts, emitter);
     jwtService = new JwtService({ secret: SECRET });
     dealerService = new DealerService(
       queue,
@@ -431,6 +432,7 @@ describe('SessionService.createTable — tableOrder 경합', () => {
   let redis: Redis;
   let sessionService: SessionService;
   let tournamentId: string;
+  let ownerId: string;
 
   beforeAll(() => {
     prisma = createTestPrisma();
@@ -448,11 +450,14 @@ describe('SessionService.createTable — tableOrder 경합', () => {
 
     const prismaService = prisma as unknown as PrismaService;
     const redisService = new RedisService(redis);
-    sessionService = new SessionService(prismaService, redisService, new OtpAttempts(redis));
+    sessionService = new SessionService(
+      prismaService, redisService, new OtpAttempts(redis), new EventEmitter2(),
+    );
 
     const owner = await prisma.user.create({
       data: { nickname: 'owner', password: 'x', role: 'STORE_ADMIN' },
     });
+    ownerId = owner.id;
     const store = await prisma.store.create({
       data: { name: '테스트 상점', ownerId: owner.id },
     });
@@ -488,8 +493,8 @@ describe('SessionService.createTable — tableOrder 경합', () => {
 
   it('동시에 두 번 불려도 tableOrder가 겹치지 않는다', async () => {
     await Promise.allSettled([
-      sessionService.createTable(tournamentId),
-      sessionService.createTable(tournamentId),
+      sessionService.createTable(tournamentId, ownerId),
+      sessionService.createTable(tournamentId, ownerId),
     ]);
 
     const tables = await prisma.table.findMany({
@@ -514,6 +519,6 @@ describe('SessionService.createTable — tableOrder 경합', () => {
     await prisma.table.deleteMany({ where: { tournamentId } });
     await prisma.dealerSession.deleteMany({ where: { tournamentId } });
 
-    await expect(sessionService.createTable(tournamentId)).rejects.toThrow(ConflictException);
+    await expect(sessionService.createTable(tournamentId, ownerId)).rejects.toThrow(ConflictException);
   });
 });

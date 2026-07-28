@@ -6,6 +6,7 @@ import {
   InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PlayerStatus, Prisma, TournamentStatus } from '@prisma/client';
 import { CreateBlindStructureDto } from 'shared/dto/blind-structure.dto';
 import { CreateTournamentDto, UpdateTournamentDto } from 'shared/dto/tournament.dto';
@@ -57,6 +58,7 @@ export class SessionService {
     private prismaService: PrismaService,
     private redis: RedisService,
     private otpAttempts: OtpAttempts,
+    private readonly eventEmitter: EventEmitter2,
   ) { };
 
   // dealerOtpHash는 어느 조회 경로에도 담아 보내지 않는다 — 해시라도 값이
@@ -200,32 +202,52 @@ export class SessionService {
   }
 
   /**
-   * 테이블을 하나 더 연다.
+   * 테이블을 하나 더 연다. 상점 콘솔의 버튼이 여기로 온다.
+   *
+   * 예전에는 착석이 좌석 점유 수를 세어 자동으로 불렀다. 소리 없이 늘어난
+   * 테이블에 앉은 손님은 아무도 응대하지 못한다 — 테이블을 여는 것은 딜러를
+   * 배치하고 칩을 세팅하는 물리적 행위다.
    *
    * `tableOrder`를 트랜잭션 **안에서** 센다. 밖에서 세면 동시 호출이 같은
-   * 번호를 읽고 둘 다 그 번호로 넣는다. 안에서 세도 Read Committed에서는
-   * 같은 값을 볼 수 있으므로, 최종 방어는 `@@unique([tournamentId, tableOrder])`다
-   * — 뒤늦은 쪽이 P2002로 거부된다.
-   *
-   * 딜러 세션은 `!`로 단언하지 않는다. `completeSession`이 대회를 닫으며
-   * 딜러 세션과 테이블을 함께 지우므로, 닫힌 대회에 이 함수를 부르면 실제로
-   * 없다.
+   * 번호를 읽는다. 최종 방어는 `@@unique([tournamentId, tableOrder])`다.
    */
-  async createTable(tournamentId: string) {
+  async createTable(tournamentId: string, ownerId: string) {
+    await this.assertTournamentOwnership(tournamentId, ownerId);
+
     const tournament = await this.prismaService.tournament.findUnique({
       where: { id: tournamentId },
       include: { dealerSession: true },
     });
     if (!tournament) throw new NotFoundException('세션을 찾을 수 없습니다.');
+    // completeSession이 대회를 닫으며 테이블과 딜러 세션을 함께 지운다.
+    // 여기서 만들면 죽은 대회에 테이블이 되살아난다.
+    if (tournament.status === TournamentStatus.FINISHED) {
+      throw new ConflictException('이미 종료된 대회입니다.');
+    }
     if (!tournament.dealerSession) {
       throw new ConflictException('딜러 세션이 없는 대회에는 테이블을 추가할 수 없습니다.');
     }
     const dealerId = tournament.dealerSession.id;
 
+    // Task 2가 만든 private 헬퍼. P2002를 409로 바꾼다.
     const newTable = await this.insertTable(tournamentId, dealerId);
 
     await this.redis.setSeatBitmap(tournamentId, newTable.id);
+    await this.emitSeatList(tournamentId);
+
     return newTable;
+  }
+
+  /**
+   * 좌석 목록 브로드캐스트.
+   *
+   * 예전에는 `createTable`이 착석 경로 안에서만 불려서, 바로 뒤의 `buyIn`이
+   * 대신 이벤트를 냈다. 상점이 단독으로 부르면 아무도 내지 않아 전광판과
+   * 좌석 목록이 새 테이블을 모른다.
+   */
+  private async emitSeatList(tournamentId: string) {
+    const state = await this.redis.getTournamentTables(tournamentId);
+    this.eventEmitter.emit('SEAT_LIST_UPDATED', { tournamentId, state });
   }
 
   /**

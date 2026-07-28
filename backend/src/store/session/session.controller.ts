@@ -59,4 +59,13 @@ export class SessionController {
     await this.sessionService.revokeDealerSession(tournamentId, req.user.userId);
     return { ok: true };
   }
+
+  // 테이블 추가/삭제도 남의 대회를 건드릴 수 없어야 한다. 소유권 확인은
+  // 재발급/내보내기와 같은 자리 — 서비스 메서드 안이다. PLATFORM_ADMIN을
+  // 빼는 이유도 같다: 운영 조작 경로에 우회 길을 늘리지 않는다.
+  @Roles(Role.STORE_ADMIN)
+  @Post(':id/tables')
+  async createTable(@Req() req, @Param('id') tournamentId: string) {
+    return await this.sessionService.createTable(tournamentId, req.user.userId);
+  }
 }
