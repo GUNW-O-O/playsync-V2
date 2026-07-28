@@ -1,3 +1,4 @@
+import { UnauthorizedException } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { UserService } from './user.service';
 import { applyTestEnv } from '../../test/helpers/test-env';
@@ -104,6 +105,18 @@ describe('UserService.getMyParticipations', () => {
       expect(row.playerOtp).toBeNull();
     });
 
+    // 규칙은 "FINISHED만 뺀다"이지 "PENDING·ONGOING만 보여준다"가 아니다.
+    // SYNCING(테이블 이동/밸런싱 대기)은 참가자가 새 테이블에 재입장하려면
+    // 바로 이 OTP가 필요한 순간이라, 다른 진행 중 상태와 마찬가지로 담겨야 한다.
+    it('테이블 이동 중(SYNCING)에도 OTP를 담는다', async () => {
+      await prisma.tournament.update({
+        where: { id: TOURNAMENT },
+        data: { status: 'SYNCING' },
+      });
+      const [row] = await service.getMyParticipations('u1');
+      expect(row.playerOtp).toMatch(/^\d{8}$/);
+    });
+
     // omit 회귀. 이 검사가 없으면 새 조회 경로가 하나 늘 때마다
     // 참가자 전원의 평문 OTP가 조용히 새는 길이 생긴다.
     it('다른 조회 경로에는 playerOtp가 실리지 않는다', async () => {
@@ -114,6 +127,20 @@ describe('UserService.getMyParticipations', () => {
       for (const row of rows) {
         expect(row).not.toHaveProperty('playerOtp');
       }
+    });
+
+    /**
+     * 딜러 토큰이 라우트 가드를 뚫고 들어오면 `req.user.userId`가
+     * `undefined`다(`JwtStrategy`가 딜러에게는 `id`만 준다). 서비스가
+     * 이걸 거부하지 않으면 `where: { userId: undefined }`가 필터를
+     * 통째로 지워 대회 전체의 참가자가 평문 OTP와 함께 새어 나온다 —
+     * 아래 시드는 u1·u2 두 대회에 걸쳐 있어서, 가드가 없다면 이 호출이
+     * 한 명이 아니라 둘 다 돌려준다는 것으로 그 유출을 그대로 보여준다.
+     */
+    it('userId가 없으면 거부한다 — 없으면 대회 전체의 참가자가 새어 나온다', async () => {
+      await expect(
+        service.getMyParticipations(undefined as unknown as string),
+      ).rejects.toThrow(UnauthorizedException);
     });
   });
 });

@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { TournamentStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 
@@ -56,9 +56,22 @@ export class UserService {
    * 이 값을 실으려면 같은 한 줄을 명시해야 하고, 그 순간 리뷰에 걸린다.
    *
    * 끝난 대회의 OTP는 쓸 데가 없다. 목록에 남겨 두면 유출 표면만 넓어지므로
-   * 응답에서 뺀다.
+   * 응답에서 뺀다. `FINISHED`만 제외하고 나머지는 전부 보여준다 — 상태를
+   * 나열해서 살아있는 것만 고르면, 나중에 상태가 하나 늘 때 조용히
+   * 빠진다(`SYNCING`이 실제로 그런 경우였다: 테이블 이동 중인 참가자가
+   * 새 테이블에 재입장하려면 바로 이 OTP가 필요하다).
+   *
+   * `userId`가 비어 있으면(예: 딜러 토큰이 가드를 뚫고 들어온 경우)
+   * `where: { userId: undefined }`가 필터를 통째로 지운다 — 이 스키마는
+   * `strictUndefinedChecks`가 없어 타입도 이를 막지 못한다. 컨트롤러의
+   * 가드가 우회되더라도 여기서 한 번 더 막는다 — 서비스를 직접 부르는
+   * 통합 테스트나 다른 호출부는 라우트 가드를 거치지 않는다.
    */
   async getMyParticipations(userId: string) {
+    if (!userId || typeof userId !== 'string') {
+      throw new UnauthorizedException('유효한 사용자가 아닙니다.');
+    }
+
     const rows = await this.prisma.tournamentParticipation.findMany({
       where: { userId },
       omit: { playerOtp: false },
@@ -72,11 +85,7 @@ export class UserService {
 
     return rows.map(row => ({
       ...row,
-      playerOtp:
-        row.tournament.status === TournamentStatus.PENDING ||
-        row.tournament.status === TournamentStatus.ONGOING
-          ? row.playerOtp
-          : null,
+      playerOtp: row.tournament.status === TournamentStatus.FINISHED ? null : row.playerOtp,
     }));
   }
 }
