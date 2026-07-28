@@ -1,6 +1,6 @@
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { JwtService } from '@nestjs/jwt';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Role } from '@prisma/client';
 import { Queue } from 'bullmq';
 import Redis from 'ioredis';
 import { AuthService } from 'src/auth/auth.service';
@@ -14,6 +14,7 @@ import { RedisService } from 'src/redis/redis.service';
 import { SessionService } from 'src/store/session/session.service';
 import { UserService } from 'src/user/user.service';
 import { WsGateway } from 'src/ws/ws.gateway';
+import { WsTicketService } from 'src/ws/ws-ticket.service';
 import { closeTestPrisma, createTestPrisma, truncateAll } from '../../test/helpers/prisma';
 import { createTestRedis, flushTestRedis } from '../../test/helpers/redis';
 
@@ -62,6 +63,7 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
   let redisService: RedisService;
   let gateway: WsGateway;
   let jwt: JwtService;
+  let tickets: WsTicketService;
 
   /** 로그인해서 받은 진짜 토큰. 좌석 태블릿이 들고 있는 것과 같다. */
   const tokens: Record<string, string> = {};
@@ -88,11 +90,27 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
     return client;
   }
 
+  /**
+   * 로그인으로 받은 JWT를 그대로 쓰지 않는다. 게이트웨이는 이제 티켓만
+   * 소비한다 — 액세스 토큰의 신원을 그대로 옮겨 담아 단명 티켓을 발급하고
+   * 그걸로 접속한다. 실제 흐름(Next 서버가 토큰을 갖고 티켓을 대신 받아
+   * 내려주는 것)과 순서는 다르지만, 게이트웨이가 보는 것은 정확히 같다.
+   */
   async function connect(token: string) {
+    const decoded = jwt.verify(token) as {
+      sub: string; role: Role; tableId?: string; tournamentId?: string;
+    };
+    const ticket = await tickets.issue({
+      sub: decoded.sub,
+      role: decoded.role,
+      tableId: decoded.tableId,
+      tournamentId: decoded.tournamentId,
+    });
+
     const client = makeClient();
     await gateway.handleConnection(client, {
-      url: `/playsync?tableId=${tableId}&token=${token}`,
-      headers: { host: 'localhost' },
+      url: `/playsync?tableId=${tableId}&ticket=${ticket}`,
+      headers: { host: 'localhost', origin: 'http://localhost:3000' },
     });
     return client;
   }
@@ -149,7 +167,8 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
     dealer = new DealerService(
       queue, prismaService, redisService, playsync, jwt, otpAttempts,
     );
-    gateway = new WsGateway(dealer, playsync, redisService, jwt, emitter);
+    tickets = new WsTicketService(redis);
+    gateway = new WsGateway(dealer, playsync, redisService, tickets, emitter);
 
     // 세 명으로 진행한다. 운영 기본값은 6이고 그 규칙은 T16이 따로 검증한다.
     process.env.MIN_PLAYERS_TO_START = '3';
