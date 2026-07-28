@@ -150,6 +150,9 @@ model Table {
   tablePlayers TablePlayer[]
 
   @@unique([tournamentId, id])
+  // 번호는 물리 테이블을 가리킨다. 겹치면 딜러와 전광판이 서로 다른 테이블을
+  // 같은 번호로 부른다. 재시도 코드가 아니라 제약으로 막는다.
+  @@unique([tournamentId, tableOrder])
 }
 
 model TablePlayer {

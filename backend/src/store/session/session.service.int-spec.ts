@@ -1,4 +1,9 @@
-import { ForbiddenException, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { JwtService } from '@nestjs/jwt';
 import { GameType, PrismaClient, TournamentStatus } from '@prisma/client';
@@ -408,5 +413,99 @@ describe('SessionService — 딜러 OTP 재발급과 내보내기', () => {
         sessionService.revokeDealerSession(tournamentId, ownerId),
       ).resolves.toBeUndefined();
     });
+  });
+});
+
+/**
+ * 테이블 추가의 동시성.
+ *
+ * tableOrder를 `tables.length + 1`로 정하는데, 그 length를 트랜잭션 밖에서
+ * 읽고 안에서 썼다. 상점 콘솔에서 두 번 눌리거나 두 관리자가 동시에 누르면
+ * 같은 번호가 두 개 생긴다. 번호는 물리 테이블을 가리키므로, 겹치면 딜러와
+ * 전광판이 서로 다른 테이블을 같은 번호로 부른다.
+ *
+ * 재시도 코드가 아니라 제약으로 막는다 — `@@unique([tournamentId, tableOrder])`.
+ */
+describe('SessionService.createTable — tableOrder 경합', () => {
+  let prisma: PrismaClient;
+  let redis: Redis;
+  let sessionService: SessionService;
+  let tournamentId: string;
+
+  beforeAll(() => {
+    prisma = createTestPrisma();
+    redis = createTestRedis();
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+    await closeTestPrisma(prisma);
+  });
+
+  beforeEach(async () => {
+    await truncateAll(prisma);
+    await flushTestRedis(redis);
+
+    const prismaService = prisma as unknown as PrismaService;
+    const redisService = new RedisService(redis);
+    sessionService = new SessionService(prismaService, redisService, new OtpAttempts(redis));
+
+    const owner = await prisma.user.create({
+      data: { nickname: 'owner', password: 'x', role: 'STORE_ADMIN' },
+    });
+    const store = await prisma.store.create({
+      data: { name: '테스트 상점', ownerId: owner.id },
+    });
+    const blind = await prisma.blindStructure.create({
+      data: {
+        name: '기본 구조',
+        storeId: store.id,
+        structure: [{ lv: 1, sb: 100, ante: false, duration: 20 }],
+      },
+    });
+    const tournament = await prisma.tournament.create({
+      data: {
+        name: '테스트 대회',
+        type: GameType.TOURNAMENT,
+        storeId: store.id,
+        blindId: blind.id,
+        dealerOtpHash: 'unused-hash', // 이 스펙은 로그인 경로를 검증하지 않는다.
+        startStack: 30000,
+        avgStack: 30000,
+        entryFee: 10000,
+        rebuyUntil: 5,
+        isRegistrationOpen: true,
+        itmCount: 1,
+        prizePayouts: [{ place: 1, percent: 100 }],
+      },
+    });
+    tournamentId = tournament.id;
+    const dealerSession = await prisma.dealerSession.create({ data: { tournamentId } });
+    await prisma.table.create({
+      data: { tableOrder: 1, tournamentId, dealerId: dealerSession.id },
+    });
+  });
+
+  it('동시에 두 번 불려도 tableOrder가 겹치지 않는다', async () => {
+    await Promise.allSettled([
+      sessionService.createTable(tournamentId),
+      sessionService.createTable(tournamentId),
+    ]);
+
+    const tables = await prisma.table.findMany({
+      where: { tournamentId },
+      select: { tableOrder: true },
+    });
+    const orders = tables.map((t) => t.tableOrder);
+
+    expect(`중복 없는 번호 ${new Set(orders).size}개 / 전체 ${orders.length}개`)
+      .toBe(`중복 없는 번호 ${orders.length}개 / 전체 ${orders.length}개`);
+  });
+
+  it('딜러 세션이 없으면 명시적으로 거부한다', async () => {
+    await prisma.table.deleteMany({ where: { tournamentId } });
+    await prisma.dealerSession.deleteMany({ where: { tournamentId } });
+
+    await expect(sessionService.createTable(tournamentId)).rejects.toThrow(ConflictException);
   });
 });

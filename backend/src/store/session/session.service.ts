@@ -199,24 +199,57 @@ export class SessionService {
     return { ...sessionInfo, dealerOtp };
   }
 
+  /**
+   * 테이블을 하나 더 연다.
+   *
+   * `tableOrder`를 트랜잭션 **안에서** 센다. 밖에서 세면 동시 호출이 같은
+   * 번호를 읽고 둘 다 그 번호로 넣는다. 안에서 세도 Read Committed에서는
+   * 같은 값을 볼 수 있으므로, 최종 방어는 `@@unique([tournamentId, tableOrder])`다
+   * — 뒤늦은 쪽이 P2002로 거부된다.
+   *
+   * 딜러 세션은 `!`로 단언하지 않는다. `completeSession`이 대회를 닫으며
+   * 딜러 세션과 테이블을 함께 지우므로, 닫힌 대회에 이 함수를 부르면 실제로
+   * 없다.
+   */
   async createTable(tournamentId: string) {
     const tournament = await this.prismaService.tournament.findUnique({
       where: { id: tournamentId },
-      include: { tables: true, dealerSession: true },
+      include: { dealerSession: true },
     });
     if (!tournament) throw new NotFoundException('세션을 찾을 수 없습니다.');
-    const tableCount = tournament.tables.length;
-    const newTable = await this.prismaService.$transaction(async (tx) => {
-      const table = await tx.table.create({
-        data: {
-          tableOrder: tableCount + 1,
-          tournamentId: tournament.id,
-          dealerId: tournament.dealerSession!.id,
-        }
-      });
-      return table;
-    });
+    if (!tournament.dealerSession) {
+      throw new ConflictException('딜러 세션이 없는 대회에는 테이블을 추가할 수 없습니다.');
+    }
+    const dealerId = tournament.dealerSession.id;
+
+    const newTable = await this.insertTable(tournamentId, dealerId);
+
     await this.redis.setSeatBitmap(tournamentId, newTable.id);
+    return newTable;
+  }
+
+  /**
+   * 번호를 세고 행을 넣는다.
+   *
+   * Read Committed에서는 동시 트랜잭션이 같은 count를 볼 수 있으므로,
+   * `@@unique([tournamentId, tableOrder])`가 뒤늦은 쪽을 P2002로 거부한다.
+   * 그대로 두면 500이 나가므로 409로 바꾼다 — 다시 누르면 되는 상황이고,
+   * 서버 오류가 아니다.
+   */
+  private async insertTable(tournamentId: string, dealerId: string) {
+    try {
+      return await this.prismaService.$transaction(async (tx) => {
+        const tableCount = await tx.table.count({ where: { tournamentId } });
+        return await tx.table.create({
+          data: { tableOrder: tableCount + 1, tournamentId, dealerId },
+        });
+      });
+    } catch (e) {
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+        throw new ConflictException('테이블 추가가 동시에 요청되었습니다. 다시 시도해 주세요.');
+      }
+      throw e;
+    }
   }
 
   /**
