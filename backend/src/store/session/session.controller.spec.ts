@@ -91,4 +91,20 @@ describe('SessionController — 재발급/내보내기 권한', () => {
       expect(guard.canActivate(contextFor(handler, Role.DEALER))).toBe(false);
     });
   });
+
+  describe('테이블 삭제 (tables/:tableId)', () => {
+    const handler = SessionController.prototype.deleteTable;
+
+    it('STORE_ADMIN은 통과한다', () => {
+      expect(guard.canActivate(contextFor(handler, Role.STORE_ADMIN))).toBe(true);
+    });
+
+    it('PLATFORM_ADMIN은 거부된다', () => {
+      expect(guard.canActivate(contextFor(handler, Role.PLATFORM_ADMIN))).toBe(false);
+    });
+
+    it('DEALER는 거부된다', () => {
+      expect(guard.canActivate(contextFor(handler, Role.DEALER))).toBe(false);
+    });
+  });
 });

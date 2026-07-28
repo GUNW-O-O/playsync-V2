@@ -124,6 +124,17 @@ export class RedisService {
     await this.redis.expire(key, 86400);
   }
 
+  /**
+   * 좌석 비트맵에서 테이블 하나를 지운다.
+   *
+   * 대회 종료는 `tournament:*:seat` 키를 통째로 지우지만, 테이블 삭제는
+   * 필드 하나만 없애야 한다.
+   */
+  async removeSeatBitmap(tournamentId: string, tableId: string) {
+    const key = `tournament:${tournamentId}:seat`;
+    await this.redis.hdel(key, `table:${tableId}`);
+  }
+
   async updateSeatBitmap(tournamentId: string, tableId: string, seatIndex: number, isOccupied: boolean) {
     const key = `tournament:${tournamentId}:seat`;
     const field = `table:${tableId}`;

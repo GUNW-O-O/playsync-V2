@@ -427,6 +427,54 @@ describe('SessionService — 딜러 OTP 재발급과 내보내기', () => {
  *
  * 재시도 코드가 아니라 제약으로 막는다 — `@@unique([tournamentId, tableOrder])`.
  */
+/**
+ * 테이블 하나가 이미 있는 대회를 세운다.
+ *
+ * `createTable — tableOrder 경합` 스위트와 `deleteTable` 스위트가 owner →
+ * store → blind → tournament → dealerSession → table로 이어지는 같은
+ * fixture를 쓴다. 두 스위트가 한 파일에 있으니 배선은 여기서 한 번만
+ * 적고, 각 describe는 자기 몫의 검증과 docstring만 남긴다.
+ */
+async function seedTournamentWithTable(prisma: PrismaClient) {
+  const owner = await prisma.user.create({
+    data: { nickname: 'owner', password: 'x', role: 'STORE_ADMIN' },
+  });
+  const store = await prisma.store.create({
+    data: { name: '테스트 상점', ownerId: owner.id },
+  });
+  const blind = await prisma.blindStructure.create({
+    data: {
+      name: '기본 구조',
+      storeId: store.id,
+      structure: [{ lv: 1, sb: 100, ante: false, duration: 20 }],
+    },
+  });
+  const tournament = await prisma.tournament.create({
+    data: {
+      name: '테스트 대회',
+      type: GameType.TOURNAMENT,
+      storeId: store.id,
+      blindId: blind.id,
+      dealerOtpHash: 'unused-hash', // 이 스펙은 로그인 경로를 검증하지 않는다.
+      startStack: 30000,
+      avgStack: 30000,
+      entryFee: 10000,
+      rebuyUntil: 5,
+      isRegistrationOpen: true,
+      itmCount: 1,
+      prizePayouts: [{ place: 1, percent: 100 }],
+    },
+  });
+  const dealerSession = await prisma.dealerSession.create({
+    data: { tournamentId: tournament.id },
+  });
+  const table = await prisma.table.create({
+    data: { tableOrder: 1, tournamentId: tournament.id, dealerId: dealerSession.id },
+  });
+
+  return { ownerId: owner.id, tournamentId: tournament.id, tableId: table.id };
+}
+
 describe('SessionService.createTable — tableOrder 경합', () => {
   let prisma: PrismaClient;
   let redis: Redis;
@@ -454,41 +502,7 @@ describe('SessionService.createTable — tableOrder 경합', () => {
       prismaService, redisService, new OtpAttempts(redis), new EventEmitter2(),
     );
 
-    const owner = await prisma.user.create({
-      data: { nickname: 'owner', password: 'x', role: 'STORE_ADMIN' },
-    });
-    ownerId = owner.id;
-    const store = await prisma.store.create({
-      data: { name: '테스트 상점', ownerId: owner.id },
-    });
-    const blind = await prisma.blindStructure.create({
-      data: {
-        name: '기본 구조',
-        storeId: store.id,
-        structure: [{ lv: 1, sb: 100, ante: false, duration: 20 }],
-      },
-    });
-    const tournament = await prisma.tournament.create({
-      data: {
-        name: '테스트 대회',
-        type: GameType.TOURNAMENT,
-        storeId: store.id,
-        blindId: blind.id,
-        dealerOtpHash: 'unused-hash', // 이 스펙은 로그인 경로를 검증하지 않는다.
-        startStack: 30000,
-        avgStack: 30000,
-        entryFee: 10000,
-        rebuyUntil: 5,
-        isRegistrationOpen: true,
-        itmCount: 1,
-        prizePayouts: [{ place: 1, percent: 100 }],
-      },
-    });
-    tournamentId = tournament.id;
-    const dealerSession = await prisma.dealerSession.create({ data: { tournamentId } });
-    await prisma.table.create({
-      data: { tableOrder: 1, tournamentId, dealerId: dealerSession.id },
-    });
+    ({ ownerId, tournamentId } = await seedTournamentWithTable(prisma));
   });
 
   it('동시에 두 번 불려도 tableOrder가 겹치지 않는다', async () => {
@@ -520,5 +534,105 @@ describe('SessionService.createTable — tableOrder 경합', () => {
     await prisma.dealerSession.deleteMany({ where: { tournamentId } });
 
     await expect(sessionService.createTable(tournamentId, ownerId)).rejects.toThrow(ConflictException);
+  });
+});
+
+/**
+ * 빈 테이블만 지운다.
+ *
+ * 좌석에 사람이 있는 테이블을 지우면 TablePlayer가 cascade로 함께 사라진다.
+ * 참가비를 낸 사람이 장부에서 조용히 없어지는 것이라 거부한다.
+ *
+ * tableOrder는 재정렬하지 않는다. 2번을 지우면 1, 3이 남는다. 재정렬하면
+ * 전광판과 딜러 화면이 보고 있는 번호가 통째로 바뀌어 물리 테이블과
+ * 어긋난다 — 번호가 비는 것보다 나쁘다.
+ */
+describe('SessionService.deleteTable', () => {
+  let prisma: PrismaClient;
+  let redis: Redis;
+  let sessionService: SessionService;
+  let tournamentId: string;
+  let ownerId: string;
+  let tableId: string;
+
+  beforeAll(() => {
+    prisma = createTestPrisma();
+    redis = createTestRedis();
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+    await closeTestPrisma(prisma);
+  });
+
+  beforeEach(async () => {
+    await truncateAll(prisma);
+    await flushTestRedis(redis);
+
+    const prismaService = prisma as unknown as PrismaService;
+    const redisService = new RedisService(redis);
+    sessionService = new SessionService(
+      prismaService, redisService, new OtpAttempts(redis), new EventEmitter2(),
+    );
+
+    ({ ownerId, tournamentId, tableId } = await seedTournamentWithTable(prisma));
+    await redisService.setSeatBitmap(tournamentId, tableId);
+  });
+
+  it('빈 테이블은 DB 행과 Redis 필드가 함께 사라진다', async () => {
+    await sessionService.deleteTable(tournamentId, tableId, ownerId);
+
+    const row = await prisma.table.findUnique({ where: { id: tableId } });
+    const seat = await redis.hget(`tournament:${tournamentId}:seat`, `table:${tableId}`);
+
+    expect(`DB ${row === null ? '없음' : '있음'} / Redis ${seat === null ? '없음' : '있음'}`)
+      .toBe('DB 없음 / Redis 없음');
+  });
+
+  it('좌석에 사람이 있으면 409고 아무것도 지워지지 않는다', async () => {
+    const player = await prisma.user.create({
+      data: { nickname: 'player', password: 'x' },
+    });
+    await prisma.tablePlayer.create({
+      data: {
+        tableId, userId: player.id, tournamentId,
+        seatPosition: 0, currentStack: 30000, nickname: 'player',
+      },
+    });
+
+    await expect(
+      sessionService.deleteTable(tournamentId, tableId, ownerId),
+    ).rejects.toThrow(ConflictException);
+
+    const row = await prisma.table.findUnique({ where: { id: tableId } });
+    const seat = await redis.hget(`tournament:${tournamentId}:seat`, `table:${tableId}`);
+
+    expect(`DB ${row === null ? '없음' : '있음'} / Redis ${seat === null ? '없음' : '있음'}`)
+      .toBe('DB 있음 / Redis 있음');
+  });
+
+  it('다른 대회의 테이블 id를 넘기면 404다', async () => {
+    const other = await prisma.tournament.create({
+      data: {
+        name: '다른 대회',
+        type: GameType.TOURNAMENT,
+        storeId: (await prisma.store.findFirstOrThrow()).id,
+        blindId: (await prisma.blindStructure.findFirstOrThrow()).id,
+        dealerOtpHash: 'unused-hash', // 이 스펙은 로그인 경로를 검증하지 않는다.
+        startStack: 30000, avgStack: 30000, entryFee: 10000, rebuyUntil: 5,
+        isRegistrationOpen: true, itmCount: 1,
+        prizePayouts: [{ place: 1, percent: 100 }],
+      },
+    });
+    const otherDealer = await prisma.dealerSession.create({
+      data: { tournamentId: other.id },
+    });
+    const otherTable = await prisma.table.create({
+      data: { tableOrder: 1, tournamentId: other.id, dealerId: otherDealer.id },
+    });
+
+    await expect(
+      sessionService.deleteTable(tournamentId, otherTable.id, ownerId),
+    ).rejects.toThrow(NotFoundException);
   });
 });

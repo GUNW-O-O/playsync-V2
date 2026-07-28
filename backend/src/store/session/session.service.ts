@@ -239,6 +239,34 @@ export class SessionService {
   }
 
   /**
+   * 잘못 연 테이블을 닫는다.
+   *
+   * **빈 테이블만** 지운다. `TablePlayer`는 `onDelete: Cascade`라 사람이 앉은
+   * 테이블을 지우면 참가자 행이 조용히 함께 사라진다 — 참가비를 낸 사람이
+   * 장부에서 없어지는 것이라 거부한다.
+   *
+   * `tableOrder`는 재정렬하지 않는다. 2번을 지우면 1, 3이 남는다. 번호는
+   * 물리 테이블을 가리키므로, 재정렬하면 전광판과 딜러 화면이 부르는 번호가
+   * 통째로 바뀌어 방 안의 테이블과 어긋난다.
+   */
+  async deleteTable(tournamentId: string, tableId: string, ownerId: string) {
+    await this.assertTournamentOwnership(tournamentId, ownerId);
+
+    const table = await this.prismaService.table.findFirst({
+      where: { id: tableId, tournamentId },
+      include: { _count: { select: { tablePlayers: true } } },
+    });
+    if (!table) throw new NotFoundException('테이블을 찾을 수 없습니다.');
+    if (table._count.tablePlayers > 0) {
+      throw new ConflictException('좌석에 참가자가 있는 테이블은 삭제할 수 없습니다.');
+    }
+
+    await this.prismaService.table.delete({ where: { id: tableId } });
+    await this.redis.removeSeatBitmap(tournamentId, tableId);
+    await this.emitSeatList(tournamentId);
+  }
+
+  /**
    * 좌석 목록 브로드캐스트.
    *
    * 예전에는 `createTable`이 착석 경로 안에서만 불려서, 바로 뒤의 `buyIn`이

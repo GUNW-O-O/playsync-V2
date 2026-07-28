@@ -1,5 +1,5 @@
 // src/store/session/session.controller.ts
-import { Controller, Get, Post, Patch, Body, Param, Req, UseGuards } from '@nestjs/common';
+import { Controller, Delete, Get, Post, Patch, Body, Param, Req, UseGuards } from '@nestjs/common';
 import { SessionService } from './session.service';
 import { RolesGuard } from 'src/auth/guard/roles.guard';
 import { Role } from '@prisma/client';
@@ -67,5 +67,16 @@ export class SessionController {
   @Post(':id/tables')
   async createTable(@Req() req, @Param('id') tournamentId: string) {
     return await this.sessionService.createTable(tournamentId, req.user.userId);
+  }
+
+  @Roles(Role.STORE_ADMIN)
+  @Delete(':id/tables/:tableId')
+  async deleteTable(
+    @Req() req,
+    @Param('id') tournamentId: string,
+    @Param('tableId') tableId: string,
+  ) {
+    await this.sessionService.deleteTable(tournamentId, tableId, req.user.userId);
+    return { ok: true };
   }
 }
