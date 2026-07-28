@@ -66,7 +66,12 @@
 - `acquireSeatLock` / `releaseSeatLock` 호출
 - `TablePlayer` 생성과 그 앞의 좌석 중복 검사
 - 스냅샷 쓰기(`withTableLock` 블록 전체)
-- `updateSeatBitmap` · `setUserContext` · `joinPlayer` · `SEAT_LIST_UPDATED` 발행
+- `updateSeatBitmap` · `setUserContext` · `SEAT_LIST_UPDATED` 발행
+
+`joinPlayer`는 **결제에 남는다.** 이름은 착석처럼 들리지만 하는 일은
+`tournament:{id}:info`의 `totalPlayer`·`activePlayer`·`totalBuyinAmount`를 올리는
+것이고(`redis.service.ts:297`), 그건 방금 결제가 DB에 올린 세 필드의 Redis
+미러다. 좌석과 무관하다.
 
 **반환.** `TableState`가 아니라 참가 확정 정보. 결제 시점에는 테이블이 없다.
 
@@ -113,9 +118,18 @@ export class EnterTournamentDto {
 2. `FINISHED`면 403.
 3. 참가 상태가 `ELIMINATED`·`AWARDED`면 409. 끝난 사람은 다시 앉지 않는다.
 4. 이미 `TablePlayer`가 있으면
-   - 같은 `(tableId, seatPosition)`이면 **토큰만 재발급하고 끝낸다.** 스냅샷을
-     건드리지 않는다.
    - 다른 자리면 409. 좌석 이동은 T29다.
+   - 같은 `(tableId, seatPosition)`이면 재발급 경로다. 아래 5번의 락에 들어가되
+     **스냅샷의 그 좌석이 비어 있거나 다른 사람일 때만** 채워 넣는다. 이미 이
+     사람이 앉아 있으면 손대지 않는다 — 진행 중인 핸드의 `bet`·`hasFolded`·
+     `totalContributed`가 날아간다.
+
+   비어 있는 경우를 살리는 이유는 5번이 DB를 먼저 쓰고 스냅샷을 나중에 쓰기
+   때문이다. 그 사이에 프로세스가 죽으면 DB에는 있고 스냅샷에는 없는 사람이
+   남는다. 재입장이 유일한 복구 경로인데 여기서 아무것도 하지 않으면 그 사람은
+   영영 앉지 못한다(자기 `TablePlayer` 때문에 신규 착석 경로로도 못 간다).
+   이때 스택은 `TablePlayer.currentStack`에서 읽는다 — 스냅샷이 없으니 그것이
+   유일한 출처다.
 5. `withTableLock(tableId)` 안에서: 테이블이 이 대회 소속인지 확인 →
    `TablePlayer` 생성 → 스냅샷에 좌석 채우기 → 비트맵·`setUserContext` 갱신 →
    `SEAT_LIST_UPDATED` 발행 → 참가 상태를 `PLAYING`으로.
@@ -128,13 +142,17 @@ export class EnterTournamentDto {
 **OTP 조회는 복합 unique 단건이다.**
 
 ```ts
-tx.tournamentParticipation.findUnique({
+prisma.tournamentParticipation.findUnique({
   where: { tournamentId_playerOtp: { tournamentId, playerOtp: dto.otp } },
-  omit: { playerOtp: false },   // 클라이언트 수준 omit을 여는 두 번째이자 마지막 지점
 })
 ```
 
 경로의 `tournamentId`가 범위를 강제하므로 다른 대회의 OTP는 애초에 맞지 않는다.
+
+**`omit: { playerOtp: false }`는 여기에 쓰지 않는다.** 클라이언트 수준 `omit`은
+출력만 가린다 — `where`에는 그대로 쓸 수 있다. 입장은 OTP로 **찾을** 뿐 돌려받을
+일이 없으므로, "참가 OTP를 읽는 유일한 곳은 마이페이지"라는 T27의 문장이 그대로
+유지된다.
 
 ## 결정 2 — 좌석 토큰
 
@@ -259,7 +277,10 @@ userId)`를 만든다. 결제 → OTP 조회(`omit: { playerOtp: false }`) → �
 - OTP 불일치 401 · 다른 대회의 OTP 401 · `FINISHED` 403
 - `ELIMINATED` 참가 409
 - 다른 자리에 앉아 있는 참가자 409
-- 같은 좌석 재입장 → 토큰 재발급, `TablePlayer` 행과 스냅샷이 그대로인지
+- 같은 좌석 재입장 → 토큰 재발급, `TablePlayer` 행이 하나 그대로인지
+- 같은 좌석 재입장인데 **스냅샷 좌석이 비어 있으면** 다시 채워 넣는지(중간에
+  죽은 경우의 복구), 반대로 **이미 앉아 있으면** `bet`·`hasFolded`를 건드리지
+  않는지
 - 같은 좌석에 동시 두 요청 → 하나만 성공. **락이 아니라 P2002로 갈리는지**
 - 핸드 도중 착석 → `hasFolded: true`로 앉고, 핸드가 끝난 뒤 살아나는지
 - 좌석 토큰의 `sub`가 `userId`라 게이트웨이 좌석 대조를 통과하는지
