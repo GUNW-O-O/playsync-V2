@@ -316,3 +316,39 @@ describe('딜러 토큰 갱신', () => {
     ).rejects.toThrow(ForbiddenException);
   });
 });
+
+describe('assertDealerSessionValid', () => {
+  it('유효한 세션이면 통과한다', async () => {
+    const { tournamentId, otp, tableId } = await seedTournament({
+      status: TournamentStatus.ONGOING,
+    });
+    const { accessToken } = await dealerService.loginDealer({ tournamentId, tableId, otp });
+    const payload = jwtService.verify(accessToken);
+
+    await expect(
+      dealerService.assertDealerSessionValid({
+        sub: payload.sub,
+        tournamentId: payload.tournamentId,
+        tableId: payload.tableId,
+        tokenVersion: payload.tokenVersion,
+      }),
+    ).resolves.toMatchObject({ tournamentId });
+  });
+
+  it('폐기된 세션(tokenVersion 불일치)을 거부한다', async () => {
+    const { tournamentId, otp, tableId } = await seedTournament({
+      status: TournamentStatus.ONGOING,
+    });
+    const { accessToken } = await dealerService.loginDealer({ tournamentId, tableId, otp });
+    const payload = jwtService.verify(accessToken);
+
+    await expect(
+      dealerService.assertDealerSessionValid({
+        sub: payload.sub,
+        tournamentId: payload.tournamentId,
+        tableId: payload.tableId,
+        tokenVersion: payload.tokenVersion + 1,
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+});

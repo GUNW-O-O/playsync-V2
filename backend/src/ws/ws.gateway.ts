@@ -1,6 +1,5 @@
 import { Logger } from '@nestjs/common';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
-import { JwtService } from '@nestjs/jwt';
 import { ConnectedSocket, MessageBody, OnGatewayConnection, OnGatewayDisconnect, SubscribeMessage, WebSocketGateway } from '@nestjs/websockets';
 import { Role } from '@prisma/client';
 import { DealerAction, DealerActionSchema, PlayerActionSchema, RebuyResponseSchema } from '@playsync/contract';
@@ -8,6 +7,7 @@ import { DealerService } from 'src/dealer/dealer.service';
 import { TableState } from 'src/game-engine/types';
 import { PlaysyncService } from 'src/playsync/playsync.service';
 import { RedisService } from 'src/redis/redis.service';
+import { WsIdentity, WsTicketService } from './ws-ticket.service';
 
 /**
  * 브라우저를 경유한 접속에만 적용된다. 기본값은 개발용 프론트다.
@@ -34,7 +34,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly dealer: DealerService,
     private readonly playsync: PlaysyncService,
     private readonly redis: RedisService,
-    private readonly jwtService: JwtService,
+    private readonly tickets: WsTicketService,
     private readonly eventEmitter: EventEmitter2,
   ) { }
 
@@ -52,14 +52,14 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
    * 피해자의 브라우저를 시켜 이 엔드포인트를 열게 하는 것(CSWSH)을 막으려면
    * 핸드셰이크의 Origin을 서버가 직접 봐야 한다.
    *
-   * Origin이 아예 없으면 통과시킨다 — 좌석 태블릿처럼 브라우저가 아닌
-   * 클라이언트는 이 헤더를 보내지 않는다. 즉 이 검사는 브라우저를 경유한
-   * 접속만 막는다. 그 외의 접근을 막는 것은 토큰과 아래의 소속 검증이다.
+   * **헤더가 없으면 거부한다.** 예전에는 통과시켰고, 근거는 "좌석 태블릿처럼
+   * 브라우저가 아닌 클라이언트는 이 헤더를 보내지 않는다"였다. 실제로는 좌석·딜러
+   * 태블릿 모두 Next 화면이라 전부 브라우저다 — 헤더를 빼는 것은 브라우저를
+   * 경유하지 않는 접속뿐이고, 그것이 이 검사가 막으려던 바로 그 대상이다.
    */
   private assertAllowedOrigin(origin?: string) {
-    if (!origin) return;
-    if (!allowedOrigins().includes(origin)) {
-      throw new Error(`허용되지 않은 출처입니다: ${origin}`);
+    if (!origin || !allowedOrigins().includes(origin)) {
+      throw new Error(`허용되지 않은 출처입니다: ${origin ?? '(없음)'}`);
     }
   }
 
@@ -69,7 +69,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
    * 어느 쪽도 클라이언트가 보낸 값을 근거로 삼지 않는다. 딜러는 로그인 시
    * 서명된 토큰의 tableId를, 플레이어는 서버가 들고 있는 스냅샷의 좌석을 본다.
    */
-  private async assertTableAccess(payload: any, tableId: string) {
+  private async assertTableAccess(payload: WsIdentity, tableId: string) {
     if (payload.role === Role.DEALER) {
       // 토큰의 tableId는 loginDealer가 서명해 넣은 값이고, 쿼리의 tableId는
       // 클라이언트가 고른 값이다. 대조하지 않으면 A테이블 딜러가 B테이블의
@@ -93,14 +93,17 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     try {
       const url = new URL(request.url, `http://${request.headers['host']}`);
       const tableId = url.searchParams.get('tableId');
-      const token = url.searchParams.get('token');
+      const ticket = url.searchParams.get('ticket');
       const tournamentId = url.searchParams.get('tournamentId');
 
       this.assertAllowedOrigin(request.headers['origin']);
 
-      if (!token) throw new Error('필수 정보 누락');
-      // JWT 검증 (딜러 토큰이든 유저 토큰이든 JwtService가 해석)
-      const payload = await this.jwtService.verifyAsync(token);
+      if (!ticket) throw new Error('필수 정보 누락');
+
+      // 신뢰의 출처가 티켓 소비다. 게이트웨이는 JWT를 보지 않는다 — 액세스
+      // 토큰은 애초에 여기까지 오지 않는다.
+      const payload = await this.tickets.consume(ticket);
+      if (!payload) throw new Error('유효하지 않은 티켓입니다.');
 
       // 소켓 객체에 유저 정보 저장 (나중에 액션 시 사용)
       (client as any).userId = payload.sub;

@@ -2,10 +2,12 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { JwtService } from '@nestjs/jwt';
 import Redis from 'ioredis';
 import { WsGateway } from './ws.gateway';
+import { WsTicketService } from './ws-ticket.service';
 import { RedisService } from 'src/redis/redis.service';
 import { DealerService } from 'src/dealer/dealer.service';
 import { PlaysyncService } from 'src/playsync/playsync.service';
 import { GamePhase, TablePlayer, TableState } from 'src/game-engine/types';
+import { Role } from '@prisma/client';
 import { createTestRedis, flushTestRedis } from '../../test/helpers/redis';
 
 /**
@@ -19,7 +21,7 @@ import { createTestRedis, flushTestRedis } from '../../test/helpers/redis';
 describe('WsGateway 인바운드 경계', () => {
   let redis: Redis;
   let gateway: WsGateway;
-  let jwt: JwtService;
+  let tickets: WsTicketService;
   let playsync: { handleAction: jest.Mock };
   let dealer: {
     startPreFlop: jest.Mock;
@@ -30,7 +32,6 @@ describe('WsGateway 인바운드 경계', () => {
   const TABLE = 'table-1';
   const OTHER_TABLE = 'table-2';
   const TOURNAMENT = 'tournament-1';
-  const SECRET = 'test-only-not-a-real-secret';
 
   function makePlayer(id: string, seatIndex: number): TablePlayer {
     return {
@@ -87,29 +88,29 @@ describe('WsGateway 인바운드 경계', () => {
     };
   }
 
-  function playerToken(userId: string) {
-    return jwt.sign({ sub: userId, nickname: userId, role: 'USER' });
+  async function playerTicket(userId: string) {
+    return tickets.issue({ sub: userId, role: Role.USER });
   }
 
-  function dealerToken(tableId: string) {
-    return jwt.sign({
+  async function dealerTicket(tableId: string) {
+    return tickets.issue({
       sub: 'dealer-session-1',
+      role: Role.DEALER,
       tournamentId: TOURNAMENT,
       tableId,
-      role: 'DEALER',
     });
   }
 
   /** 접속에 성공해 테이블에 붙은 소켓을 돌려준다. */
-  async function connect(token: string, tableId = TABLE, origin = 'http://localhost:3000') {
+  async function connect(ticket: string, tableId = TABLE, origin = 'http://localhost:3000') {
     const client = makeClient();
-    await gateway.handleConnection(client, makeRequest(`tableId=${tableId}&token=${token}`, origin));
+    await gateway.handleConnection(client, makeRequest(`tableId=${tableId}&ticket=${ticket}`, origin));
     return client;
   }
 
   beforeAll(() => {
     redis = createTestRedis();
-    jwt = new JwtService({ secret: SECRET });
+    tickets = new WsTicketService(redis);
     playsync = { handleAction: jest.fn().mockResolvedValue(makeState()) };
     dealer = {
       startPreFlop: jest.fn().mockResolvedValue(makeState()),
@@ -121,7 +122,7 @@ describe('WsGateway 인바운드 경계', () => {
       dealer as unknown as DealerService,
       playsync as unknown as PlaysyncService,
       new RedisService(redis),
-      jwt,
+      tickets,
       new EventEmitter2(),
     );
   });
@@ -139,7 +140,7 @@ describe('WsGateway 인바운드 경계', () => {
 
   describe('접속 — 딜러 토큰', () => {
     it('토큰에 적힌 테이블에는 붙는다', async () => {
-      const client = await connect(dealerToken(TABLE));
+      const client = await connect(await dealerTicket(TABLE));
       expect(client.close).not.toHaveBeenCalled();
     });
 
@@ -147,14 +148,14 @@ describe('WsGateway 인바운드 경계', () => {
       // 토큰의 tableId는 loginDealer가 서명해 넣은 값이고, 접속 쿼리의
       // tableId는 클라이언트가 고른 값이다. 대조하지 않으면 A테이블 딜러가
       // B테이블의 핸드 시작·킥·승자 지정 권한을 그대로 얻는다.
-      const client = await connect(dealerToken(TABLE), OTHER_TABLE);
+      const client = await connect(await dealerTicket(TABLE), OTHER_TABLE);
       expect(client.close).toHaveBeenCalledWith(1008, expect.any(String));
     });
   });
 
   describe('접속 — 플레이어 토큰', () => {
     it('자기 좌석이 있는 테이블에는 붙는다', async () => {
-      const client = await connect(playerToken('alice'));
+      const client = await connect(await playerTicket('alice'));
       expect(client.close).not.toHaveBeenCalled();
     });
 
@@ -166,29 +167,63 @@ describe('WsGateway 인바운드 경계', () => {
         JSON.stringify({ ...makeState(), players: [makePlayer('carol', 0)] }),
       );
 
-      const client = await connect(playerToken('alice'), OTHER_TABLE);
+      const client = await connect(await playerTicket('alice'), OTHER_TABLE);
       expect(client.close).toHaveBeenCalledWith(1008, expect.any(String));
     });
 
     it('존재하지 않는 테이블에는 붙을 수 없다', async () => {
-      const client = await connect(playerToken('alice'), 'no-such-table');
+      const client = await connect(await playerTicket('alice'), 'no-such-table');
       expect(client.close).toHaveBeenCalledWith(1008, expect.any(String));
     });
   });
 
-  describe('접속 — 토큰과 Origin', () => {
-    it('토큰이 없으면 거부한다', async () => {
+  describe('접속 — 티켓과 Origin', () => {
+    it('티켓이 없으면 거부한다', async () => {
       const client = makeClient();
-      await gateway.handleConnection(client, makeRequest(`tableId=${TABLE}`));
+      await gateway.handleConnection(
+        client,
+        makeRequest(`tableId=${TABLE}`, 'http://localhost:3000'),
+      );
       expect(client.close).toHaveBeenCalledWith(1008, expect.any(String));
     });
 
-    it('위조된 토큰을 거부한다', async () => {
-      const forged = new JwtService({ secret: 'wrong-secret' }).sign({
-        sub: 'alice',
-        role: 'USER',
-      });
-      const client = await connect(forged);
+    it('없는 티켓을 거부한다', async () => {
+      const client = await connect('no-such-ticket');
+      expect(client.close).toHaveBeenCalledWith(1008, expect.any(String));
+    });
+
+    it('같은 티켓으로 두 번 붙을 수 없다', async () => {
+      // 티켓이 재사용되면 로그나 페이지 소스에 남은 값 하나로 계속 붙을 수 있다.
+      const ticket = await playerTicket('alice');
+
+      const first = await connect(ticket);
+      const second = await connect(ticket);
+
+      expect(first.close).not.toHaveBeenCalled();
+      expect(second.close).toHaveBeenCalledWith(1008, expect.any(String));
+    });
+
+    it('유효한 JWT를 token 쿼리로 넘겨도 붙을 수 없다', async () => {
+      // 옛 경로가 살아 있으면 관찰 1(쿼리스트링 노출)과 10(httpOnly 무효화)이
+      // 닫히지 않는다. 티켓을 도입해도 옛 문이 열려 있으면 아무것도 바뀌지 않는다.
+      //
+      // 지금 코드에서는 이 테스트가 바로 위 '티켓이 없으면 거부한다'와 같은
+      // 경로(ticket 부재)를 탄다 — token 파라미터는 게이트웨이 어디서도 읽히지
+      // 않는다. 그래도 이 테스트가 지키는 것은 실재한다: handleConnection에
+      // token= 을 다시 읽어 티켓 검사 앞에서 신원을 세팅하고 접속시키는 옛
+      // 분기를 되살려 돌려본 결과, 이 테스트만 유일하게 RED로 갈라졌다
+      // (client.close가 전혀 호출되지 않음 — "Number of calls: 0"). 즉 이
+      // 테스트는 지금은 다른 테스트와 같은 이유로 통과하지만, token 경로가
+      // 되살아나는 회귀를 실제로 잡는다.
+      const jwt = new JwtService({ secret: 'test-only-not-a-real-secret' });
+      const token = jwt.sign({ sub: 'alice', nickname: 'alice', role: 'USER' });
+
+      const client = makeClient();
+      await gateway.handleConnection(
+        client,
+        makeRequest(`tableId=${TABLE}&token=${token}`, 'http://localhost:3000'),
+      );
+
       expect(client.close).toHaveBeenCalledWith(1008, expect.any(String));
     });
 
@@ -196,25 +231,26 @@ describe('WsGateway 인바운드 경계', () => {
       // 브라우저는 WebSocket에 same-origin을 강제하지 않는다. 다른 사이트가
       // 피해자 브라우저를 시켜 이 엔드포인트를 열게 하는 것을 막으려면
       // 핸드셰이크의 Origin을 직접 봐야 한다.
-      const client = await connect(playerToken('alice'), TABLE, 'http://evil.example');
+      const client = await connect(await playerTicket('alice'), TABLE, 'http://evil.example');
       expect(client.close).toHaveBeenCalledWith(1008, expect.any(String));
     });
 
-    it('Origin이 없는 접속은 허용한다', async () => {
-      // 태블릿 앱처럼 브라우저가 아닌 클라이언트는 Origin을 보내지 않는다.
-      // Origin 검증이 막는 것은 브라우저를 경유한 요청뿐이다.
+    it('Origin이 없는 접속을 거부한다', async () => {
+      // 실사용 클라이언트는 전부 브라우저다(좌석·딜러 태블릿 모두 Next 화면).
+      // 헤더를 빼는 것은 브라우저를 경유하지 않는 접속뿐이고, 그것이 정확히
+      // 이 검사가 막으려던 대상이다.
       const client = makeClient();
       await gateway.handleConnection(
         client,
-        makeRequest(`tableId=${TABLE}&token=${playerToken('alice')}`),
+        makeRequest(`tableId=${TABLE}&ticket=${await playerTicket('alice')}`),
       );
-      expect(client.close).not.toHaveBeenCalled();
+      expect(client.close).toHaveBeenCalledWith(1008, expect.any(String));
     });
   });
 
   describe('PLAYER_ACTION', () => {
     it('유효한 액션은 통과시킨다', async () => {
-      const client = await connect(playerToken('alice'));
+      const client = await connect(await playerTicket('alice'));
 
       await gateway.handlePlayerAction(client, { action: 'FOLD' });
 
@@ -224,7 +260,7 @@ describe('WsGateway 인바운드 경계', () => {
     it.each(['TIME_OUT', 'DEALER_KICK', 'DEALER_FOLD'])(
       '내부 전용 액션 %s를 거부한다',
       async (action) => {
-        const client = await connect(playerToken('alice'));
+        const client = await connect(await playerTicket('alice'));
 
         const result = await gateway.handlePlayerAction(client, { action });
 
@@ -236,7 +272,7 @@ describe('WsGateway 인바운드 경계', () => {
     it('서버가 읽지 않는 키가 섞이면 거부한다', async () => {
       // 프론트는 매 액션마다 token과 tableId를 실어 보냈지만 서버는 둘 다
       // 읽지 않는다 — 핸드셰이크에서 이미 검증했다.
-      const client = await connect(playerToken('alice'));
+      const client = await connect(await playerTicket('alice'));
 
       const result = await gateway.handlePlayerAction(client, {
         action: 'FOLD',
@@ -249,7 +285,7 @@ describe('WsGateway 인바운드 경계', () => {
     });
 
     it('금액 없는 RAISE를 거부한다', async () => {
-      const client = await connect(playerToken('alice'));
+      const client = await connect(await playerTicket('alice'));
 
       const result = await gateway.handlePlayerAction(client, { action: 'RAISE' });
 
@@ -258,7 +294,7 @@ describe('WsGateway 인바운드 경계', () => {
     });
 
     it('딜러 토큰으로는 플레이어 액션을 보낼 수 없다', async () => {
-      const client = await connect(dealerToken(TABLE));
+      const client = await connect(await dealerTicket(TABLE));
 
       const result = await gateway.handlePlayerAction(client, { action: 'FOLD' });
 
@@ -269,7 +305,7 @@ describe('WsGateway 인바운드 경계', () => {
 
   describe('DEALER_ACTION', () => {
     it('유효한 명령은 통과시킨다', async () => {
-      const client = await connect(dealerToken(TABLE));
+      const client = await connect(await dealerTicket(TABLE));
 
       await gateway.handleDealerAction(client, { action: 'START_PRE_FLOP' });
 
@@ -277,7 +313,7 @@ describe('WsGateway 인바운드 경계', () => {
     });
 
     it('플레이어 토큰으로는 보낼 수 없다', async () => {
-      const client = await connect(playerToken('alice'));
+      const client = await connect(await playerTicket('alice'));
 
       const result = await gateway.handleDealerAction(client, { action: 'START_PRE_FLOP' });
 
@@ -288,7 +324,7 @@ describe('WsGateway 인바운드 경계', () => {
     it('모르는 명령에 undefined를 브로드캐스트하지 않는다', async () => {
       // switch에 default가 없어서, 걸리지 않는 액션이 오면 updatedState가
       // undefined인 채로 테이블 전원에게 전송됐다.
-      const client = await connect(dealerToken(TABLE));
+      const client = await connect(await dealerTicket(TABLE));
       client.send.mockClear();
 
       const result = await gateway.handleDealerAction(client, { action: 'DROP_TABLE' });
@@ -298,7 +334,7 @@ describe('WsGateway 인바운드 경계', () => {
     });
 
     it('빈 승자 목록을 거부한다', async () => {
-      const client = await connect(dealerToken(TABLE));
+      const client = await connect(await dealerTicket(TABLE));
 
       const result = await gateway.handleDealerAction(client, {
         action: 'RESOLVE_WINNERS',
@@ -312,7 +348,7 @@ describe('WsGateway 인바운드 경계', () => {
     it('서비스가 던진 에러를 잡아서 돌려준다', async () => {
       // 여기엔 try/catch가 없어서 휴식 중 START_PRE_FLOP 같은 정상적인 거절이
       // 처리되지 않은 rejection으로 새어 나갔다.
-      const client = await connect(dealerToken(TABLE));
+      const client = await connect(await dealerTicket(TABLE));
       dealer.startPreFlop.mockRejectedValueOnce(new Error('휴식 상태입니다.'));
 
       const result = await gateway.handleDealerAction(client, { action: 'START_PRE_FLOP' });
@@ -324,7 +360,7 @@ describe('WsGateway 인바운드 경계', () => {
       // 예전에는 startPreFlop이 undefined를 반환했고 게이트웨이가 `if (updatedState)`로
       // 그걸 걸렀다. 지금은 실패가 예외로만 표현되므로 "상태 없이 성공한" 반환값
       // 자체가 존재하지 않는다 — 걸러낼 것이 없어졌다.
-      const client = await connect(dealerToken(TABLE));
+      const client = await connect(await dealerTicket(TABLE));
       dealer.startPreFlop.mockRejectedValueOnce(new Error('대기 상태가 아닙니다.'));
       client.send.mockClear();
 
@@ -339,8 +375,8 @@ describe('WsGateway 인바운드 경계', () => {
       // 조용한 return이 undefined를 만들어 renderGame으로 흘러가면, 테이블
       // 전원의 게임 상태가 undefined로 덮인다. 딜러의 실수 한 번에 전 화면이
       // 날아가는 셈이다.
-      const dealerClient = await connect(dealerToken(TABLE));
-      const player = await connect(playerToken('alice'));
+      const dealerClient = await connect(await dealerTicket(TABLE));
+      const player = await connect(await playerTicket('alice'));
       dealer.startPreFlop.mockRejectedValue(new Error('대기 상태가 아닙니다.'));
       jest.clearAllMocks();
 
@@ -351,8 +387,8 @@ describe('WsGateway 인바운드 경계', () => {
     });
 
     it('성공하면 테이블 전원에게 브로드캐스트한다', async () => {
-      const dealerClient = await connect(dealerToken(TABLE));
-      const player = await connect(playerToken('alice'));
+      const dealerClient = await connect(await dealerTicket(TABLE));
+      const player = await connect(await playerTicket('alice'));
       dealer.startPreFlop.mockResolvedValue(makeState());
       jest.clearAllMocks();
 
@@ -367,8 +403,8 @@ describe('WsGateway 인바운드 경계', () => {
 
   describe('브로드캐스트 위생', () => {
     it('닫힌 소켓에는 보내지 않는다', async () => {
-      const open = await connect(playerToken('alice'));
-      const closed = await connect(playerToken('bob'));
+      const open = await connect(await playerTicket('alice'));
+      const closed = await connect(await playerTicket('bob'));
       closed.readyState = 3;
       jest.clearAllMocks();
 
@@ -381,8 +417,8 @@ describe('WsGateway 인바운드 경계', () => {
     it('앞선 소켓이 닫혀 있어도 뒤 소켓은 상태를 받는다', async () => {
       // 죽은 소켓에 send하면 ws가 던진다. forEach 안에서 던지면 루프가
       // 통째로 중단되어, 뒤에 있는 멀쩡한 클라이언트들이 상태를 못 받는다.
-      const closed = await connect(playerToken('alice'));
-      const open = await connect(playerToken('bob'));
+      const closed = await connect(await playerTicket('alice'));
+      const open = await connect(await playerTicket('bob'));
       closed.readyState = 3;
       jest.clearAllMocks();
 
@@ -392,8 +428,8 @@ describe('WsGateway 인바운드 경계', () => {
     });
 
     it('닫힌 소켓은 세션에서 정리된다', async () => {
-      const closed = await connect(playerToken('alice'));
-      await connect(playerToken('bob'));
+      const closed = await connect(await playerTicket('alice'));
+      await connect(await playerTicket('bob'));
       closed.readyState = 3;
 
       gateway.handleGameStateUpdated({ tableId: TABLE, state: makeState() });

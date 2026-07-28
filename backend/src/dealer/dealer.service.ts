@@ -119,13 +119,13 @@ export class DealerService {
   }
 
   /**
-   * 갱신은 새 권한을 만들지 않는다.
+   * 이 딜러 세션이 지금도 유효한지 확인하고 세션을 돌려준다.
    *
-   * sub는 기존 토큰에서 그대로 옮긴다. tableId는 클라이언트가 보낸 값을 쓰되,
-   * 이 세션(대회) 소속 테이블인지 확인한 뒤에만 서명한다 — 검증 없이 그대로
-   * 옮기면 갱신이 다른 대회의 테이블로 넘어가는 권한 상승 경로가 된다.
+   * 갱신(`refreshToken`)과 WS 티켓 발급이 같은 다섯 가지를 본다. 검사가 두
+   * 벌이 되면 한쪽만 고쳐지는 날이 오고, 그날 폐기된 딜러가 한쪽 경로로
+   * 계속 들어온다.
    */
-  async refreshToken(payload: {
+  async assertDealerSessionValid(payload: {
     sub: string;
     tournamentId: string;
     tableId: string;
@@ -151,6 +151,24 @@ export class DealerService {
     if (!session.tables.some((t) => t.id === payload.tableId)) {
       throw new ForbiddenException('이 세션에 속하지 않은 테이블입니다.');
     }
+
+    return session;
+  }
+
+  /**
+   * 갱신은 새 권한을 만들지 않는다.
+   *
+   * sub는 기존 토큰에서 그대로 옮긴다. tableId는 클라이언트가 보낸 값을 쓰되,
+   * 이 세션(대회) 소속 테이블인지 확인한 뒤에만 서명한다 — 검증 없이 그대로
+   * 옮기면 갱신이 다른 대회의 테이블로 넘어가는 권한 상승 경로가 된다.
+   */
+  async refreshToken(payload: {
+    sub: string;
+    tournamentId: string;
+    tableId: string;
+    tokenVersion: number;
+  }) {
+    const session = await this.assertDealerSessionValid(payload);
 
     return {
       accessToken: this.jwtService.sign({
