@@ -764,7 +764,7 @@ C2는 테스트 이전에 **두 커넥션 실험**으로 먼저 확인했다(테
 |---|---|---|
 | `payment/payment.service.int-spec.ts` | 통합 | 자동 생성 제거로 안 쓰이게 된 `createTable` 스텁 제거 |
 | `scenario/table-autocreate.int-spec.ts` | 시나리오(신규) | 일곱 명이 앉아도 테이블 수는 늘지 않는다 |
-| `store/session/session.service.int-spec.ts` | 통합 | `tableOrder` 동시 경합(중복 없음 + 적어도 하나 성공), 딜러 세션 없음 409, 추가의 소유권 403/`FINISHED` 409/이벤트 발행, 삭제(빈 테이블/점유 시 409·`TablePlayer` 잔존/다른 대회 404) |
+| `store/session/session.service.int-spec.ts` | 통합 | `tableOrder` 결정적 경합(원시 커넥션이 같은 번호를 먼저 꽂아 두면 뒤늦은 추가가 유니크 인덱스에 막혀 409로 나간다), 딜러 세션 없음 409, 추가의 소유권 403/`FINISHED` 409/이벤트 발행, 삭제(빈 테이블/점유 시 409·`TablePlayer` 잔존/다른 대회 404) |
 | `store/session/session.service.spec.ts` | 단위 | `createTable` 소유권·상태 분기 |
 | `store/session/session.controller.spec.ts` | 단위 | 새 두 라우트에 `@Roles(STORE_ADMIN)`이 실제로 붙어 있는지(진짜 `RolesGuard` 실행, T23·T24와 같은 방식) |
 | `redis/redis.service.ts` | — | `removeSeatBitmap` 추가. 단독 스펙은 없고 삭제 경로의 통합 테스트가 Redis 필드 소멸을 함께 확인한다 |
@@ -780,8 +780,8 @@ C2는 테스트 이전에 **두 커넥션 실험**으로 먼저 확인했다(테
 - **좌석 선택 화면의 "빈 자리 없음" 판정이 없다.** 백엔드는 `getSeatStatus`가
   비트맵을 주는 것으로 끝났다.
 - **더블클릭으로 빈 테이블이 둘 생기는 것은 막지 않는다.** 순차 실행이면
-  `count`가 각각 달라 유니크 제약을 우회한다 — 콘솔이 버튼을 비활성화할 문제고,
-  삭제가 있으므로 되돌릴 수 있다.
+  `tableOrder`의 최댓값을 각각 다시 읽어 유니크 제약을 우회한다 — 콘솔이 버튼을
+  비활성화할 문제고, 삭제가 있으므로 되돌릴 수 있다.
 - **T26(딜러 단말 신원)은 이 티켓이 아니다.** 설계 문서가 T25·T26을 한 문서에
   담았지만, 구현은 T25(테이블 생성)까지만이다. `DealerSession`을 단말 단위로
   내리는 일, `Table.dealerId` 제거, 즉시 소켓 끊기는 여전히 미착수다 — `backlog.md`

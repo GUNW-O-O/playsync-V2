@@ -208,8 +208,9 @@ export class SessionService {
    * 테이블에 앉은 손님은 아무도 응대하지 못한다 — 테이블을 여는 것은 딜러를
    * 배치하고 칩을 세팅하는 물리적 행위다.
    *
-   * `tableOrder`를 트랜잭션 **안에서** 센다. 밖에서 세면 동시 호출이 같은
-   * 번호를 읽는다. 최종 방어는 `@@unique([tournamentId, tableOrder])`다.
+   * `tableOrder`는 트랜잭션 **안에서** 최댓값을 뽑아 다음 번호를 정한다. 밖에서
+   * 뽑으면 동시 호출이 같은 번호를 읽는다. 최종 방어는
+   * `@@unique([tournamentId, tableOrder])`다.
    */
   async createTable(tournamentId: string, ownerId: string) {
     await this.assertTournamentOwnership(tournamentId, ownerId);

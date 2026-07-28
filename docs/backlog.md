@@ -176,7 +176,7 @@ T25(테이블 생성을 상점 수동으로)를 리뷰한 결과 남은 것들�
 - **좌석 선택 화면의 "빈 자리 없음" 판정이 없다.** 백엔드는 `getSeatStatus`가
   비트맵을 주는 것으로 끝났고, 화면이 그것을 읽어야 한다.
 - **더블클릭으로 빈 테이블이 둘 생기는 것은 막지 않는다.** 순차 실행이면
-  `tableOrder`를 세는 `count`가 각각 달라 유니크 제약을 우회한다 — 콘솔이 버튼을
+  `tableOrder`의 최댓값을 각각 다시 읽어 유니크 제약을 우회한다 — 콘솔이 버튼을
   비활성화하면 되는 문제고, 삭제가 있으므로 되돌릴 수 있다.
 - **`assertTournamentOwnership`과 `createTable`이 각각 `tournament.findUnique`를
   부른다**(`session.service.ts:215, 217`). 한 번의 compound select로 합칠 수 있는
