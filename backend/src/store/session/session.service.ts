@@ -252,16 +252,23 @@ export class SessionService {
   async deleteTable(tournamentId: string, tableId: string, ownerId: string) {
     await this.assertTournamentOwnership(tournamentId, ownerId);
 
+    // 존재/소속 확인은 여기서 한다 — 404("테이블을 찾을 수 없습니다")와
+    // 아래 409("좌석에 참가자가 있는 테이블")를 구분되는 메시지로 유지하기 위해서다.
     const table = await this.prismaService.table.findFirst({
       where: { id: tableId, tournamentId },
-      include: { _count: { select: { tablePlayers: true } } },
     });
     if (!table) throw new NotFoundException('테이블을 찾을 수 없습니다.');
-    if (table._count.tablePlayers > 0) {
+
+    // 검사와 삭제가 두 왕복이면 그 사이에 누가 앉을 수 있다. TablePlayer가
+    // onDelete: Cascade라, 그 순간 참가비를 낸 사람의 행이 조용히 함께
+    // 사라진다. 조건을 삭제문 자체에 실어 한 문장으로 만든다.
+    const { count } = await this.prismaService.table.deleteMany({
+      where: { id: tableId, tournamentId, tablePlayers: { none: {} } },
+    });
+    if (count === 0) {
       throw new ConflictException('좌석에 참가자가 있는 테이블은 삭제할 수 없습니다.');
     }
 
-    await this.prismaService.table.delete({ where: { id: tableId } });
     await this.redis.removeSeatBitmap(tournamentId, tableId);
     await this.emitSeatList(tournamentId);
   }

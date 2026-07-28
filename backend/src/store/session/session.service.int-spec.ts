@@ -611,6 +611,37 @@ describe('SessionService.deleteTable', () => {
       .toBe('DB 있음 / Redis 있음');
   });
 
+  /**
+   * 위 409 테스트는 Table 행이 살아 있는지만 본다. 이 테스트는 그 아래
+   * 실제로 보호하려는 대상 — TablePlayer 행 — 이 cascade로 함께 사라지지
+   * 않았는지를 직접 확인한다. `deleteTable`이 검사(findFirst)와 삭제를
+   * 분리한 채로 있었다면 이 자체는 여전히 통과할 수 있었다(레이스가 없는
+   * 단일 스레드 호출이라서) — 구조적 가드(`tablePlayers: { none: {} }`를
+   * 조건으로 실은 `deleteMany`)가 실제로 그 자리에 있는지를 이 테스트
+   * 하나로는 증명하지 못한다. 그래도 회귀 방지 차원에서, "참가비를 낸
+   * 사람의 행이 조용히 사라지는 것"이 이 기능의 핵심 위험이므로 명시적으로
+   * 남긴다.
+   */
+  it('좌석에 사람이 있으면 TablePlayer 행도 그대로 남는다', async () => {
+    const player = await prisma.user.create({
+      data: { nickname: 'player', password: 'x' },
+    });
+    const tablePlayer = await prisma.tablePlayer.create({
+      data: {
+        tableId, userId: player.id, tournamentId,
+        seatPosition: 0, currentStack: 30000, nickname: 'player',
+      },
+    });
+
+    await expect(
+      sessionService.deleteTable(tournamentId, tableId, ownerId),
+    ).rejects.toThrow(ConflictException);
+
+    const row = await prisma.tablePlayer.findUnique({ where: { id: tablePlayer.id } });
+
+    expect(`TablePlayer ${row === null ? '없음' : '있음'}`).toBe('TablePlayer 있음');
+  });
+
   it('다른 대회의 테이블 id를 넘기면 404다', async () => {
     const other = await prisma.tournament.create({
       data: {
