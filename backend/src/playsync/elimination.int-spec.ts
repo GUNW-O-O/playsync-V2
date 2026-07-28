@@ -10,6 +10,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { Dashboard } from 'shared/types/tournamentMeta';
 import { PlaysyncService } from './playsync.service';
+import * as playerOtp from '../payment/player-otp';
 import { closeTestPrisma, createTestPrisma, truncateAll } from '../../test/helpers/prisma';
 import { createTestRedis, flushTestRedis } from '../../test/helpers/redis';
 
@@ -127,7 +128,12 @@ describe('탈락 처리 멱등성', () => {
         data: { id: nickname, nickname, password: 'x' },
       });
       await prisma.tournamentParticipation.create({
-        data: { tournamentId: TOURNAMENT, userId: user.id, status: 'PLAYING' },
+        data: {
+          tournamentId: TOURNAMENT,
+          userId: user.id,
+          status: 'PLAYING',
+          playerOtp: playerOtp.generatePlayerOtp(),
+        },
       });
       await prisma.tablePlayer.create({
         data: {

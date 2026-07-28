@@ -7,6 +7,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { SessionService } from 'src/store/session/session.service';
 import { UserService } from 'src/user/user.service';
+import * as playerOtp from './player-otp';
 
 @Injectable()
 export class PaymentService {
@@ -91,45 +92,79 @@ export class PaymentService {
 
       // 트랜잭션은 DB만 만진다. Redis는 트랜잭션에 참여하지 않으므로, 안에서
       // 스냅샷을 쓰면 뒷부분이 실패해 DB가 롤백돼도 Redis에는 유저가 앉아 있다.
-      const result = await this.prismaService.$transaction(async (tx) => {
-        // DB 최종 중복 체크
-        const exsitingPlayer = await tx.tablePlayer.findUnique({
-          where: {
-            tableId_seatPosition: {
-              tableId: dto.tableId,
-              seatPosition: dto.seatIndex
-            }
-          }
-        });
-        if (exsitingPlayer) throw new ConflictException('이미 다른 참가자가 앉은 좌석입니다.');
-        await this.user.paymentPoint(tx, userId, dto.tournamentId, session.name, session.entryFee);
-        await tx.tournamentParticipation.create({
-          data: {
-            userId: userId,
-            tournamentId: dto.tournamentId,
-            status: isOngoing ? 'PLAYING' : 'WAITING',
-          }
-        });
-        await tx.tablePlayer.create({
-          data: {
-            tournamentId: session.id,
-            nickname: user.nickname,
-            tableId: dto.tableId,
-            userId: userId,
-            seatPosition: dto.seatIndex,
-            currentStack: session.startStack,
-          }
-        })
-        await tx.tournament.update({
-          where: { id: dto.tournamentId },
-          data: {
-            totalPlayers: { increment: 1 },
-            activePlayers: { increment: 1 },
-            totalBuyinAmount: { increment: session.entryFee },
-          }
-        });
-        return { success: true };
-      });
+      //
+      // OTP가 대회 안에서 겹치면 다시 뽑는다. 8자리라 드물지만 드문 것은
+      // 안 나는 것이 아니다. 트랜잭션 전체를 다시 도는 이유는 참가비 차감과
+      // 좌석 생성이 같은 트랜잭션 안이라 OTP만 따로 바꿀 수 없기 때문이다.
+      let result: { success: boolean } | undefined;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          result = await this.prismaService.$transaction(async (tx) => {
+            // DB 최종 중복 체크
+            const exsitingPlayer = await tx.tablePlayer.findUnique({
+              where: {
+                tableId_seatPosition: {
+                  tableId: dto.tableId,
+                  seatPosition: dto.seatIndex
+                }
+              }
+            });
+            if (exsitingPlayer) throw new ConflictException('이미 다른 참가자가 앉은 좌석입니다.');
+            await this.user.paymentPoint(tx, userId, dto.tournamentId, session.name, session.entryFee);
+            await tx.tournamentParticipation.create({
+              data: {
+                userId: userId,
+                tournamentId: dto.tournamentId,
+                status: isOngoing ? 'PLAYING' : 'WAITING',
+                playerOtp: playerOtp.generatePlayerOtp(),
+              }
+            });
+            await tx.tablePlayer.create({
+              data: {
+                tournamentId: session.id,
+                nickname: user.nickname,
+                tableId: dto.tableId,
+                userId: userId,
+                seatPosition: dto.seatIndex,
+                currentStack: session.startStack,
+              }
+            })
+            await tx.tournament.update({
+              where: { id: dto.tournamentId },
+              data: {
+                totalPlayers: { increment: 1 },
+                activePlayers: { increment: 1 },
+                totalBuyinAmount: { increment: session.entryFee },
+              }
+            });
+            return { success: true };
+          });
+          break;
+        } catch (e) {
+          // 같은 사람이 두 번 참가한 경우(tournamentId, userId)는 재시도해도
+          // 같은 결과다. OTP 충돌만 다시 뽑는다.
+          //
+          // `meta.target`이 아니라 `meta.driverAdapterError...constraint.fields`를
+          // 보는 이유: 드라이버 어댑터(@prisma/adapter-pg) 구성에서는 P2002 메타에
+          // `target`이 없다. 대신 postgres가 준 제약 조건 정보를 그대로 담아
+          // 필드 이름에 큰따옴표가 붙은 채로(`"playerOtp"`) 내려온다.
+          const err = e as {
+            code?: string;
+            meta?: {
+              target?: string[];
+              driverAdapterError?: { cause?: { constraint?: { fields?: string[] } } };
+            };
+          };
+          const violatedFields =
+            err.meta?.target ?? err.meta?.driverAdapterError?.cause?.constraint?.fields ?? [];
+          const isOtpCollision =
+            err.code === 'P2002' && violatedFields.some((field) => field.includes('playerOtp'));
+          if (!isOtpCollision) throw e;
+        }
+      }
+      if (!result) {
+        throw new ConflictException('참가 OTP를 만들지 못했습니다. 다시 시도해 주세요.');
+      }
 
       let updatedState: TableState | undefined;
       if (result.success) {

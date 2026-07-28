@@ -1,6 +1,7 @@
 import { ConflictException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { TournamentStatus } from '@prisma/client';
+import { PrismaClient, TournamentStatus } from '@prisma/client';
+import { Queue } from 'bullmq';
 import Redis from 'ioredis';
 import { PayMentDto } from 'shared/dto/payment.dto';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -8,8 +9,11 @@ import { RedisService } from 'src/redis/redis.service';
 import { SessionService } from 'src/store/session/session.service';
 import { TableState } from 'src/game-engine/types';
 import { UserService } from 'src/user/user.service';
+import { PlaysyncService } from 'src/playsync/playsync.service';
 import { PaymentService } from './payment.service';
+import * as playerOtp from './player-otp';
 import { createTestRedis, flushTestRedis } from '../../test/helpers/redis';
+import { closeTestPrisma, createTestPrisma, truncateAll } from '../../test/helpers/prisma';
 
 /**
  * 착석이 DB와 Redis 두 곳에 어떻게 반영되는가.
@@ -240,6 +244,158 @@ describe('PaymentService.joinSessionWithSeat', () => {
       await expect(service.joinSessionWithSeat(dto(6), 'alice'))
         .rejects.toThrow(ConflictException);
     });
+  });
+});
+
+/**
+ * 참가 확정 시 발급되는 참가 OTP.
+ *
+ * 여기서부터는 DB를 스텁으로 두지 않는다. 검증 대상이 "OTP가 실제로 컬럼에
+ * 박히는가", "충돌하면 트랜잭션 전체가 다시 도는가"라서 진짜 유니크 제약과
+ * 진짜 P2002가 있어야 의미가 있다.
+ */
+describe('PaymentService — 참가 OTP 발급', () => {
+  let redis: Redis;
+  let prisma: PrismaClient;
+  let redisService: RedisService;
+  let userService: UserService;
+  let service: PaymentService;
+  let playsync: PlaysyncService;
+
+  const TOURNAMENT = 'otp-tournament-1';
+  const TABLE = 'otp-table-1';
+
+  function dto(seatIndex: number): PayMentDto {
+    return { tournamentId: TOURNAMENT, tableId: TABLE, seatIndex };
+  }
+
+  /** 토너먼트 한 개, 테이블 한 개, 참가 후보 유저 둘. FK가 요구하는 최소 그래프만 만든다. */
+  async function seedDb() {
+    const owner = await prisma.user.create({ data: { nickname: 'otp-owner', password: 'x' } });
+    const store = await prisma.store.create({ data: { name: 'otp-store-1', ownerId: owner.id } });
+    const blind = await prisma.blindStructure.create({
+      data: {
+        name: 'otp-blind-1',
+        storeId: store.id,
+        structure: [{ lv: 1, sb: 100, ante: false, duration: 600 }],
+      },
+    });
+    await prisma.tournament.create({
+      data: {
+        id: TOURNAMENT,
+        name: 'OTP 대회',
+        blindId: blind.id,
+        storeId: store.id,
+        dealerOtpHash: 'unused-hash', // 이 스펙은 딜러 로그인 경로를 검증하지 않는다.
+        entryFee: 1000,
+        startStack: 10000,
+        isRegistrationOpen: true,
+      },
+    });
+    const session = await prisma.dealerSession.create({ data: { tournamentId: TOURNAMENT } });
+    await prisma.table.create({ data: { id: TABLE, tournamentId: TOURNAMENT, dealerId: session.id } });
+
+    for (const id of ['u1', 'u2']) {
+      await prisma.user.create({ data: { id, nickname: id, password: 'x', points: 100000 } });
+    }
+  }
+
+  beforeAll(() => {
+    redis = createTestRedis();
+    prisma = createTestPrisma();
+    redisService = new RedisService(redis);
+    userService = new UserService(prisma as unknown as PrismaService);
+    service = new PaymentService(
+      userService,
+      {} as unknown as SessionService,
+      prisma as unknown as PrismaService,
+      redisService,
+      new EventEmitter2(),
+    );
+    // 리바인 트랜잭션만 부른다. processRebuy와 달리 사람의 팝업 응답을
+    // 기다리지 않으므로 큐는 건드리지 않는다 — 스텁으로 충분하다.
+    playsync = new PlaysyncService(
+      {} as unknown as Queue,
+      redisService,
+      prisma as unknown as PrismaService,
+      new EventEmitter2(),
+    );
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+    await closeTestPrisma(prisma);
+  });
+
+  beforeEach(async () => {
+    await flushTestRedis(redis);
+    await truncateAll(prisma);
+    await seedDb();
+    await redisService.setSeatBitmap(TOURNAMENT, TABLE);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('참가하면 8자리 OTP가 발급된다', async () => {
+    await service.joinSessionWithSeat(dto(0), 'u1');
+
+    const [row] = await prisma.$queryRaw<{ playerOtp: string }[]>`
+      SELECT "playerOtp" FROM "TournamentParticipation" WHERE "userId" = 'u1'
+    `;
+    expect(row.playerOtp).toMatch(/^\d{8}$/);
+  });
+
+  it('참가자마다 다른 값이다', async () => {
+    await service.joinSessionWithSeat(dto(0), 'u1');
+    await service.joinSessionWithSeat(dto(1), 'u2');
+
+    const rows = await prisma.$queryRaw<{ playerOtp: string }[]>`
+      SELECT "playerOtp" FROM "TournamentParticipation" WHERE "tournamentId" = ${TOURNAMENT}
+    `;
+    expect(new Set(rows.map(r => r.playerOtp)).size).toBe(2);
+  });
+
+  it('충돌하면 다시 뽑는다', async () => {
+    // 첫 두 번은 같은 값을 주고, 세 번째부터 다른 값을 준다
+    const otp = jest.spyOn(playerOtp, 'generatePlayerOtp');
+    otp.mockReturnValueOnce('00000001').mockReturnValueOnce('00000001');
+
+    await service.joinSessionWithSeat(dto(0), 'u1');
+    await expect(
+      service.joinSessionWithSeat(dto(1), 'u2'),
+    ).resolves.toBeDefined();
+
+    const rows = await prisma.$queryRaw<{ playerOtp: string }[]>`
+      SELECT "playerOtp" FROM "TournamentParticipation" WHERE "tournamentId" = ${TOURNAMENT}
+    `;
+    expect(new Set(rows.map(r => r.playerOtp)).size).toBe(2);
+  });
+
+  it('같은 사람이 두 번 참가하면 재시도하지 않고 그대로 실패한다', async () => {
+    await service.joinSessionWithSeat(dto(0), 'u1');
+    // 좌석을 바꿔도 (tournamentId, userId) 유니크에 걸린다.
+    // 이건 OTP 충돌이 아니므로 재시도 대상이 아니다.
+    await expect(
+      service.joinSessionWithSeat(dto(2), 'u1'),
+    ).rejects.toThrow();
+  });
+
+  it('리바인은 OTP를 다시 발급하지 않는다', async () => {
+    await service.joinSessionWithSeat(dto(0), 'u1');
+    const before = await prisma.$queryRaw<{ playerOtp: string }[]>`
+      SELECT "playerOtp" FROM "TournamentParticipation" WHERE "userId" = 'u1'
+    `;
+
+    // 기존 리바인 경로. processRebuy는 사람의 팝업 응답을 기다리므로, 그
+    // 응답이 들어온 뒤 실제로 DB를 건드리는 부분만 부른다.
+    await playsync.executeRebuyTransaction(TOURNAMENT, TABLE, 'u1', 1000, 10000, 'OTP 대회');
+
+    const after = await prisma.$queryRaw<{ playerOtp: string }[]>`
+      SELECT "playerOtp" FROM "TournamentParticipation" WHERE "userId" = 'u1'
+    `;
+    expect(after[0].playerOtp).toBe(before[0].playerOtp);
   });
 });
 
