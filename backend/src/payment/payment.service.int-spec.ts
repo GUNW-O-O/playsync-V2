@@ -91,7 +91,9 @@ describe('PaymentService.joinSessionWithSeat', () => {
       paymentPoint: async () => ({}),
     } as unknown as UserService;
 
-    const session = { createTable: async () => ({}) } as unknown as SessionService;
+    // 이 스위트가 부르는 경로는 SessionService를 쓰지 않는다. 예전에는
+    // 착석이 createTable을 불러서 스텁이 필요했다.
+    const session = {} as unknown as SessionService;
 
     return new PaymentService(user, session, prisma, redisService, emitter);
   }

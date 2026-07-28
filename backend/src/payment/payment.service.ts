@@ -164,14 +164,11 @@ export class PaymentService {
 
         await this.redisService.setUserContext(dto.tournamentId, userId, dto.tableId, dto.seatIndex, 'ACTIVE');
         await this.redisService.joinPlayer(dto.tournamentId, session.entryFee);
-        const table = await this.redisService.updateSeatBitmap(dto.tournamentId, dto.tableId, dto.seatIndex, true);
-        let cnt = 0;
-        table.split('').forEach(idx => {
-          if (idx === '1') cnt++;
-        })
-        if (cnt === 7) {
-          await this.session.createTable(dto.tournamentId);
-        }
+        // 좌석 비트맵 갱신은 남는다 — 좌석 목록과 전광판이 이 값을 읽는다.
+        // 예전에는 여기서 점유 수가 7이면 테이블을 자동 생성했다. 카운트
+        // 비교라 탈락으로 비었다가 다시 차면 7을 다시 넘어 빈 테이블이
+        // 계속 생겼다. 테이블은 이제 상점이 만든다.
+        await this.redisService.updateSeatBitmap(dto.tournamentId, dto.tableId, dto.seatIndex, true);
         const tableStatus = await this.redisService.getTournamentTables(dto.tournamentId);
         this.eventEmitter.emit('SEAT_LIST_UPDATED', {
           tournamentId: dto.tournamentId, 
