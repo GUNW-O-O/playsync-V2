@@ -187,10 +187,29 @@ describe('RedisService.updateSeatBitmap', () => {
     expect(await redis.hget(key, field)).toBe('100010000');
   });
 
-  it('비트맵이 없던 테이블도 9칸으로 만들어 준다', async () => {
-    await service.updateSeatBitmap(TOURNAMENT, 'table-unknown', 2, true);
+  /**
+   * 예전에는 없는 필드를 9칸짜리 빈 비트맵으로 만들어 줬다. 그 한 줄이 지워진
+   * 테이블을 되살린다 — 마지막 참가자의 탈락이 커밋된 뒤 상점이 그 테이블을
+   * 닫으면, `eliminatePlayer`가 커밋 이후에 부르는 비트 내리기가 방금 지운
+   * 필드를 다시 써 넣는다. 좌석 목록에 DB에 없는 빈 테이블이 뜨고, 그 자리를
+   * 고른 참가자는 외래키 실패로 이유 없는 500을 본다.
+   */
+  it('비트맵이 없는 테이블은 만들지 않고 그냥 넘어간다', async () => {
+    const result = await service.updateSeatBitmap(TOURNAMENT, 'table-unknown', 2, true);
 
-    expect(await redis.hget(key, 'table:table-unknown')).toBe('001000000');
+    expect(`반환 ${result === null ? 'null' : result} / 필드 ${await redis.hget(key, 'table:table-unknown') ?? '없음'}`)
+      .toBe('반환 null / 필드 없음');
+  });
+
+  it('지워진 테이블은 비트를 내려도 되살아나지 않는다', async () => {
+    await service.updateSeatBitmap(TOURNAMENT, TABLE, 4, true);
+    await service.removeSeatBitmap(TOURNAMENT, TABLE);
+
+    // 탈락 처리는 DB 커밋 뒤에 비트를 내린다. 그 사이에 테이블이 닫혔다면
+    // 내릴 대상이 이미 없다.
+    await service.updateSeatBitmap(TOURNAMENT, TABLE, 4, false);
+
+    expect(await service.getTournamentTables(TOURNAMENT)).toEqual([]);
   });
 
   it('좌석 범위를 벗어나면 비트맵을 늘리지 않는다', async () => {

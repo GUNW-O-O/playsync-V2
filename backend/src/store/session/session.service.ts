@@ -6,6 +6,7 @@ import {
   InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PlayerStatus, Prisma, TournamentStatus } from '@prisma/client';
 import { CreateBlindStructureDto } from 'shared/dto/blind-structure.dto';
 import { CreateTournamentDto, UpdateTournamentDto } from 'shared/dto/tournament.dto';
@@ -57,6 +58,7 @@ export class SessionService {
     private prismaService: PrismaService,
     private redis: RedisService,
     private otpAttempts: OtpAttempts,
+    private readonly eventEmitter: EventEmitter2,
   ) { };
 
   // dealerOtpHash는 어느 조회 경로에도 담아 보내지 않는다 — 해시라도 값이
@@ -199,24 +201,164 @@ export class SessionService {
     return { ...sessionInfo, dealerOtp };
   }
 
-  async createTable(tournamentId: string) {
+  /**
+   * 테이블을 하나 더 연다. 상점 콘솔의 버튼이 여기로 온다.
+   *
+   * 예전에는 착석이 좌석 점유 수를 세어 자동으로 불렀다. 소리 없이 늘어난
+   * 테이블에 앉은 손님은 아무도 응대하지 못한다 — 테이블을 여는 것은 딜러를
+   * 배치하고 칩을 세팅하는 물리적 행위다.
+   *
+   * `tableOrder`는 트랜잭션 **안에서** 최댓값을 뽑아 다음 번호를 정한다. 밖에서
+   * 뽑으면 동시 호출이 같은 번호를 읽는다. 최종 방어는
+   * `@@unique([tournamentId, tableOrder])`다.
+   */
+  async createTable(tournamentId: string, ownerId: string) {
+    await this.assertTournamentOwnership(tournamentId, ownerId);
+
     const tournament = await this.prismaService.tournament.findUnique({
       where: { id: tournamentId },
-      include: { tables: true, dealerSession: true },
+      include: { dealerSession: true },
     });
     if (!tournament) throw new NotFoundException('세션을 찾을 수 없습니다.');
-    const tableCount = tournament.tables.length;
-    const newTable = await this.prismaService.$transaction(async (tx) => {
-      const table = await tx.table.create({
-        data: {
-          tableOrder: tableCount + 1,
-          tournamentId: tournament.id,
-          dealerId: tournament.dealerSession!.id,
-        }
-      });
-      return table;
-    });
+    // completeSession이 대회를 닫으며 테이블과 딜러 세션을 함께 지운다.
+    // 여기서 만들면 죽은 대회에 테이블이 되살아난다.
+    if (tournament.status === TournamentStatus.FINISHED) {
+      throw new ConflictException('이미 종료된 대회입니다.');
+    }
+    if (!tournament.dealerSession) {
+      throw new ConflictException('딜러 세션이 없는 대회에는 테이블을 추가할 수 없습니다.');
+    }
+    const dealerId = tournament.dealerSession.id;
+
+    // Task 2가 만든 private 헬퍼. P2002를 409로 바꾼다.
+    const newTable = await this.insertTable(tournamentId, dealerId);
+
     await this.redis.setSeatBitmap(tournamentId, newTable.id);
+    await this.emitSeatList(tournamentId);
+
+    return newTable;
+  }
+
+  /**
+   * 잘못 연 테이블을 닫는다.
+   *
+   * **빈 테이블만** 지운다. `TablePlayer`는 `onDelete: Cascade`라 사람이 앉은
+   * 테이블을 지우면 참가자 행이 조용히 함께 사라진다 — 참가비를 낸 사람이
+   * 장부에서 없어지는 것이라 거부한다.
+   *
+   * **마지막 하나는 지우지 않는다.** 대회에 테이블이 0개인 상태는 어느 경로도
+   * 상정하지 않는다.
+   *
+   * `tableOrder`는 재정렬하지 않는다. 2번을 지우면 1, 3이 남는다. 번호는
+   * 물리 테이블을 가리키므로, 재정렬하면 전광판과 딜러 화면이 부르는 번호가
+   * 통째로 바뀌어 방 안의 테이블과 어긋난다.
+   */
+  async deleteTable(tournamentId: string, tableId: string, ownerId: string) {
+    await this.assertTournamentOwnership(tournamentId, ownerId);
+
+    await this.prismaService.$transaction(async (tx) => {
+      // 대상 행을 **먼저 잠근다.** 이 한 줄이 아래 점유 검사의 근거 전부다.
+      //
+      // TablePlayer의 INSERT는 외래키 때문에 부모 Table 행에 FOR KEY SHARE를
+      // 자동으로 건다. FOR UPDATE는 그것과 충돌하므로 두 방향 모두 직렬화된다.
+      //
+      //  - 바이인이 먼저 꽂았고 아직 커밋 전이면, 이 SELECT가 그 커밋까지
+      //    막힌다. 풀린 뒤의 점유 검사는 **새 문장**이고 Read Committed는
+      //    문장마다 스냅샷을 다시 뜨므로, 방금 커밋된 TablePlayer가 보인다 →
+      //    409로 거부한다.
+      //  - 이쪽이 먼저 잠갔으면 바이인의 INSERT가 막힌다. 삭제를 커밋하고 나면
+      //    그 INSERT는 외래키 위반으로 실패하고, `joinSessionWithSeat`의
+      //    트랜잭션이 통째로 롤백돼 포인트까지 되돌아간다. payment 쪽을
+      //    고칠 필요가 없는 이유가 이것이다 — 충돌하는 락을 이미 걸고 있다.
+      //
+      // 예전에는 `deleteMany({ where: { ..., tablePlayers: { none: {} } } })`
+      // 한 문장이 "구조로 막는다"고 적혀 있었지만 **그 보장은 성립하지 않았다.**
+      // NOT EXISTS 서브쿼리는 DELETE 문장의 스냅샷으로 평가된다. DELETE는 그
+      // 뒤 동시 INSERT가 쥔 FOR KEY SHARE에 막히는데, 상대가 커밋하면
+      // 서브쿼리를 **다시 보지 않고** 그대로 진행한다(EvalPlanQual은 대상 행이
+      // UPDATE된 경우만 재평가하고, 여기서는 key-share로 잠겼을 뿐이다).
+      // 결과는 삭제 1건 + cascade로 방금 앉은 참가자 소멸이었다. 두 커넥션으로
+      // 재현했다.
+      const locked = await tx.$queryRaw<{ id: string }[]>`
+        SELECT id FROM "Table"
+        WHERE id = ${tableId} AND "tournamentId" = ${tournamentId}
+        FOR UPDATE
+      `;
+      // 404("테이블을 찾을 수 없습니다")와 아래 409를 구분되는 메시지로 남긴다.
+      if (locked.length === 0) throw new NotFoundException('테이블을 찾을 수 없습니다.');
+
+      const occupied = await tx.tablePlayer.count({ where: { tableId } });
+      if (occupied > 0) {
+        throw new ConflictException('좌석에 참가자가 있는 테이블은 삭제할 수 없습니다.');
+      }
+
+      // 마지막 하나는 남긴다. 대회는 테이블이 최소 하나 있다는 전제 위에 서
+      // 있다 — `createSession`이 1번을 함께 만들고, `payment.service.ts`의
+      // `getTournamentInfo`는 비트맵이 비었을 때 `tables[0]`으로 복구한다.
+      // 전부 지우면 그 경로가 빈 배열의 0번을 읽어 참가자 화면이 500이 된다.
+      const remaining = await tx.table.count({ where: { tournamentId } });
+      if (remaining <= 1) {
+        throw new ConflictException('대회의 마지막 테이블은 삭제할 수 없습니다.');
+      }
+
+      await tx.table.delete({ where: { id: tableId } });
+    });
+
+    await this.redis.removeSeatBitmap(tournamentId, tableId);
+    // 스냅샷도 함께 지운다. 남겨두면 24시간 동안 사라진 테이블의 게임 상태가
+    // 떠 있고, 같은 id가 다시 쓰이지 않더라도 `completeSession`이 지우는 대상
+    // 목록에서는 이미 빠져 있어 영영 남는다.
+    await this.redis.deleteTableState(tableId);
+    await this.emitSeatList(tournamentId);
+  }
+
+  /**
+   * 좌석 목록 브로드캐스트.
+   *
+   * 예전에는 `createTable`이 착석 경로 안에서만 불려서, 바로 뒤의 `buyIn`이
+   * 대신 이벤트를 냈다. 상점이 단독으로 부르면 아무도 내지 않아 전광판과
+   * 좌석 목록이 새 테이블을 모른다.
+   */
+  private async emitSeatList(tournamentId: string) {
+    const state = await this.redis.getTournamentTables(tournamentId);
+    this.eventEmitter.emit('SEAT_LIST_UPDATED', { tournamentId, state });
+  }
+
+  /**
+   * 다음 번호를 정하고 행을 넣는다.
+   *
+   * 번호는 **개수가 아니라 최댓값**에서 뽑는다. `deleteTable`이 번호를
+   * 재정렬하지 않기 때문이다(그 이유는 `deleteTable`의 주석에 있다). 1·2·3을
+   * 만들고 2를 지우면 남는 것은 1과 3인데, 개수는 2라 `count + 1`은 이미
+   * 쓰이고 있는 3을 고른다. 유니크 제약이 P2002로 거부하고 아래 409("다시
+   * 시도해 주세요")가 나가지만, 다시 눌러도 같은 계산이라 영원히 같은 결과다 —
+   * 그 대회의 테이블 추가가 통째로 죽는다. 번호가 비는 것을 감수한 결정이
+   * 번호를 세는 쪽과 어긋나 있었다.
+   *
+   * Read Committed에서는 동시 트랜잭션이 같은 최댓값을 볼 수 있으므로,
+   * `@@unique([tournamentId, tableOrder])`가 뒤늦은 쪽을 P2002로 거부한다.
+   * 그대로 두면 500이 나가므로 409로 바꾼다 — 이쪽은 다시 누르면 실제로
+   * 풀리는 상황이고, 서버 오류가 아니다.
+   */
+  private async insertTable(tournamentId: string, dealerId: string) {
+    try {
+      return await this.prismaService.$transaction(async (tx) => {
+        const { _max } = await tx.table.aggregate({
+          _max: { tableOrder: true },
+          where: { tournamentId },
+        });
+        // 테이블이 하나도 없는 대회면 _max는 null이다. 그때의 첫 번호는 1.
+        const nextOrder = (_max.tableOrder ?? 0) + 1;
+        return await tx.table.create({
+          data: { tableOrder: nextOrder, tournamentId, dealerId },
+        });
+      });
+    } catch (e) {
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+        throw new ConflictException('테이블 추가가 동시에 요청되었습니다. 다시 시도해 주세요.');
+      }
+      throw e;
+    }
   }
 
   /**

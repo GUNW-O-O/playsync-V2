@@ -1,4 +1,9 @@
-import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
 import { GameType, TournamentStatus } from '@prisma/client';
 import { CreateTournamentDto } from 'shared/dto/tournament.dto';
 import { SessionService } from './session.service';
@@ -51,7 +56,9 @@ describe('SessionService.createSession', () => {
     };
     const redis = { setSeatBitmap: jest.fn().mockResolvedValue(undefined) };
 
-    const service = new SessionService(prisma as any, redis as any, {} as any);
+    const service = new SessionService(
+      prisma as any, redis as any, {} as any, { emit: jest.fn() } as any,
+    );
     return { service, prisma, redis, tournamentCreate, blindCreate };
   };
 
@@ -176,13 +183,15 @@ describe('SessionService HTTP 에러 타입', () => {
       $transaction: jest.fn(),
       ...overrides,
     };
-    return new SessionService(prisma as any, { setSeatBitmap: jest.fn() } as any, {} as any);
+    return new SessionService(
+      prisma as any, { setSeatBitmap: jest.fn() } as any, {} as any, { emit: jest.fn() } as any,
+    );
   };
 
   it('없는 세션에 테이블을 추가하면 404다', async () => {
     // 오타 난 id로 요청한 것과 서버가 죽은 것은 다른 일이다. 500이면 운영자가
     // 계속 재시도하고, 로그에는 같은 스택만 쌓인다.
-    await expect(setup().createTable('없는-토너먼트')).rejects.toThrow(NotFoundException);
+    await expect(setup().createTable('없는-토너먼트', '아무개')).rejects.toThrow(NotFoundException);
   });
 
   it('종료된 세션을 수정하려 하면 409다', async () => {
@@ -236,7 +245,9 @@ describe('SessionService.completeSession — 정산 게이트', () => {
     };
     const redis = { deleteTournament: jest.fn() };
     return {
-      service: new SessionService(prisma as any, redis as any, {} as any),
+      service: new SessionService(
+        prisma as any, redis as any, {} as any, { emit: jest.fn() } as any,
+      ),
       prisma,
       redis,
     };
@@ -291,7 +302,9 @@ describe('SessionService.completeSession — 정산 게이트', () => {
       tournament: { findUnique: jest.fn().mockResolvedValue(null) },
       $transaction: jest.fn(),
     };
-    const service = new SessionService(prisma as any, {} as any, {} as any);
+    const service = new SessionService(
+      prisma as any, {} as any, {} as any, { emit: jest.fn() } as any,
+    );
 
     await expect(service.completeSession('없는-대회')).rejects.toThrow(NotFoundException);
   });
@@ -353,7 +366,9 @@ describe('SessionService.startSession', () => {
       saveInitialTableSnapshots,
     };
 
-    const service = new SessionService(prisma as any, redis as any, {} as any);
+    const service = new SessionService(
+      prisma as any, redis as any, {} as any, { emit: jest.fn() } as any,
+    );
     return { service, prisma, update, setTournamentMeta, saveInitialTableSnapshots };
   };
 
@@ -467,7 +482,9 @@ describe('SessionService 시작 최소 인원', () => {
       setTournamentMeta: jest.fn().mockResolvedValue(undefined),
       saveInitialTableSnapshots: jest.fn().mockResolvedValue(undefined),
     };
-    return new SessionService(prisma as any, redis as any, {} as any);
+    return new SessionService(
+      prisma as any, redis as any, {} as any, { emit: jest.fn() } as any,
+    );
   };
 
   afterEach(() => {
@@ -492,5 +509,90 @@ describe('SessionService 시작 최소 인원', () => {
     // 모듈 로드 시점에 고정하면 테스트가 값을 바꿀 수 없다 — `rebuyTimeoutMs`와
     // 같은 이유로 호출 시점에 읽는다. 이 describe가 값을 바꿔가며 도는 것 자체가
     // 그 검증이다.
+  });
+});
+
+/**
+ * 테이블 추가는 남의 대회를 건드릴 수 없다.
+ *
+ * 소유권 검사를 컨트롤러가 아니라 서비스 메서드 첫 문장에 두는 이유는
+ * assertTournamentOwnership의 주석에 있다 — 컨트롤러에만 있으면 서비스를
+ * 직접 부르는 경로가 우회한다.
+ */
+describe('SessionService.createTable — 소유권과 상태', () => {
+  const setup = (opts: {
+    ownerId?: string;
+    status?: TournamentStatus;
+    hasDealerSession?: boolean;
+  } = {}) => {
+    const tournament = {
+      id: 'tournament-1',
+      status: opts.status ?? TournamentStatus.PENDING,
+      store: { ownerId: opts.ownerId ?? 'owner-1' },
+      dealerSession: opts.hasDealerSession === false ? null : { id: 'dealer-1' },
+    };
+    const tableCreate = jest.fn().mockResolvedValue({ id: 'table-2', tableOrder: 2 });
+    const prisma = {
+      tournament: { findUnique: jest.fn().mockResolvedValue(tournament) },
+      $transaction: jest.fn((fn: (t: any) => unknown) =>
+        fn({
+          table: {
+            // 개수가 아니라 최댓값에서 다음 번호를 뽑는다. 삭제가 번호를
+            // 재정렬하지 않아 1·3만 남는 대회가 생기기 때문이다.
+            aggregate: jest.fn().mockResolvedValue({ _max: { tableOrder: 1 } }),
+            create: tableCreate,
+          },
+        }),
+      ),
+    };
+    const redis = {
+      setSeatBitmap: jest.fn().mockResolvedValue(undefined),
+      // emitSeatList가 브로드캐스트할 좌석 목록을 읽어온다. 이 스위트가 보는
+      // 것은 이벤트가 나가는지 여부라, 내용물은 비워 둔다.
+      getTournamentTables: jest.fn().mockResolvedValue([]),
+    };
+    const emitter = { emit: jest.fn() };
+    const service = new SessionService(
+      prisma as any, redis as any, {} as any, emitter as any,
+    );
+    return { service, tableCreate, emitter };
+  };
+
+  it('남의 대회면 403이고 테이블을 만들지 않는다', async () => {
+    const { service, tableCreate } = setup({ ownerId: 'someone-else' });
+
+    await expect(service.createTable('tournament-1', 'owner-1')).rejects.toThrow(
+      ForbiddenException,
+    );
+    expect(tableCreate).not.toHaveBeenCalled();
+  });
+
+  it('FINISHED 대회면 409고 테이블을 만들지 않는다', async () => {
+    const { service, tableCreate } = setup({ status: TournamentStatus.FINISHED });
+
+    await expect(service.createTable('tournament-1', 'owner-1')).rejects.toThrow(
+      ConflictException,
+    );
+    expect(tableCreate).not.toHaveBeenCalled();
+  });
+
+  it('딜러 세션이 없으면 409고 테이블을 만들지 않는다', async () => {
+    const { service, tableCreate } = setup({ hasDealerSession: false });
+
+    await expect(service.createTable('tournament-1', 'owner-1')).rejects.toThrow(
+      ConflictException,
+    );
+    expect(tableCreate).not.toHaveBeenCalled();
+  });
+
+  it('성공하면 SEAT_LIST_UPDATED를 낸다', async () => {
+    const { service, emitter } = setup();
+
+    await service.createTable('tournament-1', 'owner-1');
+
+    expect(emitter.emit).toHaveBeenCalledWith(
+      'SEAT_LIST_UPDATED',
+      expect.objectContaining({ tournamentId: 'tournament-1' }),
+    );
   });
 });

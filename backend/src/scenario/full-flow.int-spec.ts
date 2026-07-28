@@ -162,7 +162,7 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
     auth = new AuthService(prismaService, userService, jwt);
     playsync = new PlaysyncService(queue, redisService, prismaService, emitter);
     const otpAttempts = new OtpAttempts(redis);
-    session = new SessionService(prismaService, redisService, otpAttempts);
+    session = new SessionService(prismaService, redisService, otpAttempts, emitter);
     payment = new PaymentService(userService, session, prismaService, redisService, emitter);
     dealer = new DealerService(
       queue, prismaService, redisService, playsync, jwt, otpAttempts,
