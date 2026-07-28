@@ -9,7 +9,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { PaymentModule } from './payment/payment.module';
 import { AuthModule } from './auth/auth.module';
 import { StoreModule } from './store/store.module';
-import { WsGateway } from './ws/ws.gateway';
+import { WsModule } from './ws/ws.module';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 
 @Module({
@@ -31,8 +31,8 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
     DealerModule,
     PlaysyncModule,
     PaymentModule,
-    StoreModule
+    StoreModule,
+    WsModule,
   ],
-  providers: [WsGateway],
 })
 export class AppModule {}
