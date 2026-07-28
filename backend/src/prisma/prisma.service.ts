@@ -6,6 +6,8 @@ import { Pool } from 'pg';
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
+  private readonly pool: Pool;
+
   constructor() {
     const connectionString = process.env.DATABASE_URL;
     if (!connectionString) {
@@ -27,6 +29,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
       // 읽는 곳은 마이페이지 조회 단 하나이고 거기서만 `omit: { playerOtp: false }`를 준다.
       omit: { tournamentParticipation: { playerOtp: true } },
     });
+    this.pool = pool;
   }
 
   async onModuleInit() {
@@ -35,5 +38,9 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
 
   async onModuleDestroy() {
     await this.$disconnect();
+    // 드라이버 어댑터 구성에서는 $disconnect()가 어댑터에 넘긴 pg Pool까지
+    // 닫지 않는다(test/helpers/prisma.ts의 closeTestPrisma가 같은 이유로
+    // Pool을 따로 추적해 닫는다). 앱 종료 때도 소켓이 남으므로 여기서 닫는다.
+    await this.pool.end();
   }
 }
