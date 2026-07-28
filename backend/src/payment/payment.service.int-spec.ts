@@ -357,20 +357,64 @@ describe('PaymentService — 참가 OTP 발급', () => {
     expect(new Set(rows.map(r => r.playerOtp)).size).toBe(2);
   });
 
-  it('충돌하면 다시 뽑는다', async () => {
-    // 첫 두 번은 같은 값을 주고, 세 번째부터 다른 값을 준다
+  it('충돌하면 다시 뽑는다 — 재시도가 부수효과를 정확히 한 번만 적용한다', async () => {
+    // 첫 두 번은 같은 값을 주고, 세 번째부터 다른 값을 준다. u1의 발급(1회)과
+    // u2의 첫 시도(1회)가 이 둘을 소비해 충돌을 만들고, u2의 재시도(2번째
+    // $transaction 시도)는 mock 큐가 빈 뒤라 진짜 난수를 받아 통과한다.
     const otp = jest.spyOn(playerOtp, 'generatePlayerOtp');
     otp.mockReturnValueOnce('00000001').mockReturnValueOnce('00000001');
 
     await service.joinSessionWithSeat(dto(0), 'u1');
+
+    // u1의 참가로 이미 늘어난 값 위에서 u2 몫만 재는 게 목적이라, 기준점을
+    // u1 참가 "이후"에 잡는다. 재시도가 부수효과를 두 번 적용했다면 아래
+    // before/after 차이가 entryFee나 카운터 증분의 배수로 어긋난다.
+    const beforeUser = await prisma.user.findUniqueOrThrow({ where: { id: 'u2' } });
+    const beforeTournament = await prisma.tournament.findUniqueOrThrow({ where: { id: TOURNAMENT } });
+    otp.mockClear();
+
     await expect(
       service.joinSessionWithSeat(dto(1), 'u2'),
     ).resolves.toBeDefined();
+
+    // 재시도가 실제로 일어났는지부터 확인한다. 여기서 통과하지 못하면
+    // 아래 단정들은 "재시도 경로가 한 번만 적용한다"를 증명하지 못하고
+    // "정상 경로가 한 번만 적용한다"만 증명하게 된다.
+    expect(otp.mock.calls.length).toBeGreaterThan(1);
 
     const rows = await prisma.$queryRaw<{ playerOtp: string }[]>`
       SELECT "playerOtp" FROM "TournamentParticipation" WHERE "tournamentId" = ${TOURNAMENT}
     `;
     expect(new Set(rows.map(r => r.playerOtp)).size).toBe(2);
+
+    // 포인트 차감이 재시도 횟수만큼(2번) 아니라 정확히 한 번만 반영됐는가.
+    const afterUser = await prisma.user.findUniqueOrThrow({ where: { id: 'u2' } });
+    expect(afterUser.points).toBe(beforeUser.points - 1000);
+
+    // 대회 집계도 마찬가지로 시도 횟수가 아니라 성공한 참가 한 건만큼만 는다.
+    const afterTournament = await prisma.tournament.findUniqueOrThrow({ where: { id: TOURNAMENT } });
+    expect(afterTournament.totalPlayers).toBe(beforeTournament.totalPlayers + 1);
+    expect(afterTournament.activePlayers).toBe(beforeTournament.activePlayers + 1);
+    expect(afterTournament.totalBuyinAmount).toBe(beforeTournament.totalBuyinAmount + 1000);
+
+    // 참가/착석 행도 재시도로 실패한 첫 시도의 잔해 없이 정확히 하나씩이다.
+    const participationCount = await prisma.tournamentParticipation.count({
+      where: { tournamentId: TOURNAMENT, userId: 'u2' },
+    });
+    expect(participationCount).toBe(1);
+
+    const tablePlayerCount = await prisma.tablePlayer.count({
+      where: { tableId: TABLE, userId: 'u2' },
+    });
+    expect(tablePlayerCount).toBe(1);
+
+    // 포인트 원장(user.service.ts의 paymentPoint가 쓰는 PointTransaction)도
+    // 한 건만 남아야 한다. 실패한 첫 시도의 차감이 롤백되지 않고 남았다면
+    // 여기서 2가 나온다.
+    const pointTxCount = await prisma.pointTransaction.count({
+      where: { userId: 'u2', tournamentId: TOURNAMENT, type: 'BUY_IN' },
+    });
+    expect(pointTxCount).toBe(1);
   });
 
   it('같은 사람이 두 번 참가하면 재시도하지 않고 그대로 실패한다', async () => {
