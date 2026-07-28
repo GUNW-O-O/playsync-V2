@@ -5,7 +5,7 @@ import PokerTable from './PokerTable';
 import { TableState } from '@/app/types/game';
 import ActionPanel from './ActionPanel';
 
-export default function GameClient({ tableId, initialData, seatIndex, token, initIsDealer }: { tableId: string, initialData?: TableState, seatIndex: number, token: string, initIsDealer: boolean }) {
+export default function GameClient({ tableId, initialData, seatIndex, initIsDealer }: { tableId: string, initialData?: TableState, seatIndex: number, initIsDealer: boolean }) {
   const socketRef = useRef<WebSocket | null>(null);
   const [gameState, setGameState] = useState<TableState | null>(initialData || null);
   const [mySeatIndex, setMySeatIndex] = useState<number | null>(seatIndex ?? null);
@@ -13,27 +13,47 @@ export default function GameClient({ tableId, initialData, seatIndex, token, ini
   const [rebuyData, setRebuyData] = useState<any>(null);
 
   useEffect(() => {
-    const wsUrl = `${process.env.NEXT_PUBLIC_BACKEND_URL?.replace('http', 'ws')}/playsync?tableId=${tableId}&token=${token}`;
-    const ws = new WebSocket(wsUrl);
     if (seatIndex === -1) {
       setIsDealer(true);
     } else {
       setIsDealer(false);
       setMySeatIndex(seatIndex);
     }
-    socketRef.current = ws;
-    ws.onmessage = (event) => {
-      const { event: serverEvent, data } = JSON.parse(event.data);
-      if (serverEvent === 'renderGame') {
-        setGameState(data);
-      }
-      else if (serverEvent === 'REBUY_PROMPT') {
-        setRebuyData(data);
-      }
-    };
 
-    return () => ws.close();
-  }, [tableId]);
+    let socket: WebSocket | null = null;
+    let cancelled = false;
+
+    // 티켓은 1회용 30초라 연결 시도마다 새로 받는다. 액세스 토큰은 이 컴포넌트에
+    // 들어오지 않는다 — 쿠키를 읽는 것은 route handler(서버)뿐이다.
+    (async () => {
+      const res = await fetch('/api/ws-ticket', { method: 'POST' });
+      if (!res.ok) {
+        console.error('WS 티켓을 받지 못했습니다.');
+        return;
+      }
+      const { ticket } = await res.json();
+      if (cancelled) return;
+
+      const wsUrl = `${process.env.NEXT_PUBLIC_BACKEND_URL?.replace('http', 'ws')}/playsync?tableId=${tableId}&ticket=${ticket}`;
+      socket = new WebSocket(wsUrl);
+      socketRef.current = socket;
+
+      socket.onmessage = (event) => {
+        const { event: serverEvent, data } = JSON.parse(event.data);
+        if (serverEvent === 'renderGame') {
+          setGameState(data);
+        }
+        else if (serverEvent === 'REBUY_PROMPT') {
+          setRebuyData(data);
+        }
+      };
+    })();
+
+    return () => {
+      cancelled = true;
+      socket?.close();
+    };
+  }, [tableId, seatIndex]);
 
 
   const sendAction = (type: 'PLAYER_ACTION' | 'DEALER_ACTION', payload: any = {}) => {

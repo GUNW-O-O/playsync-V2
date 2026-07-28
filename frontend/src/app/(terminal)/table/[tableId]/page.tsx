@@ -19,19 +19,14 @@ export default async function GamePage({ params }: { params: Promise<{ tableId: 
   const { tableId } = await params;
   const initialData = await getInitialGameData(tableId);
   const cookieStore = await cookies();
-  const dealerToken = cookieStore.get('dealerToken')?.value;
-  const accessToken = cookieStore.get('accessToken')?.value;
-  const token = dealerToken || accessToken || "";
-  let isDealer = false;
-  // !! = 강제 불리언형변환
-  if(initialData.seatIndex === -1 && !!dealerToken) {
-    isDealer = true;
-  }
+  // 딜러 여부만 서버에서 판정해 내린다. 토큰 자체는 내리지 않는다 — prop은
+  // RSC 페이로드로 직렬화되어 페이지 소스에 그대로 남기 때문이다.
+  const isDealer = initialData.seatIndex === -1 && !!cookieStore.get('dealerToken');
+
   return (
     <main className="h-screen bg-slate-900 overflow-hidden">
       {initialData ? (
         <GameClient
-          token={token}
           initIsDealer={isDealer}
           tableId={tableId}
           initialData={initialData.tableState}
