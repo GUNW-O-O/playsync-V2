@@ -242,3 +242,63 @@ describe('PaymentService.joinSessionWithSeat', () => {
     });
   });
 });
+
+/**
+ * 테이블이 하나도 없는 대회의 조회.
+ *
+ * 좌석 비트맵이 비면 DB에서 재구성을 시도하는 분기가 있다. 그 가드가
+ * `if (!session || !session.tables)`였는데, `[]`는 truthy라 테이블이 0개인
+ * 대회도 그대로 통과했다. 바로 다음 줄의 `session.tables[0].id`가
+ * `TypeError: Cannot read properties of undefined`로 죽고, 이 엔드포인트는
+ * 그 대회를 보고 있는 참가자 전원에게 500이 된다.
+ *
+ * 테이블 0개는 실제로 생긴다 — `completeSession`이 대회를 닫으며 전부 지운다.
+ */
+describe('PaymentService.getTournamentInfo — 테이블이 없는 대회', () => {
+  let redis: Redis;
+  let redisService: RedisService;
+
+  const TOURNAMENT = 'tournament-empty';
+
+  beforeAll(() => {
+    redis = createTestRedis();
+    redisService = new RedisService(redis);
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+  });
+
+  beforeEach(async () => {
+    await flushTestRedis(redis);
+  });
+
+  function makeService(tables: { id: string }[], totalPlayers: number) {
+    const row = { id: TOURNAMENT, totalPlayers, tables };
+    const prisma = {
+      tournament: { findUnique: async () => row },
+    } as unknown as PrismaService;
+    const session = { getGameSession: async () => row } as unknown as SessionService;
+
+    return new PaymentService(
+      {} as unknown as UserService, session, prisma, redisService, new EventEmitter2(),
+    );
+  }
+
+  it('테이블이 0개여도 500이 아니라 빈 좌석 목록을 돌려준다', async () => {
+    const service = makeService([], 0);
+
+    const info = await service.getTournamentInfo(TOURNAMENT);
+
+    expect(`좌석 목록 ${info.seatStatus.length}개`).toBe('좌석 목록 0개');
+  });
+
+  it('테이블이 있으면 예전처럼 비트맵을 되살린다', async () => {
+    const service = makeService([{ id: 'table-a' }], 0);
+
+    await service.getTournamentInfo(TOURNAMENT);
+
+    expect(await redis.hget(`tournament:${TOURNAMENT}:seat`, 'table:table-a'))
+      .toBe('000000000');
+  });
+});

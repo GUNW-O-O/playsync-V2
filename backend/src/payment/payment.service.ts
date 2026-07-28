@@ -52,8 +52,13 @@ export class PaymentService {
           tables: true
         }
       });
-      if (!session || !session.tables) throw new ConflictException('잘못된 세션 ID 입니다.');
-      if (session.totalPlayers === 0) {
+      if (!session) throw new ConflictException('잘못된 세션 ID 입니다.');
+      // `!session.tables`로는 빈 배열을 걸러내지 못한다 — `[]`는 truthy라
+      // 그대로 통과한 뒤 `tables[0].id`에서 TypeError로 죽었다. 대회를 보고
+      // 있는 참가자 전원이 500을 본다. 테이블이 하나도 없는 상태는 실제로
+      // 생긴다: `completeSession`이 대회를 닫으며 전부 지운 경우다.
+      // 되살릴 대상이 없을 뿐이므로 거부가 아니라 그냥 건너뛴다.
+      if (session.totalPlayers === 0 && session.tables.length > 0) {
         await this.redisService.setSeatBitmap(tournamentId, session.tables[0].id);
       }
       // TODO : 다중 테이블 기능 개발시 유저자리 매핑하는로직
