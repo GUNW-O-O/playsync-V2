@@ -98,11 +98,22 @@ export class RedisService {
    * 해시 **필드**라 `SETRANGE`를 쓸 수 없어서(Redis에 `HSETRANGE`는 없다)
    * 같은 일을 Lua로 한다. 키를 테이블별로 쪼개면 `SETRANGE`를 쓸 수 있지만,
    * 그러면 좌석 현황 조회의 `hgetall` 한 번이 여러 번으로 늘어난다.
+   *
+   * **필드가 없으면 아무것도 하지 않는다.** 만드는 것은 `setSeatBitmap`의
+   * 일이다. 예전에는 없으면 9칸짜리 빈 비트맵을 만들어 놓고 비트를 세웠는데,
+   * 그 한 줄이 지워진 테이블을 되살렸다 — 마지막 참가자가 탈락해 커밋된 뒤
+   * 상점이 그 테이블을 닫으면, `eliminatePlayer`가 커밋 **이후에** 부르는
+   * 비트 내리기가 방금 지운 필드를 전부 0인 채로 다시 써 넣는다. 좌석 목록에는
+   * DB에 없는 9칸짜리 빈 테이블이 24시간 떠 있고, 그 자리를 고른 참가자는
+   * `tablePlayer.create`의 외래키 실패로 이유 없는 500을 본다.
+   *
+   * Redis가 통째로 비었을 때의 복구도 이 자리가 아니다. 빈 비트맵을 만들고
+   * 한 칸만 세우면 이미 앉아 있던 사람들이 화면에서 사라진다 — 설계 문서가
+   * "반쪽 복구가 더 위험하다"고 적고 B2로 미룬 그것이다.
    */
   private static readonly UPDATE_SEAT_BIT = `
     local bitmap = redis.call('hget', KEYS[1], ARGV[1])
-    local size = tonumber(ARGV[4])
-    if not bitmap then bitmap = string.rep('0', size) end
+    if not bitmap then return false end
     local idx = tonumber(ARGV[2])
     if idx < 0 or idx >= #bitmap then
       return redis.error_reply('seat index out of range')
@@ -135,7 +146,25 @@ export class RedisService {
     await this.redis.hdel(key, `table:${tableId}`);
   }
 
-  async updateSeatBitmap(tournamentId: string, tableId: string, seatIndex: number, isOccupied: boolean) {
+  /**
+   * 테이블 하나의 게임 상태 스냅샷을 지운다.
+   *
+   * 대회 종료는 `deleteTournament`가 테이블 목록을 받아 한꺼번에 지우지만,
+   * 테이블 하나만 닫는 경로에는 대응하는 것이 없었다. 남겨두면 24시간짜리
+   * 스냅샷이 떠 있고, `completeSession`이 지울 목록에는 이미 그 테이블이
+   * 없으므로 아무도 치우지 않는다.
+   */
+  async deleteTableState(tableId: string) {
+    await this.redis.del(`table:state:${tableId}`);
+  }
+
+  /** 비트맵이 없으면 `null`. 없는 테이블을 만들어 주지는 않는다(위 주석 참고). */
+  async updateSeatBitmap(
+    tournamentId: string,
+    tableId: string,
+    seatIndex: number,
+    isOccupied: boolean,
+  ): Promise<string | null> {
     const key = `tournament:${tournamentId}:seat`;
     const field = `table:${tableId}`;
 
@@ -146,8 +175,7 @@ export class RedisService {
       field,
       seatIndex,
       isOccupied ? '1' : '0',
-      RedisService.SEAT_COUNT,
-    )) as string;
+    )) as string | null;
   }
 
   async getTournamentTables(tournamentId: string) {
