@@ -535,7 +535,14 @@ describe('SessionService.createTable — 소유권과 상태', () => {
     const prisma = {
       tournament: { findUnique: jest.fn().mockResolvedValue(tournament) },
       $transaction: jest.fn((fn: (t: any) => unknown) =>
-        fn({ table: { count: jest.fn().mockResolvedValue(1), create: tableCreate } }),
+        fn({
+          table: {
+            // 개수가 아니라 최댓값에서 다음 번호를 뽑는다. 삭제가 번호를
+            // 재정렬하지 않아 1·3만 남는 대회가 생기기 때문이다.
+            aggregate: jest.fn().mockResolvedValue({ _max: { tableOrder: 1 } }),
+            create: tableCreate,
+          },
+        }),
       ),
     };
     const redis = {
