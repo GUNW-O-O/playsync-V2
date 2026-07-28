@@ -581,17 +581,22 @@ Important 둘, Minor 넷.
 `@Roles(STORE_ADMIN)`으로 추가했다 — `reissueDealerOtp`·`revokeDealerSession`과
 같은 권한이다. 소유권은 `assertTournamentOwnership`을 각 서비스 메서드의 **첫
 문장**으로 재사용한다. `createTable`은 `FINISHED` 대회를 409로 막고(죽은 대회에
-테이블이 되살아나는 것 방지), 트랜잭션 **안에서** `tx.table.count`로
-`tableOrder`를 센 뒤 `@@unique([tournamentId, tableOrder])` 제약으로 동시 호출의
-경합을 재시도 코드가 아니라 구조로 막는다(P2002를 잡아 409로 변환). `dealerSession`
+테이블이 되살아나는 것 방지), 트랜잭션 **안에서** `tableOrder`의 **최댓값**을
+읽어(`tx.table.aggregate`) 다음 번호를 정한 뒤 `@@unique([tournamentId, tableOrder])`
+제약으로 동시 호출의 경합을 재시도 코드가 아니라 구조로 막는다(P2002를 잡아
+409로 변환). 처음에는 개수(`tx.table.count`)로 셌는데 삭제가 번호를 재정렬하지
+않는 것과 어긋나 영구 장애가 났다 — 아래 "머지 직전 전체 리뷰 대응" 참고.
+`dealerSession`
 없음은 명시적 409로 바꾸고 `!` 단언을 지웠다. 성공 시 `SEAT_LIST_UPDATED`를 새로
 방출한다 — 자동 생성일 때는 바로 뒤에서 `buyIn`이 이벤트를 냈지만, 상점이 단독으로
 부르면 아무도 내지 않아 전광판과 좌석 목록이 새 테이블을 모른다.
 
-`deleteTable`은 빈 테이블만 지운다. 점유 검사와 삭제를
-`deleteMany({ where: { id, tournamentId, tablePlayers: { none: {} } } })` 한
-문장으로 묶어 check-then-act 경합을 없앴다(아래 "작업 중 추가로 나온 것" 참고).
-`tableOrder`는 재정렬하지 않는다 — 재정렬하면 전광판과 딜러 화면이 보는 번호가
+`deleteTable`은 **빈 테이블만, 그리고 마지막 하나는 남기고** 지운다. 점유 검사와
+삭제 사이의 경합은 한 트랜잭션 안에서 대상 행에 `SELECT ... FOR UPDATE`를 먼저
+거는 것으로 막는다 — 참가자 INSERT가 외래키 때문에 부모 `Table` 행에 자동으로
+거는 `FOR KEY SHARE`와 충돌하므로 두 방향 모두 직렬화된다. 중간에
+`deleteMany` 한 문장으로 묶는 안을 썼다가 되돌렸다(아래 "머지 직전 전체 리뷰
+대응" 참고). `tableOrder`는 재정렬하지 않는다 — 재정렬하면 전광판과 딜러 화면이 보는 번호가
 통째로 바뀌어 물리 테이블과 화면이 어긋난다. 번호가 비는 것보다 나쁘다.
 
 ### 버린 선택지
@@ -649,11 +654,109 @@ Important 둘, Minor 넷.
   같은 테이블에 참가자를 꽂으면 `TablePlayer`의 `onDelete: Cascade`가 그 행을
   조용히 지울 수 있었다 — 참가비를 이미 뗀 사람이 장부에서 사라지는, 이 가드가
   막으려던 바로 그 피해다. 점유 검사와 삭제를 `deleteMany`의 `where` 절 하나
-  (`tablePlayers: { none: {} }`)로 묶어 구조로 막았다. Task 2가 `tableOrder`
-  경합을 유니크 제약으로 막은 것과 같은 방식이다.
+  (`tablePlayers: { none: {} }`)로 묶어 구조로 막았다 — **고 믿었으나 틀렸다.**
+  아래 "머지 직전 전체 리뷰 대응"의 C2가 그것이다.
 
 리뷰가 남긴 사소한 지적(고치지 않고 이월한 것)은 `docs/backlog.md`의 "T25가
 남긴 이월 항목"에 있다.
+
+### 머지 직전 전체 리뷰 대응
+
+브랜치 전체를 다시 리뷰해 여섯 건이 나왔고, 한 파도로 함께 고쳤다. 셋은 위
+"결정"에 적힌 내용 자체를 뒤집는 것이라 그 문단들도 같이 고쳤다.
+
+**C1 — `tableOrder`를 개수에서 뽑아 테이블 추가가 영구히 죽었다.**
+`insertTable`이 `count + 1`로 다음 번호를 정했는데, `deleteTable`은 번호를
+재정렬하지 않는다. 1·2·3에서 2를 지우면 개수는 2라 다음 번호로 이미 쓰이는 3을
+고르고, `@@unique`가 P2002를 던져 409("동시에 요청되었습니다. 다시 시도해 주세요")가
+나간다. **다시 눌러도 같은 계산이라 영원히 같은 결과다** — 그 대회의 테이블
+추가가 통째로 죽는다. 재정렬하지 않기로 한 결정과 번호를 세는 쪽이 어긋나
+있었다. `tx.table.aggregate({ _max: { tableOrder: true } })`로 바꿨다.
+
+**C2 — 조건부 `deleteMany` 한 문장은 자기가 주장한 보장을 하지 않았다.**
+"조건을 삭제문에 실어 한 문장으로 만들면 구조적으로 안전하다"고 주석까지
+적었는데, PostgreSQL READ COMMITTED에서 성립하지 않는다. `NOT EXISTS` 서브쿼리는
+DELETE 문장의 스냅샷으로 평가되고, DELETE는 그 뒤 동시 INSERT가 쥔
+`FOR KEY SHARE`에 막혔다가 **상대가 커밋하면 서브쿼리를 다시 보지 않고**
+진행한다(EvalPlanQual은 대상 행이 UPDATE된 경우에만 재평가하는데, 여기서는
+key-share로 잠겼을 뿐이다). 두 커넥션으로 재현했다 — 삭제 1건 성공, 방금 앉은
+`TablePlayer`가 cascade로 소멸.
+
+피해는 `TablePlayer` 한 행에서 끝나지 않는다. `joinSessionWithSeat`의 트랜잭션은
+포인트 차감, `TournamentParticipation`, `totalPlayers`/`activePlayers`/
+`totalBuyinAmount` 증가를 **이미 커밋한 뒤**다. 좌석만 사라진 참가자는 탈락도
+수상도 되지 않고, `completeSession`의 정산 게이트
+(`totalBuyinAmount − Σ prizeAmount === 0`)가 영원히 맞지 않아 **대회를 닫을 수
+없게 된다.**
+
+한 트랜잭션 안에서 대상 행에 `SELECT id FROM "Table" WHERE id = ... FOR UPDATE`를
+먼저 걸도록 바꿨다. 외래키 INSERT가 부모 행에 자동으로 거는 `FOR KEY SHARE`와
+충돌하므로 양방향이 직렬화된다 — 바이인이 먼저면 이쪽이 커밋까지 대기했다가
+새 문장(새 스냅샷)의 점유 검사에서 409를 내고, 이쪽이 먼저면 바이인의 INSERT가
+막혔다가 외래키 위반으로 실패해 그 트랜잭션 전체가 롤백된다(포인트도 되돌아간다).
+**`payment.service.ts`는 한 줄도 고치지 않았다** — 충돌하는 락을 이미 걸고 있다.
+"거짓 보장을 적은 주석은 주석이 없는 것보다 나쁘다"라서 주석도 다시 썼다.
+
+**I1 — 마지막 테이블을 지우면 참가자용 조회가 500이 된다.**
+막는 것이 없어 유일한 테이블도 지울 수 있었다. 필드가 지워지면 해시 키가
+통째로 사라져 `getTournamentTables`가 `[]`를 주고, `getTournamentInfo`의 재구성
+분기 가드가 `if (!session || !session.tables)`라 `[]`(truthy)를 그대로 통과한 뒤
+`session.tables[0].id`에서 `TypeError`로 죽는다. 그 대회를 보고 있는 참가자
+전원이 500을 본다. 양쪽을 다 고쳤다 — `deleteTable`은 마지막 하나를 409로
+거부하고, `getTournamentInfo`는 truthiness가 아니라 `length`로 본다(테이블 0개는
+`completeSession`이 대회를 닫은 뒤에도 생기므로 거부가 아니라 건너뛴다).
+
+**I2 — 동시성 테스트가 유니크 인덱스를 지워도 초록이었다.**
+`Promise.allSettled`로 `createTable`을 두 번 부르던 테스트다. 두 호출이
+사실상 직렬화돼 충돌이 **한 번도 일어나지 않았고**, 제약은 실행조차 되지
+않았다. `DROP INDEX "Table_tournamentId_tableOrder_key"` 후 실행해도 그대로
+통과하는 것을 직접 확인했다. 커밋하지 않은 원시 커넥션이 같은 번호를 먼저
+꽂아두는 결정적 충돌로 바꿨다 — 인덱스를 지우면 대기가 사라져 빨개진다.
+CLAUDE.md의 "새 테스트가 처음부터 통과하면 의심한다"가 네 번째로 맞았다.
+
+**I3 — 지워진 테이블이 좌석 목록에 되살아난다. Redis 실패는 필요 없다.**
+`UPDATE_SEAT_BIT` Lua가 필드가 없으면 9칸 빈 비트맵을 만들어 줬고,
+`eliminatePlayer`는 DB 커밋 **뒤에** 좌석 비트를 내린다. 마지막 참가자의 탈락이
+커밋된 직후 상점이 그 테이블을 닫으면(점유 검사를 통과한다), 뒤늦은 비트
+내리기가 방금 지운 필드를 전부 0인 채로 다시 써 넣는다. DB에 없는 9칸짜리 빈
+테이블이 좌석 목록에 24시간 떠 있고, 그 자리를 고른 참가자는
+`tablePlayer.create`의 외래키 실패로 이유 없는 500을 본다. 스크립트를 **필드가
+없으면 아무것도 하지 않게** 바꿨다 — 만드는 것은 `setSeatBitmap`의 일이다.
+호출부 둘(`joinSessionWithSeat`, `eliminatePlayer`) 다 반환값을 쓰지 않고, 없는
+필드를 만드는 데 의존하지도 않는다. Redis가 통째로 비었을 때의 복구는 원래
+이 자리가 아니다 — 빈 비트맵에 한 칸만 세우면 앉아 있던 사람들이 화면에서
+사라지는 "반쪽 복구"고, 설계 문서가 그 이유로 B2에 미뤄둔 것이다.
+함께: `deleteTable`이 `table:state:<tableId>`를 지우지 않아 스냅샷이 남았다
+(`completeSession`은 `deleteTournament`로 지운다). `deleteTableState`를 더했다.
+
+**I4 — 마이그레이션에 중복 사전 점검이 없다.** 고치지 않고
+`docs/backlog.md`에 적었다. 판단 근거는 그쪽에 있다 — 요약하면 이 위험에 닿는
+DB가 이 프로젝트에 존재하지 않고, 자동 재번호는 "번호를 재정렬하지 않는다"는
+이 티켓의 결정과 정면으로 어긋나며, 가드를 넣어도 얻는 것이 에러 메시지뿐이기
+때문이다.
+
+부수 효과로 이월 항목 하나가 사라졌다 — "동시에 같은 테이블을 두 번 삭제하면
+404 대신 409"는 `deleteMany`가 조건 불일치의 이유를 구분하지 못해서였는데,
+`FOR UPDATE`가 행을 못 찾으면 그대로 404다.
+
+#### RED 확인
+
+여섯 건 모두 제품 코드를 되돌려 빨간불을 직접 봤다. 통합 8건이 늘었다.
+
+| | 되돌린 것 | 실제로 본 실패 |
+|---|---|---|
+| C1 | `aggregate(_max)` → `count + 1` | `ConflictException: 테이블 추가가 동시에 요청되었습니다` (다시 눌러도 같음) |
+| C2 | `FOR UPDATE` 트랜잭션 → 옛 `deleteMany` | `결과 undefined / Table 0행 / TablePlayer 0행` — 삭제가 성공하고 참가자가 cascade로 소멸 |
+| I1(a) | 마지막 테이블 가드 제거 | `Received promise resolved instead of rejected` |
+| I1(b) | `length > 0` → `!session.tables` | `TypeError: Cannot read properties of undefined (reading 'id')` |
+| I2 | `DROP INDEX Table_tournamentId_tableOrder_key` | 새 테스트는 `대기 중 아님`으로 실패. **옛 테스트는 같은 조건에서 그대로 통과했다** — 그것이 이 지적의 내용이다 |
+| I3 | Lua의 `if not bitmap then ... end` 복원 / `deleteTableState` 호출 제거 | `좌석 목록의 지워진 테이블 있음`, `반환 001000000 / 필드 001000000`, `스냅샷 있음` |
+
+C2는 테스트 이전에 **두 커넥션 실험**으로 먼저 확인했다(테스트 Postgres 5433,
+원시 `pg` 클라이언트 셋). 조건부 `deleteMany`는 `rowCount = 1`과 함께 참가자
+행을 없앴고, `FOR UPDATE`를 먼저 거는 쪽은 바이인이 선행하면 409를, 삭제가
+선행하면 상대에게 `23503 ... violates foreign key constraint
+"TablePlayer_tableId_fkey"`를 돌려줬다 — 즉 바이인 트랜잭션 전체가 롤백된다.
 
 ### 테스트
 
@@ -667,7 +770,8 @@ Important 둘, Minor 넷.
 | `redis/redis.service.ts` | — | `removeSeatBitmap` 추가. 단독 스펙은 없고 삭제 경로의 통합 테스트가 Redis 필드 소멸을 함께 확인한다 |
 
 기준선: contract 44 / 백엔드 단위 150 (10 스위트) / 프론트 단위 52 (14 파일) /
-통합 244 (20 스위트) / 타입 에러 0.
+통합 252 (20 스위트) / 타입 에러 0. 통합 8건은 머지 직전 전체 리뷰 대응에서
+늘었다 — 아래 참고.
 
 ### 남긴 것
 
