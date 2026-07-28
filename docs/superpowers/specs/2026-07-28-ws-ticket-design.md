@@ -203,7 +203,7 @@ T23의 "내보내기"는 `tokenVersion`을 올려 갱신을 막지만, 살아 �
 | 게이트웨이 | Origin 없음 · 미허용 | `close(1008, '인증 실패')`, `logger.warn`으로 남긴다 |
 | `POST /ws/ticket` | 토큰 없음 · 무효 | 401 (`JwtAuthGuard`) |
 | `POST /ws/ticket` | 폐기된 딜러 세션 · `FINISHED` 대회 | 403, 문구는 `refreshToken`과 동일 |
-| `POST /ws/ticket` | 성공 | 200 `{ ticket }`. 그 외의 키는 contract 스키마가 스트립한다 |
+| `POST /ws/ticket` | 성공 | 201 `{ ticket }`(NestJS `@Post` 기본값). route handler가 이 응답을 `WsTicketResponseSchema.parse`에 태워 반환하므로, 그 외의 키는 route handler에서 실제로 스트립된다 |
 | route handler | 쿠키 없음 | 401. 백엔드까지 가지 않는다 |
 | route handler | 백엔드 실패 | 상태 코드 그대로, 본문은 `message`만 |
 

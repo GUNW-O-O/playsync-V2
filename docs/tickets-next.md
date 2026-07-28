@@ -340,6 +340,12 @@ import만 남는다.
   티켓 범위에 없었지만, "딜러 토큰의 수명을 대회에 묶는다"는 목표가 끝단까지
   간 것은 아니다. 백로그 B5/B7의 명시 항목으로 팠다.
 - **WS 토큰 전달**(관찰 1·2·10). 계획 C. 내보내기의 즉시성도 여기에 걸려 있다.
+- **`assertDealerSessionValid`를 공유하면서 문구도 함께 넘어왔다.** 세션 없음·대회
+  불일치일 때 던지는 "갱신할 수 없는 세션입니다."는 원래 `POST /dealer/refresh`
+  용으로 쓴 문구인데, 이제 `POST /ws/ticket` 실패 시에도 그대로 나간다 — 딜러
+  화면에 "갱신"이라는 단어가 뜬다. 설계가 검사 함수와 함께 문구도 재사용하도록
+  명시했으니 의도된 것이지만, 문구가 발급 경로 문맥과 어긋난다는 것은 알고
+  넘어간다.
 - **대회 존재 여부의 타이밍 차이.** 대회 없음과 OTP 오류를 같은 예외로 묶어 응답을
   가르지 않지만, 대회가 없으면 bcrypt 대조 자체를 건너뛰어 수십 ms 빨리 돌아온다.
   코드 주석이 주장하는 "구분 불가"는 아직 완전하지 않다.
@@ -464,17 +470,63 @@ httpOnly를 건 이유가 정면으로 무효화됐다. `dealerToken`은 한 단
 
 | 파일 | 계층 | 무엇 |
 |---|---|---|
-| `backend/src/ws/ws-ticket.controller.spec.ts` | 단위 | `POST /ws/ticket`의 성공·인증 실패·딜러 세션 무효 분기 |
+| `backend/src/ws/ws-ticket.controller.spec.ts` | 단위 | `POST /ws/ticket`의 성공·인증 실패·딜러 세션 무효 분기, **`issue`에 `JwtAuthGuard`가 실제로 붙어 있는지**(리뷰 지적) |
 | `backend/src/ws/ws-ticket.int-spec.ts` | 통합 | 발급·소비, **같은 티켓 두 번째는 거부**(`GETDEL`의 1회성), TTL 만료 |
 | `backend/src/ws/ws.gateway.int-spec.ts` | 통합 | 티켓 경로 접속, Origin 필수(없음·미허용 모두 거부), **`?token=` 회귀**(옛 경로 부활 여부를 잡는다) |
 | `backend/src/dealer/dealer.int-spec.ts` | 통합 | 폐기된 세션·`FINISHED` 대회의 티켓 발급 거부(`assertDealerSessionValid` 재사용 경로) |
-| `frontend/src/app/api/ws-ticket/route.test.ts` | 단위 | 쿠키 없으면 401(백엔드 미호출), 성공 응답 본문에 액세스 토큰 없음, 백엔드 실패 시 상태 코드 전달 |
+| `frontend/src/app/api/ws-ticket/route.test.ts` | 단위 | 쿠키 없으면 401(백엔드 미호출), 성공 응답 본문에 액세스 토큰 없음, 백엔드 실패 시 상태 코드 전달, **`WsTicketResponseSchema.parse`가 형식이 다른 응답을 502로 막는지**(리뷰 지적) |
 | `frontend/src/app/(terminal)/dealer/[id]/action.test.ts` | 단위 | 서버 액션이 `dealerToken`을 httpOnly로 심는지, 실패 시 쿠키를 심지 않는지 |
 | `frontend/src/app/(terminal)/dealer/[id]/page.test.tsx` | 단위 | 인증 성공 시 그 테이블 게임 화면으로 이동 |
-| `frontend/src/app/(terminal)/table/[tableId]/GameClient.test.tsx` | 단위 | 티켓 `fetch` 실패가 처리되지 않은 거부로 새지 않는지 |
+| `frontend/src/app/(terminal)/table/[tableId]/GameClient.test.tsx` | 단위 | 티켓 `fetch` 실패가 처리되지 않은 거부로 새지 않는지, **티켓 발급 403 시 배너가 뜨고 서버 문구가 그대로 보이는지**(리뷰 지적) |
+| `frontend/src/app/(terminal)/table/[tableId]/page.test.tsx` | 단위 | **이 브랜치의 핵심 불변식**: 쿠키의 토큰 문자열이 `GameClient`로 넘어가는 어떤 prop에도 없다(리뷰 지적, 아래 "머지 직전 마지막 손질" 참고) |
 
-기준선: contract 44 / 백엔드 단위 139 (9 → 10 스위트) / 프론트 47 (10 → 13 파일) /
+기준선: contract 44 / 백엔드 단위 140 (10 스위트) / 프론트 52 (14 파일) /
 통합 237 / 타입 에러 0.
+
+### 머지 직전 마지막 손질
+
+전체 브랜치 리뷰(머지 판정: 가능)가 낸 지적 여섯 개를 마지막으로 처리했다.
+Important 둘, Minor 넷.
+
+- **`page.tsx`에 토큰 미전달을 지키는 테스트가 없었다.** 설계 문서가 프론트
+  단위 테스트로 명시한 셋 중 이것만 구현이 빠져 있었다 — `GameClient`의 props
+  타입에 `token`이 없어 tsc가 우연히 막고 있었을 뿐, 누가 prop을 추가하면
+  타입도 통과하고 285개 테스트도 초록인 채로 JWT가 `view-source`에 돌아왔을
+  것이다. `page.test.tsx`를 새로 만들어, `GamePage`가 반환한 React 엘리먼트
+  트리를 직렬화해 쿠키 값 문자열이 어디에도 없는지 단언한다. 특정 prop 이름을
+  보지 않는다 — RED 확인에서 `token`이 아니라 `authCredential`이라는 새 이름의
+  prop으로 같은 값을 실었는데도 두 테스트 모두 빨개졌다(`expected ... not to
+  contain 'leaked-jwt-value'`, `'leaked-dealer-jwt-value'`). 확인 뒤 임시
+  변경은 되돌렸고 `git diff`로 `page.tsx`가 원상태인 것을 확인했다.
+- **티켓 발급 실패·소켓 이상 종료가 화면에 안 보였다.** `GameClient.tsx`에
+  `connectionError` state 하나를 추가했다 — 티켓 발급이 `!res.ok`거나 fetch
+  자체가 거부되면, 그리고 소켓이 `onerror`나 정상 종료(1000)가 아닌
+  `onclose`를 받으면 채운다. 서버가 문구를 주면 그 문구를, 없으면 "연결이
+  끊어졌습니다. 화면을 새로고침하거나 운영자에게 알려주세요."를 배너로
+  보여준다. 언마운트로 인한 `onclose`는 기존 `cancelled` 플래그로 걸러 에러로
+  보지 않는다. 화면 디자인은 하지 않았다 — B7의 몫이다. RED 확인은
+  `GameClient.tsx`만 stash로 되돌리고(테스트 파일은 새 버전 유지) 새 테스트
+  둘을 돌려 실제로 실패하는 것을 봤다("Unable to find an element with the
+  text: 만료된 딜러 세션입니다." / 기본 문구도 동일하게 실패). 확인 뒤
+  `git stash pop`으로 구현을 되돌렸다.
+- **contract 스키마 주석이 "마지막 그물"이라 적어놓고 아무도 parse하지
+  않았다.** `frontend/src/app/api/ws-ticket/route.ts`가 백엔드 응답을
+  `WsTicketResponseSchema.parse`에 태우도록 고쳤다 — 이제 스키마에 없는 키가
+  실제로 스트립되고, 백엔드가 `ticket`을 안 주면 502(액세스 토큰이 새지 않는
+  응답)로 막는다. `route.test.ts`에 이 실패 경로 테스트를 더했다.
+- **`@UseGuards(JwtAuthGuard)`를 지나는 테스트가 없었다.** `session.controller
+  .spec.ts`의 `RolesGuard(new Reflector())` 직접 실행 패턴을 그대로 옮기지는
+  못했다 — `JwtAuthGuard`는 `AuthGuard('jwt')`(passport)를 상속해 `canActivate`를
+  직접 부르려면 passport 전략 등록이 필요하기 때문이다. 대신 Nest의
+  `@UseGuards`가 실제로 남기는 리플렉션 메타데이터(`GUARDS_METADATA` =
+  `'__guards__'`)를 `ws-ticket.controller.spec.ts`에서 읽어 `issue`에
+  `JwtAuthGuard`가 붙어 있는지 확인한다. RED 확인: 데코레이터 줄을 지우자
+  `Matcher error: received value must not be null nor undefined`로 실패했고,
+  되돌리자 6개 전부 다시 통과했다.
+- **안 쓰는 `ForbiddenException` import.** `ws-ticket.int-spec.ts`에서 지웠다.
+- **설계 문서의 성공 상태 코드가 200으로 적혀 있었다.** NestJS `@Post`
+  기본값은 201이다(리뷰어 실측). 정정했고, 스트립이 route handler에서
+  일어난다는 사실도 함께 적었다.
 
 ### 남긴 것
 

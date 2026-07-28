@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, waitFor } from '@testing-library/react';
+import { render, waitFor, screen } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/mocks/server';
 
@@ -30,6 +30,41 @@ describe('GameClient', () => {
     ).not.toThrow();
 
     await waitFor(() => expect(errorSpy).toHaveBeenCalled());
+
+    errorSpy.mockRestore();
+  });
+
+  /**
+   * 리뷰 지적: 티켓 발급이 401·403을 줘도 화면이 "멀쩡해 보이지만 아무것도
+   * 안 움직이는" 상태로 멈췄다. 딜러 클릭이 게임 진행의 트리거인 시스템에서
+   * 가장 나쁜 실패 모드라, 최소한 눈에 띄는 배너로 알린다.
+   */
+  it('티켓 발급이 403이면 화면에 배너가 뜬다', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    server.use(
+      http.post('*/api/ws-ticket', () =>
+        HttpResponse.json({ message: '만료된 딜러 세션입니다.' }, { status: 403 }),
+      ),
+    );
+
+    render(<GameClient tableId="tbl-1" seatIndex={-1} initIsDealer={true} />);
+
+    await waitFor(() => expect(screen.getByText('만료된 딜러 세션입니다.')).toBeInTheDocument());
+
+    errorSpy.mockRestore();
+  });
+
+  it('서버가 문구를 안 주면 기본 안내 문구를 보여준다', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    server.use(http.post('*/api/ws-ticket', () => new HttpResponse(null, { status: 500 })));
+
+    render(<GameClient tableId="tbl-1" seatIndex={-1} initIsDealer={true} />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByText('연결이 끊어졌습니다. 화면을 새로고침하거나 운영자에게 알려주세요.'),
+      ).toBeInTheDocument(),
+    );
 
     errorSpy.mockRestore();
   });

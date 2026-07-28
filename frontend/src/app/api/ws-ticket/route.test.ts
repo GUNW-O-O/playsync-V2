@@ -96,6 +96,22 @@ describe('POST /api/ws-ticket', () => {
     expect(JSON.stringify(body)).not.toContain('leaked-token');
   });
 
+  it('백엔드가 ticket 없이 200을 주면 스키마 parse가 막고 502를 준다', async () => {
+    // WsTicketResponseSchema.parse가 실제로 도는지 확인한다. 안 돌면 이
+    // 응답이 그대로 흘러나가 스트립도, 형식 보증도 없어진다.
+    server.use(
+      http.post('http://backend.test/ws/ticket', () => HttpResponse.json({ ok: true })),
+    );
+    cookieStore.get.mockImplementation((name: string) =>
+      name === 'accessToken' ? { value: 'player-token' } : undefined,
+    );
+
+    const res = await POST();
+
+    expect(res.status).toBe(502);
+    expect(JSON.stringify(await res.json())).not.toContain('player-token');
+  });
+
   it('백엔드 실패는 상태코드와 문구를 그대로 전한다', async () => {
     server.use(
       http.post('http://backend.test/ws/ticket', () =>

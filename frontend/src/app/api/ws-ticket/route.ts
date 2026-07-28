@@ -1,5 +1,6 @@
 import { cookies } from 'next/headers';
 import { NextResponse } from 'next/server';
+import { WsTicketResponseSchema } from '@playsync/contract';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
 
@@ -35,7 +36,15 @@ export async function POST() {
     );
   }
 
-  // 백엔드 본문을 그대로 흘려보내지 않는다. 키를 골라 담아야 나중에 백엔드가
-  // 필드를 늘려도 이 경로로 새지 않는다.
-  return NextResponse.json({ ticket: (body as { ticket: string }).ticket });
+  // 백엔드 본문을 그대로 흘려보내지 않는다. contract 스키마로 parse해야
+  // 스키마에 없는 키(예: 실수로 실린 accessToken)가 실제로 스트립된다 —
+  // ws-ticket.ts의 주석이 말하는 "마지막 그물"은 여기서 실행돼야 사실이 된다.
+  try {
+    const parsed = WsTicketResponseSchema.parse(body);
+    return NextResponse.json(parsed);
+  } catch {
+    // 백엔드가 ticket을 안 줬거나 모양이 다르다. 액세스 토큰이 새지 않는
+    // 응답이면 되므로 본문은 담지 않는다.
+    return NextResponse.json({ message: '티켓 응답 형식이 올바르지 않습니다.' }, { status: 502 });
+  }
 }

@@ -1,4 +1,3 @@
-import { ForbiddenException } from '@nestjs/common';
 import { Role } from '@prisma/client';
 import Redis from 'ioredis';
 import { createTestRedis, flushTestRedis } from '../../test/helpers/redis';

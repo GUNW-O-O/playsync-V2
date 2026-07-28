@@ -76,8 +76,8 @@ npm run test:int       # 통합 테스트 (컨테이너 기동부터 자동)
 
 ```
 contract       44  (2 suites)
-백엔드 단위   139  (10 suites)
-프론트 단위    47  (13 files)
+백엔드 단위   140  (10 suites)
+프론트 단위    52  (14 files)
 통합          237  (19 suites)
 타입 에러       0
 ```
