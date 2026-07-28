@@ -982,8 +982,7 @@ C2는 테스트 이전에 **두 커넥션 실험**으로 먼저 확인했다(테
 | `user/user.service.int-spec.ts` | 통합 | 본인 참여만, 진행 중/대기 대회는 OTP를 담음, 끝난 대회는 뺌, `SYNCING`에도 담음, 다른 조회 경로엔 안 실림(omit 회귀), `userId` 없으면 거부(딜러 토큰 우회 회귀) |
 | `user/user.controller.spec.ts` | 단위 | 진짜 `RolesGuard`로 `USER`만 통과, `DEALER`·`STORE_ADMIN`·`PLATFORM_ADMIN` 거부 |
 
-기준선: contract 44 (2 스위트) / 백엔드 단위 158 (12 스위트) / 프론트 단위 52
-(14 파일) / 통합 263 (21 스위트) / 타입 에러 0.
+기준선은 아래 "최종 리뷰 대응"이 테스트를 더 얹은 뒤의 값이 최종이다.
 
 ### 남긴 것
 
