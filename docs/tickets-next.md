@@ -44,6 +44,7 @@
 |---|---|---|---|
 | T22 | 프론트 앱 셸 | B5 일부 + B7 토대 | 완료 (PR #21) |
 | T23 | 딜러 인증 강화 | B1 (딜러 절반) | 완료 (#22) |
+| T24 | WS 단명 티켓 | B1 (계획 C) | 완료 (PR #없음 — 채운다) |
 
 ---
 
@@ -342,6 +343,149 @@ import만 남는다.
 - **대회 존재 여부의 타이밍 차이.** 대회 없음과 OTP 오류를 같은 예외로 묶어 응답을
   가르지 않지만, 대회가 없으면 bcrypt 대조 자체를 건너뛰어 수십 ms 빨리 돌아온다.
   코드 주석이 주장하는 "구분 불가"는 아직 완전하지 않다.
+
+---
+
+## T24 — WS 단명 티켓
+
+**항목**: B1(계획 C — WS 토큰 전달). 선행 문서
+[`docs/superpowers/specs/2026-07-28-ws-ticket-design.md`](./superpowers/specs/2026-07-28-ws-ticket-design.md)
+**범위**: `backend/src/ws/`, `backend/src/dealer/dealer.service.ts`,
+`packages/contract/src/ws-ticket.ts`, `frontend/src/app/api/ws-ticket/`,
+`frontend/src/app/(terminal)/table/[tableId]/`, `frontend/src/app/(terminal)/dealer/[id]/`
+**프론트 영향**: 있음 (게임 화면 연결 경로, 딜러 인증 경로 둘 다)
+
+### 문제
+
+위협 모델 관찰 1·2·10이 한 경로였다. WS 토큰이 JWT 그대로 쿼리스트링에
+실려(`?token=<JWT>`) 서버·프록시 로그와 브라우저 히스토리에 남고, Origin 검사는
+헤더가 없으면 통과해 브라우저를 거치지 않는 접속을 걸러내지 못했다. 그리고
+서버 컴포넌트가 httpOnly `accessToken` 쿠키를 읽어 `GameClient`에 `token` prop으로
+넘기고 있었는데, Next App Router에서 서버 → 클라이언트 prop은 RSC 페이로드로
+직렬화되어 페이지 HTML 안에 그대로 실린다. `view-source`로 보이는 값이라
+httpOnly를 건 이유가 정면으로 무효화됐다. `dealerToken`은 한 단계 더 나빴다 —
+`js-cookie`는 httpOnly를 설정할 수 없어 애초에 `document.cookie`로 읽혔고, 이
+토큰이 곧 `resolveWinners` 호출 권한, 즉 돈이었다.
+
+### 결정
+
+**단명 티켓 교환.** Next route handler(`/api/ws-ticket`)가 httpOnly 쿠키를
+서버에서 읽어 백엔드 `POST /ws/ticket`을 부르고, 브라우저에는 1회용 30초
+티켓만 내려간다. 게이트웨이는 그 티켓을 Redis `GETDEL`로 소비하고, 신뢰의
+출처가 거기로 옮겨간다 — 게이트웨이가 더 이상 JWT를 검증하지 않고
+`JwtService` 의존이 빠졌다. **1회용의 근거가 `GETDEL`의 원자성이다.** 같은
+티켓으로 둘이 동시에 붙으면 하나만 값을 받고 나머지는 `null`을 받아 거부된다.
+읽고-지우는 두 명령으로 나누면 그 사이에 창이 생긴다.
+
+> **버린 선택지 — 첫 메시지 인증, `Sec-WebSocket-Protocol` 헤더.** 둘 다
+> 쿼리스트링(관찰 1)은 비우지만, 액세스 토큰이 여전히 브라우저 JS에 있어야
+> 보낼 수 있어서 관찰 10(RSC 페이로드 노출)을 닫지 못한다. 관찰 10은 "토큰이
+> 브라우저 JS에 존재하는가"의 문제라, JS가 토큰을 들고 있는 방식은 무엇이든
+> 이 문제를 닫지 못한다 — 위협 모델이 Q1에 붙여둔 조건("10번을 함께 닫으려면
+> 액세스 토큰이 브라우저 JS에 들어가지 않는 방식이어야 한다")이 선택지를 하나로
+> 좁힌다.
+
+**Origin은 필수로 바꿨다.** 예전 통과 근거는 "좌석 태블릿처럼 브라우저가 아닌
+클라이언트는 이 헤더를 보내지 않는다"였는데, 사실이 아니었다 — 좌석·딜러
+태블릿 모두 `(terminal)` 라우트 그룹의 Next 화면이라 전부 브라우저다. 실사용
+클라이언트가 전부 브라우저이므로 필수로 바꿔도 깨지는 것이 없다.
+
+**딜러 인증도 서버 액션으로 옮겼다.** `js-cookie` 의존 자체를 제거하고,
+`dealerToken`을 서버 액션에서 httpOnly로 심는다. 클라이언트 JS가 더 이상
+이 토큰을 읽지 못한다.
+
+**티켓 발급이 `tokenVersion`을 대조한다.** `dealer.service.ts`의
+`assertDealerSessionValid`(T23의 `refreshToken`에서 뽑아냄)를 재사용해, 상점이
+내보낸 딜러는 새 연결과 모든 재연결이 즉시 막힌다. 검사가 두 벌이면 한쪽만
+고쳐지는 날이 오기 때문에 갱신 경로와 발급 경로가 같은 함수를 부른다.
+
+> **즉시 소켓 끊기는 뺐다.** `DealerSession`이 대회 단위라(위협 모델 관찰 7 —
+> 딜러 `sub`가 단말을 구분하지 못하는 그 이유), 딜러 한 명을 내보내는 조작이
+> 실제로 폐기하는 것은 **그 대회 딜러 전원의 세션**이다. 지금은 효과가 "다음
+> 갱신 거부"뿐이라 이게 보이지 않는다. 즉시 끊기를 넣으면 테이블 다섯 개가
+> 도는 대회에서 딜러 하나를 내보내려고 누른 버튼이 다섯 테이블의 딜러 화면을
+> 핸드 진행 중에 동시에 끊는 것으로 보인다 — 안 눌리는 버튼이 되고, 안 눌리는
+> 보안 기능은 없는 것과 같다. 계획 B가 `sub`를 단말 단위로 내리면 그때 정확히
+> 한 단말을 끊을 수 있고, 그전까지는 `docs/backlog.md`의 계획 B 문단으로 넘겼다.
+>
+> 그때까지 남는 구멍은 "화면이 켜진 채 연결이 유지된 태블릿" 하나뿐이고, 그건
+> 물리적으로 눈앞에 있는 상황이다.
+
+**티켓이 못 막는 것도 정직하게 적는다.** XSS가 있으면 공격자는 피해자
+브라우저에서 `/api/ws-ticket`을 그냥 호출할 수 있다. 티켓이 XSS를 무해하게
+만들지는 않는다. 바뀌는 것은 **무엇을 훔칠 수 있느냐**다 — 1시간짜리 재사용
+가능한 토큰 대신 30초짜리 1회용 티켓이라, 빼돌려 다른 기기에서 나중에 쓰는
+것이 안 된다. 지속적 탈취가 일회성으로 내려간다.
+
+### RED 확인 방법
+
+`?token=` 회귀 테스트는 "먼저 빨간불"이 성립하지 않는다 — 수정 전에는 이
+경로가 아직 없어 통과하는 것이 정상이기 때문이다. 대신 **수정 후에** 제품
+코드(`backend/src/ws/ws.gateway.ts`)에 옛 `?token=` 분기를 임시로 되살려
+(티켓 검사 앞에서 `token` 쿼리를 읽어 신원을 세팅하고 접속시키는 코드) 회귀
+테스트가 실제로 빨개지는지 확인했다.
+
+- `유효한 JWT를 token 쿼리로 넘겨도 붙을 수 없다` — FAIL
+  (`expect(client.close).toHaveBeenCalledWith(1008, ...)`, `Number of calls: 0`)
+- `Origin이 없는 접속을 거부한다` — `assertAllowedOrigin`의 첫 줄을
+  `if (!origin) return;`로 임시 복원하자 같은 방식으로 FAIL
+  (`Number of calls: 0`)
+
+두 건 모두 확인 뒤 `git checkout backend/src/ws/ws.gateway.ts`로 되돌리고,
+`git diff`로 제품 코드가 원상태인 것을 확인한 다음 다시 돌려 PASS를 재확인했다.
+임시 코드는 커밋되지 않았다.
+
+### 작업 중 추가로 나온 것
+
+리뷰가 잡았고 테스트가 놓친 것 넷.
+
+- **`ws.module.ts`에 `imports: [DealerModule]`만으로는 앱 부팅이 깨졌다.**
+  `WsGateway`가 `PlaysyncService`를 주입받는데 `PlaysyncModule`이 전역이 아니고
+  `DealerModule`이 그걸 재수출하지 않는다. 타입 체크와 기존 테스트 어느 쪽도
+  이걸 잡지 못했다 — 실제로 앱을 부팅해봐야 나오는 에러였다. `WsModule`이
+  `PlaysyncModule`도 직접 import하도록 고쳤다.
+- **`?token=` 회귀 테스트가 "중복"이라는 지적을 리뷰가 냈다.** 지금 코드에서는
+  이 테스트가 '티켓이 없으면 거부한다'와 같은 경로(ticket 부재)를 타서,
+  `token` 파라미터를 게이트웨이 어디서도 읽지 않는다는 점만 보면 맞는
+  관찰이다. 하지만 계획 본문이 이 테스트를 명시적으로 요구했으므로
+  **증거로 판정했다** — 위 RED 확인처럼 옛 분기를 되살려 보니 이 테스트만
+  유일하게 빨개졌다(`Number of calls: 0`). 코드 경로 관찰 자체는 맞지만, 이
+  테스트는 지키려는 특정 회귀(token 경로 부활)를 실제로 잡는다. 주석을 그
+  사실대로 정정했다.
+- **RED로 지목된 두 테스트가 수정 전에 이미 GREEN이었다.** 옛 코드가 다른
+  이유로 우연히 `close(1008)`을 호출하고 있어서, "먼저 빨간불"이 그대로는
+  성립하지 않았다. 제품 코드를 실제로 되돌려 진짜 RED를 보는 절차(위 "RED
+  확인 방법")를 추가로 밟아 확인했다.
+- **티켓 `fetch`에 `try/catch`가 없었다.** 계획 본문이 준 코드 형태가 그대로
+  였고, 네트워크 실패가 처리되지 않은 프라미스 거부로 샜다. 리뷰가 잡았고,
+  `GameClient.test.tsx`를 새로 만들어 fetch 실패 시의 동작을 덮었다.
+
+### 테스트
+
+| 파일 | 계층 | 무엇 |
+|---|---|---|
+| `backend/src/ws/ws-ticket.controller.spec.ts` | 단위 | `POST /ws/ticket`의 성공·인증 실패·딜러 세션 무효 분기 |
+| `backend/src/ws/ws-ticket.int-spec.ts` | 통합 | 발급·소비, **같은 티켓 두 번째는 거부**(`GETDEL`의 1회성), TTL 만료 |
+| `backend/src/ws/ws.gateway.int-spec.ts` | 통합 | 티켓 경로 접속, Origin 필수(없음·미허용 모두 거부), **`?token=` 회귀**(옛 경로 부활 여부를 잡는다) |
+| `backend/src/dealer/dealer.int-spec.ts` | 통합 | 폐기된 세션·`FINISHED` 대회의 티켓 발급 거부(`assertDealerSessionValid` 재사용 경로) |
+| `frontend/src/app/api/ws-ticket/route.test.ts` | 단위 | 쿠키 없으면 401(백엔드 미호출), 성공 응답 본문에 액세스 토큰 없음, 백엔드 실패 시 상태 코드 전달 |
+| `frontend/src/app/(terminal)/dealer/[id]/action.test.ts` | 단위 | 서버 액션이 `dealerToken`을 httpOnly로 심는지, 실패 시 쿠키를 심지 않는지 |
+| `frontend/src/app/(terminal)/dealer/[id]/page.test.tsx` | 단위 | 인증 성공 시 그 테이블 게임 화면으로 이동 |
+| `frontend/src/app/(terminal)/table/[tableId]/GameClient.test.tsx` | 단위 | 티켓 `fetch` 실패가 처리되지 않은 거부로 새지 않는지 |
+
+기준선: contract 44 / 백엔드 단위 139 (9 → 10 스위트) / 프론트 47 (10 → 13 파일) /
+통합 237 / 타입 에러 0.
+
+### 남긴 것
+
+- **즉시 소켓 끊기**(위협 모델 Q1의 나머지 절반). `DealerSession`이 단말이
+  아니라 대회 단위인 한 표현할 수 없다. 계획 B(`docs/backlog.md`)로 넘겼다 —
+  단말 단위 신원이 생겨야 정확히 한 단말만 끊을 수 있다.
+- **XSS가 여전히 `/api/ws-ticket`을 호출할 수 있다.** 티켓은 탈취의 지속성을
+  낮췄을 뿐 XSS 자체를 막지 않는다. 별건이다.
+- T23이 남긴 이월 항목(대회 단위 잠금의 DoS 원시함수, `omit`의 Prisma 클라이언트
+  수준화, 상점 소유권 검사 누락 등)은 T24가 건드리지 않았다 — 위 `backlog.md`
+  참고.
 
 ---
 
