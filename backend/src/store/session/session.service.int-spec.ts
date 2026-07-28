@@ -500,6 +500,14 @@ describe('SessionService.createTable — tableOrder 경합', () => {
 
     expect(`중복 없는 번호 ${new Set(orders).size}개 / 전체 ${orders.length}개`)
       .toBe(`중복 없는 번호 ${orders.length}개 / 전체 ${orders.length}개`);
+
+    // 위 검사는 "겹치지 않았다"만 본다. 두 호출이 전부 실패해도(진짜 데드락,
+    // 무관한 회귀, insertTable이 삽입 전에 던지는 경우 등) orders는 사전에
+    // 만들어둔 1개뿐이라 size === length가 그대로 성립해 초록불이 뜬다.
+    // `Promise.allSettled`가 두 거부를 다 삼키므로 그 실패는 겉으로도 안 보인다.
+    // 그래서 "적어도 하나는 실제로 추가됐다"를 별도로 확인한다.
+    expect(`사전 생성 1개 대비 추가된 개수 ${orders.length - 1}개 (0이면 둘 다 실패)`)
+      .not.toBe('사전 생성 1개 대비 추가된 개수 0개 (0이면 둘 다 실패)');
   });
 
   it('딜러 세션이 없으면 명시적으로 거부한다', async () => {
