@@ -25,28 +25,40 @@ export default function GameClient({ tableId, initialData, seatIndex, initIsDeal
 
     // 티켓은 1회용 30초라 연결 시도마다 새로 받는다. 액세스 토큰은 이 컴포넌트에
     // 들어오지 않는다 — 쿠키를 읽는 것은 route handler(서버)뿐이다.
+    //
+    // fetch 자체가 reject하는 경우(네트워크 단절, 브라우저 확장 차단 등)를
+    // try/catch로 감싼다. 감싸지 않으면 이 async IIFE는 어디서도 await되지
+    // 않으므로 처리되지 않은 프라미스 거부로 새어 나간다. res.json() 파싱
+    // 실패도 같은 자리에서 잡힌다.
     (async () => {
-      const res = await fetch('/api/ws-ticket', { method: 'POST' });
-      if (!res.ok) {
-        console.error('WS 티켓을 받지 못했습니다.');
-        return;
+      try {
+        const res = await fetch('/api/ws-ticket', { method: 'POST' });
+        if (!res.ok) {
+          console.error('WS 티켓을 받지 못했습니다.');
+          return;
+        }
+        const { ticket } = await res.json();
+        if (cancelled) return;
+
+        const wsUrl = `${process.env.NEXT_PUBLIC_BACKEND_URL?.replace('http', 'ws')}/playsync?tableId=${tableId}&ticket=${ticket}`;
+        socket = new WebSocket(wsUrl);
+        socketRef.current = socket;
+
+        socket.onmessage = (event) => {
+          const { event: serverEvent, data } = JSON.parse(event.data);
+          if (serverEvent === 'renderGame') {
+            setGameState(data);
+          }
+          else if (serverEvent === 'REBUY_PROMPT') {
+            setRebuyData(data);
+          }
+        };
+      } catch (err) {
+        // 언마운트로 인한 중단(cancelled)은 정상 경로다. 에러처럼 남기지 않는다.
+        if (!cancelled) {
+          console.error('WS 티켓 요청 중 오류가 발생했습니다.', err);
+        }
       }
-      const { ticket } = await res.json();
-      if (cancelled) return;
-
-      const wsUrl = `${process.env.NEXT_PUBLIC_BACKEND_URL?.replace('http', 'ws')}/playsync?tableId=${tableId}&ticket=${ticket}`;
-      socket = new WebSocket(wsUrl);
-      socketRef.current = socket;
-
-      socket.onmessage = (event) => {
-        const { event: serverEvent, data } = JSON.parse(event.data);
-        if (serverEvent === 'renderGame') {
-          setGameState(data);
-        }
-        else if (serverEvent === 'REBUY_PROMPT') {
-          setRebuyData(data);
-        }
-      };
     })();
 
     return () => {
