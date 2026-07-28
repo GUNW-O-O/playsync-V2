@@ -45,6 +45,7 @@
 | T22 | 프론트 앱 셸 | B5 일부 + B7 토대 | 완료 (PR #21) |
 | T23 | 딜러 인증 강화 | B1 (딜러 절반) | 완료 (#22) |
 | T24 | WS 단명 티켓 | B1 (계획 C) | 완료 (PR #없음 — 채운다) |
+| T25 | 테이블 생성 상점 수동화 | B1 (계획 B 일부) | 완료 (PR #없음 — 채운다) |
 
 ---
 
@@ -538,6 +539,149 @@ Important 둘, Minor 넷.
 - T23이 남긴 이월 항목(대회 단위 잠금의 DoS 원시함수, `omit`의 Prisma 클라이언트
   수준화, 상점 소유권 검사 누락 등)은 T24가 건드리지 않았다 — 위 `backlog.md`
   참고.
+
+---
+
+## T25 — 테이블 생성을 상점 수동으로
+
+**항목**: `docs/backlog.md`의 B1 계획 B 일부. 선행 문서
+[`docs/superpowers/specs/2026-07-28-table-creation-design.md`](./superpowers/specs/2026-07-28-table-creation-design.md)
+(같은 문서가 T26·딜러 단말 신원도 담고 있으나, **이 티켓이 닫은 것은 테이블 생성
+쪽뿐이다** — 아래 "남긴 것" 참고)
+**범위**: `backend/src/payment/payment.service.ts`,
+`backend/src/store/session/session.service.ts`,
+`backend/src/store/session/session.controller.ts`,
+`backend/src/redis/redis.service.ts`, `backend/prisma/schema.prisma`(+마이그레이션)
+**프론트 영향**: 없음 (상점 콘솔 화면이 아직 없어 새 엔드포인트 둘에 호출자가 없다)
+
+### 문제
+
+`payment.service.ts:167-174`가 좌석 점유 수가 **정확히** 7이 되는 순간
+`createTable`을 불러 테이블을 늘렸다. 카운트 비교라 엣지 트리거였다 — 기존
+테이블에 8번째가 앉으면 `cnt === 8`이라 안전하지만, **7을 다시 넘는 경로**가 샜다.
+탈락이 비트를 0으로 내리고(`playsync.service.ts:355`) 리바인·늦은 등록이 다시
+1로 올리므로, 7 → 6 → 7이면 빈 테이블이 또 생겼고 반복할 수 있었다. `createTable`
+자신도 이미 빈 테이블이 있는지 보지 않고 무조건 만들었다.
+
+여기에 셋이 더 있었다. `session.service.ts:208`의 `tableOrder`가
+`tournament.tables.length`를 트랜잭션 **밖에서** 읽어, 동시에 두 번 불리면 같은
+번호가 나올 수 있었다. `dealerSession!` non-null 단언은 딜러 세션이 없는 대회
+(`completeSession`이 닫으며 지운 경우)에서 그대로 런타임 예외로 죽었다. 그리고
+`createTable`은 지금까지 내부 호출뿐이라 소유권 검사가 아예 없었다 — 엔드포인트로
+노출하는 순간 필요해졌다.
+
+### 결정
+
+**자동 생성을 지우고 상점 콘솔의 버튼으로 옮긴다.** 테이블이 소리 없이 늘어나면
+그 테이블에 앉은 손님을 아무도 응대하지 못하는 상황이 생긴다. 현장에서 테이블을
+여는 것은 딜러를 배치하고 칩과 카드를 세팅하는 물리적 행위이므로, 시스템이 그
+결정을 대신할 근거가 없다.
+
+`POST /store/sessions/:id/tables` / `DELETE /store/sessions/:id/tables/:tableId`를
+`@Roles(STORE_ADMIN)`으로 추가했다 — `reissueDealerOtp`·`revokeDealerSession`과
+같은 권한이다. 소유권은 `assertTournamentOwnership`을 각 서비스 메서드의 **첫
+문장**으로 재사용한다. `createTable`은 `FINISHED` 대회를 409로 막고(죽은 대회에
+테이블이 되살아나는 것 방지), 트랜잭션 **안에서** `tx.table.count`로
+`tableOrder`를 센 뒤 `@@unique([tournamentId, tableOrder])` 제약으로 동시 호출의
+경합을 재시도 코드가 아니라 구조로 막는다(P2002를 잡아 409로 변환). `dealerSession`
+없음은 명시적 409로 바꾸고 `!` 단언을 지웠다. 성공 시 `SEAT_LIST_UPDATED`를 새로
+방출한다 — 자동 생성일 때는 바로 뒤에서 `buyIn`이 이벤트를 냈지만, 상점이 단독으로
+부르면 아무도 내지 않아 전광판과 좌석 목록이 새 테이블을 모른다.
+
+`deleteTable`은 빈 테이블만 지운다. 점유 검사와 삭제를
+`deleteMany({ where: { id, tournamentId, tablePlayers: { none: {} } } })` 한
+문장으로 묶어 check-then-act 경합을 없앴다(아래 "작업 중 추가로 나온 것" 참고).
+`tableOrder`는 재정렬하지 않는다 — 재정렬하면 전광판과 딜러 화면이 보는 번호가
+통째로 바뀌어 물리 테이블과 화면이 어긋난다. 번호가 비는 것보다 나쁘다.
+
+### 버린 선택지
+
+- **테이블 상태 컬럼** — 딜러의 `startPreFlop`이 곧 진행 중이고, 별도 컬럼은 같은
+  사실의 두 번째 기록이 되어 언젠가 어긋난다.
+- **대기열** — 환불 경로가 없다. 참가비는 포인트 차감이 먼저 일어나므로 좌석을
+  나중에 배정하면 실패 시 되돌릴 방법이 있어야 한다.
+- **자동 생성을 멱등하게 고쳐 유지** — 조건을 "빈 좌석 있는 테이블이 없으면 만든다"로
+  바꾸면 버그는 사라지지만, 딜러 없는 테이블이 소리 없이 생기는 문제는 남는다.
+- **Redis 유실 지연 복구** — 브레인스토밍에서 한 번 채택했다가 뺐다. `createTable`의
+  DB→Redis 순서 노출은 T25가 만드는 것이 아니라 `buyIn`·`startSession`과 같은 기존
+  패턴이고, 빈 비트맵으로 채우는 반쪽 복구는 앉아 있던 사람이 사라진 화면을 만든다.
+  B2에서 `buttonUser`·스냅샷과 함께 본다.
+
+### RED 확인 방법
+
+**자동 생성 제거**(Task 1) — `table-autocreate.int-spec.ts`가 수정 전에 그대로
+빨갰다. 일곱 번째 착석이 `cnt === 7`을 통과해 `createTable`을 한 번 더 불러
+"테이블 수 1"을 기대한 자리에 "테이블 수 2"가 나왔다.
+
+**`tableOrder` 경합**(Task 2) — 수정 전 실행이 실제로 실패했다. 동시 호출 2건 중
+1건만 성공해 "중복 없는 번호 2개 / 전체 3개"였고, 딜러 세션 없음 테스트는
+`dealerSession!.id`에서 `TypeError`가 났다(기대는 `ConflictException`). 리뷰가
+이 동시성 테스트를 "우연히 초록일 수 있다"고 지적했다 — 두 호출이 전부 실패해도
+"중복 없음"만 보면 통과하기 때문이다. `insertTable`에 강제 실패를 임시로 넣어
+새로 추가한 "적어도 하나는 성공했다" 단언이 실제로 빨개지는 것을 확인한 뒤
+되돌렸다.
+
+**엔드포인트·소유권·이벤트**(Task 3) — 6건 중 5건은 계획대로 빨갰다(컨트롤러
+라우팅 3건, 소유권 403, `FINISHED` 409, 이벤트 미발행). **딜러 세션 없음 409
+테스트 하나는 처음부터 우연히 통과했다.** 옛 `createTable(tournamentId)`
+시그니처에 인자를 하나 더 얹은 새 시그니처가 인자 **개수** 면에서는 호환됐던
+탓에, 소유권·상태 검사를 아직 넣지 않은 코드로도 이 테스트만은 다른 경로로
+"무언가를 던진다"는 조건을 만족시켰다. T22·T23·T24와 같은 종류의 "테스트가
+처음부터 초록이면 의심한다"가 여기서도 한 번 더 맞았다.
+
+**`deleteTable`**(Task 4) — 컨트롤러 3건·통합 3건 전부 "핸들러/메서드가 없다"는
+이유로 정확히 빨갰다. 리뷰가 지적한 check-then-act 경합에 대응해 추가한 "좌석에
+사람이 있으면 `TablePlayer` 행도 그대로 남는다" 테스트는, 가드를 임시로 무조건
+삭제(`deleteMany({ where: { id, tournamentId } })`)로 되돌려 실제로 빨개지는 것
+(`Received promise resolved instead of rejected`)을 확인한 뒤 정상 코드로
+복원했다.
+
+### 작업 중 추가로 나온 것
+
+- `new SessionService(...)` 생성자 호출부가 계획이 예고한 12곳이 아니라 13곳이었다
+  (`session.service.int-spec.ts`의 "tableOrder 경합" describe에 계획이 언급하지
+  않은 세 번째 호출이 있었다). 같은 describe의 `createTable` 호출 3곳도 새
+  시그니처로 `ownerId`가 필요해져 함께 배선했다.
+- `emitSeatList`가 부르는 `this.redis.getTournamentTables`가 계획이 준 단위
+  테스트 mock에 없어 `TypeError`로 죽었다 — mock에 메서드를 추가해 해결했다.
+- 리뷰가 `deleteTable`의 check-then-act 경합을 잡았다. `findFirst`로 점유를
+  확인하고 별도 왕복으로 `table.delete`를 부르는 사이, 동시 `buyIn` 트랜잭션이
+  같은 테이블에 참가자를 꽂으면 `TablePlayer`의 `onDelete: Cascade`가 그 행을
+  조용히 지울 수 있었다 — 참가비를 이미 뗀 사람이 장부에서 사라지는, 이 가드가
+  막으려던 바로 그 피해다. 점유 검사와 삭제를 `deleteMany`의 `where` 절 하나
+  (`tablePlayers: { none: {} }`)로 묶어 구조로 막았다. Task 2가 `tableOrder`
+  경합을 유니크 제약으로 막은 것과 같은 방식이다.
+
+리뷰가 남긴 사소한 지적(고치지 않고 이월한 것)은 `docs/backlog.md`의 "T25가
+남긴 이월 항목"에 있다.
+
+### 테스트
+
+| 파일 | 계층 | 무엇 |
+|---|---|---|
+| `payment/payment.service.int-spec.ts` | 통합 | 자동 생성 제거로 안 쓰이게 된 `createTable` 스텁 제거 |
+| `scenario/table-autocreate.int-spec.ts` | 시나리오(신규) | 일곱 명이 앉아도 테이블 수는 늘지 않는다 |
+| `store/session/session.service.int-spec.ts` | 통합 | `tableOrder` 동시 경합(중복 없음 + 적어도 하나 성공), 딜러 세션 없음 409, 추가의 소유권 403/`FINISHED` 409/이벤트 발행, 삭제(빈 테이블/점유 시 409·`TablePlayer` 잔존/다른 대회 404) |
+| `store/session/session.service.spec.ts` | 단위 | `createTable` 소유권·상태 분기 |
+| `store/session/session.controller.spec.ts` | 단위 | 새 두 라우트에 `@Roles(STORE_ADMIN)`이 실제로 붙어 있는지(진짜 `RolesGuard` 실행, T23·T24와 같은 방식) |
+| `redis/redis.service.ts` | — | `removeSeatBitmap` 추가. 단독 스펙은 없고 삭제 경로의 통합 테스트가 Redis 필드 소멸을 함께 확인한다 |
+
+기준선: contract 44 / 백엔드 단위 150 (10 스위트) / 프론트 단위 52 (14 파일) /
+통합 244 (20 스위트) / 타입 에러 0.
+
+### 남긴 것
+
+- **상점 콘솔 화면이 없어 새 엔드포인트 둘에 호출자가 없다.** T23의 재발급·
+  내보내기와 같은 상태다. B5 명세 → B7 구현.
+- **좌석 선택 화면의 "빈 자리 없음" 판정이 없다.** 백엔드는 `getSeatStatus`가
+  비트맵을 주는 것으로 끝났다.
+- **더블클릭으로 빈 테이블이 둘 생기는 것은 막지 않는다.** 순차 실행이면
+  `count`가 각각 달라 유니크 제약을 우회한다 — 콘솔이 버튼을 비활성화할 문제고,
+  삭제가 있으므로 되돌릴 수 있다.
+- **T26(딜러 단말 신원)은 이 티켓이 아니다.** 설계 문서가 T25·T26을 한 문서에
+  담았지만, 구현은 T25(테이블 생성)까지만이다. `DealerSession`을 단말 단위로
+  내리는 일, `Table.dealerId` 제거, 즉시 소켓 끊기는 여전히 미착수다 — `backlog.md`
+  의 계획 B로 남아 있다.
 
 ---
 
