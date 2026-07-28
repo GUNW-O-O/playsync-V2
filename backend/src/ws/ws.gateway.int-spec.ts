@@ -206,6 +206,15 @@ describe('WsGateway 인바운드 경계', () => {
     it('유효한 JWT를 token 쿼리로 넘겨도 붙을 수 없다', async () => {
       // 옛 경로가 살아 있으면 관찰 1(쿼리스트링 노출)과 10(httpOnly 무효화)이
       // 닫히지 않는다. 티켓을 도입해도 옛 문이 열려 있으면 아무것도 바뀌지 않는다.
+      //
+      // 지금 코드에서는 이 테스트가 바로 위 '티켓이 없으면 거부한다'와 같은
+      // 경로(ticket 부재)를 탄다 — token 파라미터는 게이트웨이 어디서도 읽히지
+      // 않는다. 그래도 이 테스트가 지키는 것은 실재한다: handleConnection에
+      // token= 을 다시 읽어 티켓 검사 앞에서 신원을 세팅하고 접속시키는 옛
+      // 분기를 되살려 돌려본 결과, 이 테스트만 유일하게 RED로 갈라졌다
+      // (client.close가 전혀 호출되지 않음 — "Number of calls: 0"). 즉 이
+      // 테스트는 지금은 다른 테스트와 같은 이유로 통과하지만, token 경로가
+      // 되살아나는 회귀를 실제로 잡는다.
       const jwt = new JwtService({ secret: 'test-only-not-a-real-secret' });
       const token = jwt.sign({ sub: 'alice', nickname: 'alice', role: 'USER' });
 
