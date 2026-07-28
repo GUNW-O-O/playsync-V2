@@ -135,7 +135,17 @@ omit: { tournamentParticipation: { playerOtp: true } }
 ```
 
 읽는 단 한 곳(마이페이지 조회)만 `omit: { playerOtp: false }`를 준다. 그러면
-**빠뜨림이 조용한 누출이 아니라 컴파일 에러**가 된다.
+**빠뜨림이 조용한 누출이 아니라 컴파일 에러**가 된다 — 단, `super()`에 이
+객체를 넘기는 것만으로는 안 된다. `class PrismaService extends PrismaClient`
+처럼 타입 인자 없이 상속하면 `PrismaClient<ClientOptions>`의 `ClientOptions`가
+기본값(`Prisma.PrismaClientOptions`, 아직 모델별로 좁혀지지 않은 범용 타입)으로
+고정돼 `omit`이 런타임에만 걸리고 생성된 결과 타입은 `playerOtp: string`을
+그대로 선언한다 — 빠뜨린 읽기 경로가 컴파일은 통과하고 `undefined`를 조용히
+돌려준다. 실제로 이 리포에서 그렇게 나던 것을 확인했다. 컴파일 에러로 만들려면
+`extends PrismaClient<{ adapter: PrismaPg; omit: { tournamentParticipation: {
+playerOtp: true } } }>`처럼 `ClientOptions`를 명시해야 한다 — 이 타입 인자가
+`Prisma.TournamentParticipationDelegate<ExtArgs, ClientOptions>`를 거쳐 결과
+타입에서 `playerOtp`를 실제로 지운다. `prisma.service.ts`가 이 형태를 쓴다.
 
 `backlog.md`의 "T23이 남긴 이월 항목"에 있던 그 항목을 여기서 실제로 한다.
 T23은 `dealerOtpHash`를 손으로 지우는 `omit`이 일곱 곳이었고, 그중 두 곳을
@@ -195,8 +205,7 @@ JWT의 `userId`로만 조회한다. 경로에 `userId`를 받지 않는다 — �
 |---|---|---|
 | `payment/player-otp.spec.ts` | 단위 | 8자리인가, 앞자리 0이 살아 있는가, 매번 다른가 |
 | `payment/payment.service.int-spec.ts` | 통합 | 참가마다 OTP가 발급되는가, 리바인은 재발급하지 않는가, 대회 안에서 유일한가, 충돌 시 재생성하는가 |
-| `user/user.service.int-spec.ts` | 통합 | 본인 것만 나오는가, `FINISHED` 대회는 OTP가 빠지는가 |
-| `prisma/prisma.service.int-spec.ts` | 통합 | **기본 조회에 `playerOtp`가 없는가** — omit 회귀 |
+| `user/user.service.int-spec.ts` | 통합 | 본인 것만 나오는가, `FINISHED` 대회는 OTP가 빠지는가, **기본 조회에 `playerOtp`가 없는가**(omit 회귀) |
 
 **충돌 재생성의 RED 확인 방법**: 난수 생성기를 같은 값만 뱉도록 임시로 바꾸고
 두 번째 참가가 재시도 끝에 실패하는지 본다. 재시도가 없으면 P2002가 그대로

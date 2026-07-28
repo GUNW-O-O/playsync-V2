@@ -1,6 +1,6 @@
 import { ConflictException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { PrismaClient, TournamentStatus } from '@prisma/client';
+import { Prisma, PrismaClient, TournamentStatus } from '@prisma/client';
 import { Queue } from 'bullmq';
 import Redis from 'ioredis';
 import { PayMentDto } from 'shared/dto/payment.dto';
@@ -418,12 +418,46 @@ describe('PaymentService — 참가 OTP 발급', () => {
   });
 
   it('같은 사람이 두 번 참가하면 재시도하지 않고 그대로 실패한다', async () => {
+    // 인자 없는 `.rejects.toThrow()`는 아무 에러나 통과시킨다 — 충돌 판별을
+    // 거꾸로 뒤집어(OTP 충돌이 아닌 것을 충돌로 오분류) 5번 재시도 끝에
+    // `ConflictException('참가 OTP를 만들지 못했습니다...')`를 던지게 고장 내도
+    // 그 조건을 만족해 버린다. 그래서 여기서는 두 가지를 정확히 짚는다 —
+    // (1) 실제로 올라오는 에러가 (tournamentId, userId) 유니크 위반 그
+    // 자체(Prisma P2002, playerOtp가 아닌 필드)라는 것, (2) 재시도를 하지
+    // 않았다는 것을 OTP 생성 호출 횟수로 직접 증명하는 것.
+    const otp = jest.spyOn(playerOtp, 'generatePlayerOtp');
+
     await service.joinSessionWithSeat(dto(0), 'u1');
+    otp.mockClear();
+
     // 좌석을 바꿔도 (tournamentId, userId) 유니크에 걸린다.
     // 이건 OTP 충돌이 아니므로 재시도 대상이 아니다.
-    await expect(
-      service.joinSessionWithSeat(dto(2), 'u1'),
-    ).rejects.toThrow();
+    let caught: unknown;
+    try {
+      await service.joinSessionWithSeat(dto(2), 'u1');
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(Prisma.PrismaClientKnownRequestError);
+    const err = caught as Prisma.PrismaClientKnownRequestError;
+    expect(err.code).toBe('P2002');
+    // ConflictException으로 포장되지 않고 Prisma 원본 에러 그대로 올라왔다는
+    // 뜻이다 — 재시도 루프를 다 돌고 나서 뜨는 '참가 OTP를 만들지 못했습니다'
+    // 메시지가 아니다.
+    expect(err.message).not.toContain('참가 OTP를 만들지 못했습니다');
+
+    // 충돌 필드가 playerOtp가 아니라 (tournamentId, userId)라는 것도 확인한다
+    // — payment.service.ts의 판별 로직과 같은 자리를 본다.
+    const meta = err.meta as
+      | { target?: string[]; driverAdapterError?: { cause?: { constraint?: { fields?: string[] } } } }
+      | undefined;
+    const violatedFields = meta?.target ?? meta?.driverAdapterError?.cause?.constraint?.fields ?? [];
+    expect(violatedFields.some((f) => f.includes('playerOtp'))).toBe(false);
+
+    // 재시도하지 않았다 — 두 번째 참가 시도에서 generatePlayerOtp가 정확히
+    // 한 번만 불렸다(재시도했다면 2회 이상이었을 것이다).
+    expect(otp).toHaveBeenCalledTimes(1);
   });
 
   it('리바인은 OTP를 다시 발급하지 않는다', async () => {

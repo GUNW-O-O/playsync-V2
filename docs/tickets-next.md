@@ -962,8 +962,13 @@ C2는 테스트 이전에 **두 커넥션 실험**으로 먼저 확인했다(테
   그러자 "Jest did not exit"가 떴다. 드라이버 어댑터 구성에서
   `$disconnect()`는 어댑터에 넘긴 pg Pool을 닫지 않는다 — `PrismaService`에
   `pool` 필드를 추가해 `onModuleDestroy`에서 `$disconnect()`에 이어
-  `pool.end()`도 부르게 했다. 테스트 전용 우회가 아니라 앱 정상 종료 시에도
-  있던 같은 누수의 실제 수정이다.
+  `pool.end()`도 부르게 했다. **다만 이 수정이 실제로 효과를 내는 곳은
+  지금은 테스트뿐이다.** `onModuleDestroy`는 Nest가 종료 훅을 실행할 때만
+  불리는데, `backend/src/main.ts`가 `app.enableShutdownHooks()`를 부르지
+  않아서 실행 중인 앱에서는 이 훅 자체가 걸리지 않는다 — 테스트는
+  `closeTestPrisma`/`onModuleDestroy`를 직접 호출하므로 거기서만 지금 이
+  수정이 실행된다. `enableShutdownHooks()`를 추가하는 것은 이 티켓 범위
+  밖의 별도 행동 변화라 손대지 않았다.
 - **첫 태스크 스펙의 mock 오염.** 위 "RED 확인 방법" 참고 — `mockRestore()`가
   앞 `expect` 실패로 실행되지 않을 수 있는 결함을 발견해 `afterEach`로
   고쳤다.
@@ -986,13 +991,16 @@ C2는 테스트 이전에 **두 커넥션 실험**으로 먼저 확인했다(테
   그대로 갖고 있다.** 둘 다 `@UseGuards(JwtAuthGuard)`만 걸고
   `req.user.userId`를 읽는다 — 딜러 토큰이 통과하면 같은 종류의 `undefined`
   문제가 날 수 있는지는 이번 라운드에서 확인하지 않았다. 이 티켓이 고친 것은
-  마이페이지 경로 하나뿐이고, 나머지 둘은 의도적으로 손대지 않았다.
+  마이페이지 경로 하나뿐이고, 나머지 둘은 의도적으로 손대지 않았다. **아래
+  "최종 리뷰 대응"의 F2에서 `payment.controller.ts`만 먼저 좁혔다** —
+  `undefined` 문제가 아니라 역할 자체가 안 맞는 별도 결함이었다.
+  `playsync.controller.ts`는 여전히 손대지 않았다.
 - **`GET /user/add`는 여전히 가드가 없다.** `req.user.userId`를 그대로
   읽으므로 익명 요청이 500이나 undefined 동작을 만들 수 있다. 이 티켓
   범위 밖이라 손대지 않았다.
-- **`user.service.int-spec.ts`가 `entryFee: 1000`을 하드코딩한다.** 픽스처
-  상수를 참조하지 않고 리터럴을 그대로 썼다 — 픽스처가 바뀌면 조용히
-  어긋날 수 있는 자리다.
+- **`payment.service.int-spec.ts`(`PaymentService — 참가 OTP 발급`의
+  `seedDb`)가 `entryFee: 1000`을 하드코딩한다.** 픽스처 상수를 참조하지 않고
+  리터럴을 그대로 썼다 — 픽스처가 바뀌면 조용히 어긋날 수 있는 자리다.
 - **`@Roles(Role.USER)`는 `Role.USER` == "플레이어"에 기댄다.** 지금
   코드베이스에서는 실제로 그렇지만(`JwtStrategy`의 비-딜러 분기가 돌려주는
   값도 `USER`), 나중에 플레이어 전용 역할이 따로 생기면 이 데코레이터도
@@ -1009,6 +1017,107 @@ C2는 테스트 이전에 **두 커넥션 실험**으로 먼저 확인했다(테
   전이시키지 않는다 — 마이페이지 규칙의 배제 방식은 "혹시 누가 나중에
   전이시켜도 조용히 안 빠진다"는 방어일 뿐, `SYNCING`을 능동적으로 쓰겠다는
   선언이 아니다.
+
+### 최종 리뷰 대응
+
+브랜치 전체를 다시 리뷰해 중요도 높은 세 건이 나왔고, 문서 서술 어긋남
+셋과 함께 한 파도로 고쳤다.
+
+**F1 — "컴파일 에러가 된다"는 서술이 코드와 어긋나 있었다.** `class
+PrismaService extends PrismaClient`처럼 타입 인자 없이 상속하면
+`PrismaClient<ClientOptions>`의 `ClientOptions`가 기본값으로 고정돼, `super()`에
+준 `omit`은 런타임에만 걸리고 생성된 결과 타입은 `playerOtp: string`을 그대로
+선언한다. 프로브 파일로 확인했다 — 일반 `findMany()` 결과에서 `.playerOtp`를
+읽는 코드가 `tsc --noEmit`을 그대로 통과했다(에러 0건). 빠뜨린 읽기 경로가
+컴파일은 통과하고 조용히 `undefined`를 돌려주는 상태였다는 뜻이다.
+
+**먼저 컴파일 에러로 만드는 쪽을 시도해 성공했다.** `PrismaClient<ClientOptions>`의
+`ClientOptions`가 `Prisma.TournamentParticipationDelegate<ExtArgs,
+ClientOptions>`를 거쳐 결과 타입의 `ExtractGlobalOmit`까지 그대로 흘러간다 —
+즉 `ClientOptions`에 `omit` 모양을 실어 명시하면 타입 레벨에서도 지워진다.
+`prisma.service.ts`를
+
+```ts
+type PrismaClientOptionsWithPlayerOtpOmit = {
+  adapter: PrismaPg;
+  omit: { tournamentParticipation: { playerOtp: true } };
+};
+
+export class PrismaService extends PrismaClient<PrismaClientOptionsWithPlayerOtpOmit>
+```
+
+로 바꾸자 같은 프로브가 `Property 'playerOtp' does not exist`로 실제로
+빨개졌다. `adapter` 키가 필요한 이유는 생성자 매개변수 타입
+(`Prisma.Subset<ClientOptions, Prisma.PrismaClientOptions>`)이 `ClientOptions`에
+없는 키를 초과 속성으로 거부하기 때문이다 — 없이 시도하면 `super({ adapter,
+omit })`의 `adapter` 자체가 컴파일 에러가 난다.
+
+부수적으로 `test/helpers/prisma.ts`의 `truncateAll`·`closeTestPrisma`가 받던
+매개변수 타입(기본 `PrismaClient`)이 이제 더 좁아진 `PrismaService`와
+구조적으로 호환되지 않아(부분집합 쪽이 `playerOtp` 필수 필드 누락으로
+취급됨) `user.service.int-spec.ts`가 `new PrismaService()`를 그 함수들에
+넘기지 못했다. 두 함수의 매개변수 타입을 `PrismaClient<any>`로 넓혀 고쳤다 —
+둘 다 `$disconnect`·`$queryRaw`처럼 omit과 무관한 메서드만 쓴다.
+
+**결과: 컴파일 타임 강제가 실제로 걸렸다.** `user.service.ts`의 유일한 합법
+읽기(`omit: { playerOtp: false }`)는 그대로 타입 체크를 통과하고 `playerOtp`를
+돌려준다 — `PatchFlat`이 로컬 `omit`을 전역 `omit` 위에 덮어쓰기 때문이다.
+설계 문서와 코드 주석의 "컴파일 에러가 된다"는 서술은 틀리지 않았던 것으로
+정정됐지만, "무엇이 그것을 강제하는가"(단순 `super()` 인자가 아니라 클래스의
+타입 인자)는 문서에 없던 내용이라 함께 적었다.
+
+**F2 — 참가(바이인) 경로가 마이페이지 조회와 다른 역할을 들인다.**
+`payment.controller.ts`의 `POST /tournaments/payment`는 `JwtAuthGuard`만
+걸려 있어 `STORE_ADMIN` 같은 다른 역할의 유효한 토큰도 통과했다. 반면
+`GET /user/me/participations`는 `@Roles(Role.USER)`로 막혀 있다.
+`STORE_ADMIN`이 참가비를 내고 `playerOtp`를 발급받은 뒤 그 값을 다시 읽으려
+하면 403이 나고, 재발급 엔드포인트가 없으므로 그 OTP는 영영 조회할 수 없는
+상태가 된다.
+
+운영 결정: **대회 참가는 `USER` 역할만 한다.** 상점 직원이 플레이하고 싶으면
+별도 플레이어 계정을 쓴다. `payment.controller.ts`의 `joinSession`에
+`session.controller.ts`와 같은 패턴(`@UseGuards(JwtAuthGuard, RolesGuard)` +
+`@Roles(Role.USER)`)을 얹었다. 같은 컨트롤러의 나머지 라우트(가맹점 검색,
+세션 조회, 대회 정보 조회)는 원래도 공개 조회라 손대지 않았다.
+
+`payment.controller.spec.ts`를 `user.controller.spec.ts`와 같은 모양으로
+새로 만들어 진짜 `RolesGuard` + `new Reflector()`로 `USER`는 통과하고
+`STORE_ADMIN`·`PLATFORM_ADMIN`·`DEALER`는 거부되는지 확인했다. RED 확인:
+`@Roles` 줄을 지우면 방금 만든 5건 중 3건이 실제로 빨개졌다.
+
+**F3 — "재시도하지 않는다" 테스트가 사실은 아무것도 고정하지 못했다.**
+`payment.service.int-spec.ts`의 "같은 사람이 두 번 참가하면 재시도하지 않고
+그대로 실패한다"가 인자 없는 `.rejects.toThrow()`만 썼다. 충돌 판별을 거꾸로
+뒤집어(OTP 충돌이 아닌 것을 충돌로 오분류) 5번 재시도 끝에
+`ConflictException('참가 OTP를 만들지 못했습니다...')`를 던지게 고장 내도 그
+조건을 만족해 버려서, 두 구현을 구분하지 못했다.
+
+에러를 `Prisma.PrismaClientKnownRequestError`이고 `code === 'P2002'`이며
+충돌 필드가 `playerOtp`가 아니라는 것까지 구체적으로 짚고, `generatePlayerOtp`
+스파이가 정확히 한 번만 불렸다는 것을 더해 재시도가 없었다는 것을 직접
+증명하도록 고쳤다. RED 확인: `payment.service.ts`의 판별식
+(`violatedFields.some((field) => field.includes('playerOtp'))`)에 `!`를 붙여
+뒤집자 이 테스트를 포함해 2건이 실제로 빨개졌다(하나는 이 테스트, 하나는
+"충돌하면 다시 뽑는다" — 뒤집힌 판별식이 진짜 OTP 충돌도 재시도 대상에서
+빼버리기 때문이다). 되돌려 다시 초록을 확인했다.
+
+**문서 서술 정정 셋.**
+- 위 F1에서 정정한 "컴파일 에러" 서술 — 설계 문서와 이 절 모두 고쳤다.
+- omit 회귀 테스트가 실제로는 `prisma/prisma.service.int-spec.ts`(존재하지
+  않는 파일)가 아니라 `user/user.service.int-spec.ts`에 있다는 것 — 설계
+  문서의 테스트 표를 고쳤다.
+- `entryFee: 1000` 하드코딩 위치 — `user.service.int-spec.ts`가 아니라
+  `payment.service.int-spec.ts`(`PaymentService — 참가 OTP 발급`의
+  `seedDb`)다. 위 "남긴 것"의 해당 항목을 고쳤다.
+- `pool.end()` 수정이 "앱 정상 종료 시에도 있던 누수"를 고친다는 서술 —
+  `main.ts`가 `enableShutdownHooks()`를 부르지 않아 `onModuleDestroy`가
+  실행 중인 앱에서는 걸리지 않는다. 지금은 테스트에서만 효과가 있다는
+  것으로 위 "작업 중 추가로 나온 것"을 고쳤다.
+
+기준선 갱신: contract 44 (2 스위트) / 백엔드 단위 163 (13 스위트,
+`payment.controller.spec.ts` 5건 추가) / 프론트 단위 52 (14 파일) / 통합 263
+(21 스위트, 건수 동일 — `payment.service.int-spec.ts`의 기존 한 건이 더
+엄격해졌을 뿐 개수는 그대로) / 타입 에러 0.
 
 ---
 

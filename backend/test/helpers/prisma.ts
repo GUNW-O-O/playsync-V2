@@ -14,7 +14,7 @@ import { applyTestEnv } from './test-env';
  * jest가 열린 핸들 때문에 종료되지 않으므로, 클라이언트별 Pool을 기억해 뒀다가
  * closeTestPrisma에서 함께 닫는다.
  */
-const pools = new WeakMap<PrismaClient, Pool>();
+const pools = new WeakMap<PrismaClient<any>, Pool>();
 
 export function createTestPrisma(): PrismaClient {
   applyTestEnv();
@@ -30,8 +30,18 @@ export function createTestPrisma(): PrismaClient {
   return prisma;
 }
 
-/** 반드시 이걸로 닫을 것. $disconnect()만 부르면 pg Pool이 남는다. */
-export async function closeTestPrisma(prisma: PrismaClient): Promise<void> {
+/**
+ * 반드시 이걸로 닫을 것. $disconnect()만 부르면 pg Pool이 남는다.
+ *
+ * 매개변수 타입이 `PrismaClient<any>`인 이유: `PrismaService`는 이제
+ * `PrismaClient<PrismaClientOptionsWithPlayerOtpOmit>`로, 결과 타입에서
+ * `playerOtp`가 컴파일 타임에 지워진다. 기본 `PrismaClient`(전체 필드 유지)
+ * 타입을 그대로 쓰면 그 둘이 구조적으로 호환되지 않아(부분집합 쪽이 필수
+ * 필드 누락으로 취급됨) `user.service.int-spec.ts`가 `new PrismaService()`를
+ * 여기 넘기지 못한다. 이 함수는 `$disconnect`·`$queryRaw`처럼 omit과 무관한
+ * 메서드만 쓰므로 `any`로 넓혀도 안전하다.
+ */
+export async function closeTestPrisma(prisma: PrismaClient<any>): Promise<void> {
   await prisma.$disconnect();
   await pools.get(prisma)?.end();
 }
@@ -42,7 +52,7 @@ export async function closeTestPrisma(prisma: PrismaClient): Promise<void> {
  * 테이블 목록을 손으로 관리하면 스키마가 바뀔 때마다 어긋나므로 pg_tables에서 읽는다.
  * _prisma_migrations는 제외한다 — 지우면 마이그레이션 상태가 사라진다.
  */
-export async function truncateAll(prisma: PrismaClient): Promise<void> {
+export async function truncateAll(prisma: PrismaClient<any>): Promise<void> {
   const rows = await prisma.$queryRaw<{ tablename: string }[]>`
     SELECT tablename FROM pg_tables
     WHERE schemaname = 'public' AND tablename != '_prisma_migrations'
