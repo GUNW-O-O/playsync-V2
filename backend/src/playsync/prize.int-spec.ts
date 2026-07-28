@@ -9,6 +9,7 @@ import { RedisService } from 'src/redis/redis.service';
 import { closeTestPrisma, createTestPrisma, truncateAll } from '../../test/helpers/prisma';
 import { createTestRedis, flushTestRedis } from '../../test/helpers/redis';
 import { PlaysyncService } from './playsync.service';
+import * as playerOtp from '../payment/player-otp';
 
 /**
  * 상금 지급.
@@ -94,7 +95,12 @@ describe('상금 지급', () => {
     for (const [i, nickname] of USERS.entries()) {
       const user = await prisma.user.create({ data: { id: nickname, nickname, password: 'x' } });
       await prisma.tournamentParticipation.create({
-        data: { tournamentId: TOURNAMENT, userId: user.id, status: 'PLAYING' },
+        data: {
+          tournamentId: TOURNAMENT,
+          userId: user.id,
+          status: 'PLAYING',
+          playerOtp: playerOtp.generatePlayerOtp(),
+        },
       });
       await prisma.tablePlayer.create({
         data: {

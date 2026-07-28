@@ -189,9 +189,14 @@ model TournamentParticipation {
   finalPlace  Int?
   prizeAmount Int          @default(0)
 
+  /// 참가 OTP. 평문이다 — 마이페이지에서 다시 볼 수 있어야 하고 권한이
+  /// 좌석 하나뿐이다. 노출은 PrismaService의 클라이언트 수준 omit이 막는다.
+  playerOtp String
+
   createdAt DateTime @default(now())
 
   @@unique([tournamentId, userId])
+  @@unique([tournamentId, playerOtp])
 }
 
 model DealerSession {

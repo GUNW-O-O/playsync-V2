@@ -72,13 +72,13 @@ npm run test:int       # 통합 테스트 (컨테이너 기동부터 자동)
 타입 에러 0건, 테스트 전부 통과가 정상이다. CI(`.github/workflows/ci.yml`)가
 타입 체크 · 테스트 · 빌드를 돌린다.
 
-현재 기준선 (T25 완료 시점):
+현재 기준선 (T27 완료 시점):
 
 ```
 contract       44  (2 suites)
-백엔드 단위   150  (10 suites)
+백엔드 단위   163  (13 suites)
 프론트 단위    52  (14 files)
-통합          252  (20 suites)
+통합          263  (21 suites)
 타입 에러       0
 ```
 
