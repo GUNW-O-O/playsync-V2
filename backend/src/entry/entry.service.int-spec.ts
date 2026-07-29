@@ -269,6 +269,24 @@ describe('EntryService.enterSeat', () => {
     expect(state.players.filter(Boolean)).toHaveLength(3);
   });
 
+  /**
+   * 리뷰 finding 1: 같은 OTP가 두 테이블에서 몇 ms 안에 동시에 들어오면,
+   * 사전 체크(`tablePlayer.findFirst`)는 둘 다 통과시킨다 — 테이블마다 락이
+   * 따로라 서로 막지 않는다. `@@unique([tournamentId, userId])`가 없으면
+   * 둘 다 커밋되어 참가 하나가 좌석 둘을 갖는다.
+   */
+  it('같은 유저가 서로 다른 테이블을 동시에 노리면 한 곳에만 앉는다', async () => {
+    await participate('u1', '00000001');
+
+    const results = await Promise.allSettled([
+      service.enterSeat(TOURNAMENT, { otp: '00000001', tableId: TABLE, seatIndex: 2 }),
+      service.enterSeat(TOURNAMENT, { otp: '00000001', tableId: OTHER_TABLE, seatIndex: 3 }),
+    ]);
+
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(await prisma.tablePlayer.count({ where: { userId: 'u1' } })).toBe(1);
+  });
+
   it('좌석 비트맵에 반영된다', async () => {
     await participate('u1', '00000001');
     await redisService.setSeatBitmap(TOURNAMENT, TABLE);

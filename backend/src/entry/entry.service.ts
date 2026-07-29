@@ -65,8 +65,12 @@ export class EntryService {
       throw new ConflictException('이미 끝난 참가입니다.');
     }
 
-    // 좌석은 대회 안에서 하나다. `@@unique([tableId, userId])`는 같은 테이블만
-    // 막으므로 테이블을 건너뛴 중복은 여기서 본다.
+    // 좌석은 대회 안에서 하나다. 이건 빠른 경로일 뿐 경합의 최종 판정이
+    // 아니다 — check-then-act라 같은 OTP가 두 테이블에서 몇 ms 안에
+    // 동시에 들어오면 둘 다 이 줄을 `null`로 통과할 수 있다(테이블마다
+    // 락이 따로라 서로를 막지 않는다). 진짜 판정은
+    // `@@unique([tournamentId, userId])`가 `claimSeat`의 트랜잭션에서
+    // `P2002`로 내린다.
     const seated = await this.prisma.tablePlayer.findFirst({
       where: { tournamentId, userId: participation.userId },
     });
@@ -101,58 +105,87 @@ export class EntryService {
   /**
    * 좌석을 DB와 스냅샷에 반영한다.
    *
-   * 락을 잡는 이유는 좌석 예매가 아니라 스냅샷이다 — JSON 통째로 덮어쓰므로
-   * 다른 의자에 앉는 두 사람이 겹치면 나중에 쓴 쪽이 앞선 착석을 지운다.
-   * 같은 의자를 노리는 경합의 최종 판정은 `@@unique([tableId, seatPosition])`가
-   * 한다. 락은 만료가 있고 제약은 없다.
+   * DB 트랜잭션은 락 **밖**에서 돈다. 두 사람이 같은 의자를 노리는 경합의
+   * 최종 판정은 `@@unique([tableId, seatPosition])`다 — 트랜잭션이 위반을
+   * `P2002`로 돌려주면 늦게 온 쪽이 거기서 끝난다. 트랜잭션을 락 안에 두면,
+   * 대회 시작처럼 여러 명이 한꺼번에 들어와 커넥션 풀이 찰 때 트랜잭션이
+   * 락의 TTL(5초)보다 오래 걸릴 수 있다. 그러면 락이 말없이 만료되고 두
+   * 요청이 임계 구역에 같이 들어가 스냅샷을 서로 지운다 — `payment.service.ts`가
+   * 이미 트랜잭션을 락 밖에 두는 이유와 같다.
+   *
+   * 락이 감싸는 것은 스냅샷 읽기 → 점유자 확인 → 스냅샷 쓰기뿐이다. JSON을
+   * 통째로 덮어쓰므로 그 세 단계가 원자적이어야 다른 좌석에 앉는 두 사람이
+   * 서로의 착석을 지우지 않는다.
    */
   private async claimSeat(
     tournamentId: string,
     dto: EnterTournamentDto,
     who: Claimant,
   ) {
-    await this.redis.withTableLock(dto.tableId, async () => {
-      // 락 밖에서 미리 보지 않는다. 검사와 쓰기가 같은 락 안에 있어야
-      // check-then-act가 생기지 않는다(T25의 deleteTable이 걸렸던 자리다).
-      const table = await this.prisma.table.findUnique({
-        where: { tournamentId_id: { tournamentId, id: dto.tableId } },
-        select: { id: true },
-      });
-      if (!table) {
-        throw new ForbiddenException('이 대회에 속하지 않은 테이블입니다.');
-      }
+    // 어떤 쓰기보다도 먼저 확인한다. 트랜잭션이 락 밖에 있으므로, 락 안에서
+    // 확인하면 이미 DB에 좌석을 만든 뒤에야 403을 던지는 순서가 된다.
+    const table = await this.prisma.table.findUnique({
+      where: { tournamentId_id: { tournamentId, id: dto.tableId } },
+      select: { id: true },
+    });
+    if (!table) {
+      throw new ForbiddenException('이 대회에 속하지 않은 테이블입니다.');
+    }
 
+    if (!who.alreadySeated) {
+      try {
+        await this.prisma.$transaction(async (tx) => {
+          await tx.tablePlayer.create({
+            data: {
+              tournamentId,
+              tableId: dto.tableId,
+              userId: who.userId,
+              nickname: who.nickname,
+              seatPosition: dto.seatIndex,
+              currentStack: who.stack,
+            },
+          });
+          await tx.tournamentParticipation.update({
+            where: { id: who.participationId },
+            data: { status: PlayerStatus.PLAYING },
+          });
+        });
+      } catch (e) {
+        // 어떤 제약이 걸렸는지로 메시지를 가른다. 드라이버 어댑터
+        // (@prisma/adapter-pg) 구성에서는 P2002 메타에 `target`이 없다.
+        // 대신 postgres가 준 제약 조건 정보를 필드 이름에 큰따옴표가 붙은
+        // 채로 담아 온다(`payment.service.ts:143-163`와 같은 모양).
+        const err = e as {
+          code?: string;
+          meta?: {
+            target?: string[];
+            driverAdapterError?: { cause?: { constraint?: { fields?: string[] } } };
+          };
+        };
+        if (err.code !== 'P2002') throw e;
+        const violatedFields =
+          err.meta?.target ?? err.meta?.driverAdapterError?.cause?.constraint?.fields ?? [];
+        // seatPosition이 걸리면 자리 싸움(`tableId+seatPosition`)이다.
+        // userId만 걸리면(`tableId+userId` 또는 `tournamentId+userId`)
+        // 이 사람이 이미 다른 자리에 있다는 뜻이다 — 테이블 안이든
+        // 대회 안 다른 테이블이든 메시지는 같다.
+        if (violatedFields.some((field) => field.includes('seatPosition'))) {
+          throw new ConflictException('이미 다른 참가자가 앉은 좌석입니다.');
+        }
+        throw new ConflictException('이미 다른 좌석에 앉아 있습니다. 상점에 문의해주세요.');
+      }
+    }
+
+    await this.redis.withTableLock(dto.tableId, async () => {
       const state =
         (await this.redis.getSnapShot(dto.tableId)) ?? this.emptyTableState(tournamentId);
       const occupant = state.players[dto.seatIndex];
+      // 정상 경로라면 여기 도달했을 때 이 좌석은 이미 우리 것으로 DB에
+      // 확정돼 있다(방금 트랜잭션이 성공했거나, 재입장이라 원래 우리
+      // 것이었다). 그런데도 다른 사용자가 점유자로 남아 있다면 스냅샷이
+      // DB와 어긋난 것이다 — 방어용이다.
       if (occupant && occupant.id !== who.userId) {
         throw new ConflictException('이미 다른 참가자가 앉은 좌석입니다.');
-      }
-
-      if (!who.alreadySeated) {
-        try {
-          await this.prisma.$transaction(async (tx) => {
-            await tx.tablePlayer.create({
-              data: {
-                tournamentId,
-                tableId: dto.tableId,
-                userId: who.userId,
-                nickname: who.nickname,
-                seatPosition: dto.seatIndex,
-                currentStack: who.stack,
-              },
-            });
-            await tx.tournamentParticipation.update({
-              where: { id: who.participationId },
-              data: { status: PlayerStatus.PLAYING },
-            });
-          });
-        } catch (e) {
-          if ((e as { code?: string }).code === 'P2002') {
-            throw new ConflictException('이미 다른 참가자가 앉은 좌석입니다.');
-          }
-          throw e;
-        }
       }
 
       // 이 사람이 이미 스냅샷에 있으면 손대지 않는다. 덮어쓰면 진행 중인
