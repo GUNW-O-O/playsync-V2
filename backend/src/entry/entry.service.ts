@@ -227,8 +227,10 @@ export class EntryService {
       // 반복된다 — 영구히 좌석 없는 PLAYING으로 묶인다.
       //
       // 위 409는 그 덫에 걸리지 않는다. 거기까지 갔다는 것은 DB 주인이 우리가
-      // 아니라는 뜻이고, 재시도는 `enterSeat`의 앞단(ELIMINATED 검사 또는
-      // "이미 다른 좌석에 앉아 있습니다")에서 걸러진다.
+      // 아니라는 뜻이라 재시도가 `alreadySeated`로 새지 않는다. 우리 행이
+      // 사라졌다면 그것을 지운 `eliminatePlayer`가 같은 트랜잭션에서 상태를
+      // ELIMINATED로 바꾸므로 앞단 검사에 걸리고, 남이 가져갔다면 재시도는
+      // 트랜잭션을 다시 돌아 `tableId+seatPosition`의 P2002로 끝난다.
       //
       // 점유자가 이미 우리 자신이면 손대지 않는다. 덮어쓰면 진행 중인
       // 핸드의 bet·hasFolded·totalContributed가 날아간다.

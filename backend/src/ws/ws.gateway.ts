@@ -117,7 +117,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       if (tournamentId && !tableId) {
         (client as any).tournamentId = tournamentId;
         this.addToMap(this.tournamentSessions, tournamentId, client);
-        return; // 예매 로직만 수행하므로 여기서 종료
+        return; // 테이블 세션에는 넣지 않는다
       }
 
       // 2. 테이블 진입 시 (게임 시작 후)
