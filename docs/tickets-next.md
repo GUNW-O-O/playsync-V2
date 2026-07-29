@@ -1330,6 +1330,204 @@ omit })`의 `adapter` 자체가 컴파일 에러가 난다.
 
 ---
 
+## T29 — 상점의 좌석 해제와 칩 이사
+
+**항목**: `docs/backlog.md`의 B8 절, T27~T29의 마지막 조각. 선행 문서
+[`2026-07-29-seat-release-design.md`](./superpowers/specs/2026-07-29-seat-release-design.md),
+계획 [`2026-07-29-seat-release.md`](./superpowers/plans/2026-07-29-seat-release.md)
+**범위**: `backend/prisma/schema.prisma`(+마이그레이션),
+`backend/src/entry/entry.service.ts`, `backend/src/payment/payment.service.ts`,
+`backend/src/playsync/playsync.service.ts`, `backend/src/redis/redis.service.ts`,
+`backend/src/store/session/`(서비스·컨트롤러), `backend/shared/dto/seat-release.dto.ts`(신설),
+`backend/src/scenario/`
+**프론트 영향**: 없음 (상점 콘솔의 해제 버튼은 B7)
+
+### 문제
+
+`TablePlayer`는 좌석 배치표인데 칩(`currentStack`)이 거기 있었다. 상점이
+사람을 자리에서 떼면 그 행이 사라지고, 칩도 함께 사라진다. 다시 앉을 때는
+새 `TablePlayer`를 만들 수밖에 없는데 그 칩 필드를 채울 출처가 없어
+`startStack`을 다시 받는다 — **해제 한 번마다 칩이 복제된다.** B8이 정한
+이동 방식("상점이 해제 → 사람이 걸어가 OTP로 재입장")이 성립하려면 좌석을
+뜬 사람의 칩이 좌석보다 오래 살아야 한다.
+
+### 결정
+
+**`currentStack`을 `TablePlayer`에서 `TournamentParticipation`으로 옮긴다.**
+`TablePlayer`는 좌석 배치표, `TournamentParticipation`은 장부라는 구분을
+스키마에 그대로 새겼다. 결제(`PaymentService.joinSession`)가 `startStack`으로
+장부를 열고, 핸드마다 `PlaysyncService.syncTableInventoryToDb`가 장부를
+갱신하고, 입장(`EntryService.claimSeat`)은 장부 값을 읽어 스냅샷에 앉힐 뿐
+더 이상 `TablePlayer.currentStack`을 쓰지 않는다(그 컬럼 자체가 없다).
+리바인(`PlaysyncService.rebuyPlayer`)도 장부 하나만 건드리도록 합쳐졌다 —
+예전에는 `buyInCount`(참가 행)와 `currentStack`(좌석 행)이 갈라져 있어 update가
+둘이었다.
+
+`syncTableInventoryToDb`는 `updateMany`에서 `update`로 함께 바뀌었다.
+`updateMany`는 대상이 0행이어도 조용히 성공한다 — 스냅샷에는 있는데 장부에
+없는 사람이 있으면 칩 불일치가 아무 에러 없이 지나간다(T28 최종 리뷰가 낸
+관찰이다). `update`는 그런 행을 P2025로 즉시 터뜨리고, 기존 `catch`가 유한
+재시도 경로로 보낸다.
+
+**`releaseSeats`의 트랜잭션을 락 안에 둔다 — T28과 반대 방향이다.** 근거가
+다르다. T28의 입장(`claimSeat`)은 대회 시작에 수십 명이 한꺼번에 몰려
+커넥션 풀이 찰 수 있어 트랜잭션을 락 밖으로 뺐다. T29의 해제는 상점 운영자
+한 명의 조작이고 행이 최대 9개다. 이 리포의 실제 규칙은 "트랜잭션 금지"가
+아니라 **"기다림이 무한정인 일 금지"**다 — `resolveWinners`가 3단계(탈락
+확정)는 락 안에서 돌리고 2단계(사람이 리바인 수락을 기다림)와 4단계(백오프
+재시도)만 락 밖으로 뺀 것이 그 증거다. `releaseSeats`의 트랜잭션은 사람이
+기다리는 일이 없고 행 수가 작아 락 안에 둬도 무한정 기다림이 되지 않는다.
+
+**레디스 락이 좌석의 DB 쓰기를 직렬화하지 않는다.** T28이 입장의 트랜잭션을
+락 밖으로 뺀 결과, 입장은 테이블 락을 건드리지 않고 `TablePlayer`를
+INSERT한다. 그래서 T25의 `deleteTable`이 쓰던 것과 같은
+`SELECT ... FOR UPDATE`가 해제에도 필요해졌다 — INSERT가 부모 `Table` 행에
+거는 `FOR KEY SHARE`와 충돌해 두 방향 모두 직렬화된다. T28의 결정(트랜잭션을
+락 밖으로 빼는 것)이 T29의 제약(`FOR UPDATE`가 있어야 하는 것)을 만든
+셈이다. `session.service.int-spec.ts`의 "해제 도중 들어온 착석은 지워지지
+않고 해제가 409로 막힌다" 테스트가 이 직렬화를 실제 커넥션 둘로 검증한다 —
+입장 트랜잭션을 커밋하지 않은 채 해제를 걸면 해제가 그 커밋까지 대기하고,
+커밋 뒤 검사 2(DB 재조회)가 낡은 쌍을 잡아 409를 낸다.
+
+**`(seatIndex, userId)` 쌍을 두 번 검증한다.** 상점 화면은 조금 전에 그린
+판을 보고 체크한다 — 그 사이 그 자리 사람이 탈락하고 다른 사람이 OTP로
+앉았을 수 있다. T28이 핸드 도중 착석을 허용하므로 이 창은 항상 열려 있다.
+검사 1(스냅샷, 락 안 첫 줄)이 상점 화면이 낡았으면 걸러내고, 검사 2(DB,
+`FOR UPDATE` 이후의 재조회)가 락 대기 중 커밋된 변화를 잡는다. "락 안에서
+다시 검사한다"는 원칙(T25의 `deleteTable`, T28의 `claimSeat`)을 API 요청
+바디까지 끌어올린 것이다 — `ReleaseSeatItem`이 `seatIndex`만이 아니라
+`userId`도 함께 받는다.
+
+**`GamePhase.WAITING` 가드가 T29에서 처음 실제로 쓰인다.** B8 설계 문서가
+폐기한 재배치 설계에서 살려 둔 판단이지만 T28은 쓰지 않았다 — 신규 착석은
+핸드 도중이어도 허용이다(늦은 참가는 `hasFolded: true`로 들어가 팟·차례·
+사이드팟 어디에도 끼지 않는다). **이미 앉은 사람을 빼는 것은 다르다** — 팟에
+낸 돈이 있는 사람을 지우면 그 몫이 증발한다. 그래서 해제는 핸드 밖에서만
+허용하고, `WAITING` 하나가 팟·차례·폴드 상태·사이드팟을 전부 비껴간다.
+
+**`startSession`의 일괄 승격을 지웠다.** 예전에는 대회 시작이
+`tournamentParticipation.updateMany`로 참가자 **전원**을 조건 없이
+`PLAYING`으로 올렸다. 결제만 하고 오지 않은 사람도 시작 버튼 한 번에
+`PLAYING`이 되어, `tournamentFinished`의 우승자 조회
+(`findFirst({ where: { status: PLAYING } })`)가 한 번도 앉지 않은 참가자를
+우승자로 뽑을 수 있었다(T30, T28 3라운드 리뷰 finding 3). `PLAYING`은 이제
+오직 착석(`EntryService.claimSeat`)만 매긴다 — 시작은 아무도 승격시키지
+않고, 노쇼는 `WAITING`에 그대로 남는다.
+
+**이 삭제가 T30의 절반만 닫는다.** 우승자가 노쇼로 뽑히는 문제(위 문단)는
+사라졌지만, `Tournament.activePlayers`는 여전히 **결제 시점**
+(`PaymentService.joinSession`)에 올라간다. 노쇼가 있으면 이 카운터가 탈락
+가능한 인원수보다 영구히 높게 남아 자동 마무리 조건
+(`activePlayerCount <= 1`)이 걸리지 않는다 — 상금이 자동으로 나가지 않고
+상점이 `completeSession`으로 수동 종료해야 한다. 남은 것은 `docs/backlog.md`
+T30 절에 그대로 있다.
+
+**시나리오 하네스가 테이블 하나만 도는 제약을 풀었다.** `checkInvariants`가
+검사할 `tableId`를 인자로 받는다(기본값 `h.tableId`라 기존 호출자는 전부
+그대로 돈다). 두 테이블짜리 시나리오
+(`table-move.int-spec.ts`)가 이 인자로 각 테이블을 따로 검사한다.
+
+### 버린 선택지
+
+- **해제를 좌석 수만큼 반복 호출한다(초안).** Redis 비트맵·유저 컨텍스트를
+  `updateSeatBitmap`·`deleteUserContext`로 좌석마다 따로 불렀는데, 한
+  테이블의 모든 좌석 비트가 같은 해시 필드에 있어서 반복 중간에 Redis 장애가
+  끼면 일부만 비트가 내려가고 나머지는 영원히 "찬 자리"로 남는다 — DB의
+  `TablePlayer` 행은 이미 지워진 뒤라 아무도 그 자리에 못 앉는 부분 성공이다.
+  `updateSeatBitmapMany`(여러 인덱스를 한 Lua eval로), `deleteUserContexts`
+  (한 `hdel`로 여러 필드)로 묶어 "전부 되거나 전부 안 된다"를 지켰다.
+- **점유자 불일치를 조용히 고쳐 쓴다(T28의 `claimSeat` 패턴 재사용).** 입장은
+  DB가 권위이고 스냅샷이 파생 뷰라 낡은 점유자를 덮어써도 안전하지만, 해제는
+  반대 방향이다 — 상점이 지목한 사람이 이미 그 자리에 없다면 **다른 사람을
+  잘못 떼는 사고**가 된다. 그래서 해제는 불일치를 고쳐 쓰지 않고 409로
+  막는다.
+- **`Role` enum에 손대는 것.** 이 티켓은 건드리지 않는다 — T28의 금지가
+  `Role` enum에만 걸리고(3e901c6) 좌석 불변식을 세우는 스키마 변경은
+  허용이었던 것과 같은 자리지만, T29는 새 유니크 제약이 필요하지 않았다.
+  경합의 최종 판정은 이미 T28의 `@@unique([tableId, seatPosition])`·
+  `@@unique([tournamentId, userId])`가 지고 있고, 해제는 그 두 제약이 지우는
+  행을 줄이기만 한다.
+
+### RED 확인 방법
+
+Task 1~3(칩 이사, 해제 API, 일괄 승격 삭제)은 각 커밋에서 실패하는 테스트로
+재현한 뒤 고쳤다 — `session.service.int-spec.ts`의 `releaseSeats` describe
+넷, `session.service.int-spec.ts`의 "시작은 참가자 상태를 올리지 않는다"가
+그 기록이다.
+
+Task 4(두 테이블 시나리오)는 **의심에서 시작해 세 번 빨간불을 봤다.**
+
+- **처음 짠 시나리오가 설정 단계에서부터 죽었다.** 브리프가 준 이동 단계
+  코드는 `h.seatPlayer`(결제 + 입장 묶음)를 재사용했는데, p4는 이미 결제를
+  마친 참가자라 `payment.joinSession`이 `@@unique([tournamentId, userId])`에
+  걸려 `PrismaClientKnownRequestError`를 던졌다. **이건 RED가 아니다** —
+  검증하려는 어서션에 닿지도 못한 설정 오류였다. `h.entry.enterSeat`을
+  p4의 기존 `playerOtp`로 직접 부르도록 고쳐서야 시나리오 본문이 실행됐다.
+- **그 다음 통과가 의심스러워, 브리프가 지시한 대로 4단계 기대값을
+  `SCENARIO.startStack`(10000)으로 바꿔 돌렸다.**
+  ```
+  Expected: "4. 이동 후 2번 테이블: 칩 10000"
+  Received: "4. 이동 후 2번 테이블: 칩 17300"
+  ```
+  이사가 없었다면(스택이 `startStack`으로 리셋됐다면) 나왔을 값이 정확히
+  `Expected` 쪽에 찍혔다 — 검사가 실제 이사값(17300)에 민감하다는 뜻이다.
+  확인 후 되돌렸다.
+- **제품 코드를 직접 두 번 부러뜨려 봤다.** `releaseSeats`의
+  `updateSeatBitmapMany` 호출을 주석 처리하자
+  ```
+  Expected: "3. 이동 후 1번 테이블: 비트맵 3"
+  Received: "3. 이동 후 1번 테이블: 비트맵 4"
+  ```
+  로 `checkInvariants`의 좌석 비트맵 불변식(6번 검사)이 정확한 단계 이름과
+  함께 걸렸다. `tournamentParticipation.updateMany`(WAITING 되돌리기)를
+  주석 처리하자
+  ```
+  Expected: "해제된 사람 상태 WAITING / 칩 17300"
+  Received: "해제된 사람 상태 PLAYING / 칩 17300"
+  ```
+  로 해제 직후 어서션이 걸렸다. 둘 다 확인 후 되돌리고 `git diff`로
+  `session.service.ts`가 원상태인 것을 확인한 다음 다시 돌려 PASS를
+  재확인했다.
+
+### 작업 중 추가로 나온 것
+
+- **`h.seatPlayer`는 신규 등록자 전용이지 재입장 전용이 아니다.** 결제(1회성
+  `create`)와 입장을 한 번에 묶은 헬퍼라, 이미 참가 행이 있는 사람(해제 후
+  이동, 재접속)에 재사용하면 결제 쪽에서 유니크 제약에 걸린다. T28이 "남긴
+  것"에 적어 둔 "`seatPlayer` 헬퍼 중복"과 같은 자리에서 드러난 다른 얼굴이다
+  — 헬퍼를 정리한다면 결제 없이 입장만 하는 경로도 노출해야 한다는 뜻인데,
+  이번 시나리오 하나만으로는 하네스 리팩터를 정당화하기엔 이르다고 보고
+  `entry.enterSeat` 직접 호출로 시나리오 쪽만 고쳤다.
+
+### 테스트
+
+| 파일 | 계층 | 무엇 |
+|---|---|---|
+| `store/session/session.service.int-spec.ts` | 통합 | `releaseSeats` 4건 — 정상 해제(좌석행·스냅샷·비트맵이 비고 칩은 남음), 핸드 중 409, 낡은 쌍 409, **해제 도중 들어온 착석과의 경합**(두 커넥션, `FOR UPDATE` 직렬화 확인) |
+| `store/session/session.service.int-spec.ts` | 통합 | "시작은 참가자 상태를 올리지 않는다" 1건 — 결제만 한 사람이 `startSession` 뒤에도 `WAITING` |
+| `entry/entry.service.int-spec.ts` | 통합 | 장부 기반 스택으로 좌석에 앉는 경로(기존 스위트에 편입) |
+| `scenario/table-move.int-spec.ts` | 시나리오(신설) | 4명 착석 → 2번 테이블 개설 → p4 스택을 17300으로 바꿈 → 해제(1번 테이블 인원 3, 칩 보존, 참가 상태 WAITING) → 2번 테이블 0번에 재입장 → 칩이 17300 그대로 도착 — 매 단계 `checkInvariants`(칩 총량, 사이드팟 합, 폴드 자격, 쇼다운 차례, 좌석 비트맵)를 두 테이블 각각에 대해 확인 |
+
+기준선 갱신: contract 44 (2 스위트) / 백엔드 단위 173 (15 스위트) / 프론트
+단위 52 (14 파일) / 통합 282 (23 스위트, `scenario/table-move.int-spec.ts`
+신설) / 타입 에러 0.
+
+### 남긴 것
+
+- **`activePlayers`가 여전히 결제 시점 기준이다.** `startSession`의 일괄
+  승격을 지워 우승자 오선정은 막았지만, 자동 마무리 게이트
+  (`activePlayerCount <= 1`)는 노쇼가 있으면 여전히 걸리지 않는다.
+  `docs/backlog.md`의 T30이 남은 절반이다.
+- **자동 밸런싱과 테이블 통합 규칙은 하지 않는다.** B8이 정한 그대로다 —
+  언제 누구를 어디로 보낼지는 규칙이 아니라 현장 판단이다.
+- **좌석 해제에 상점 콘솔 화면이 없다.** `POST .../tables/:tableId/seats/release`에
+  아직 호출자가 없다. B7이 채운다.
+- **`h.seatPlayer`가 재입장에는 못 쓴다는 것이 시나리오 코드에만 남아 있다.**
+  하네스 자체의 리팩터(결제와 입장을 분리한 헬퍼 둘로 쪼개기)는 하지 않았다
+  — 위 "작업 중 추가로 나온 것" 참고.
+
+---
+
 <!--
 티켓 서술 형식 (1단계에서 쓰던 것):
 

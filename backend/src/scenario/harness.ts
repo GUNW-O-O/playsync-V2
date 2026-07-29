@@ -239,13 +239,17 @@ export async function setupTournament(
  *
  * @param expectedChips 테이블 위에 있어야 할 칩 총량. 리바인처럼 칩이 정당하게
  *   늘어나는 시나리오는 호출자가 갱신해서 넘긴다.
+ * @param tableId 검사할 테이블. 기본값이 `h.tableId`라 기존 호출자는 그대로
+ *   돈다 — 두 테이블 이상을 다루는 시나리오만 명시한다.
  */
 export async function checkInvariants(
   h: Harness,
   label: string,
   expectedChips: number,
+  tableId: string = h.tableId,
 ): Promise<TableState> {
-  const state = await h.snapshot();
+  const state = await h.redisService.getSnapShot(tableId);
+  if (!state) throw new Error(`${label}: 스냅샷 없음 (${tableId})`);
 
   // 1. 칩은 만들어지지도 사라지지도 않는다. 카드가 실물이라 부기가 틀리면
   //    되돌릴 근거가 테이블 위에 남지 않는다.
@@ -296,7 +300,7 @@ export async function checkInvariants(
 
   // 6. 좌석 비트맵과 스냅샷의 착석자가 일치한다.
   const bitmap = await h.redis.hget(
-    `tournament:${h.tournamentId}:seat`, `table:${h.tableId}`,
+    `tournament:${h.tournamentId}:seat`, `table:${tableId}`,
   );
   const seatedInBitmap = (bitmap ?? '').split('').filter(c => c === '1').length;
   const seatedInState = state.players.filter(p => p !== null).length;
