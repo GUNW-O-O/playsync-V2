@@ -693,6 +693,14 @@ export class SessionService {
    * `TablePlayer`를 INSERT한다. 그래서 `deleteTable`과 같은
    * `SELECT ... FOR UPDATE`가 필요하다 — INSERT가 부모 `Table` 행에 거는
    * `FOR KEY SHARE`와 충돌해 두 방향 모두 직렬화된다.
+   *
+   * **`FOR UPDATE` 대기가 락 TTL을 넘길 수 있다.** 이 트랜잭션은 진행 중인
+   * 입장 트랜잭션의 커밋을 기다리므로 대기 시간이 우리 손 밖이다. 5초를
+   * 넘기면 레디스 락이 말없이 만료되고 뒤따르는 `saveSnapShot`이 보호 없이
+   * 돈다 — T28이 트랜잭션을 락 밖으로 뺀 바로 그 위험이다. 그래도 고치지
+   * 않는다: 복구가 셀프서비스이고(참가 OTP를 다시 넣으면 `alreadySeated`
+   * 경로가 점유자를 진실로 고쳐 쓴다) 해제는 착석 러시가 아니라 쉬는 시간에
+   * 일어나 입장 트랜잭션과 겹칠 일이 드물다. 감수하는 것이지 막은 것이 아니다.
    */
   async releaseSeats(
     tournamentId: string,
@@ -701,6 +709,17 @@ export class SessionService {
     ownerId: string,
   ) {
     await this.assertTournamentOwnership(tournamentId, ownerId);
+
+    // 어떤 락보다도 먼저 확인한다(`claimSeat`의 "어떤 쓰기보다도 먼저"와 같은
+    // 자리). 아래 `FOR UPDATE`가 tableId와 tournamentId를 묶어 주긴 하지만
+    // 그건 이미 남의 테이블 락을 쥐고 DB를 한 바퀴 돈 뒤다 — A 대회 주인이
+    // B 대회의 tableId를 넣어 B의 게임 락을 잡아 둘 수 있고, 404와 409의
+    // 차이로 남의 좌석 상태를 떠볼 수도 있다.
+    const table = await this.prismaService.table.findUnique({
+      where: { tournamentId_id: { tournamentId, id: tableId } },
+      select: { id: true },
+    });
+    if (!table) throw new NotFoundException('테이블을 찾을 수 없습니다.');
 
     await this.redis.withTableLock(tableId, async () => {
       const state = await this.redis.getSnapShot(tableId);
@@ -744,6 +763,36 @@ export class SessionService {
           throw new ConflictException('좌석 정보가 바뀌었습니다. 화면을 새로 고쳐 주세요.');
         }
 
+        // 검사 3 — 장부. 좌석 행과 스냅샷이 멀쩡해도 참가가 이미 끝난 사람이
+        // 있다. **끝난 참가에 좌석이 남는 경로가 둘 있다.**
+        //
+        // - 킥: `handleDealerAction`이 상태를 `ELIMINATED`로 내리고
+        //   `activePlayers`를 깎지만 `TablePlayer` 행은 지우지 않는다(엔진은
+        //   폴드만 시킨다). 그 사람은 칩과 함께 스냅샷에 남는다.
+        // - 우승: `tournamentFinished`가 `awardPrize`로 `AWARDED`를 매기고
+        //   좌석은 그대로 둔다.
+        //
+        // 둘 다 좌석 행 + 스냅샷 점유 + `WAITING` 페이즈라 검사 1·2를 통과한다.
+        // 그대로 `WAITING`으로 되돌리면 **끝난 참가가 되살아난다** —
+        // `enterSeat`은 `ELIMINATED`/`AWARDED`만 막으므로 그 사람이 자기 OTP로
+        // 다시 앉고, 나중에 진짜로 터질 때 `eliminatePlayer`가 같은 사람 몫으로
+        // `activePlayers`를 두 번 깎는다. 상금 쪽은 더 직접적이다 —
+        // `awardPrize`의 멱등 키가 곧 상태(`status: { notIn: [...] }`)라
+        // `AWARDED`를 풀면 같은 등수의 포인트 지급이 다시 열린다.
+        //
+        // 조용히 건너뛰지 않고 요청 전체를 막는다. 상점이 체크한 사람 중
+        // 하나가 실은 뗄 수 없는 사람이었다는 것은 화면이 낡았다는 뜻이고,
+        // 부분 성공은 이 API가 하지 않기로 한 것이다.
+        const parts = await tx.tournamentParticipation.findMany({
+          where: { tournamentId, userId: { in: userIds } },
+          select: { status: true },
+        });
+        const allPlaying = parts.length === userIds.length
+          && parts.every(p => p.status === PlayerStatus.PLAYING);
+        if (!allPlaying) {
+          throw new ConflictException('앉아 있는 참가자만 해제할 수 있습니다. 화면을 새로 고쳐 주세요.');
+        }
+
         await tx.tablePlayer.deleteMany({ where: { tableId, seatPosition: { in: seatIndexes } } });
         // 칩은 건드리지 않는다. 좌석만 사라지고 장부는 남는다(T29의 이사).
         await tx.tournamentParticipation.updateMany({
@@ -754,19 +803,32 @@ export class SessionService {
 
       for (const s of seats) state.players[s.seatIndex] = null;
       await this.redis.saveSnapShot(tableId, state);
+
+      // **비트맵과 유저 컨텍스트도 락 안이다.** 원자 연산이라 그 자체는 락이
+      // 필요 없지만, 필요한 것은 원자성이 아니라 **입장과의 순서**다. 락
+      // 밖에 두면 우리가 락을 놓은 뒤 재입장이 비트를 1로 세우고 컨텍스트를
+      // 쓴 **다음에** 우리 0과 삭제가 도착할 수 있다. 결과는 "비트 0 /
+      // 스냅샷 있음 / 컨텍스트 없음"이고, 스스로 낫지 않는다 — 좌석 목록에는
+      // 빈 자리로 보이는데 `TablePlayer`와 스냅샷은 앉아 있다고 말하는,
+      // 시나리오 불변식(좌석 비트맵 == 스냅샷)이 깨진 상태다.
+      //
+      // 둘 다 왕복이 정해진 Redis 호출이라 "기다림이 무한정인 일 금지"를
+      // 어기지 않는다. 브로드캐스트만 락 밖으로 남긴다.
+      //
+      // 이것이 닫는 것은 **해제 → 입장** 방향뿐이다. 입장의 비트 쓰기는
+      // 자기 락 밖이라 여전히 늦게 도착할 수 있고(입장 → 해제), 그건 T28이
+      // 만든 자리라 여기서 고치지 않는다.
+      //
+      // 좌석 수만큼 반복 호출하지 않는다 — 한 테이블의 비트는 모두 같은
+      // 해시 필드에 있어서, 여러 번 나눠 부르면 그 사이 Redis 장애가 끼었을 때
+      // 일부 좌석만 비트가 내려가고 나머지는 영원히 "찬 자리"로 남는다(DB의
+      // TablePlayer 행은 이미 사라진 뒤라 아무도 그 자리에 못 앉는다). 배치
+      // 메서드 하나로 묶어 부분 성공을 없앤다.
+      await this.redis.updateSeatBitmapMany(tournamentId, tableId, seatIndexes, false);
+      await this.redis.deleteUserContexts(tournamentId, userIds);
     });
 
-    // 락 밖. 비트맵은 필드 단위 원자 연산이라 락이 필요 없다.
-    //
-    // 좌석 수만큼 반복 호출하지 않는다 — 한 테이블의 비트는 모두 같은
-    // 해시 필드에 있어서, 여러 번 나눠 부르면 그 사이 Redis 장애가 끼었을 때
-    // 일부 좌석만 비트가 내려가고 나머지는 영원히 "찬 자리"로 남는다(DB의
-    // TablePlayer 행은 이미 사라진 뒤라 아무도 그 자리에 못 앉는다). 배치
-    // 메서드 하나로 묶어 부분 성공을 없앤다.
-    await this.redis.updateSeatBitmapMany(
-      tournamentId, tableId, seats.map(s => s.seatIndex), false,
-    );
-    await this.redis.deleteUserContexts(tournamentId, seats.map(s => s.userId));
+    // 락 밖. 락을 쥔 채로 브로드캐스트하지 않는다.
     await this.emitSeatList(tournamentId);
   }
 }
