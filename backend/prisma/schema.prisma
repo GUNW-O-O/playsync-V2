@@ -178,13 +178,15 @@ model TablePlayer {
   // 여기서 막는다 — 같은 OTP를 두 테이블에서 동시에 입력하는 경합이 실제
   // 시나리오다(T28 리뷰 finding 1). `tournamentId`가 nullable이라 Postgres는
   // 그 값이 NULL인 행끼리는 이 제약으로 묶지 않는데, 실제로는 걸릴 일이
-  // 없다: `tournamentId`를 NULL로 만드는 유일한 경로인 `ON DELETE SET NULL`은
-  // 이 행에 절대 발동하지 않는다. `tableId`가 같은 대회의 `Table`을
-  // 가리키는 한, 그 `Table`이 먼저 `Tournament`의 CASCADE로 지워지면서
-  // `tableId`의 CASCADE가 이 행 자체를 함께 지운다 — SET NULL이 손쓰기
-  // 전이다. 실제 대회 삭제로 직접 확인했다(`DELETE FROM "Tournament"`
-  // 후 해당 `TablePlayer` 행이 NULL이 아니라 통째로 사라졌다). 현재 쓰기
-  // 경로(entry.service.ts, payment.service.ts)도 전부 tournamentId를
+  // 없다: `tournamentId`를 NULL로 만드는 유일한 경로는 대회 삭제의
+  // `ON DELETE SET NULL`인데, 같은 삭제가 그 대회의 `Table`도 CASCADE로
+  // 지우고 `tableId`는 `onDelete: Cascade`라 이 행 자체가 사라진다. 두 참조
+  // 무결성 트리거 중 어느 쪽이 먼저 도는지는 Postgres가 정해 주지 않지만
+  // 결과는 같다 — SET NULL이 먼저 돌아도 그 행은 곧이어 CASCADE로 지워지고,
+  // CASCADE가 먼저 돌면 SET NULL이 건드릴 행이 없다. 어느 쪽이든 NULL인 채로
+  // 살아남는 행은 생기지 않는다. 실제 대회 삭제로 확인했다
+  // (`DELETE FROM "Tournament"` 후 해당 `TablePlayer` 행이 NULL이 아니라
+  // 통째로 사라졌다). 현재 유일한 쓰기 경로(entry.service.ts)도 tournamentId를
   // 채우므로, 이 제약은 지금 존재하는 모든 행에 실제로 걸린다.
   @@unique([tournamentId, userId])
 }

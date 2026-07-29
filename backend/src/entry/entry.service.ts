@@ -2,6 +2,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -31,6 +32,8 @@ type Claimant = {
  */
 @Injectable()
 export class EntryService {
+  private readonly logger = new Logger(EntryService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
@@ -117,10 +120,10 @@ export class EntryService {
    * 통째로 덮어쓰므로 그 세 단계가 원자적이어야 다른 좌석에 앉는 두 사람이
    * 서로의 착석을 지우지 않는다.
    *
-   * 권위는 DB에 있고 스냅샷은 그 파생 뷰다: 이 지점까지 왔다는 것은 DB가
-   * 이 좌석을 우리 것으로 확정했다는 뜻이므로, 점유자 확인에서 다른
-   * 사용자가 나와도 예외를 던지지 않고 **고쳐 쓴다**(아래 상세 근거는
-   * 해당 분기의 주석에 있다).
+   * 권위는 DB에 있고 스냅샷은 그 파생 뷰다. 그래서 락 안에서 **DB 좌석
+   * 주인을 다시 조회해** 우리 것임을 확인한 뒤에야 스냅샷을 쓴다. 확인이
+   * 끝나면 점유자가 다른 사용자로 보여도 그건 낡은 값이므로 예외를 던지지
+   * 않고 **고쳐 쓴다**(아래 상세 근거는 해당 분기의 주석에 있다).
    */
   private async claimSeat(
     tournamentId: string,
@@ -182,15 +185,34 @@ export class EntryService {
     }
 
     await this.redis.withTableLock(dto.tableId, async () => {
+      // 권위는 DB 행이다. **추론하지 않고 여기서 확인한다.**
+      //
+      // 예전에는 "여기 도달했다 = DB가 이 좌석을 우리 것으로 확정했다"고
+      // 추론했다. 새 입장(방금 트랜잭션이 커밋된 경로)에서는 참이지만,
+      // 재입장(`alreadySeated`) 경로에서는 거짓이다 — 그쪽은 트랜잭션을
+      // 건너뛰므로 손에 든 것이 `enterSeat` 맨 앞에서 읽은 낡은 스냅일
+      // 뿐이고, 그 읽기와 이 지점 사이는 임의로 벌어질 수 있다
+      // (`withTableLock`은 5초까지 재시도하고 `resolveWinners`는 같은
+      // 락을 여러 블록에 걸쳐 쥔다). 그 사이에 탈락 처리가 끝나면 우리는
+      // 이미 DB에 없는 사람인데도 스냅샷에 자신을 되살리고, 새 참가자가
+      // 그 좌석을 정당하게 가져갔다면 그 사람을 덮어쓴다.
+      //
+      // 인덱스 point SELECT 한 번이다. 트랜잭션이 아니므로 트랜잭션을 락
+      // 밖으로 뺀 이유(TTL 초과)를 다시 불러들이지 않는다.
+      const owner = await this.prisma.tablePlayer.findUnique({
+        where: { tableId_seatPosition: { tableId: dto.tableId, seatPosition: dto.seatIndex } },
+        select: { userId: true },
+      });
+      if (owner?.userId !== who.userId) {
+        throw new ConflictException('좌석 정보가 바뀌었습니다. 다시 시도해 주세요.');
+      }
+
       const state =
         (await this.redis.getSnapShot(dto.tableId)) ?? this.emptyTableState(tournamentId);
       const occupant = state.players[dto.seatIndex];
 
-      // 여기 도달했다는 것은 DB가 이 좌석을 우리 것으로 확정했다는 뜻이다
-      // (방금 트랜잭션이 성공했거나, 재입장이라 원래 우리 것이었다).
-      // `@@unique([tableId, seatPosition])`가 있는 한 다른 사람이 동시에 이
-      // 좌석의 `TablePlayer` 행을 가질 수 없다 — 그러니 점유자가 다른
-      // 사람이면 그 값은 낡은 것이다. 실제로 그런 창이 있다: 탈락 처리
+      // 위에서 DB 주인이 우리임을 확인했으므로, 점유자가 다른 사람이면 그
+      // 값은 낡은 것이다. 실제로 그런 창이 있다: 탈락 처리
       // (`eliminatePlayer`)가 DB 행을 지우는 시점과, 다음 핸드 준비
       // (`finishHand`의 `initTable`)가 그 스냅샷 자리를 비우는 시점 사이다
       // (`dealer.service.ts`의 `resolveWinners` 3~5단계). 그 창은 항상
@@ -204,9 +226,22 @@ export class EntryService {
       // 재시도해도 `alreadySeated`가 참이 되어 트랜잭션 없이 같은 예외가
       // 반복된다 — 영구히 좌석 없는 PLAYING으로 묶인다.
       //
+      // 위 409는 그 덫에 걸리지 않는다. 거기까지 갔다는 것은 DB 주인이 우리가
+      // 아니라는 뜻이고, 재시도는 `enterSeat`의 앞단(ELIMINATED 검사 또는
+      // "이미 다른 좌석에 앉아 있습니다")에서 걸러진다.
+      //
       // 점유자가 이미 우리 자신이면 손대지 않는다. 덮어쓰면 진행 중인
       // 핸드의 bet·hasFolded·totalContributed가 날아간다.
       if (!occupant || occupant.id !== who.userId) {
+        if (occupant) {
+          // 조용한 복구는 남겨야 할 사건이다. 스냅샷이 DB와 갈라졌다는
+          // 신호이고, 잦아지면 위 "탈락 창"이 아니라 다른 원인이 있다는 뜻이다.
+          this.logger.warn(
+            `스냅샷 점유자가 DB 좌석 주인과 달라 고쳐 씁니다. ` +
+              `tournamentId=${tournamentId} tableId=${dto.tableId} ` +
+              `seatIndex=${dto.seatIndex} 스냅샷=${occupant.id} DB=${who.userId}`,
+          );
+        }
         state.players[dto.seatIndex] = {
           id: who.userId,
           tableId: dto.tableId,

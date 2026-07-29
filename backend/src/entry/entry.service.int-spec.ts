@@ -390,6 +390,133 @@ describe('EntryService.enterSeat', () => {
     expect((await snapshot())!.players[7]).toMatchObject({ id: 'u1' });
   });
 
+  /**
+   * T28 최종 리뷰 finding 1(Critical): `seated`를 읽는 시점과 락 안에서
+   * 스냅샷을 쓰는 시점 사이가 임의로 벌어질 수 있다. `withTableLock`은 최대
+   * 5초를 재시도하고, `resolveWinners`는 그 같은 락을 여러 블록에 걸쳐 쥔다.
+   *
+   * 그 창에서 탈락이 끝나면(3단계가 `TablePlayer`를 지우고, 5단계
+   * `finishHand` → `initTable`이 스냅샷 자리를 비운다) 대기하던 재입장이
+   * 깨어나 `!occupant`를 보고 자기 자신을 낡은 스택으로 되살린다 — DB 행도
+   * 없고 참가는 `ELIMINATED`인데 스냅샷에는 앉아 있는 유령이다.
+   * `startPreFlop`은 스냅샷만 읽으므로 다음 핸드에 딜링되고,
+   * `syncTableInventoryToDb`의 `updateMany`는 0행을 조용히 갱신해 스냅샷과
+   * DB의 칩 총량이 아무 에러 없이 어긋난다.
+   *
+   * 락을 테스트가 직접 쥐고(raw SET) 재입장을 락 대기에 묶은 뒤, 그 안에서
+   * 탈락을 흉내 내고 락을 놓는다. 락 진입 시점은 `withTableLock` 스파이로
+   * 잡는다 — 그 시점이면 `enterSeat`의 DB 읽기(`seated` 포함)는 이미 끝나
+   * 낡은 값을 손에 쥐고 있다.
+   */
+  describe('락을 기다리는 사이에 좌석의 주인이 바뀌면', () => {
+    const LOCK_KEY = `lock:table:state:${TABLE}`;
+
+    /** 재입장을 락 대기에 묶고, 락에 도달한 순간을 돌려준다. */
+    async function blockReentryOnLock() {
+      let reached!: () => void;
+      const atLock = new Promise<void>((resolve) => {
+        reached = resolve;
+      });
+      const original = redisService.withTableLock.bind(redisService);
+      const spy = jest
+        .spyOn(redisService, 'withTableLock')
+        .mockImplementation((tableId, fn, ttlMs, maxWaitMs) => {
+          reached();
+          return original(tableId, fn, ttlMs, maxWaitMs);
+        });
+
+      // 테스트가 락을 먼저 쥔다. 재입장은 여기서 50ms 간격으로 재시도한다.
+      await redis.set(LOCK_KEY, 'test-holder', 'PX', 5000, 'NX');
+      const settled = service
+        .enterSeat(TOURNAMENT, { otp: '00000001', tableId: TABLE, seatIndex: 1 })
+        .then(() => 'fulfilled' as const)
+        .catch((e: unknown) => e);
+      await atLock;
+
+      return {
+        async release() {
+          await redis.del(LOCK_KEY);
+          const outcome = await settled;
+          spy.mockRestore();
+          return outcome;
+        },
+      };
+    }
+
+    /** 스냅샷 자리를 비운다 — `initTable`이 하는 일. */
+    async function clearSeatInSnapshot() {
+      const state = (await snapshot())!;
+      state.players[1] = null;
+      await redisService.saveSnapShot(TABLE, state);
+    }
+
+    it('탈락한 자신을 스냅샷에 되살리지 않는다', async () => {
+      await participate('u1', '00000001');
+      await service.enterSeat(TOURNAMENT, { otp: '00000001', tableId: TABLE, seatIndex: 1 });
+      await prisma.tablePlayer.updateMany({
+        where: { userId: 'u1' }, data: { currentStack: 5000 },
+      });
+
+      const blocked = await blockReentryOnLock();
+
+      // 창 안에서 딜러가 핸드를 정산하고 u1이 탈락한다.
+      await prisma.tablePlayer.deleteMany({ where: { userId: 'u1' } });
+      await prisma.tournamentParticipation.updateMany({
+        where: { userId: 'u1' }, data: { status: PlayerStatus.ELIMINATED },
+      });
+      await clearSeatInSnapshot();
+
+      const outcome = await blocked.release();
+
+      // 유령이 남지 않는 것이 본론이다. 되살아나면 다음 핸드에 딜링되고
+      // 스냅샷과 DB의 칩 총량이 조용히 어긋난다.
+      expect((await snapshot())!.players[1]).toBeNull();
+      expect(await prisma.tablePlayer.count({ where: { userId: 'u1' } })).toBe(0);
+      expect(outcome).toBeInstanceOf(ConflictException);
+
+      // 409가 좌석을 묶지 않는다: 재시도는 이제 `ELIMINATED` 검사에서 먼저
+      // 걸린다 — 좌석 없는 PLAYING으로 남지 않는다.
+      await expect(
+        service.enterSeat(TOURNAMENT, { otp: '00000001', tableId: TABLE, seatIndex: 1 }),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect((await snapshot())!.players[1]).toBeNull();
+    });
+
+    it('그 좌석을 새로 가져간 참가자를 덮어쓰지 않는다', async () => {
+      await participate('u1', '00000001');
+      await participate('u2', '00000002');
+      await service.enterSeat(TOURNAMENT, { otp: '00000001', tableId: TABLE, seatIndex: 1 });
+
+      const blocked = await blockReentryOnLock();
+
+      // u1이 탈락해 자리가 비고, u2가 그 자리를 정당하게 가져간다.
+      await prisma.tablePlayer.deleteMany({ where: { userId: 'u1' } });
+      await prisma.tournamentParticipation.updateMany({
+        where: { userId: 'u1' }, data: { status: PlayerStatus.ELIMINATED },
+      });
+      await clearSeatInSnapshot();
+      await prisma.tablePlayer.create({
+        data: {
+          tournamentId: TOURNAMENT, tableId: TABLE, userId: 'u2',
+          nickname: 'u2', seatPosition: 1, currentStack: 10000,
+        },
+      });
+      const withU2 = (await snapshot())!;
+      withU2.players[1] = {
+        id: 'u2', tableId: TABLE, nickname: 'u2', seatIndex: 1, stack: 10000,
+        bet: 0, hasFolded: false, isAllIn: false, hasChecked: false, totalContributed: 0,
+      };
+      await redisService.saveSnapShot(TABLE, withU2);
+
+      const outcome = await blocked.release();
+
+      // u2는 DB 행과 스냅샷 좌석을 모두 지킨다 — 스냅샷에서 지워지면 u2 자신의
+      // WS 접속이 `assertTableAccess`에서 거부된다.
+      expect((await snapshot())!.players[1]).toMatchObject({ id: 'u2', stack: 10000 });
+      expect(outcome).toBeInstanceOf(ConflictException);
+    });
+  });
+
   it('좌석 비트맵에 반영된다', async () => {
     await participate('u1', '00000001');
     await redisService.setSeatBitmap(TOURNAMENT, TABLE);
