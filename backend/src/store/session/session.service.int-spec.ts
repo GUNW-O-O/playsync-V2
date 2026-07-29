@@ -694,8 +694,8 @@ describe('SessionService.deleteTable', () => {
     try {
       await buyin.query('BEGIN');
       await buyin.query(
-        `INSERT INTO "TablePlayer"(id,nickname,"tableId","userId","seatPosition","currentStack","tournamentId")
-         VALUES (gen_random_uuid(), 'player', $1, $2, 0, 30000, $3)`,
+        `INSERT INTO "TablePlayer"(id,nickname,"tableId","userId","seatPosition","tournamentId")
+         VALUES (gen_random_uuid(), 'player', $1, $2, 0, $3)`,
         [tableId, player.id, tournamentId],
       );
 
@@ -760,7 +760,7 @@ describe('SessionService.deleteTable', () => {
     await prisma.tablePlayer.create({
       data: {
         tableId, userId: player.id, tournamentId,
-        seatPosition: 0, currentStack: 30000, nickname: 'player',
+        seatPosition: 0, nickname: 'player',
       },
     });
 
@@ -793,7 +793,7 @@ describe('SessionService.deleteTable', () => {
     const tablePlayer = await prisma.tablePlayer.create({
       data: {
         tableId, userId: player.id, tournamentId,
-        seatPosition: 0, currentStack: 30000, nickname: 'player',
+        seatPosition: 0, nickname: 'player',
       },
     });
 

@@ -20,11 +20,18 @@ describe('EntryService.enterSeat', () => {
   const TABLE = 'entry-table-1';
   const OTHER_TABLE = 'entry-table-2';
 
-  /** 참가 하나를 만들고 그 OTP를 돌려준다. */
+  /**
+   * 참가 하나를 만들고 그 OTP를 돌려준다. `currentStack`을 `seedTournament`의
+   * `startStack`(10000)에 맞춰 넣는다 — 실제로는 결제가 채우는 값이라, 결제를
+   * 거치지 않는 이 헬퍼가 대신 흉내 낸다.
+   */
   async function participate(userId: string, otp: string, tournamentId = TOURNAMENT) {
     await prisma.user.create({ data: { id: userId, nickname: userId, password: 'x' } });
     await prisma.tournamentParticipation.create({
-      data: { userId, tournamentId, playerOtp: otp, status: PlayerStatus.WAITING },
+      data: {
+        userId, tournamentId, playerOtp: otp,
+        status: PlayerStatus.WAITING, currentStack: 10000,
+      },
     });
     return otp;
   }
@@ -97,7 +104,6 @@ describe('EntryService.enterSeat', () => {
 
     const row = await prisma.tablePlayer.findFirstOrThrow({ where: { userId: 'u1' } });
     expect(row.seatPosition).toBe(3);
-    expect(row.currentStack).toBe(10000);
 
     const state = await snapshot();
     expect(state!.players[3]).toMatchObject({ id: 'u1', seatIndex: 3, stack: 10000 });
@@ -453,7 +459,7 @@ describe('EntryService.enterSeat', () => {
     it('탈락한 자신을 스냅샷에 되살리지 않는다', async () => {
       await participate('u1', '00000001');
       await service.enterSeat(TOURNAMENT, { otp: '00000001', tableId: TABLE, seatIndex: 1 });
-      await prisma.tablePlayer.updateMany({
+      await prisma.tournamentParticipation.updateMany({
         where: { userId: 'u1' }, data: { currentStack: 5000 },
       });
 
@@ -498,7 +504,7 @@ describe('EntryService.enterSeat', () => {
       await prisma.tablePlayer.create({
         data: {
           tournamentId: TOURNAMENT, tableId: TABLE, userId: 'u2',
-          nickname: 'u2', seatPosition: 1, currentStack: 10000,
+          nickname: 'u2', seatPosition: 1,
         },
       });
       const withU2 = (await snapshot())!;
@@ -525,5 +531,105 @@ describe('EntryService.enterSeat', () => {
 
     const bitmap = await redis.hget(`tournament:${TOURNAMENT}:seat`, `table:${TABLE}`);
     expect(bitmap![5]).toBe('1');
+  });
+});
+
+// 위 `describe('EntryService.enterSeat', ...)`와는 별개의 최상위 describe다.
+// `participate`/`seedTournament`/`snapshot`은 그 안의 지역 함수라 바깥에서
+// 이름을 그대로 쓸 수 없고(스코프 밖), 그 describe의 `beforeEach`가 이미
+// `TOURNAMENT`를 PENDING으로 시딩해 두므로 안에 중첩하면 이 테스트가 다시
+// `seedTournament`를 부를 때 같은 id로 P2002가 난다. 그래서 같은 헬퍼를
+// 그대로 복제한 채, 이 describe만의 대회/테이블 id로 독립된 상태에서 돈다.
+describe('EntryService.enterSeat — 칩은 좌석보다 오래 산다', () => {
+  let prisma: PrismaClient;
+  let redis: Redis;
+  let redisService: RedisService;
+  let service: EntryService;
+
+  const TOURNAMENT = 'entry-chip-tournament-1';
+  const TABLE = 'entry-chip-table-1';
+
+  /** 참가 하나를 만들고 그 OTP를 돌려준다. */
+  async function participate(userId: string, otp: string, tournamentId = TOURNAMENT) {
+    await prisma.user.create({ data: { id: userId, nickname: userId, password: 'x' } });
+    await prisma.tournamentParticipation.create({
+      data: { userId, tournamentId, playerOtp: otp, status: PlayerStatus.WAITING },
+    });
+    return otp;
+  }
+
+  /** `Table.dealerId`가 필수라 대회마다 딜러 세션이 하나 있어야 한다. */
+  async function seedTournament(id: string, status: TournamentStatus, tableIds: string[]) {
+    await prisma.tournament.create({
+      data: {
+        id, name: id, blindId: 'entry-chip-blind', storeId: 'entry-chip-store',
+        dealerOtpHash: 'unused', entryFee: 1000, startStack: 10000,
+        status, isRegistrationOpen: true,
+      },
+    });
+    const dealerSession = await prisma.dealerSession.create({ data: { tournamentId: id } });
+    for (const [order, tableId] of tableIds.entries()) {
+      await prisma.table.create({
+        data: {
+          id: tableId, tournamentId: id, tableOrder: order + 1,
+          dealerId: dealerSession.id,
+        },
+      });
+    }
+  }
+
+  beforeAll(() => {
+    prisma = createTestPrisma();
+    redis = createTestRedis();
+    redisService = new RedisService(redis);
+    service = new EntryService(
+      prisma as unknown as PrismaService,
+      redisService,
+      new JwtService({ secret: 'entry-spec-secret' }),
+      new EventEmitter2(),
+    );
+  });
+
+  beforeEach(async () => {
+    await truncateAll(prisma);
+    await flushTestRedis(redis);
+    await prisma.user.create({
+      data: { id: 'entry-chip-owner', nickname: 'entry-chip-owner', password: 'x', role: 'STORE_ADMIN' },
+    });
+    await prisma.store.create({
+      data: { id: 'entry-chip-store', name: '칩상점', ownerId: 'entry-chip-owner' },
+    });
+    await prisma.blindStructure.create({
+      data: {
+        id: 'entry-chip-blind', name: '칩기본', storeId: 'entry-chip-store',
+        structure: [{ lv: 1, sb: 100, ante: false, duration: 600 }],
+      },
+    });
+  });
+
+  afterAll(async () => {
+    await closeTestPrisma(prisma);
+    await redis.quit();
+  });
+
+  it('좌석 행이 사라져도 참가 행의 칩으로 다시 앉는다', async () => {
+    await seedTournament(TOURNAMENT, TournamentStatus.ONGOING, [TABLE]);
+    await participate('u1', '11111111');
+
+    await service.enterSeat(TOURNAMENT, { otp: '11111111', tableId: TABLE, seatIndex: 0 });
+
+    // 핸드가 돌아 스택이 바뀐 상태를 만든다.
+    await prisma.tournamentParticipation.update({
+      where: { tournamentId_userId: { tournamentId: TOURNAMENT, userId: 'u1' } },
+      data: { currentStack: 23400 },
+    });
+    // 상점이 좌석을 해제한 것과 같은 상태 — 좌석 행만 사라진다.
+    await prisma.tablePlayer.deleteMany({ where: { tournamentId: TOURNAMENT, userId: 'u1' } });
+    await redis.del(`table:state:${TABLE}`);
+
+    await service.enterSeat(TOURNAMENT, { otp: '11111111', tableId: TABLE, seatIndex: 5 });
+
+    const state = (await redisService.getSnapShot(TABLE))!;
+    expect(`재착석 스택 ${state.players[5]!.stack}`).toBe('재착석 스택 23400');
   });
 });

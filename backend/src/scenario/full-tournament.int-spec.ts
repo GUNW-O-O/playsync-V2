@@ -384,11 +384,16 @@ describe('시나리오 — 대회 하나를 끝까지', () => {
     expect(state.players.every(p => p === null || !p.hasFolded)).toBe(true);
     expect(state.players.every(p => p === null || p.bet === 0)).toBe(true);
 
-    // Redis의 스택이 DB에 반영됐는가. 이 동기화가 조용히 실패하던 것이 N-6이다.
+    // Redis의 스택이 DB(장부)에 반영됐는가. 이 동기화가 조용히 실패하던 것이
+    // N-6이다. 체크포인트는 참가 행(TournamentParticipation)을 갱신하므로
+    // 좌석 행(TablePlayer)은 좌석 매핑에만 쓴다.
     const rows = await prisma.tablePlayer.findMany({ where: { tableId } });
     for (const row of rows) {
       const seat = state.players[row.seatPosition];
-      expect(`${row.userId} DB ${row.currentStack}`)
+      const participation = await prisma.tournamentParticipation.findUniqueOrThrow({
+        where: { tournamentId_userId: { tournamentId, userId: row.userId } },
+      });
+      expect(`${row.userId} DB ${participation.currentStack}`)
         .toBe(`${row.userId} DB ${seat?.stack ?? 0}`);
     }
 

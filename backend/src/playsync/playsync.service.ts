@@ -210,13 +210,20 @@ export class PlaysyncService {
    * 배열의 truthy 여부를 물은 것이고 항상 `true`였다. 호출자의
    * `if (!isTxSuccess) throw`는 도달할 수 없는 죽은 분기였다 — DB가 실패해도
    * 정산은 성공으로 끝나고 다음 핸드로 넘어갔다.
+   *
+   * `updateMany`가 아니라 `update`인 이유: `updateMany`는 대상이 0행이어도
+   * 조용히 성공한다. 스냅샷에는 있는데 장부에 없는 사람이 있으면 칩 불일치가
+   * 아무 에러 없이 지나갔다(T28 최종 리뷰). `update`는 P2025로 즉시 터지고,
+   * 아래 `catch`가 유한 재시도 경로로 보낸다.
    */
   public async syncTableInventoryToDb(state: TableState): Promise<boolean> {
     const updates = state.players
       .filter(p => p !== null)
-      .map(p => this.prisma.tablePlayer.updateMany({
-        where: { userId: p.id, tableId: p.tableId },
-        data: { currentStack: p.stack }
+      .map(p => this.prisma.tournamentParticipation.update({
+        where: {
+          tournamentId_userId: { tournamentId: state.tournamentId, userId: p.id },
+        },
+        data: { currentStack: p.stack },
       }));
     try {
       await this.prisma.$transaction(updates);
@@ -530,14 +537,14 @@ export class PlaysyncService {
         data: { totalBuyinAmount: { increment: entryFee } },
       })
 
+      // 리바인은 장부 하나만 건드린다. 예전에는 buyInCount(참가 행)와
+      // currentStack(좌석 행)이 갈라져 있어 update가 둘이었다.
       await tx.tournamentParticipation.update({
         where: { tournamentId_userId: { tournamentId, userId } },
-        data: { buyInCount: { increment: 1 } },
-      });
-
-      await tx.tablePlayer.update({
-        where: { tableId_userId: { tableId: tableId, userId } }, // tableId 관리 필요
-        data: { currentStack: { increment: startStack } }
+        data: {
+          buyInCount: { increment: 1 },
+          currentStack: { increment: startStack },
+        },
       });
 
       return { success: true, startStack };
