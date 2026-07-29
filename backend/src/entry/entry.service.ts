@@ -116,6 +116,11 @@ export class EntryService {
    * 락이 감싸는 것은 스냅샷 읽기 → 점유자 확인 → 스냅샷 쓰기뿐이다. JSON을
    * 통째로 덮어쓰므로 그 세 단계가 원자적이어야 다른 좌석에 앉는 두 사람이
    * 서로의 착석을 지우지 않는다.
+   *
+   * 권위는 DB에 있고 스냅샷은 그 파생 뷰다: 이 지점까지 왔다는 것은 DB가
+   * 이 좌석을 우리 것으로 확정했다는 뜻이므로, 점유자 확인에서 다른
+   * 사용자가 나와도 예외를 던지지 않고 **고쳐 쓴다**(아래 상세 근거는
+   * 해당 분기의 주석에 있다).
    */
   private async claimSeat(
     tournamentId: string,
@@ -180,18 +185,28 @@ export class EntryService {
       const state =
         (await this.redis.getSnapShot(dto.tableId)) ?? this.emptyTableState(tournamentId);
       const occupant = state.players[dto.seatIndex];
-      // 정상 경로라면 여기 도달했을 때 이 좌석은 이미 우리 것으로 DB에
-      // 확정돼 있다(방금 트랜잭션이 성공했거나, 재입장이라 원래 우리
-      // 것이었다). 그런데도 다른 사용자가 점유자로 남아 있다면 스냅샷이
-      // DB와 어긋난 것이다 — 방어용이다.
-      if (occupant && occupant.id !== who.userId) {
-        throw new ConflictException('이미 다른 참가자가 앉은 좌석입니다.');
-      }
 
-      // 이 사람이 이미 스냅샷에 있으면 손대지 않는다. 덮어쓰면 진행 중인
-      // 핸드의 bet·hasFolded·totalContributed가 날아간다. 비어 있는 경우만
-      // 채우는 것이 곧 "DB는 썼는데 스냅샷을 못 쓰고 죽은" 상태의 복구다.
-      if (!occupant) {
+      // 여기 도달했다는 것은 DB가 이 좌석을 우리 것으로 확정했다는 뜻이다
+      // (방금 트랜잭션이 성공했거나, 재입장이라 원래 우리 것이었다).
+      // `@@unique([tableId, seatPosition])`가 있는 한 다른 사람이 동시에 이
+      // 좌석의 `TablePlayer` 행을 가질 수 없다 — 그러니 점유자가 다른
+      // 사람이면 그 값은 낡은 것이다. 실제로 그런 창이 있다: 탈락 처리
+      // (`eliminatePlayer`)가 DB 행을 지우는 시점과, 다음 핸드 준비
+      // (`finishHand`의 `initTable`)가 그 스냅샷 자리를 비우는 시점 사이다
+      // (`dealer.service.ts`의 `resolveWinners` 3~5단계). 그 창은 항상
+      // 팟이 이미 분배된 뒤(HAND_END)라 지워지는 쪽은 그 핸드를 더 이상
+      // 다투지 않는다 — 덮어써도 살아 있는 핸드 상태를 파괴하지 않는다.
+      //
+      // 그래서 점유자가 다르면 예외를 던지지 않고 **고쳐 쓴다.** 스냅샷은
+      // DB에서 파생된 뷰이고, DB가 이 좌석을 우리 것이라고 확정한 이상
+      // 낡은 값을 남겨 두는 것보다 지금 진실로 덮는 것이 맞다. 던지면
+      // DB에는 이미 우리 좌석이 커밋된 채로 클라이언트만 409를 보고,
+      // 재시도해도 `alreadySeated`가 참이 되어 트랜잭션 없이 같은 예외가
+      // 반복된다 — 영구히 좌석 없는 PLAYING으로 묶인다.
+      //
+      // 점유자가 이미 우리 자신이면 손대지 않는다. 덮어쓰면 진행 중인
+      // 핸드의 bet·hasFolded·totalContributed가 날아간다.
+      if (!occupant || occupant.id !== who.userId) {
         state.players[dto.seatIndex] = {
           id: who.userId,
           tableId: dto.tableId,

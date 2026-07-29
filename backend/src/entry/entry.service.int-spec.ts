@@ -287,6 +287,48 @@ describe('EntryService.enterSeat', () => {
     expect(await prisma.tablePlayer.count({ where: { userId: 'u1' } })).toBe(1);
   });
 
+  /**
+   * 리뷰 2라운드 finding: 탈락 처리가 `TablePlayer` 행을 지운 뒤, 다음 핸드
+   * 준비(`initTable`)가 스냅샷 자리를 비우기 전 사이의 창을 흉내 낸다. DB에는
+   * 그 좌석의 행이 없지만 스냅샷은 여전히 예전 점유자를 가리키는 상태다.
+   * 이 상태에서 새 참가자가 그 좌석을 노리면, DB가 좌석을 내줬으니 스냅샷의
+   * 낡은 값을 예외 없이 고쳐 써야 한다 — 예외를 던지면 DB에는 이미 새
+   * 참가자의 좌석이 커밋된 채로 클라이언트만 실패를 보고, 재시도해도
+   * `alreadySeated`라 트랜잭션 없이 같은 예외가 반복돼 영구히 좌석 없는
+   * PLAYING으로 묶인다.
+   */
+  it('스냅샷에 낡은 다른 참가자가 남아 있어도 DB가 비어 있으면 좌석을 되찾는다', async () => {
+    await participate('u1', '00000001');
+    await participate('ghost', '00000099');
+    // ghost가 먼저 앉아 스냅샷에 자리를 남긴다.
+    await service.enterSeat(TOURNAMENT, { otp: '00000099', tableId: TABLE, seatIndex: 7 });
+
+    // 탈락 처리를 흉내 낸다: DB 행만 지우고 스냅샷은 그대로 둔다
+    // (eliminatePlayer가 지운 뒤 initTable이 비우기 전의 창).
+    await prisma.tablePlayer.deleteMany({ where: { userId: 'ghost' } });
+
+    const before = (await snapshot())!;
+    expect(before.players[7]).toMatchObject({ id: 'ghost' });
+
+    const { accessToken } = await service.enterSeat(TOURNAMENT, {
+      otp: '00000001', tableId: TABLE, seatIndex: 7,
+    });
+    expect(accessToken).toEqual(expect.any(String));
+
+    const row = await prisma.tablePlayer.findFirstOrThrow({ where: { userId: 'u1' } });
+    expect(row.tableId).toBe(TABLE);
+    expect(row.seatPosition).toBe(7);
+
+    const after = (await snapshot())!;
+    expect(after.players[7]).toMatchObject({ id: 'u1' });
+
+    // 재시도(같은 요청을 한 번 더)해도 안전하다 — 이제 alreadySeated라
+    // 트랜잭션은 건너뛰고, 스냅샷은 이미 우리 것이라 손대지 않는다.
+    await service.enterSeat(TOURNAMENT, { otp: '00000001', tableId: TABLE, seatIndex: 7 });
+    expect(await prisma.tablePlayer.count({ where: { userId: 'u1' } })).toBe(1);
+    expect((await snapshot())!.players[7]).toMatchObject({ id: 'u1' });
+  });
+
   it('좌석 비트맵에 반영된다', async () => {
     await participate('u1', '00000001');
     await redisService.setSeatBitmap(TOURNAMENT, TABLE);
