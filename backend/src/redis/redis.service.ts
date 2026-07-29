@@ -1,6 +1,5 @@
 import { Inject, Injectable } from "@nestjs/common";
 import Redis from "ioredis";
-import { PayMentDto } from "shared/dto/payment.dto";
 import { BlindField, Dashboard, FullTournamentInfo } from "shared/types/tournamentMeta";
 import { calculatePrizes, PrizePayout } from "src/playsync/prize";
 import { UserInfo } from "shared/types/userInfo";
@@ -64,34 +63,11 @@ export class RedisService {
       'if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end';
     await this.redis.eval(script, 1, lockKey, token);
   }
-  // 좌석 선점 시도
-  async acquireSeatLock(dto: PayMentDto, userId: string): Promise<boolean> {
-    const lockKey = `lock:seat:${dto.tableId}:${dto.seatIndex}`;
-    const expireTime = 10;
-
-    // NX: 키가 없을 때만 세팅, EX: 만료 시간 설정
-    const result = await this.redis.set(lockKey, userId, 'EX', expireTime, 'NX');
-
-    return result === 'OK'; // 성공하면 true, 이미 누가 점유 중이면 false
-  }
-
-  // 락 해제 (결제 완료 후 또는 취소 시)
-  async releaseSeatLock(dto: PayMentDto) {
-    const lockKey = `lock:seat:${dto.tableId}:${dto.seatIndex}`;
-    await this.redis.del(lockKey);
-  }
-
   /** 한 테이블의 좌석 수. 비트맵 길이가 곧 이 값이다. */
   private static readonly SEAT_COUNT = 9;
 
   /**
    * 좌석 한 칸만 원자적으로 바꾸고 바뀐 비트맵을 돌려준다.
-   *
-   * 좌석 락은 좌석**별**이라 다른 좌석에 앉는 두 사람은 서로를 막지 않는다.
-   * `hget → 문자열 수정 → hset`이면 둘이 같은 비트맵을 읽고 각자 자기 비트만
-   * 세팅해 저장하므로, 나중에 쓴 쪽이 앞선 비트를 지운다. 실착석은 DB unique
-   * 제약이 막아주니 돈이 새지는 않지만, 예매 화면에 점유 좌석이 빈자리로 남아
-   * 앉을 수 없는 자리를 계속 클릭하게 된다.
    *
    * 게임 상태와 달리 좌석 비트는 서로 독립적이다. 필드 간 일관성을 지킬 게
    * 없으므로 락(`withTableLock`)이 아니라 원자 연산이 맞다. 다만 비트맵이

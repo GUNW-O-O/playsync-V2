@@ -1,8 +1,7 @@
 import { ConflictException, Injectable } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { TournamentStatus } from '@prisma/client';
+import { PlayerStatus, TournamentStatus } from '@prisma/client';
 import { PayMentDto } from 'shared/dto/payment.dto';
-import { GamePhase, TablePlayer, TableState } from 'src/game-engine/types';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { SessionService } from 'src/store/session/session.service';
@@ -67,157 +66,87 @@ export class PaymentService {
     return { tournament, seatStatus };
   }
 
-  // 세션 참여
-  async joinSessionWithSeat(dto: PayMentDto, userId: string) {
-    const isLocked = await this.redisService.acquireSeatLock(dto, userId);
-    if (!isLocked) {
-      throw new ConflictException('이미 다른 유저가 선택 중인 좌석입니다.');
+  // 참가비 결제. **좌석은 여기서 정하지 않는다**(T28) — 오프라인에서 돈은
+  // 미리 내고 의자는 현장에서 정해진다. 좌석 확정은 EntryService가 참가
+  // OTP를 받는 순간에 한다.
+  async joinSession(dto: PayMentDto, userId: string) {
+    const user = await this.user.findByUUID(userId);
+    if (!user) {
+      throw new ConflictException('잘못된 유저 ID 입니다.');
     }
-    try {
-      const user = await this.user.findByUUID(userId);
-      if (!user) {
-        throw new ConflictException('잘못된 유저 ID 입니다.')
-      }
-      const session = await this.prismaService.tournament.findUnique({
-        where: { id: dto.tournamentId },
-      });
-      if (!session) throw new ConflictException('잘못된 세션 ID 입니다.');
-      if (session.status === TournamentStatus.FINISHED || !session.isRegistrationOpen) {
-        throw new ConflictException('이미 종료된 세션입니다.');
-      }
-      if (user.points < session.entryFee) {
-        throw new ConflictException('포인트가 부족합니다.');
-      }
-      const isOngoing = session.status === TournamentStatus.ONGOING;
+    const session = await this.prismaService.tournament.findUnique({
+      where: { id: dto.tournamentId },
+    });
+    if (!session) throw new ConflictException('잘못된 세션 ID 입니다.');
+    if (session.status === TournamentStatus.FINISHED || !session.isRegistrationOpen) {
+      throw new ConflictException('이미 종료된 세션입니다.');
+    }
+    if (user.points < session.entryFee) {
+      throw new ConflictException('포인트가 부족합니다.');
+    }
 
-      // 트랜잭션은 DB만 만진다. Redis는 트랜잭션에 참여하지 않으므로, 안에서
-      // 스냅샷을 쓰면 뒷부분이 실패해 DB가 롤백돼도 Redis에는 유저가 앉아 있다.
-      //
-      // OTP가 대회 안에서 겹치면 다시 뽑는다. 8자리라 드물지만 드문 것은
-      // 안 나는 것이 아니다. 트랜잭션 전체를 다시 도는 이유는 참가비 차감과
-      // 좌석 생성이 같은 트랜잭션 안이라 OTP만 따로 바꿀 수 없기 때문이다.
-      let result: { success: boolean } | undefined;
-      for (let attempt = 0; attempt < 5; attempt++) {
-        try {
-          result = await this.prismaService.$transaction(async (tx) => {
-            // DB 최종 중복 체크
-            const exsitingPlayer = await tx.tablePlayer.findUnique({
-              where: {
-                tableId_seatPosition: {
-                  tableId: dto.tableId,
-                  seatPosition: dto.seatIndex
-                }
-              }
-            });
-            if (exsitingPlayer) throw new ConflictException('이미 다른 참가자가 앉은 좌석입니다.');
-            await this.user.paymentPoint(tx, userId, dto.tournamentId, session.name, session.entryFee);
-            await tx.tournamentParticipation.create({
-              data: {
-                userId: userId,
-                tournamentId: dto.tournamentId,
-                status: isOngoing ? 'PLAYING' : 'WAITING',
-                playerOtp: playerOtp.generatePlayerOtp(),
-              }
-            });
-            await tx.tablePlayer.create({
-              data: {
-                tournamentId: session.id,
-                nickname: user.nickname,
-                tableId: dto.tableId,
-                userId: userId,
-                seatPosition: dto.seatIndex,
-                currentStack: session.startStack,
-              }
-            })
-            await tx.tournament.update({
-              where: { id: dto.tournamentId },
-              data: {
-                totalPlayers: { increment: 1 },
-                activePlayers: { increment: 1 },
-                totalBuyinAmount: { increment: session.entryFee },
-              }
-            });
-            return { success: true };
+    // OTP가 대회 안에서 겹치면 다시 뽑는다. 8자리라 드물지만 드문 것은 안 나는
+    // 것이 아니다. 트랜잭션 전체를 다시 도는 이유는 참가비 차감과 참가 생성이
+    // 같은 트랜잭션 안이라 OTP만 따로 바꿀 수 없기 때문이다.
+    let participation: { id: string; status: PlayerStatus } | undefined;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        participation = await this.prismaService.$transaction(async (tx) => {
+          await this.user.paymentPoint(
+            tx, userId, dto.tournamentId, session.name, session.entryFee,
+          );
+          // 착석 여부와 무관하게 WAITING이다. PLAYING으로 올리는 것은
+          // 입장(EntryService)의 몫이다 — PlayerStatus의 주석이 원래
+          // 그렇게 적혀 있다("바이인 완료 후 대기" / "테이블 착석 중").
+          const created = await tx.tournamentParticipation.create({
+            data: {
+              userId,
+              tournamentId: dto.tournamentId,
+              status: PlayerStatus.WAITING,
+              playerOtp: playerOtp.generatePlayerOtp(),
+            },
           });
-          break;
-        } catch (e) {
-          // 같은 사람이 두 번 참가한 경우(tournamentId, userId)는 재시도해도
-          // 같은 결과다. OTP 충돌만 다시 뽑는다.
-          //
-          // `meta.target`이 아니라 `meta.driverAdapterError...constraint.fields`를
-          // 보는 이유: 드라이버 어댑터(@prisma/adapter-pg) 구성에서는 P2002 메타에
-          // `target`이 없다. 대신 postgres가 준 제약 조건 정보를 그대로 담아
-          // 필드 이름에 큰따옴표가 붙은 채로(`"playerOtp"`) 내려온다.
-          const err = e as {
-            code?: string;
-            meta?: {
-              target?: string[];
-              driverAdapterError?: { cause?: { constraint?: { fields?: string[] } } };
-            };
-          };
-          const violatedFields =
-            err.meta?.target ?? err.meta?.driverAdapterError?.cause?.constraint?.fields ?? [];
-          const isOtpCollision =
-            err.code === 'P2002' && violatedFields.some((field) => field.includes('playerOtp'));
-          if (!isOtpCollision) throw e;
-        }
-      }
-      if (!result) {
-        throw new ConflictException('참가 OTP를 만들지 못했습니다. 다시 시도해 주세요.');
-      }
-
-      let updatedState: TableState | undefined;
-      if (result.success) {
-        const newPlayer: TablePlayer = {
-          id: userId,
-          tableId: dto.tableId,
-          nickname: user.nickname!,
-          seatIndex: dto.seatIndex,
-          stack: session.startStack,
-          bet: 0,
-          hasFolded: isOngoing, // 게임 중이면 true, 대기 중이면 false
-          isAllIn: false,
-          hasChecked: false,
-          totalContributed: 0,
-        };
-
-        // 좌석 락은 좌석별이라 다른 좌석에 앉는 사람을 막지 않는다. 스냅샷은
-        // JSON 통째로 덮어쓰므로, 락 없이 겹치면 나중에 쓴 쪽이 앞선 착석을
-        // 통째로 지운다 — 앉았는데 자리에 없는 유저가 생긴다.
-        updatedState = await this.redisService.withTableLock(dto.tableId, async () => {
-          const state = await this.redisService.getSnapShot(dto.tableId) ?? {
-            phase: GamePhase.WAITING,
-            players: Array(9).fill(null),
-            pot: 0,
-            currentBet: 0,
-            buttonUser: 0,
-            currentTurnSeatIndex: -1,
-            sidePots: [],
-            ante: false,
-            tournamentId: session.id,
-            smallBlind: 100,
-          };
-          state.players[dto.seatIndex] = newPlayer;
-          await this.redisService.saveSnapShot(dto.tableId, state);
-          return state;
+          await tx.tournament.update({
+            where: { id: dto.tournamentId },
+            data: {
+              totalPlayers: { increment: 1 },
+              activePlayers: { increment: 1 },
+              totalBuyinAmount: { increment: session.entryFee },
+            },
+          });
+          return { id: created.id, status: created.status };
         });
-
-        await this.redisService.setUserContext(dto.tournamentId, userId, dto.tableId, dto.seatIndex, 'ACTIVE');
-        await this.redisService.joinPlayer(dto.tournamentId, session.entryFee);
-        // 좌석 비트맵 갱신은 남는다 — 좌석 목록과 전광판이 이 값을 읽는다.
-        // 예전에는 여기서 점유 수가 7이면 테이블을 자동 생성했다. 카운트
-        // 비교라 탈락으로 비었다가 다시 차면 7을 다시 넘어 빈 테이블이
-        // 계속 생겼다. 테이블은 이제 상점이 만든다.
-        await this.redisService.updateSeatBitmap(dto.tournamentId, dto.tableId, dto.seatIndex, true);
-        const tableStatus = await this.redisService.getTournamentTables(dto.tournamentId);
-        this.eventEmitter.emit('SEAT_LIST_UPDATED', {
-          tournamentId: dto.tournamentId, 
-          state : tableStatus
-        })
+        break;
+      } catch (e) {
+        // 같은 사람이 두 번 참가한 경우(tournamentId, userId)는 재시도해도
+        // 같은 결과다. OTP 충돌만 다시 뽑는다.
+        //
+        // `meta.target`이 아니라 `meta.driverAdapterError...constraint.fields`를
+        // 보는 이유: 드라이버 어댑터(@prisma/adapter-pg) 구성에서는 P2002 메타에
+        // `target`이 없다. 대신 postgres가 준 제약 조건 정보를 그대로 담아
+        // 필드 이름에 큰따옴표가 붙은 채로(`"playerOtp"`) 내려온다.
+        const err = e as {
+          code?: string;
+          meta?: {
+            target?: string[];
+            driverAdapterError?: { cause?: { constraint?: { fields?: string[] } } };
+          };
+        };
+        const violatedFields =
+          err.meta?.target ?? err.meta?.driverAdapterError?.cause?.constraint?.fields ?? [];
+        const isOtpCollision =
+          err.code === 'P2002' && violatedFields.some((field) => field.includes('playerOtp'));
+        if (!isOtpCollision) throw e;
       }
-      return updatedState;
-    } finally {
-      await this.redisService.releaseSeatLock(dto);
     }
+    if (!participation) {
+      throw new ConflictException('참가 OTP를 만들지 못했습니다. 다시 시도해 주세요.');
+    }
+
+    // 대회 카운터의 Redis 미러다. 방금 DB에 올린 세 필드와 같은 값이라
+    // 좌석과 무관하고, 그래서 여기 남는다.
+    await this.redisService.joinPlayer(dto.tournamentId, session.entryFee);
+
+    return participation;
   }
 }

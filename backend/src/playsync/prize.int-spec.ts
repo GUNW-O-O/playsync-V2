@@ -272,7 +272,7 @@ describe('상금 지급', () => {
     /**
      * 상금이 **참가자 행에 적히는 것**과 **유저가 쓸 수 있게 되는 것**은 다르다.
      *
-     * 참가비는 포인트에서 빠진다(`joinSessionWithSeat`, `executeRebuyTransaction`).
+     * 참가비는 포인트에서 빠진다(`joinSession`, `executeRebuyTransaction`).
      * 상금이 포인트로 돌아오지 않으면 대회를 열 때마다 시스템이 포인트를
      * 삼킨다. `TransactionType.PRIZE`가 스키마에 있는데 쓰는 코드가 없었던
      * 것이 그 증거다.
