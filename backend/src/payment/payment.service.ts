@@ -1,5 +1,4 @@
 import { ConflictException, Injectable } from '@nestjs/common';
-import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PlayerStatus, TournamentStatus } from '@prisma/client';
 import { PayMentDto } from 'shared/dto/payment.dto';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -14,7 +13,6 @@ export class PaymentService {
     private session: SessionService,
     private prismaService: PrismaService,
     private redisService: RedisService,
-    private readonly eventEmitter: EventEmitter2,
   ) { };
 
   // 가맹점 이름으로 검색

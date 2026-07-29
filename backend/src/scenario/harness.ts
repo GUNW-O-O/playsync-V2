@@ -105,7 +105,7 @@ export async function setupTournament(
   const otpAttempts = new OtpAttempts(redis);
   const session = new SessionService(prismaService, redisService, otpAttempts, emitter);
   const user = new UserService(prismaService);
-  const payment = new PaymentService(user, session, prismaService, redisService, emitter);
+  const payment = new PaymentService(user, session, prismaService, redisService);
   const dealer = new DealerService(
     queue, prismaService, redisService, playsync, {} as JwtService,
     otpAttempts,

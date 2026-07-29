@@ -77,7 +77,6 @@ describe('PaymentService — 참가 OTP 발급', () => {
       {} as unknown as SessionService,
       prisma as unknown as PrismaService,
       redisService,
-      new EventEmitter2(),
     );
     entry = new EntryService(
       prisma as unknown as PrismaService,
@@ -289,7 +288,7 @@ describe('PaymentService.getTournamentInfo — 테이블이 없는 대회', () =
     const session = { getGameSession: async () => row } as unknown as SessionService;
 
     return new PaymentService(
-      {} as unknown as UserService, session, prisma, redisService, new EventEmitter2(),
+      {} as unknown as UserService, session, prisma, redisService,
     );
   }
 

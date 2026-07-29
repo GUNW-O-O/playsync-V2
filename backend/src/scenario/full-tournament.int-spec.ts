@@ -174,7 +174,7 @@ describe('시나리오 — 대회 하나를 끝까지', () => {
     const otpAttempts = new OtpAttempts(redis);
     session = new SessionService(prismaService, redisService, otpAttempts, emitter);
     user = new UserService(prismaService);
-    payment = new PaymentService(user, session, prismaService, redisService, emitter);
+    payment = new PaymentService(user, session, prismaService, redisService);
     entry = new EntryService(
       prismaService, redisService,
       new JwtService({ secret: 'scenario-secret' }),

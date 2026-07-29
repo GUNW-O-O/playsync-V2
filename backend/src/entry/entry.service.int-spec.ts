@@ -239,7 +239,7 @@ describe('EntryService.enterSeat', () => {
     expect((await snapshot())!.players[4]).toMatchObject({ id: 'u2', hasFolded: true });
   });
 
-  it('같은 좌석을 동시에 노리면 한 명만 앉는다', async () => {
+  it('같은 좌석을 동시에 노리면 한 명만 앉고 진 쪽은 409를 받는다', async () => {
     await participate('u1', '00000001');
     await participate('u2', '00000002');
 
@@ -250,6 +250,14 @@ describe('EntryService.enterSeat', () => {
 
     expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
     expect(await prisma.tablePlayer.count({ where: { tableId: TABLE, seatPosition: 2 } })).toBe(1);
+
+    // T11이 지키던 것: 진 쪽이 500이 아니라 409를 받는다. 프론트가 "다른 자리를
+    // 고르세요"와 "서버가 죽었다"를 구분하려면 이 타입이 정확해야 한다. 좌석
+    // describe를 지우면서(T28 Task 3) 이 어서션 없이 통과가 남을 뻔했다 —
+    // `claimSeat`의 catch가 `ConflictException`을 안 던지고 원본 Prisma
+    // 에러를 그대로 흘려도 위 두 줄만으로는 초록이었다(T28 리뷰 finding 1).
+    const rejected = results.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+    expect(rejected.reason).toBeInstanceOf(ConflictException);
   });
 
   it('다른 좌석에 동시에 앉으면 서로를 지우지 않는다', async () => {
@@ -285,6 +293,59 @@ describe('EntryService.enterSeat', () => {
 
     expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
     expect(await prisma.tablePlayer.count({ where: { userId: 'u1' } })).toBe(1);
+  });
+
+  /**
+   * T28 리뷰 3라운드 finding 2: `payment.service.ts`는 이미 이 보증을
+   * 스텁으로 검증한 적이 있었다(트랜잭션 커밋이 실패해도 Redis에 유령 착석이
+   * 남지 않는다 — `docs/fixlist.md:376`). Task 3가 그 describe를 지우면서
+   * "entry.service.int-spec.ts가 같은 것을 진짜 제약 위에서 본다"고 했지만,
+   * 그 주장을 뒷받침하는 테스트가 실제로는 없었다.
+   *
+   * 스텁 없이 진짜로 커밋을 실패시킨다: 같은 유저가 두 테이블을 동시에
+   * 노리면 `@@unique([tournamentId, userId])`가 진 쪽의 `tablePlayer.create`를
+   * P2002로 되돌린다 — 위의 "한 곳에만 앉는다" 테스트와 같은 경합이다. 그
+   * 테스트가 안 보는 것: 진 쪽이 노렸던 좌석에 스냅샷이나 비트맵 흔적이
+   * 조금이라도 남는가. `claimSeat`은 스냅샷·비트맵 쓰기를 트랜잭션 **밖**에
+   * 둬서 막고 있는데, 그 배치가 우연이 아니라 지켜야 할 계약이라는 것을
+   * 여기서 고정한다. 누군가 "원자적으로 만들자"며 그 쓰기를 트랜잭션 안으로
+   * 옮기면(자연스러워 보이는 리팩터다), 트랜잭션이 실패하기 전에 실행된
+   * Redis 쓰기는 롤백되지 않고 살아남는다 — 이 테스트가 그걸 잡아야 한다.
+   */
+  it('두 테이블 경합에서 진 쪽이 노린 좌석에는 스냅샷도 비트맵도 남지 않는다', async () => {
+    await participate('u1', '00000001');
+    await redisService.setSeatBitmap(TOURNAMENT, TABLE);
+    await redisService.setSeatBitmap(TOURNAMENT, OTHER_TABLE);
+
+    const attempts = [
+      { tableId: TABLE, seatIndex: 2 },
+      { tableId: OTHER_TABLE, seatIndex: 3 },
+    ];
+    const results = await Promise.allSettled(
+      attempts.map((a) =>
+        service.enterSeat(TOURNAMENT, { otp: '00000001', tableId: a.tableId, seatIndex: a.seatIndex }),
+      ),
+    );
+
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const loserIndex = results.findIndex((r) => r.status === 'rejected');
+    expect(loserIndex).toBeGreaterThanOrEqual(0);
+    expect((results[loserIndex] as PromiseRejectedResult).reason).toBeInstanceOf(ConflictException);
+
+    const winnerIndex = loserIndex === 0 ? 1 : 0;
+    const loser = attempts[loserIndex];
+    const winner = attempts[winnerIndex];
+
+    // 이긴 쪽의 좌석은 정상적으로 채워진다.
+    const winnerState = await snapshot(winner.tableId);
+    expect(winnerState?.players[winner.seatIndex]).toMatchObject({ id: 'u1' });
+
+    // 진 쪽이 노렸던 좌석에는 스냅샷도(테이블 자체가 비어 있거나, 그 자리가
+    // null이거나) 비트맵도 흔적이 없어야 한다.
+    const loserState = await snapshot(loser.tableId);
+    expect(loserState?.players[loser.seatIndex] ?? null).toBeNull();
+    const bitmap = await redis.hget(`tournament:${TOURNAMENT}:seat`, `table:${loser.tableId}`);
+    expect(bitmap?.[loser.seatIndex]).toBe('0');
   });
 
   /**
