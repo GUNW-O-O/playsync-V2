@@ -13,7 +13,9 @@
 ## Global Constraints
 
 - 좌석 토큰 페이로드는 정확히 `{ sub: userId, tournamentId, tableId, seatIndex, role: 'PLAYER' }`. `sub`는 반드시 `userId`다 — 게이트웨이가 `state.players.some(p => p.id === payload.sub)`로 좌석을 대조한다(`ws.gateway.ts:87`).
-- `'PLAYER'`는 Prisma `Role` enum에 **추가하지 않는다.** 마이그레이션 금지.
+- `'PLAYER'`는 Prisma `Role` enum에 **추가하지 않는다.** 이 금지는 `Role` enum에만 걸린다 —
+  좌석의 불변식을 제약으로 세우는 스키마 변경과 그 마이그레이션은 허용이다. 락이 아니라
+  제약으로 막는 것이 이 리포의 방향이다(T25의 `tableOrder`).
 - 입장에 시도 제한(잠금·카운터)을 붙이지 않는다. T27의 결정이다.
 - 입장은 `omit: { playerOtp: false }`를 쓰지 않는다. OTP로 **찾을** 뿐 돌려받지 않는다.
 - 입장 경로에 `phase` 가드를 넣지 않는다. 핸드 도중 착석은 허용이다(늦은 참가).
