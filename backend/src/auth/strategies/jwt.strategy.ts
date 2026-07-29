@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { Role } from '@prisma/client';
+import { SEAT_ROLE } from '../seat-role';
 
 // 검증 쪽에 기본값이 남아 있으면 서명 쪽만 고쳐도 소용이 없다 — 리포지토리에
 // 적힌 키로 서명한 토큰이 그대로 통과한다. 두 곳을 같은 방식으로 막는다.
@@ -39,10 +40,22 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         role: Role.DEALER,
       }
     }
-    return { 
-      userId: payload.sub, 
-      nickname: payload.nickname, 
-      role: payload.role as Role 
+    // 좌석 토큰(T28). `userId` 키를 그대로 두는 이유는 `/playsync/*`가
+    // `req.user.userId`로 플레이어를 찾기 때문이다. 딜러처럼 `id`로 개명하면
+    // 게임 경로가 전부 undefined를 받는다.
+    if (payload.role === SEAT_ROLE) {
+      return {
+        userId: payload.sub,
+        tournamentId: payload.tournamentId,
+        tableId: payload.tableId,
+        seatIndex: payload.seatIndex,
+        role: SEAT_ROLE,
+      };
+    }
+    return {
+      userId: payload.sub,
+      nickname: payload.nickname,
+      role: payload.role as Role
     };
   }
 }
