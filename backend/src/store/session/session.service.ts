@@ -384,11 +384,13 @@ export class SessionService {
   async startSession(id: string) {
     const { startedAt } = await this.initializeGame(id);
 
+    // 참가자 상태는 여기서 건드리지 않는다. `PLAYING`은 **착석**이 올린다
+    // (T28의 `EntryService`). 예전에는 이 자리에서 대회의 참가자 전원을
+    // 조건 없이 승격시켰는데, 그러면 결제만 하고 오지 않은 사람도 시작 버튼
+    // 한 번에 `PLAYING`이 되고 `tournamentFinished`의
+    // `findFirst({ where: { status: PLAYING } })`가 한 번도 앉지 않은 사람을
+    // 우승자로 뽑을 수 있었다.
     return await this.prismaService.$transaction(async (tx) => {
-      await tx.tournamentParticipation.updateMany({
-        where: { tournamentId: id },
-        data: { status: PlayerStatus.PLAYING },
-      });
       // startedAt은 준비 단계가 정한 값을 그대로 쓴다. 여기서 다시 찍으면
       // Redis의 블라인드 기준 시각과 어긋난다 — 블라인드 레벨은 startedAt으로
       // 부터의 경과 시간으로 계산되므로, DB를 읽는 쪽은 다른 레벨을 얻는다.

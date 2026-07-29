@@ -144,6 +144,33 @@ describe('SessionService.createSession — OTP 해시 통합', () => {
       expect(updated).not.toHaveProperty('dealerOtpHash');
     });
   });
+
+  describe('시작은 참가자 상태를 올리지 않는다', () => {
+    it('결제만 한 사람이 WAITING으로 남는다', async () => {
+      const created = await sessionService.createSession(makeCreateDto());
+      const noshow = await prisma.user.create({
+        data: { nickname: 'noshow', password: 'x' },
+      });
+      await prisma.tournamentParticipation.create({
+        data: {
+          userId: noshow.id, tournamentId: created.id, playerOtp: '77777777',
+          status: 'WAITING', currentStack: 10000,
+        },
+      });
+
+      process.env.MIN_PLAYERS_TO_START = '0';
+      try {
+        await sessionService.startSession(created.id);
+      } finally {
+        delete process.env.MIN_PLAYERS_TO_START;
+      }
+
+      const p = await prisma.tournamentParticipation.findUniqueOrThrow({
+        where: { tournamentId_userId: { tournamentId: created.id, userId: noshow.id } },
+      });
+      expect(`미착석자 상태 ${p.status}`).toBe('미착석자 상태 WAITING');
+    });
+  });
 });
 
 /**
