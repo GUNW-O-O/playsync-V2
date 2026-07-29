@@ -1287,7 +1287,7 @@ omit })`의 `adapter` 자체가 컴파일 에러가 난다.
   `findFirst({ where: { status: PLAYING } })`가 한 번도 앉지 않은 참가자를
   우승자로 뽑을 수 있다. 리바인은 `activePlayers`를 건드리지 않아 어느
   기준을 쓰든 영향이 없다(구현 중 코드로 확인 — `RedisService.rebuyPlayer`는
-  `totalBuyinAmount`만 올린다). T28 3라운드 리뷰가 찾았고, human partner가
+  `totalBuyinAmount`만 올린다). T28 3라운드 리뷰가 찾았고, 사람이 직접
   범위 밖으로 뺐다 — 이 리포의 목적은 트랜잭션 격리·락 경계의 판단을
   기록하는 것이지 도메인 장부 회계가 아니고, 노쇼가 있어야만 걸리며
   `completeSession`이라는 수동 우회가 이미 있기 때문이다. `docs/backlog.md`의
