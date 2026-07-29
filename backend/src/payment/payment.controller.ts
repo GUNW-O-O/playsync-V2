@@ -40,7 +40,7 @@ export class PaymentController {
   @Post('payment')
   async joinSession(@Body() dto: PayMentDto, @Req() req: any) {
     const userId = req.user.userId;
-    return await this.paymentService.joinSessionWithSeat(dto, userId);
+    return await this.paymentService.joinSession(dto, userId);
   }
 
 }

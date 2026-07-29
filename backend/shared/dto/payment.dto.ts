@@ -1,17 +1,9 @@
-import { IsInt, IsString, Max, Min } from "class-validator";
+import { IsString } from "class-validator";
 
 export class PayMentDto {
 
   @IsString()
   tournamentId: string;
-
-  @IsString()
-  tableId: string;
-
-  @IsInt()
-  @Min(0)
-  @Max(8)
-  seatIndex: number;
 
 }
 

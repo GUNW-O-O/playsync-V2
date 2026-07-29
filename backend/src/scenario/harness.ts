@@ -5,6 +5,7 @@ import { Queue } from 'bullmq';
 import Redis from 'ioredis';
 import { DealerService } from 'src/dealer/dealer.service';
 import { OtpAttempts } from 'src/dealer/otp-attempts';
+import { EntryService } from 'src/entry/entry.service';
 import { GamePhase, TableState } from 'src/game-engine/types';
 import { PaymentService } from 'src/payment/payment.service';
 import { PlaysyncService } from 'src/playsync/playsync.service';
@@ -42,6 +43,7 @@ export interface Harness {
   dealer: DealerService;
   session: SessionService;
   payment: PaymentService;
+  entry: EntryService;
   emitter: EventEmitter2;
   queue: Queue;
 
@@ -53,6 +55,14 @@ export interface Harness {
   seatOf(state: TableState, id: string): number;
   /** 지금 차례인 플레이어의 id. 없으면 null. */
   turnId(state: TableState): string | null;
+  /**
+   * 결제 후 입장까지. T28에서 착석이 두 단계가 됐다 — 돈은 미리 내고 의자는
+   * 현장에서 정해진다. 테스트는 그 사이의 "OTP를 폰에서 확인한다"를 DB 조회로
+   * 대신한다.
+   */
+  seatPlayer(
+    tournamentId: string, tableId: string, seatIndex: number, userId: string,
+  ): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -95,10 +105,15 @@ export async function setupTournament(
   const otpAttempts = new OtpAttempts(redis);
   const session = new SessionService(prismaService, redisService, otpAttempts, emitter);
   const user = new UserService(prismaService);
-  const payment = new PaymentService(user, session, prismaService, redisService, emitter);
+  const payment = new PaymentService(user, session, prismaService, redisService);
   const dealer = new DealerService(
     queue, prismaService, redisService, playsync, {} as JwtService,
     otpAttempts,
+  );
+  const entry = new EntryService(
+    prismaService, redisService,
+    new JwtService({ secret: 'scenario-secret' }),
+    emitter,
   );
 
   // 시작 최소 인원은 운영 기본값이 6이다. 시나리오는 인원을 자유롭게 잡아야
@@ -152,10 +167,28 @@ export async function setupTournament(
     })),
   });
 
+  /**
+   * 결제 후 입장까지. T28에서 착석이 두 단계가 됐다 — 돈은 미리 내고 의자는
+   * 현장에서 정해진다. 테스트는 그 사이의 "OTP를 폰에서 확인한다"를 DB 조회로
+   * 대신한다.
+   *
+   * `createTestPrisma()`는 클라이언트 수준 `omit`이 없는 맨 `PrismaClient`라
+   * `playerOtp`가 그대로 나온다. 테스트에서만 성립하는 사실이다.
+   */
+  async function seatPlayer(
+    tournamentId: string, tableId: string, seatIndex: number, userId: string,
+  ) {
+    await payment.joinSession({ tournamentId }, userId);
+    const participation = await prisma.tournamentParticipation.findUniqueOrThrow({
+      where: { tournamentId_userId: { tournamentId, userId } },
+    });
+    await entry.enterSeat(tournamentId, {
+      otp: participation.playerOtp, tableId, seatIndex,
+    });
+  }
+
   for (const [seat, id] of players.entries()) {
-    await payment.joinSessionWithSeat(
-      { tournamentId: created.id, tableId: table.id, seatIndex: seat }, id,
-    );
+    await seatPlayer(created.id, table.id, seat, id);
   }
 
   await session.startSession(created.id);
@@ -163,7 +196,7 @@ export async function setupTournament(
   const stateKey = `table:state:${table.id}`;
 
   return {
-    redis, prisma, redisService, playsync, dealer, session, payment, emitter, queue,
+    redis, prisma, redisService, playsync, dealer, session, payment, entry, emitter, queue,
     tournamentId: created.id,
     tableId: table.id,
 
@@ -182,6 +215,7 @@ export async function setupTournament(
       if (state.currentTurnSeatIndex === -1) return null;
       return state.players[state.currentTurnSeatIndex]?.id ?? null;
     },
+    seatPlayer,
     async close() {
       delete process.env.MIN_PLAYERS_TO_START;
       await queue.close();

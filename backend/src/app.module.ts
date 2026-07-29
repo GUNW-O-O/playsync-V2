@@ -11,6 +11,7 @@ import { AuthModule } from './auth/auth.module';
 import { StoreModule } from './store/store.module';
 import { WsModule } from './ws/ws.module';
 import { EventEmitterModule } from '@nestjs/event-emitter';
+import { EntryModule } from './entry/entry.module';
 
 @Module({
   imports:[
@@ -33,6 +34,7 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
     PaymentModule,
     StoreModule,
     WsModule,
+    EntryModule,
   ],
 })
 export class AppModule {}

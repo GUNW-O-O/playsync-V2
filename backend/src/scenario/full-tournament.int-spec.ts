@@ -5,6 +5,7 @@ import { Queue } from 'bullmq';
 import Redis from 'ioredis';
 import { DealerService } from 'src/dealer/dealer.service';
 import { OtpAttempts } from 'src/dealer/otp-attempts';
+import { EntryService } from 'src/entry/entry.service';
 import { ActionType, GamePhase, TableState } from 'src/game-engine/types';
 import { PaymentService } from 'src/payment/payment.service';
 import { PlaysyncService } from 'src/playsync/playsync.service';
@@ -50,6 +51,7 @@ describe('시나리오 — 대회 하나를 끝까지', () => {
   let dealer: DealerService;
   let session: SessionService;
   let payment: PaymentService;
+  let entry: EntryService;
   let user: UserService;
 
   const STORE = 'store-1';
@@ -75,6 +77,26 @@ describe('시나리오 — 대회 하나를 끝까지', () => {
 
   const seatOf = (state: TableState, id: string) =>
     state.players.findIndex(p => p?.id === id);
+
+  /**
+   * 결제 후 입장까지. T28에서 착석이 두 단계가 됐다 — 돈은 미리 내고 의자는
+   * 현장에서 정해진다. 테스트는 그 사이의 "OTP를 폰에서 확인한다"를 DB 조회로
+   * 대신한다.
+   *
+   * `createTestPrisma()`는 클라이언트 수준 `omit`이 없는 맨 `PrismaClient`라
+   * `playerOtp`가 그대로 나온다. 테스트에서만 성립하는 사실이다.
+   */
+  async function seatPlayer(
+    tournamentId: string, tableId: string, seatIndex: number, userId: string,
+  ) {
+    await payment.joinSession({ tournamentId }, userId);
+    const participation = await prisma.tournamentParticipation.findUniqueOrThrow({
+      where: { tournamentId_userId: { tournamentId, userId } },
+    });
+    await entry.enterSeat(tournamentId, {
+      otp: participation.playerOtp, tableId, seatIndex,
+    });
+  }
 
   /**
    * 이 도메인에서 항상 참이어야 하는 것들.
@@ -152,7 +174,12 @@ describe('시나리오 — 대회 하나를 끝까지', () => {
     const otpAttempts = new OtpAttempts(redis);
     session = new SessionService(prismaService, redisService, otpAttempts, emitter);
     user = new UserService(prismaService);
-    payment = new PaymentService(user, session, prismaService, redisService, emitter);
+    payment = new PaymentService(user, session, prismaService, redisService);
+    entry = new EntryService(
+      prismaService, redisService,
+      new JwtService({ secret: 'scenario-secret' }),
+      emitter,
+    );
     dealer = new DealerService(
       queue, prismaService, redisService, playsync, {} as JwtService,
       otpAttempts,
@@ -227,9 +254,7 @@ describe('시나리오 — 대회 하나를 끝까지', () => {
 
   it('3. 6명이 좌석을 사서 앉는다', async () => {
     for (const [seat, id] of PLAYERS.entries()) {
-      await payment.joinSessionWithSeat(
-        { tournamentId, tableId, seatIndex: seat }, id,
-      );
+      await seatPlayer(tournamentId, tableId, seat, id);
     }
 
     // 참가비가 실제로 빠졌는가. 스택은 아직 Redis에만 있다.

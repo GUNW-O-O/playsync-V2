@@ -112,11 +112,12 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         (client as any).tournamentId = payload.tournamentId;
       }
 
-      // 1. 자리 예매 시 (토너먼트 진입 전)
+      // 1. 대회 단위 접속 (테이블 지정 없음) — 좌석 현황(`SEAT_LIST_UPDATED`)
+      //    브로드캐스트를 받는 용도다.
       if (tournamentId && !tableId) {
         (client as any).tournamentId = tournamentId;
         this.addToMap(this.tournamentSessions, tournamentId, client);
-        return; // 예매 로직만 수행하므로 여기서 종료
+        return; // 테이블 세션에는 넣지 않는다
       }
 
       // 2. 테이블 진입 시 (게임 시작 후)

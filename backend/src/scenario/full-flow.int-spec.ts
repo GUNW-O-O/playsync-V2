@@ -6,6 +6,7 @@ import Redis from 'ioredis';
 import { AuthService } from 'src/auth/auth.service';
 import { DealerService } from 'src/dealer/dealer.service';
 import { OtpAttempts } from 'src/dealer/otp-attempts';
+import { EntryService } from 'src/entry/entry.service';
 import { GamePhase, TableState } from 'src/game-engine/types';
 import { PaymentService } from 'src/payment/payment.service';
 import { PlaysyncService } from 'src/playsync/playsync.service';
@@ -57,6 +58,7 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
   let auth: AuthService;
   let userService: UserService;
   let payment: PaymentService;
+  let entry: EntryService;
   let session: SessionService;
   let dealer: DealerService;
   let playsync: PlaysyncService;
@@ -144,6 +146,26 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
     return PLAYERS.find(n => userIds[n] === id) ?? null;
   }
 
+  /**
+   * 결제 후 입장까지. T28에서 착석이 두 단계가 됐다 — 돈은 미리 내고 의자는
+   * 현장에서 정해진다. 테스트는 그 사이의 "OTP를 폰에서 확인한다"를 DB 조회로
+   * 대신한다.
+   *
+   * `createTestPrisma()`는 클라이언트 수준 `omit`이 없는 맨 `PrismaClient`라
+   * `playerOtp`가 그대로 나온다. 테스트에서만 성립하는 사실이다.
+   */
+  async function seatPlayer(
+    tournamentId: string, tableId: string, seatIndex: number, userId: string,
+  ) {
+    await payment.joinSession({ tournamentId }, userId);
+    const participation = await prisma.tournamentParticipation.findUniqueOrThrow({
+      where: { tournamentId_userId: { tournamentId, userId } },
+    });
+    await entry.enterSeat(tournamentId, {
+      otp: participation.playerOtp, tableId, seatIndex,
+    });
+  }
+
   beforeAll(async () => {
     redis = createTestRedis();
     queueConnection = createTestRedis({ maxRetriesPerRequest: null });
@@ -163,7 +185,8 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
     playsync = new PlaysyncService(queue, redisService, prismaService, emitter);
     const otpAttempts = new OtpAttempts(redis);
     session = new SessionService(prismaService, redisService, otpAttempts, emitter);
-    payment = new PaymentService(userService, session, prismaService, redisService, emitter);
+    payment = new PaymentService(userService, session, prismaService, redisService);
+    entry = new EntryService(prismaService, redisService, jwt, emitter);
     dealer = new DealerService(
       queue, prismaService, redisService, playsync, jwt, otpAttempts,
     );
@@ -271,11 +294,9 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
     expect(created.status).toBe('PENDING');
   });
 
-  it('7. 참가자가 좌석을 고르면 포인트가 빠지고 내역이 남는다', async () => {
+  it('7. 참가자가 결제하고 좌석에 앉으면 포인트가 빠지고 내역이 남는다', async () => {
     for (const [seat, nickname] of PLAYERS.entries()) {
-      await payment.joinSessionWithSeat(
-        { tournamentId, tableId, seatIndex: seat }, userIds[nickname],
-      );
+      await seatPlayer(tournamentId, tableId, seat, userIds[nickname]);
     }
 
     expect(await pointsOf('alice')).toBe(INITIAL_POINTS - ENTRY_FEE);
@@ -290,14 +311,12 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
     expect(t.totalBuyinAmount).toBe(ENTRY_FEE * PLAYERS.length);
   });
 
-  it('8. 포인트가 모자라면 앉을 수 없다', async () => {
+  it('8. 포인트가 모자라면 결제할 수 없다', async () => {
     await auth.createUser({ nickname: 'poor', password: 'pw' } as never);
     const poor = await prisma.user.findUniqueOrThrow({ where: { nickname: 'poor' } });
 
     await expect(
-      payment.joinSessionWithSeat(
-        { tournamentId, tableId, seatIndex: 5 }, poor.id,
-      ),
+      payment.joinSession({ tournamentId }, poor.id),
     ).rejects.toThrow(/포인트가 부족/);
   });
 

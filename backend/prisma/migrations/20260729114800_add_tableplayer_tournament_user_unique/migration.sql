@@ -1,0 +1,12 @@
+-- 좌석은 대회 안에서 하나다. 기존 두 제약(tableId+seatPosition, tableId+userId)은
+-- 테이블이 다르면 못 막는다 — 같은 참가 OTP를 두 테이블에서 동시에 입력하는
+-- 경합이 그 틈을 뚫는다(T28 리뷰 finding 1). tournamentId가 nullable이라
+-- Postgres는 그 값이 NULL인 행끼리는 이 제약으로 묶지 않는데, 실제로는 걸릴
+-- 일이 없다: tournamentId를 NULL로 만드는 ON DELETE SET NULL은 이 행에 발동할
+-- 기회가 없다 — tableId가 가리키는 Table이 같은 대회 소속인 한, 그 Table이
+-- Tournament의 CASCADE로 먼저 지워지면서 tableId의 CASCADE가 이 행 자체를
+-- 함께 지운다(직접 삭제로 확인: 대회를 지우면 TablePlayer 행이 NULL이 아니라
+-- 통째로 사라진다). 현재 모든 쓰기 경로가 tournamentId를 채우므로, 이 제약은
+-- 지금 존재하는 모든 행에 실제로 걸린다.
+-- CreateIndex
+CREATE UNIQUE INDEX "TablePlayer_tournamentId_userId_key" ON "TablePlayer"("tournamentId", "userId");

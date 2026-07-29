@@ -262,14 +262,15 @@ export class SessionService {
       // TablePlayer의 INSERT는 외래키 때문에 부모 Table 행에 FOR KEY SHARE를
       // 자동으로 건다. FOR UPDATE는 그것과 충돌하므로 두 방향 모두 직렬화된다.
       //
-      //  - 바이인이 먼저 꽂았고 아직 커밋 전이면, 이 SELECT가 그 커밋까지
+      //  - 좌석 확정이 먼저 꽂았고 아직 커밋 전이면, 이 SELECT가 그 커밋까지
       //    막힌다. 풀린 뒤의 점유 검사는 **새 문장**이고 Read Committed는
       //    문장마다 스냅샷을 다시 뜨므로, 방금 커밋된 TablePlayer가 보인다 →
       //    409로 거부한다.
-      //  - 이쪽이 먼저 잠갔으면 바이인의 INSERT가 막힌다. 삭제를 커밋하고 나면
-      //    그 INSERT는 외래키 위반으로 실패하고, `joinSessionWithSeat`의
-      //    트랜잭션이 통째로 롤백돼 포인트까지 되돌아간다. payment 쪽을
-      //    고칠 필요가 없는 이유가 이것이다 — 충돌하는 락을 이미 걸고 있다.
+      //  - 이쪽이 먼저 잠갔으면 좌석 확정의 INSERT가 막힌다. 삭제를 커밋하고
+      //    나면 그 INSERT는 외래키 위반으로 실패하고, `EntryService.claimSeat`의
+      //    트랜잭션이 통째로 롤백된다(T28부터 이 INSERT는 결제가 아니라 입장이
+      //    한다). 그쪽을 고칠 필요가 없는 이유가 이것이다 — 충돌하는 락을
+      //    이미 걸고 있다.
       //
       // 예전에는 `deleteMany({ where: { ..., tablePlayers: { none: {} } } })`
       // 한 문장이 "구조로 막는다"고 적혀 있었지만 **그 보장은 성립하지 않았다.**

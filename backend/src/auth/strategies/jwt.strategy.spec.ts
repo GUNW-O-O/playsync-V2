@@ -61,4 +61,37 @@ describe('JwtStrategy', () => {
       role: Role.DEALER,
     });
   });
+
+  /**
+   * 좌석 토큰(T28)은 딜러와 달리 `userId` 키를 그대로 쓴다.
+   * `/playsync/*`가 `req.user.userId`로 플레이어를 찾기 때문이다 —
+   * 딜러처럼 `id`로 개명하면 게임 경로 전체가 `undefined`를 받는다.
+   */
+  it('좌석 토큰을 userId와 좌석 정보가 담긴 모양으로 내보낸다', async () => {
+    const strategy = loadStrategy();
+
+    const user = await strategy.validate({
+      sub: 'user-1',
+      tournamentId: 'tour-1',
+      tableId: 'table-1',
+      seatIndex: 3,
+      role: 'PLAYER',
+    });
+
+    expect(user).toEqual({
+      userId: 'user-1',
+      tournamentId: 'tour-1',
+      tableId: 'table-1',
+      seatIndex: 3,
+      role: 'PLAYER',
+    });
+  });
+
+  it('좌석 토큰의 역할을 USER로 승격시키지 않는다', async () => {
+    const strategy = loadStrategy();
+
+    const user = await strategy.validate({ sub: 'user-1', role: 'PLAYER', seatIndex: 0 });
+
+    expect(user.role).not.toBe(Role.USER);
+  });
 });
