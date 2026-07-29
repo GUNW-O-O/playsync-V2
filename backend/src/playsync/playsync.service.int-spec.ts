@@ -1,10 +1,12 @@
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { PrismaClient } from '@prisma/client';
 import { Queue } from 'bullmq';
 import Redis from 'ioredis';
 import { PlaysyncService } from './playsync.service';
 import { RedisService } from 'src/redis/redis.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { ActionType, GamePhase, TablePlayer, TableState } from 'src/game-engine/types';
+import { closeTestPrisma, createTestPrisma, truncateAll } from '../../test/helpers/prisma';
 import { createTestRedis, flushTestRedis } from '../../test/helpers/redis';
 
 /**
@@ -451,5 +453,73 @@ describe('PlaysyncService.processRebuy', () => {
 
     expect(result).toBe(0);
     expect(prompted).toBe(false);
+  });
+});
+
+/**
+ * 체크포인트가 참가 행(TournamentParticipation)을 갱신하는 계약.
+ *
+ * 위 두 블록은 진짜 Redis만 쓰고 Prisma는 스텁(또는 `{}`)이었다 — handleAction과
+ * processRebuy 경로에서는 그걸로 충분했다. 이 블록은 다르다: 검증 대상이
+ * "장부에 없는 사람을 갱신하면 실제로 터지는가"이므로 진짜 Postgres가 필요하다.
+ * 그래서 이 describe만 `createTestPrisma`로 독립된 연결을 연다.
+ */
+describe('PlaysyncService.syncTableInventoryToDb', () => {
+  let redis: Redis;
+  let queueConnection: Redis;
+  let queue: Queue;
+  let prisma: PrismaClient;
+  let service: PlaysyncService;
+
+  const TABLE = 'sync-table-1';
+  const TOURNAMENT = 'sync-tournament-1';
+
+  beforeAll(() => {
+    redis = createTestRedis();
+    // BullMQ는 블로킹 명령을 쓰므로 재시도 제한이 없는 별도 연결을 요구한다
+    // (위 두 describe와 같은 이유). 큐 이름도 실제 서비스가 주입받는 것과
+    // 같은 'player-timeout'이어야 한다 — 이름이 다르면 이 테스트가 진짜
+    // 서비스가 쓰는 큐를 보고 있는 게 아니게 된다.
+    queueConnection = createTestRedis({ maxRetriesPerRequest: null });
+    queue = new Queue('player-timeout', { connection: queueConnection });
+    prisma = createTestPrisma();
+    service = new PlaysyncService(
+      queue,
+      new RedisService(redis),
+      prisma as unknown as PrismaService,
+      new EventEmitter2(),
+    );
+  });
+
+  afterAll(async () => {
+    await queue.close();
+    await queueConnection.quit();
+    await redis.quit();
+    await closeTestPrisma(prisma);
+  });
+
+  beforeEach(async () => {
+    await truncateAll(prisma);
+    await flushTestRedis(redis);
+  });
+
+  it('장부에 없는 사람이 스냅샷에 있으면 체크포인트가 실패한다', async () => {
+    const state: TableState = {
+      phase: GamePhase.HAND_END,
+      players: [
+        {
+          id: 'ghost', tableId: TABLE, nickname: 'ghost', seatIndex: 0,
+          stack: 5000, bet: 0, hasFolded: false, isAllIn: false,
+          hasChecked: false, totalContributed: 0,
+        },
+        ...Array(8).fill(null),
+      ],
+      pot: 0, currentBet: 0, buttonUser: 0, currentTurnSeatIndex: -1,
+      sidePots: [], ante: false, tournamentId: TOURNAMENT, smallBlind: 100,
+    };
+
+    const ok = await service.syncTableInventoryToDb(state);
+
+    expect(`체크포인트 ${ok ? '성공' : '실패'}`).toBe('체크포인트 실패');
   });
 });

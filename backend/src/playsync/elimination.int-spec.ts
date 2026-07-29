@@ -132,6 +132,7 @@ describe('탈락 처리 멱등성', () => {
           tournamentId: TOURNAMENT,
           userId: user.id,
           status: 'PLAYING',
+          currentStack: 10000,
           playerOtp: playerOtp.generatePlayerOtp(),
         },
       });
@@ -141,7 +142,6 @@ describe('탈락 처리 멱등성', () => {
           tournamentId: TOURNAMENT,
           userId: user.id,
           seatPosition: i,
-          currentStack: 10000,
         },
       });
     }

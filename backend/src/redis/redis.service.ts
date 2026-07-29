@@ -100,6 +100,41 @@ export class RedisService {
     return updated
   `;
 
+  /**
+   * 좌석 여러 칸을 한 번에 원자적으로 바꾼다.
+   *
+   * 한 테이블의 좌석 비트는 전부 같은 해시 필드(`tournament:{id}:seat`의
+   * `table:{tableId}`)에 들어 있다. `releaseSeats`처럼 한 요청이 좌석
+   * 여러 개를 동시에 내리는 경우, `UPDATE_SEAT_BIT`를 좌석 수만큼 반복
+   * 호출하면 그 사이 Redis 장애가 끼어들 때 일부만 성공한다 — 좌석 3·5를
+   * 같이 해제했는데 3의 비트만 내려가고 5는 영원히 1로 남으면, DB에서는
+   * `TablePlayer` 행이 이미 사라졌는데 좌석 목록은 5번을 계속 "찬 자리"로
+   * 보여준다. 아무도 그 자리에 못 앉고 24시간 TTL까지 기다려야 한다 —
+   * "전부 되거나 전부 안 된다"를 어기는 부분 성공이다. 이 스크립트는 여러
+   * 인덱스를 한 Lua 실행 안에서 고쳐 그 창을 없앤다.
+   *
+   * `UPDATE_SEAT_BIT`와 같은 이유로 **필드가 없으면 아무것도 하지 않고
+   * `false`를 돌려준다** — 만드는 것은 `setSeatBitmap`의 일이다. 여기서
+   * 없는 필드에 뭔가 쓰면 지워진 테이블을 되살리는 것과 같은 사고가 난다
+   * (`UPDATE_SEAT_BIT` 주석 참고). 범위 검사와 TTL 갱신(`expire`)도 그대로
+   * 가져온다.
+   */
+  private static readonly UPDATE_SEAT_BITS_MANY = `
+    local bitmap = redis.call('hget', KEYS[1], ARGV[1])
+    if not bitmap then return false end
+    local value = ARGV[#ARGV]
+    for i = 2, #ARGV - 1 do
+      local idx = tonumber(ARGV[i])
+      if idx < 0 or idx >= #bitmap then
+        return redis.error_reply('seat index out of range')
+      end
+      bitmap = string.sub(bitmap, 1, idx) .. value .. string.sub(bitmap, idx + 2)
+    end
+    redis.call('hset', KEYS[1], ARGV[1], bitmap)
+    redis.call('expire', KEYS[1], 86400)
+    return bitmap
+  `;
+
   // 테이블 초기생성
   async setSeatBitmap(tournamentId: string, tableId: string) {
     const key = `tournament:${tournamentId}:seat`;
@@ -150,6 +185,30 @@ export class RedisService {
       key,
       field,
       seatIndex,
+      isOccupied ? '1' : '0',
+    )) as string | null;
+  }
+
+  /**
+   * 좌석 여러 칸을 한 번에 같은 값으로 바꾼다. 위 `UPDATE_SEAT_BITS_MANY`
+   * 참고 — 반복 호출 대신 이 메서드를 쓰면 중간에 장애가 껴도 부분 성공이
+   * 나지 않는다. 비트맵이 없으면(테이블이 이미 지워졌으면) `null`.
+   */
+  async updateSeatBitmapMany(
+    tournamentId: string,
+    tableId: string,
+    seatIndexes: number[],
+    isOccupied: boolean,
+  ): Promise<string | null> {
+    const key = `tournament:${tournamentId}:seat`;
+    const field = `table:${tableId}`;
+
+    return (await this.redis.eval(
+      RedisService.UPDATE_SEAT_BITS_MANY,
+      1,
+      key,
+      field,
+      ...seatIndexes.map(String),
       isOccupied ? '1' : '0',
     )) as string | null;
   }
@@ -385,6 +444,18 @@ export class RedisService {
   async deleteUserContext(tournamentId: string, userId: string) {
     const key = `tournament:${tournamentId}:user`;
     await this.redis.hdel(key, userId);
+  }
+
+  /**
+   * 유저 정보 여러 명을 한 번에 삭제한다. `hdel`은 필드를 여러 개 받으므로
+   * 한 번의 호출로 끝난다 — `deleteUserContext`를 유저 수만큼 반복하면
+   * 그 사이 장애가 껴서 일부만 지워지는 창이 생긴다(위 `updateSeatBitmapMany`와
+   * 같은 이유).
+   */
+  async deleteUserContexts(tournamentId: string, userIds: string[]) {
+    if (userIds.length === 0) return;
+    const key = `tournament:${tournamentId}:user`;
+    await this.redis.hdel(key, ...userIds);
   }
 
   // 대회 종료시 redis 정리

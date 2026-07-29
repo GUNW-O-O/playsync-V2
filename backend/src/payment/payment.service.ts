@@ -96,11 +96,15 @@ export class PaymentService {
           // 착석 여부와 무관하게 WAITING이다. PLAYING으로 올리는 것은
           // 입장(EntryService)의 몫이다 — PlayerStatus의 주석이 원래
           // 그렇게 적혀 있다("바이인 완료 후 대기" / "테이블 착석 중").
+          //
+          // 칩은 여기서 정해진다. 좌석이 아니라 **돈을 낸 것**이므로 T28이 그은
+          // 경계(결제는 좌석을 정하지 않는다)를 넘지 않는다.
           const created = await tx.tournamentParticipation.create({
             data: {
               userId,
               tournamentId: dto.tournamentId,
               status: PlayerStatus.WAITING,
+              currentStack: session.startStack,
               playerOtp: playerOtp.generatePlayerOtp(),
             },
           });

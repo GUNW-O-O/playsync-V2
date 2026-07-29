@@ -99,13 +99,14 @@ describe('상금 지급', () => {
           tournamentId: TOURNAMENT,
           userId: user.id,
           status: 'PLAYING',
+          currentStack: 10000,
           playerOtp: playerOtp.generatePlayerOtp(),
         },
       });
       await prisma.tablePlayer.create({
         data: {
           tableId: TABLE, tournamentId: TOURNAMENT, userId: user.id,
-          seatPosition: i, currentStack: 10000,
+          seatPosition: i,
         },
       });
     }

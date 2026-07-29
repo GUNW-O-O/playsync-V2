@@ -19,6 +19,7 @@ type Claimant = {
   userId: string;
   participationId: string;
   nickname: string;
+  /** 장부(`TournamentParticipation.currentStack`)의 현재 칩. */
   stack: number;
   /** 이미 이 좌석의 `TablePlayer`가 있는가(재입장). */
   alreadySeated: boolean;
@@ -49,7 +50,7 @@ export class EntryService {
       where: { tournamentId_playerOtp: { tournamentId, playerOtp: dto.otp } },
       include: {
         user: { select: { nickname: true } },
-        tournament: { select: { status: true, startStack: true } },
+        tournament: { select: { status: true } },
       },
     });
 
@@ -89,8 +90,9 @@ export class EntryService {
       userId: participation.userId,
       participationId: participation.id,
       nickname: participation.user.nickname ?? '',
-      // 재입장이면 스냅샷이 없을 수 있고, 그때는 DB의 스택이 유일한 출처다.
-      stack: seated?.currentStack ?? participation.tournament.startStack,
+      // 칩은 장부(참가 행)에 있다. 결제가 startStack으로 넣고, 핸드마다
+      // 체크포인트가 갱신한다. 좌석 행이 사라져도(T29의 해제) 남는다.
+      stack: participation.currentStack,
       alreadySeated: seated !== null,
     });
 
@@ -150,7 +152,6 @@ export class EntryService {
               userId: who.userId,
               nickname: who.nickname,
               seatPosition: dto.seatIndex,
-              currentStack: who.stack,
             },
           });
           await tx.tournamentParticipation.update({

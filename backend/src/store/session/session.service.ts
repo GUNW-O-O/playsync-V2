@@ -384,11 +384,13 @@ export class SessionService {
   async startSession(id: string) {
     const { startedAt } = await this.initializeGame(id);
 
+    // 참가자 상태는 여기서 건드리지 않는다. `PLAYING`은 **착석**이 올린다
+    // (T28의 `EntryService`). 예전에는 이 자리에서 대회의 참가자 전원을
+    // 조건 없이 승격시켰는데, 그러면 결제만 하고 오지 않은 사람도 시작 버튼
+    // 한 번에 `PLAYING`이 되고 `tournamentFinished`의
+    // `findFirst({ where: { status: PLAYING } })`가 한 번도 앉지 않은 사람을
+    // 우승자로 뽑을 수 있었다.
     return await this.prismaService.$transaction(async (tx) => {
-      await tx.tournamentParticipation.updateMany({
-        where: { tournamentId: id },
-        data: { status: PlayerStatus.PLAYING },
-      });
       // startedAt은 준비 단계가 정한 값을 그대로 쓴다. 여기서 다시 찍으면
       // Redis의 블라인드 기준 시각과 어긋난다 — 블라인드 레벨은 startedAt으로
       // 부터의 경과 시간으로 계산되므로, DB를 읽는 쪽은 다른 레벨을 얻는다.
@@ -671,12 +673,186 @@ export class SessionService {
     });
   }
 
-  // 플레이어 자리 옮기기
-  async manualMovingPlayer() {
-    // 플레이어끼리 위치변경
+  /**
+   * 상점이 좌석에서 사람을 뗀다.
+   *
+   * 시스템은 누구를 어디로 보낼지 정하지 않는다. 상점이 체크한 사람을 뗄
+   * 뿐이고, 그 사람은 걸어가서 빈 자리에 앉아 자기 참가 OTP를 넣는다(T28).
+   * 자동 밸런싱은 하지 않기로 한 것이다 — 언제 누구를 어디로 보낼지는 규칙이
+   * 아니라 현장 판단이다.
+   *
+   * **트랜잭션이 락 안에 있다.** T28의 입장은 반대로 락 밖에 두는데, 그
+   * 근거는 대회 시작에 수십 명이 한꺼번에 들어와 커넥션 풀이 차는 상황이었다.
+   * 해제는 상점 운영자 한 명의 조작이고 행이 최대 9개다. 이 리포의 실제 규칙은
+   * "트랜잭션 금지"가 아니라 **기다림이 무한정인 일 금지**다 —
+   * `resolveWinners`가 3단계(탈락 확정)는 락 안에서 돌리고 2단계(사람이 리바인
+   * 수락을 기다림)와 4단계(백오프 재시도)만 락 밖으로 뺀 것이 그 증거다.
+   *
+   * **그런데 레디스 락은 좌석의 DB 쓰기를 직렬화하지 않는다.** T28이 입장의
+   * 트랜잭션을 락 밖으로 뺐기 때문에 입장은 테이블 락을 건드리지 않고
+   * `TablePlayer`를 INSERT한다. 그래서 `deleteTable`과 같은
+   * `SELECT ... FOR UPDATE`가 필요하다 — INSERT가 부모 `Table` 행에 거는
+   * `FOR KEY SHARE`와 충돌해 두 방향 모두 직렬화된다.
+   *
+   * **`FOR UPDATE` 대기가 락 TTL을 넘길 수 있다.** 이 트랜잭션은 진행 중인
+   * 입장 트랜잭션의 커밋을 기다리므로 대기 시간이 우리 손 밖이다. 5초를
+   * 넘기면 레디스 락이 말없이 만료되고 뒤따르는 `saveSnapShot`이 보호 없이
+   * 돈다 — T28이 트랜잭션을 락 밖으로 뺀 바로 그 위험이다. 그래도 고치지
+   * 않는다: 복구가 셀프서비스이고(참가 OTP를 다시 넣으면 `alreadySeated`
+   * 경로가 점유자를 진실로 고쳐 쓴다) 해제는 착석 러시가 아니라 쉬는 시간에
+   * 일어나 입장 트랜잭션과 겹칠 일이 드물다. 감수하는 것이지 막은 것이 아니다.
+   */
+  async releaseSeats(
+    tournamentId: string,
+    tableId: string,
+    seats: { seatIndex: number; userId: string }[],
+    ownerId: string,
+  ) {
+    await this.assertTournamentOwnership(tournamentId, ownerId);
 
-    // 빈자리에 채우기
+    // 어떤 락보다도 먼저 확인한다(`claimSeat`의 "어떤 쓰기보다도 먼저"와 같은
+    // 자리). 아래 `FOR UPDATE`가 tableId와 tournamentId를 묶어 주긴 하지만
+    // 그건 이미 남의 테이블 락을 쥐고 DB를 한 바퀴 돈 뒤다 — A 대회 주인이
+    // B 대회의 tableId를 넣어 B의 게임 락을 잡아 둘 수 있고, 404와 409의
+    // 차이로 남의 좌석 상태를 떠볼 수도 있다.
+    const table = await this.prismaService.table.findUnique({
+      where: { tournamentId_id: { tournamentId, id: tableId } },
+      select: { id: true },
+    });
+    if (!table) throw new NotFoundException('테이블을 찾을 수 없습니다.');
+
+    await this.redis.withTableLock(tableId, async () => {
+      const state = await this.redis.getSnapShot(tableId);
+      if (!state) throw new NotFoundException('테이블 상태를 찾을 수 없습니다.');
+
+      // 핸드 중에는 자리가 움직이지 않는다. 이 가드 하나가 팟·차례·폴드
+      // 상태·사이드팟을 전부 비껴간다. T28은 이 가드를 쓰지 않았다 — 신규
+      // 착석은 핸드 도중이어도 폴드 상태로 들어가 아무것에도 끼지 않는다.
+      // 이미 앉은 사람을 빼는 것은 다르다.
+      if (state.phase !== GamePhase.WAITING) {
+        throw new ConflictException('핸드 진행 중에는 좌석을 해제할 수 없습니다.');
+      }
+
+      // 검사 1 — 스냅샷(게임의 진실). 상점 화면이 낡았으면 여기서 걸린다.
+      for (const s of seats) {
+        if (state.players[s.seatIndex]?.id !== s.userId) {
+          throw new ConflictException('좌석 정보가 바뀌었습니다. 화면을 새로 고쳐 주세요.');
+        }
+      }
+
+      const seatIndexes = seats.map(s => s.seatIndex);
+      const userIds = seats.map(s => s.userId);
+
+      await this.prismaService.$transaction(async (tx) => {
+        const locked = await tx.$queryRaw<{ id: string }[]>`
+          SELECT id FROM "Table"
+          WHERE id = ${tableId} AND "tournamentId" = ${tournamentId}
+          FOR UPDATE
+        `;
+        if (locked.length === 0) throw new NotFoundException('테이블을 찾을 수 없습니다.');
+
+        // 검사 2 — DB(좌석의 진실). 위 SELECT가 풀린 뒤의 **새 문장**이라
+        // Read Committed가 스냅샷을 다시 뜬다. 방금 커밋된 입장이 보인다.
+        const rows = await tx.tablePlayer.findMany({
+          where: { tableId, seatPosition: { in: seatIndexes } },
+          select: { seatPosition: true, userId: true },
+        });
+        const matched = rows.length === seats.length
+          && seats.every(s => rows.some(r => r.seatPosition === s.seatIndex && r.userId === s.userId));
+        if (!matched) {
+          throw new ConflictException('좌석 정보가 바뀌었습니다. 화면을 새로 고쳐 주세요.');
+        }
+
+        // 검사 3 — 장부. 좌석 행과 스냅샷이 멀쩡해도 참가가 이미 끝난 사람이
+        // 있다. **끝난 참가에 좌석이 남는 경로가 둘 있다.**
+        //
+        // - 킥: `handleDealerAction`이 상태를 `ELIMINATED`로 내리고
+        //   `activePlayers`를 깎지만 `TablePlayer` 행은 지우지 않는다(엔진은
+        //   폴드만 시킨다). 그 사람은 칩과 함께 스냅샷에 남는다.
+        // - 우승: `tournamentFinished`가 `awardPrize`로 `AWARDED`를 매기고
+        //   좌석은 그대로 둔다.
+        //
+        // 둘 다 좌석 행 + 스냅샷 점유 + `WAITING` 페이즈라 검사 1·2를 통과한다.
+        // 그대로 `WAITING`으로 되돌리면 **끝난 참가가 되살아난다** —
+        // `enterSeat`은 `ELIMINATED`/`AWARDED`만 막으므로 그 사람이 자기 OTP로
+        // 다시 앉고, 나중에 진짜로 터질 때 `eliminatePlayer`가 같은 사람 몫으로
+        // `activePlayers`를 두 번 깎는다. 상금 쪽은 더 직접적이다 —
+        // `awardPrize`의 멱등 키가 곧 상태(`status: { notIn: [...] }`)라
+        // `AWARDED`를 풀면 같은 등수의 포인트 지급이 다시 열린다.
+        //
+        // 조용히 건너뛰지 않고 요청 전체를 막는다. 상점이 체크한 사람 중
+        // 하나가 실은 뗄 수 없는 사람이었다는 것은 화면이 낡았다는 뜻이고,
+        // 부분 성공은 이 API가 하지 않기로 한 것이다.
+        //
+        // **이 검사는 위 `FOR UPDATE`가 지켜 주지 않는다.** 잠근 것은 `Table`
+        // 행이라 `TablePlayer`의 INSERT/DELETE만 직렬화된다. 참가의 `status`는
+        // 다른 행이고 다른 경로가 쓴다 — 킥은 같은 테이블 락 아래라 덤으로
+        // 막히지만 `tournamentFinished`는 아니다. 그쪽은 `PLAYING`인 사람을
+        // 테이블과 무관하게 `findFirst`로 골라 `AWARDED`를 매기므로, 1번
+        // 테이블의 마지막 탈락이 2번 테이블에 앉은 사람에게 상금을 주는 동안
+        // 우리가 2번 테이블에서 그 사람을 뗄 수 있다. 읽을 때는 `PLAYING`이던
+        // 것이 쓸 때는 아니다.
+        const parts = await tx.tournamentParticipation.findMany({
+          where: { tournamentId, userId: { in: userIds } },
+          select: { status: true },
+        });
+        const allPlaying = parts.length === userIds.length
+          && parts.every(p => p.status === PlayerStatus.PLAYING);
+        if (!allPlaying) {
+          throw new ConflictException('앉아 있는 참가자만 해제할 수 있습니다. 화면을 새로 고쳐 주세요.');
+        }
+
+        await tx.tablePlayer.deleteMany({ where: { tableId, seatPosition: { in: seatIndexes } } });
+        // 칩은 건드리지 않는다. 좌석만 사라지고 장부는 남는다(T29의 이사).
+        //
+        // `status: PLAYING`을 조건에 다시 건다. 위 검사와 중복으로 보이지만
+        // 그 사이에 커밋된 수상을 덮어쓰지 않게 하는 것이 이 줄의 일이다 —
+        // 조건이 없으면 방금 매겨진 `AWARDED`가 `WAITING`으로 지워지고,
+        // 상금은 이미 나갔는데 멱등 키(=상태)가 다시 열려 같은 등수가 한 번 더
+        // 지급될 수 있다. 조건에 걸려 0행이 되면 조용히 넘어가지 않고 던진다.
+        const updated = await tx.tournamentParticipation.updateMany({
+          where: { tournamentId, userId: { in: userIds }, status: PlayerStatus.PLAYING },
+          data: { status: PlayerStatus.WAITING },
+        });
+        if (updated.count !== userIds.length) {
+          throw new ConflictException('해제 중 참가 상태가 바뀌었습니다. 다시 시도해 주세요.');
+        }
+      });
+
+      for (const s of seats) state.players[s.seatIndex] = null;
+      await this.redis.saveSnapShot(tableId, state);
+
+      // **비트맵과 유저 컨텍스트도 락 안이다.** 원자 연산이라 그 자체는 락이
+      // 필요 없지만, 필요한 것은 원자성이 아니라 **입장과의 순서**다. 락
+      // 밖에 두면 우리가 락을 놓은 뒤 재입장이 비트를 1로 세우고 컨텍스트를
+      // 쓴 **다음에** 우리 0과 삭제가 도착할 수 있다. 결과는 "비트 0 /
+      // 스냅샷 있음 / 컨텍스트 없음"이고, 스스로 낫지 않는다 — 좌석 목록에는
+      // 빈 자리로 보이는데 `TablePlayer`와 스냅샷은 앉아 있다고 말하는,
+      // 시나리오 불변식(좌석 비트맵 == 스냅샷)이 깨진 상태다.
+      //
+      // 둘 다 왕복이 정해진 Redis 호출이라 "기다림이 무한정인 일 금지"를
+      // 어기지 않는다. 브로드캐스트만 락 밖으로 남긴다.
+      //
+      // 이것이 닫는 것은 **해제 → 입장** 방향뿐이고, 그나마 **같은 테이블에
+      // 한해서다.** 락이 테이블 단위라 그렇다. 비트맵은 테이블별 필드라
+      // 문제가 없지만 유저 컨텍스트는 대회 단위이고, T29는 애초에 뗀 사람이
+      // **다른 테이블**로 걸어가라고 있는 기능이다 — 트랜잭션이 커밋된 뒤
+      // 2번 테이블에 앉은 사람의 컨텍스트를, 아직 1번 테이블 락을 쥔 우리가
+      // 지울 수 있다. 그 컨텍스트를 읽는 곳은 `handleAction`의 KICKED 검사
+      // 하나뿐이고 검사 3을 통과한 사람은 `PLAYING`이라 영향이 작아 감수한다.
+      // 입장의 비트 쓰기가 자기 락 밖이라 늦게 도착하는 반대 방향(입장 →
+      // 해제)도 그대로다. 그건 T28이 만든 자리라 여기서 고치지 않는다.
+      //
+      // 좌석 수만큼 반복 호출하지 않는다 — 한 테이블의 비트는 모두 같은
+      // 해시 필드에 있어서, 여러 번 나눠 부르면 그 사이 Redis 장애가 끼었을 때
+      // 일부 좌석만 비트가 내려가고 나머지는 영원히 "찬 자리"로 남는다(DB의
+      // TablePlayer 행은 이미 사라진 뒤라 아무도 그 자리에 못 앉는다). 배치
+      // 메서드 하나로 묶어 부분 성공을 없앤다.
+      await this.redis.updateSeatBitmapMany(tournamentId, tableId, seatIndexes, false);
+      await this.redis.deleteUserContexts(tournamentId, userIds);
+    });
+
+    // 락 밖. 락을 쥔 채로 브로드캐스트하지 않는다.
+    await this.emitSeatList(tournamentId);
   }
-
-
 }

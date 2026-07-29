@@ -1,10 +1,8 @@
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { JwtService } from '@nestjs/jwt';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { Queue } from 'bullmq';
 import Redis from 'ioredis';
 import { PayMentDto } from 'shared/dto/payment.dto';
-import { EntryService } from 'src/entry/entry.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { SessionService } from 'src/store/session/session.service';
@@ -28,7 +26,6 @@ describe('PaymentService — 참가 OTP 발급', () => {
   let redisService: RedisService;
   let userService: UserService;
   let service: PaymentService;
-  let entry: EntryService;
   let playsync: PlaysyncService;
 
   const TOURNAMENT = 'otp-tournament-1';
@@ -77,12 +74,6 @@ describe('PaymentService — 참가 OTP 발급', () => {
       {} as unknown as SessionService,
       prisma as unknown as PrismaService,
       redisService,
-    );
-    entry = new EntryService(
-      prisma as unknown as PrismaService,
-      redisService,
-      new JwtService({ secret: 'test-secret' }),
-      new EventEmitter2(),
     );
     // 리바인 트랜잭션만 부른다. processRebuy와 달리 사람의 팝업 응답을
     // 기다리지 않으므로 큐는 건드리지 않는다 — 스텁으로 충분하다.
@@ -235,9 +226,9 @@ describe('PaymentService — 참가 OTP 발급', () => {
       SELECT "playerOtp" FROM "TournamentParticipation" WHERE "userId" = 'u1'
     `;
 
-    // 리바인은 이미 앉은 사람 몫이다(T28) — 결제만으로는 TablePlayer가
-    // 없으므로 입장까지 마쳐야 executeRebuyTransaction이 찾는 좌석이 생긴다.
-    await entry.enterSeat(TOURNAMENT, { otp: before[0].playerOtp, tableId: TABLE, seatIndex: 0 });
+    // 좌석을 만들 필요가 없다. T29가 칩을 좌석 배치표에서 장부로 옮긴 뒤로
+    // executeRebuyTransaction은 TournamentParticipation 하나만 건드린다 —
+    // 결제로 생긴 참가 행이 이미 그 대상이다.
 
     // 기존 리바인 경로. processRebuy는 사람의 팝업 응답을 기다리므로, 그
     // 응답이 들어온 뒤 실제로 DB를 건드리는 부분만 부른다.

@@ -50,7 +50,7 @@
 한 것의 근거가 사라진다.
 
 ```
-T27(참가 OTP, 완료) → T28(입장 시 좌석 확정, 완료) → T29(좌석 해제) → B2(축소)
+T27(참가 OTP, 완료) → T28(입장 시 좌석 확정, 완료) → T29(좌석 해제, 완료) → B2(축소)
 → B3(최소) → B5(화면 셋) → B7 → 마무리
 ```
 
@@ -422,6 +422,9 @@ B5·B6 뒤.
 
 ## B8 — 테이블 간 인원 이동
 
+**상태**: 완료. T27(참가 OTP) → T28(입장 시 좌석 확정) → T29(상점의 좌석 해제)
+셋으로 닫았다.
+
 다중 테이블 자체는 이미 돈다. 스키마가 `Store → Tournament[] → Table[]`이고,
 좌석 비트맵은 `tournament:{id}:seat` 해시의 `table:{tableId}` 필드라 테이블마다
 칸이 따로 있다. 스냅샷은 `tableId` 키, WS 게이트웨이는 대회 단위와 테이블 단위
@@ -461,7 +464,7 @@ Map을 둘 다 들고 있다. T25가 상점이 테이블을 여닫는 엔드포�
 |---|---|---|
 | T27 | 참가 OTP 발급·조회 | [`player-otp`](./superpowers/specs/2026-07-28-player-otp-design.md) |
 | T28 | 좌석 확정을 결제 시점에서 입장 시점으로. 좌석 예매와 `acquireSeatLock` 폐기 | [`seat-on-enter`](./superpowers/specs/2026-07-29-seat-on-enter-design.md) |
-| T29 | 상점의 좌석 해제, `currentStack`을 `TournamentParticipation`으로 이사 | 미작성 |
+| T29 | 상점의 좌석 해제, `currentStack`을 `TournamentParticipation`으로 이사 | [`seat-release`](./superpowers/specs/2026-07-29-seat-release-design.md) |
 
 **폐기한 설계에서 살아남는 판단 셋.** T28·T29가 그대로 쓴다.
 
@@ -473,7 +476,9 @@ Map을 둘 다 들고 있다. T25가 상점이 테이블을 여닫는 엔드포�
   자연히 `WAITING`에 머물고, 극후반에 휴식이 아니어도 핸드 사이라면 같은 조건으로
   열린다. **T28은 이 가드를 쓰지 않는다** — 신규 착석은 핸드 도중이어도 허용이다
   (늦은 참가는 폴드 상태로 들어간다). 이미 앉은 사람을 다른 자리로 옮기는 T29가
-  실제로 쓰는 조건이다.
+  실제로 쓰는 조건이다. **T29에서 실제로 이 가드가 처음 쓰였다** —
+  `SessionService.releaseSeats`가 `state.phase !== GamePhase.WAITING`을
+  409로 막는다.
 - **검사는 락 안에서 다시 한다.** 락 밖 검사만 믿으면 T25의 `deleteTable`이
   걸렸던 check-then-act가 재현된다.
 
@@ -492,12 +497,16 @@ Map을 둘 다 들고 있다. T25가 상점이 테이블을 여닫는 엔드포�
 - **비트맵 유실 복구가 `tables[0]`만 되살린다**(`payment.service.ts:61-62`).
   테이블이 셋이면 나머지 둘은 비트맵 없이 남는다. 여기서 유일하게 실재하는
   단일 테이블 가정이고, B2에서 스냅샷 재구성과 함께 본다.
-- **시나리오 하네스가 테이블 하나만 돈다**(`scenario/harness.ts`의 `tableId`).
-  T29가 좌석 해제를 넣으면 두 테이블짜리 시나리오가 하나 필요해진다.
+- ~~시나리오 하네스가 테이블 하나만 돈다~~ **완료(T29).**
+  `checkInvariants`가 검사할 `tableId`를 인자로 받도록 고쳤고(기본값
+  `h.tableId`라 기존 호출자는 그대로 돈다), `scenario/table-move.int-spec.ts`가
+  두 테이블 각각을 검사한다.
 
 ### T30 — `activePlayers`를 착석 기준으로 옮긴다
 
 **전신**: T28 3라운드 리뷰 finding 3. **T28 범위 밖으로 뺐다** — 이유는 아래.
+**절반은 T29에서 닫혔다** — 아래 "T29가 닫은 절반" 참고. 남은 것은
+`activePlayers` 카운터 자체뿐이다.
 
 `Tournament.activePlayers`는 결제(`PaymentService.joinSession`)에서 늘고,
 탈락 처리(`PlaysyncService.eliminatePlayer`)에서 `TablePlayer` 삭제 건수만큼
@@ -506,11 +515,15 @@ Map을 둘 다 들고 있다. T25가 상점이 테이블을 여닫는 엔드포�
 (`activePlayerCount <= 1`)이 걸리지 않는다 — 상금이 자동으로 나가지 않고,
 상점이 `completeSession`으로 수동 종료해야 한다.
 
-같은 자리에 딸린 문제가 하나 더 있다. `startSession`이
+**T29가 닫은 절반.** `startSession`이
 `tournamentParticipation.updateMany`로 참가자 전원을 한 번에 `PLAYING`으로
-올린다 — 착석 여부와 무관하다. 그래서 `tournamentFinished`의 우승자 조회
+올리던 것 — 착석 여부와 무관했다 — 을 T29에서 지웠다. 그래서
+`tournamentFinished`의 우승자 조회
 (`findFirst({ where: { status: PlayerStatus.PLAYING } })`)가 한 번도 앉지
-않은 참가자를 우승자로 뽑을 수 있다.
+않은 참가자를 우승자로 뽑던 문제는 사라졌다. **`activePlayers` 카운터의
+기준(결제 vs 착석)은 그대로 남는다** — T29는 승격 시점만 고쳤을 뿐 이
+카운터를 건드리지 않았다. 자동 마무리 게이트가 노쇼에 걸리지 않는 문제는
+아직 열려 있다.
 
 **리바인은 영향이 없다.** `RedisService.rebuyPlayer`는 `totalBuyinAmount`만
 올리고 `activePlayers`를 건드리지 않는다 — 어느 기준으로 바꾸든 리바인
@@ -524,9 +537,9 @@ Map을 둘 다 들고 있다. T25가 상점이 테이블을 여닫는 엔드포�
 리포의 목적 자체이기 때문이다.
 
 **고칠 때는 착석이 아니라 상태 전이에 걸어야 한다.** "살아있는 사람(칩
-보유)"과 "게임 중인 사람(의자 점유)"은 지금은 같은 집합이지만, T29가 테이블
-밸런싱으로 사람을 옮기기 시작하면 갈라진다 — 카운터를 좌석 점유
-(`TablePlayer`)에 걸면 이동할 때마다 중복 증감이 생긴다. 전광판이 세는 것은
+보유)"과 "게임 중인 사람(의자 점유)"은 이제 T29가 사람을 실제로 옮기면서
+갈라진다 — 해제된 사람은 칩을 들고 있지만 어느 좌석에도 없다. 카운터를 좌석
+점유(`TablePlayer`)에 걸면 이동할 때마다 중복 증감이 생긴다. 전광판이 세는 것은
 "살아있는 사람"이므로, `activePlayers`는 `TablePlayer`가 아니라
 `PlayerStatus`의 `WAITING`→`PLAYING` 전이 자체에 걸어야 한다.
 
