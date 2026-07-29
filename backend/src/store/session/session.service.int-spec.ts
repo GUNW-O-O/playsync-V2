@@ -11,6 +11,7 @@ import { Queue } from 'bullmq';
 import { CreateTournamentDto } from 'shared/dto/tournament.dto';
 import { DealerService } from 'src/dealer/dealer.service';
 import { OtpAttempts } from 'src/dealer/otp-attempts';
+import { GamePhase } from 'src/game-engine/types';
 import { PlaysyncService } from 'src/playsync/playsync.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
@@ -829,5 +830,176 @@ describe('SessionService.deleteTable', () => {
     await expect(
       sessionService.deleteTable(tournamentId, otherTable.id, ownerId),
     ).rejects.toThrow(NotFoundException);
+  });
+});
+
+/**
+ * 상점이 좌석에서 사람을 뗀다.
+ *
+ * `TablePlayer` 행, Redis 스냅샷, 좌석 비트맵 셋이 함께 비어야 하고 칩
+ * (`TournamentParticipation.currentStack`)은 그대로 남아야 한다 — 해제는
+ * 이사일 뿐 정산이 아니다.
+ */
+describe('SessionService.releaseSeats', () => {
+  let prisma: PrismaClient;
+  let redis: Redis;
+  let sessionService: SessionService;
+  let tournamentId: string;
+  let ownerId: string;
+  let tableId: string;
+
+  beforeAll(() => {
+    prisma = createTestPrisma();
+    redis = createTestRedis();
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+    await closeTestPrisma(prisma);
+  });
+
+  beforeEach(async () => {
+    await truncateAll(prisma);
+    await flushTestRedis(redis);
+
+    const prismaService = prisma as unknown as PrismaService;
+    const redisService = new RedisService(redis);
+    sessionService = new SessionService(
+      prismaService, redisService, new OtpAttempts(redis), new EventEmitter2(),
+    );
+
+    ({ ownerId, tournamentId, tableId } = await seedTournamentWithTable(prisma));
+    await redisService.setSeatBitmap(tournamentId, tableId);
+  });
+
+  /** 스냅샷과 좌석 행을 함께 만든다. */
+  async function seat(userId: string, seatIndex: number, stack = 10000) {
+    await prisma.user.create({ data: { id: userId, nickname: userId, password: 'x' } });
+    await prisma.tournamentParticipation.create({
+      data: {
+        userId, tournamentId, playerOtp: `otp${seatIndex}0000`,
+        status: 'PLAYING', currentStack: stack,
+      },
+    });
+    await prisma.tablePlayer.create({
+      data: { tournamentId, tableId, userId, nickname: userId, seatPosition: seatIndex },
+    });
+  }
+
+  async function putSnapshot(phase: GamePhase, seated: { userId: string; seatIndex: number; stack: number }[]) {
+    const players = Array(9).fill(null);
+    for (const s of seated) {
+      players[s.seatIndex] = {
+        id: s.userId, tableId, nickname: s.userId, seatIndex: s.seatIndex,
+        stack: s.stack, bet: 0, hasFolded: false, isAllIn: false,
+        hasChecked: false, totalContributed: 0,
+      };
+    }
+    await redis.set(`table:state:${tableId}`, JSON.stringify({
+      phase, players, pot: 0, currentBet: 0, buttonUser: 0,
+      currentTurnSeatIndex: -1, sidePots: [], ante: false, tournamentId, smallBlind: 100,
+    }));
+    await redis.hset(`tournament:${tournamentId}:seat`, `table:${tableId}`,
+      Array(9).fill('0').map((c, i) => seated.some(s => s.seatIndex === i) ? '1' : c).join(''));
+  }
+
+  it('해제하면 좌석 행·스냅샷·비트맵이 함께 비고 칩은 남는다', async () => {
+    await seat('u1', 3, 23400);
+    await putSnapshot(GamePhase.WAITING, [{ userId: 'u1', seatIndex: 3, stack: 23400 }]);
+
+    await sessionService.releaseSeats(tournamentId, tableId, [{ seatIndex: 3, userId: 'u1' }], ownerId);
+
+    const rows = await prisma.tablePlayer.count({ where: { tableId, userId: 'u1' } });
+    const p = await prisma.tournamentParticipation.findUniqueOrThrow({
+      where: { tournamentId_userId: { tournamentId, userId: 'u1' } },
+    });
+    const state = JSON.parse((await redis.get(`table:state:${tableId}`))!);
+    const bitmap = await redis.hget(`tournament:${tournamentId}:seat`, `table:${tableId}`);
+
+    expect(`좌석행 ${rows} / 상태 ${p.status} / 칩 ${p.currentStack} / 스냅샷 ${state.players[3] === null ? '빔' : '있음'} / 비트 ${bitmap![3]}`)
+      .toBe('좌석행 0 / 상태 WAITING / 칩 23400 / 스냅샷 빔 / 비트 0');
+  });
+
+  it('핸드 중에는 409고 아무것도 바뀌지 않는다', async () => {
+    await seat('u1', 3);
+    await putSnapshot(GamePhase.FLOP, [{ userId: 'u1', seatIndex: 3, stack: 10000 }]);
+
+    const caught = await sessionService
+      .releaseSeats(tournamentId, tableId, [{ seatIndex: 3, userId: 'u1' }], ownerId)
+      .catch(e => e);
+
+    const rows = await prisma.tablePlayer.count({ where: { tableId, userId: 'u1' } });
+    expect(`${caught instanceof ConflictException ? '409' : `결과 ${String(caught)}`} / 좌석행 ${rows}`)
+      .toBe('409 / 좌석행 1');
+  });
+
+  it('낡은 화면이 보낸 쌍은 409로 막힌다', async () => {
+    await seat('u1', 3);
+    await putSnapshot(GamePhase.WAITING, [{ userId: 'u1', seatIndex: 3, stack: 10000 }]);
+
+    const caught = await sessionService
+      .releaseSeats(tournamentId, tableId, [{ seatIndex: 3, userId: 'u2' }], ownerId)
+      .catch(e => e);
+
+    const rows = await prisma.tablePlayer.count({ where: { tableId } });
+    expect(`${caught instanceof ConflictException ? '409' : `결과 ${String(caught)}`} / 좌석행 ${rows}`)
+      .toBe('409 / 좌석행 1');
+  });
+
+  /**
+   * 레디스 락은 좌석의 DB 쓰기를 직렬화하지 않는다 — T28이 입장의 트랜잭션을
+   * 락 밖으로 뺐기 때문에 입장은 테이블 락을 건드리지 않고 INSERT한다.
+   * `SELECT ... FOR UPDATE`가 그 자리를 메운다.
+   *
+   * 이 테스트가 대기하려면 4번 자리가 요청에 들어 있어야 한다. 스냅샷 검사
+   * (검사 1)는 4번이 비어 있으면 락 안에서 먼저 걸려 `FOR UPDATE`에 닿지
+   * 못한다 — 그래서 스냅샷에도 4번을 미리 채워 둔다.
+   */
+  it('해제 도중 들어온 착석은 지워지지 않고 해제가 409로 막힌다', async () => {
+    await seat('u1', 3);
+    await putSnapshot(GamePhase.WAITING, [
+      { userId: 'u1', seatIndex: 3, stack: 10000 },
+      { userId: 'u1', seatIndex: 4, stack: 10000 },
+    ]);
+
+    const newcomer = await prisma.user.create({ data: { nickname: 'newcomer', password: 'x' } });
+    await prisma.tournamentParticipation.create({
+      data: {
+        userId: newcomer.id, tournamentId, playerOtp: '99999999',
+        status: 'WAITING', currentStack: 10000,
+      },
+    });
+
+    const entering = new Client({ connectionString: process.env.DATABASE_URL });
+    await entering.connect();
+
+    let outcome: unknown;
+    try {
+      await entering.query('BEGIN');
+      // 해제 대상과 **다른** 자리에 앉는다. 커밋 전이라 아직 아무도 못 본다.
+      await entering.query(
+        `INSERT INTO "TablePlayer"(id,nickname,"tableId","userId","seatPosition","tournamentId")
+         VALUES (gen_random_uuid(), 'newcomer', $1, $2, 4, $3)`,
+        [tableId, newcomer.id, tournamentId],
+      );
+
+      let settled = false;
+      const caught = sessionService
+        .releaseSeats(tournamentId, tableId, [{ seatIndex: 3, userId: 'u1' }, { seatIndex: 4, userId: 'u1' }], ownerId)
+        .then(v => { settled = true; return v; }, e => { settled = true; return e; });
+
+      await new Promise(r => setTimeout(r, 500));
+      expect(`대기 중 ${settled ? '아님' : '맞음'}`).toBe('대기 중 맞음');
+
+      await entering.query('COMMIT');
+      outcome = await caught;
+    } finally {
+      await entering.query('ROLLBACK').catch(() => undefined);
+      await entering.end();
+    }
+
+    const seated = await prisma.tablePlayer.count({ where: { tableId } });
+    expect(`${outcome instanceof ConflictException ? '409' : `결과 ${String(outcome)}`} / 좌석행 ${seated}`)
+      .toBe('409 / 좌석행 2');
   });
 });

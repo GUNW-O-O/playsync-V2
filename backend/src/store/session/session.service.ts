@@ -671,12 +671,94 @@ export class SessionService {
     });
   }
 
-  // 플레이어 자리 옮기기
-  async manualMovingPlayer() {
-    // 플레이어끼리 위치변경
+  /**
+   * 상점이 좌석에서 사람을 뗀다.
+   *
+   * 시스템은 누구를 어디로 보낼지 정하지 않는다. 상점이 체크한 사람을 뗄
+   * 뿐이고, 그 사람은 걸어가서 빈 자리에 앉아 자기 참가 OTP를 넣는다(T28).
+   * 자동 밸런싱은 하지 않기로 한 것이다 — 언제 누구를 어디로 보낼지는 규칙이
+   * 아니라 현장 판단이다.
+   *
+   * **트랜잭션이 락 안에 있다.** T28의 입장은 반대로 락 밖에 두는데, 그
+   * 근거는 대회 시작에 수십 명이 한꺼번에 들어와 커넥션 풀이 차는 상황이었다.
+   * 해제는 상점 운영자 한 명의 조작이고 행이 최대 9개다. 이 리포의 실제 규칙은
+   * "트랜잭션 금지"가 아니라 **기다림이 무한정인 일 금지**다 —
+   * `resolveWinners`가 3단계(탈락 확정)는 락 안에서 돌리고 2단계(사람이 리바인
+   * 수락을 기다림)와 4단계(백오프 재시도)만 락 밖으로 뺀 것이 그 증거다.
+   *
+   * **그런데 레디스 락은 좌석의 DB 쓰기를 직렬화하지 않는다.** T28이 입장의
+   * 트랜잭션을 락 밖으로 뺐기 때문에 입장은 테이블 락을 건드리지 않고
+   * `TablePlayer`를 INSERT한다. 그래서 `deleteTable`과 같은
+   * `SELECT ... FOR UPDATE`가 필요하다 — INSERT가 부모 `Table` 행에 거는
+   * `FOR KEY SHARE`와 충돌해 두 방향 모두 직렬화된다.
+   */
+  async releaseSeats(
+    tournamentId: string,
+    tableId: string,
+    seats: { seatIndex: number; userId: string }[],
+    ownerId: string,
+  ) {
+    await this.assertTournamentOwnership(tournamentId, ownerId);
 
-    // 빈자리에 채우기
+    await this.redis.withTableLock(tableId, async () => {
+      const state = await this.redis.getSnapShot(tableId);
+      if (!state) throw new NotFoundException('테이블 상태를 찾을 수 없습니다.');
+
+      // 핸드 중에는 자리가 움직이지 않는다. 이 가드 하나가 팟·차례·폴드
+      // 상태·사이드팟을 전부 비껴간다. T28은 이 가드를 쓰지 않았다 — 신규
+      // 착석은 핸드 도중이어도 폴드 상태로 들어가 아무것에도 끼지 않는다.
+      // 이미 앉은 사람을 빼는 것은 다르다.
+      if (state.phase !== GamePhase.WAITING) {
+        throw new ConflictException('핸드 진행 중에는 좌석을 해제할 수 없습니다.');
+      }
+
+      // 검사 1 — 스냅샷(게임의 진실). 상점 화면이 낡았으면 여기서 걸린다.
+      for (const s of seats) {
+        if (state.players[s.seatIndex]?.id !== s.userId) {
+          throw new ConflictException('좌석 정보가 바뀌었습니다. 화면을 새로 고쳐 주세요.');
+        }
+      }
+
+      const seatIndexes = seats.map(s => s.seatIndex);
+      const userIds = seats.map(s => s.userId);
+
+      await this.prismaService.$transaction(async (tx) => {
+        const locked = await tx.$queryRaw<{ id: string }[]>`
+          SELECT id FROM "Table"
+          WHERE id = ${tableId} AND "tournamentId" = ${tournamentId}
+          FOR UPDATE
+        `;
+        if (locked.length === 0) throw new NotFoundException('테이블을 찾을 수 없습니다.');
+
+        // 검사 2 — DB(좌석의 진실). 위 SELECT가 풀린 뒤의 **새 문장**이라
+        // Read Committed가 스냅샷을 다시 뜬다. 방금 커밋된 입장이 보인다.
+        const rows = await tx.tablePlayer.findMany({
+          where: { tableId, seatPosition: { in: seatIndexes } },
+          select: { seatPosition: true, userId: true },
+        });
+        const matched = rows.length === seats.length
+          && seats.every(s => rows.some(r => r.seatPosition === s.seatIndex && r.userId === s.userId));
+        if (!matched) {
+          throw new ConflictException('좌석 정보가 바뀌었습니다. 화면을 새로 고쳐 주세요.');
+        }
+
+        await tx.tablePlayer.deleteMany({ where: { tableId, seatPosition: { in: seatIndexes } } });
+        // 칩은 건드리지 않는다. 좌석만 사라지고 장부는 남는다(T29의 이사).
+        await tx.tournamentParticipation.updateMany({
+          where: { tournamentId, userId: { in: userIds } },
+          data: { status: PlayerStatus.WAITING },
+        });
+      });
+
+      for (const s of seats) state.players[s.seatIndex] = null;
+      await this.redis.saveSnapShot(tableId, state);
+    });
+
+    // 락 밖. 비트맵은 필드 단위 원자 연산이라 락이 필요 없다.
+    for (const s of seats) {
+      await this.redis.updateSeatBitmap(tournamentId, tableId, s.seatIndex, false);
+      await this.redis.deleteUserContext(tournamentId, s.userId);
+    }
+    await this.emitSeatList(tournamentId);
   }
-
-
 }

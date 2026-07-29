@@ -5,6 +5,7 @@ import { RolesGuard } from 'src/auth/guard/roles.guard';
 import { Role } from '@prisma/client';
 import { Roles } from 'src/auth/decorator/roles.decorator';
 import { CreateTournamentDto, UpdateTournamentDto } from 'shared/dto/tournament.dto';
+import { ReleaseSeatsDto } from 'shared/dto/seat-release.dto';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -77,6 +78,20 @@ export class SessionController {
     @Param('tableId') tableId: string,
   ) {
     await this.sessionService.deleteTable(tournamentId, tableId, req.user.userId);
+    return { ok: true };
+  }
+
+  // 좌석 해제도 남의 대회를 건드릴 수 없어야 한다. 소유권 확인은 서비스
+  // 메서드 안이고, PLATFORM_ADMIN을 빼는 것도 테이블 추가/삭제와 같은 이유다.
+  @Roles(Role.STORE_ADMIN)
+  @Post(':id/tables/:tableId/seats/release')
+  async releaseSeats(
+    @Req() req,
+    @Param('id') tournamentId: string,
+    @Param('tableId') tableId: string,
+    @Body() dto: ReleaseSeatsDto,
+  ) {
+    await this.sessionService.releaseSeats(tournamentId, tableId, dto.seats, req.user.userId);
     return { ok: true };
   }
 }
