@@ -920,6 +920,47 @@ describe('SessionService.releaseSeats', () => {
       .toBe('좌석행 0 / 상태 WAITING / 칩 23400 / 스냅샷 빔 / 비트 0');
   });
 
+  /**
+   * 좌석 두 개를 한 요청으로 뗀다.
+   *
+   * 위 단일 좌석 테스트만으로는 배치 처리를 검증하지 못한다 — n=1이면
+   * 비트맵 갱신과 유저 컨텍스트 삭제를 반복문으로 하나씩 부르나 한 번에
+   * 부르나 겉보기 결과가 같다. 두 좌석을 동시에 요청해 둘 다 비트가
+   * 내려가고 둘 다 유저 컨텍스트가 사라지는지 함께 확인한다.
+   */
+  it('좌석 두 개를 한 요청으로 해제하면 둘 다 함께 비고 칩은 각자 남는다', async () => {
+    await seat('u1', 3, 23400);
+    await seat('u2', 5, 17700);
+    await putSnapshot(GamePhase.WAITING, [
+      { userId: 'u1', seatIndex: 3, stack: 23400 },
+      { userId: 'u2', seatIndex: 5, stack: 17700 },
+    ]);
+    await redis.hset(`tournament:${tournamentId}:user`, 'u1', JSON.stringify({ tableId }));
+    await redis.hset(`tournament:${tournamentId}:user`, 'u2', JSON.stringify({ tableId }));
+
+    await sessionService.releaseSeats(
+      tournamentId, tableId,
+      [{ seatIndex: 3, userId: 'u1' }, { seatIndex: 5, userId: 'u2' }],
+      ownerId,
+    );
+
+    const rows = await prisma.tablePlayer.count({ where: { tableId, userId: { in: ['u1', 'u2'] } } });
+    const p1 = await prisma.tournamentParticipation.findUniqueOrThrow({
+      where: { tournamentId_userId: { tournamentId, userId: 'u1' } },
+    });
+    const p2 = await prisma.tournamentParticipation.findUniqueOrThrow({
+      where: { tournamentId_userId: { tournamentId, userId: 'u2' } },
+    });
+    const bitmap = await redis.hget(`tournament:${tournamentId}:seat`, `table:${tableId}`);
+    const ctx1 = await redis.hget(`tournament:${tournamentId}:user`, 'u1');
+    const ctx2 = await redis.hget(`tournament:${tournamentId}:user`, 'u2');
+
+    expect(
+      `좌석행 ${rows} / 상태 ${p1.status}·${p2.status} / 칩 ${p1.currentStack}·${p2.currentStack} / `
+      + `비트 ${bitmap![3]}${bitmap![5]} / 컨텍스트 ${ctx1 === null ? '없음' : '있음'}·${ctx2 === null ? '없음' : '있음'}`
+    ).toBe('좌석행 0 / 상태 WAITING·WAITING / 칩 23400·17700 / 비트 00 / 컨텍스트 없음·없음');
+  });
+
   it('핸드 중에는 409고 아무것도 바뀌지 않는다', async () => {
     await seat('u1', 3);
     await putSnapshot(GamePhase.FLOP, [{ userId: 'u1', seatIndex: 3, stack: 10000 }]);

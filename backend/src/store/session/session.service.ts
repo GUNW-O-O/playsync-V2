@@ -755,10 +755,16 @@ export class SessionService {
     });
 
     // 락 밖. 비트맵은 필드 단위 원자 연산이라 락이 필요 없다.
-    for (const s of seats) {
-      await this.redis.updateSeatBitmap(tournamentId, tableId, s.seatIndex, false);
-      await this.redis.deleteUserContext(tournamentId, s.userId);
-    }
+    //
+    // 좌석 수만큼 반복 호출하지 않는다 — 한 테이블의 비트는 모두 같은
+    // 해시 필드에 있어서, 여러 번 나눠 부르면 그 사이 Redis 장애가 끼었을 때
+    // 일부 좌석만 비트가 내려가고 나머지는 영원히 "찬 자리"로 남는다(DB의
+    // TablePlayer 행은 이미 사라진 뒤라 아무도 그 자리에 못 앉는다). 배치
+    // 메서드 하나로 묶어 부분 성공을 없앤다.
+    await this.redis.updateSeatBitmapMany(
+      tournamentId, tableId, seats.map(s => s.seatIndex), false,
+    );
+    await this.redis.deleteUserContexts(tournamentId, seats.map(s => s.userId));
     await this.emitSeatList(tournamentId);
   }
 }
