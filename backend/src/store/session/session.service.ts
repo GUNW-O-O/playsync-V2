@@ -783,6 +783,15 @@ export class SessionService {
         // 조용히 건너뛰지 않고 요청 전체를 막는다. 상점이 체크한 사람 중
         // 하나가 실은 뗄 수 없는 사람이었다는 것은 화면이 낡았다는 뜻이고,
         // 부분 성공은 이 API가 하지 않기로 한 것이다.
+        //
+        // **이 검사는 위 `FOR UPDATE`가 지켜 주지 않는다.** 잠근 것은 `Table`
+        // 행이라 `TablePlayer`의 INSERT/DELETE만 직렬화된다. 참가의 `status`는
+        // 다른 행이고 다른 경로가 쓴다 — 킥은 같은 테이블 락 아래라 덤으로
+        // 막히지만 `tournamentFinished`는 아니다. 그쪽은 `PLAYING`인 사람을
+        // 테이블과 무관하게 `findFirst`로 골라 `AWARDED`를 매기므로, 1번
+        // 테이블의 마지막 탈락이 2번 테이블에 앉은 사람에게 상금을 주는 동안
+        // 우리가 2번 테이블에서 그 사람을 뗄 수 있다. 읽을 때는 `PLAYING`이던
+        // 것이 쓸 때는 아니다.
         const parts = await tx.tournamentParticipation.findMany({
           where: { tournamentId, userId: { in: userIds } },
           select: { status: true },
@@ -795,10 +804,19 @@ export class SessionService {
 
         await tx.tablePlayer.deleteMany({ where: { tableId, seatPosition: { in: seatIndexes } } });
         // 칩은 건드리지 않는다. 좌석만 사라지고 장부는 남는다(T29의 이사).
-        await tx.tournamentParticipation.updateMany({
-          where: { tournamentId, userId: { in: userIds } },
+        //
+        // `status: PLAYING`을 조건에 다시 건다. 위 검사와 중복으로 보이지만
+        // 그 사이에 커밋된 수상을 덮어쓰지 않게 하는 것이 이 줄의 일이다 —
+        // 조건이 없으면 방금 매겨진 `AWARDED`가 `WAITING`으로 지워지고,
+        // 상금은 이미 나갔는데 멱등 키(=상태)가 다시 열려 같은 등수가 한 번 더
+        // 지급될 수 있다. 조건에 걸려 0행이 되면 조용히 넘어가지 않고 던진다.
+        const updated = await tx.tournamentParticipation.updateMany({
+          where: { tournamentId, userId: { in: userIds }, status: PlayerStatus.PLAYING },
           data: { status: PlayerStatus.WAITING },
         });
+        if (updated.count !== userIds.length) {
+          throw new ConflictException('해제 중 참가 상태가 바뀌었습니다. 다시 시도해 주세요.');
+        }
       });
 
       for (const s of seats) state.players[s.seatIndex] = null;
@@ -815,9 +833,15 @@ export class SessionService {
       // 둘 다 왕복이 정해진 Redis 호출이라 "기다림이 무한정인 일 금지"를
       // 어기지 않는다. 브로드캐스트만 락 밖으로 남긴다.
       //
-      // 이것이 닫는 것은 **해제 → 입장** 방향뿐이다. 입장의 비트 쓰기는
-      // 자기 락 밖이라 여전히 늦게 도착할 수 있고(입장 → 해제), 그건 T28이
-      // 만든 자리라 여기서 고치지 않는다.
+      // 이것이 닫는 것은 **해제 → 입장** 방향뿐이고, 그나마 **같은 테이블에
+      // 한해서다.** 락이 테이블 단위라 그렇다. 비트맵은 테이블별 필드라
+      // 문제가 없지만 유저 컨텍스트는 대회 단위이고, T29는 애초에 뗀 사람이
+      // **다른 테이블**로 걸어가라고 있는 기능이다 — 트랜잭션이 커밋된 뒤
+      // 2번 테이블에 앉은 사람의 컨텍스트를, 아직 1번 테이블 락을 쥔 우리가
+      // 지울 수 있다. 그 컨텍스트를 읽는 곳은 `handleAction`의 KICKED 검사
+      // 하나뿐이고 검사 3을 통과한 사람은 `PLAYING`이라 영향이 작아 감수한다.
+      // 입장의 비트 쓰기가 자기 락 밖이라 늦게 도착하는 반대 방향(입장 →
+      // 해제)도 그대로다. 그건 T28이 만든 자리라 여기서 고치지 않는다.
       //
       // 좌석 수만큼 반복 호출하지 않는다 — 한 테이블의 비트는 모두 같은
       // 해시 필드에 있어서, 여러 번 나눠 부르면 그 사이 Redis 장애가 끼었을 때
