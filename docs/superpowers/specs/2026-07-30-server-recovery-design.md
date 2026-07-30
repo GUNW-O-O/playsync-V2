@@ -327,9 +327,22 @@ dashboard 필드 전부가 `Tournament` 컬럼에서 나오고 blindStructure도
 `AWARDED`는 좌석 행이 남아 있을 수 있으므로(T29의 검사 3) 좌석만 보면 탈락자를
 되살린다.
 
-재구성은 스냅샷과 **좌석 비트맵**을 함께 세운다. 비트맵도 Redis에 산다
-(`tournament:{id}:seat` 해시의 `table:{tableId}` 필드). 스냅샷만 세우면
-`entry`가 좌석을 비어 있는 것으로 보고 다른 사람에게 팔 수 있다.
+재구성은 Redis 키 **셋**을 함께 세운다. 스냅샷만 세우면 나머지가 어긋난다.
+
+| 키 | 없으면 |
+|---|---|
+| `table:state:{tableId}` | 게임이 안 돈다 |
+| `tournament:{id}:seat` 해시의 `table:{tableId}` | `entry`가 좌석을 비어 있는 것으로 보고 다른 사람에게 판다 |
+| `tournament:{id}:user` | 아래 |
+
+유저 컨텍스트는 **지금 읽는 곳이 한 군데뿐이다** — `playsync.service.ts:120`의
+`isKicked` 판정. 그리고 재구성은 `PLAYING`만 앉히므로 킥된 사람은 애초에 스냅샷에
+없고, 없으면 액션 경로가 `playerIdx`를 못 찾는다. **즉 이 키를 안 세워도 지금은
+틀리지 않는다.**
+
+그래도 세운다. 착석과 컨텍스트가 짝이라는 불변식(`entry.service.ts:267`이 착석
+때 항상 쓴다)을 재구성만 예외로 두면, 나중에 이 키를 읽는 코드가 하나 붙는
+순간 조용히 깨진다. 비용은 테이블당 `hset` 한 번이다.
 
 ### 실패는 대회 단위로 격리한다
 
@@ -377,6 +390,21 @@ private emptyTableState(tournamentId: string): TableState {
 대회가 `ONGOING`인데 스냅샷이 없으면 fallback 대신 던진다. fallback은 시작 전에만
 남는다.
 
+**질의를 늘리지 않는다.** `claimSeat`은 이미 락 **밖에서** 테이블을 조회한다
+(`entry.service.ts:137`, "어떤 쓰기보다도 먼저"). 그 `select`에 대회 상태를
+얹으면 라운드트립이 늘지 않는다.
+
+```ts
+const table = await this.prisma.table.findUnique({
+  where: { tournamentId_id: { tournamentId, id: dto.tableId } },
+  select: { id: true, tournament: { select: { status: true } } },
+});
+```
+
+읽은 상태를 락 안으로 넘겨 fallback 자리에서 판정한다. 상태를 락 안에서 다시
+읽지 않는 이유는 이 리포의 기존 근거와 같다 — 락 안에 넣을 이유가 없는 읽기를
+넣으면 TTL 예산만 먹는다.
+
 이것이 재구성을 **부팅 시 자동**으로 두는 이유이기도 하다. 사람이 누르는
 방식이면 그 버튼보다 `entry`가 먼저 도착할 수 있다.
 
@@ -418,7 +446,8 @@ private emptyTableState(tournamentId: string): TableState {
 - 부팅 훅이 스냅샷 없는 테이블만 재구성한다 (한 대회 안에 둘이 섞인 입력)
 - 재구성이 `PLAYING`만 앉힌다: `ELIMINATED`/`AWARDED` 좌석 행이 남아 있어도
   스냅샷에 안 들어간다
-- 재구성이 좌석 비트맵도 세운다
+- 재구성이 좌석 비트맵도 세운다: 비트맵 == 스냅샷 점유 좌석
+- 재구성이 유저 컨텍스트도 세운다
 - 재구성이 한 대회에서 실패해도 다른 대회는 복구된다
 - `ONGOING` + 스냅샷 없음에서 `entry`가 409를 던지고 빈 스냅샷을 만들지 않는다
 - 시작 전 첫 착석은 여전히 fallback으로 스냅샷을 만든다 (가드가 정상 경로를
