@@ -1,10 +1,11 @@
 import Redis from 'ioredis';
-import { PrismaClient, TournamentStatus } from '@prisma/client';
+import { PlayerStatus, PrismaClient, TournamentStatus } from '@prisma/client';
 import { BlindField } from 'shared/types/tournamentMeta';
 import { closeTestPrisma, createTestPrisma, truncateAll } from '../../test/helpers/prisma';
 import { createTestRedis, flushTestRedis } from '../../test/helpers/redis';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
+import { GamePhase, TableState } from 'src/game-engine/types';
 import { RecoveryService } from './recovery.service';
 
 /**
@@ -102,6 +103,42 @@ describe('RecoveryService', () => {
       tableIds.push(table.id);
     }
     return { tournamentId: tournament.id, tableIds, structure };
+  }
+
+  /**
+   * 좌석 하나를 만든다 — 유저, 참가 행(장부), 좌석 행(배치표)을 함께 세운다.
+   * `status`를 바꿔 PLAYING이 아닌 참가자(ELIMINATED 등)의 좌석 행이 남아
+   * 있는 상태를 흉내 낼 수 있다.
+   */
+  async function seatPlayer(opts: {
+    tournamentId: string;
+    tableId: string;
+    seatPosition: number;
+    stack: number;
+    status?: PlayerStatus;
+  }) {
+    seq += 1;
+    const userId = `p-${seq}`;
+    await prisma.user.create({ data: { id: userId, nickname: userId, password: 'x' } });
+    await prisma.tournamentParticipation.create({
+      data: {
+        userId,
+        tournamentId: opts.tournamentId,
+        playerOtp: `otp-${seq}`,
+        status: opts.status ?? PlayerStatus.PLAYING,
+        currentStack: opts.stack,
+      },
+    });
+    await prisma.tablePlayer.create({
+      data: {
+        tournamentId: opts.tournamentId,
+        tableId: opts.tableId,
+        userId,
+        nickname: userId,
+        seatPosition: opts.seatPosition,
+      },
+    });
+    return userId;
   }
 
   it('하트비트 행이 없으면 정지 시간 보정을 건너뛴다', async () => {
@@ -208,5 +245,162 @@ describe('RecoveryService', () => {
 
     const synced = await redisService.checkAndSyncBlindLevel(tournamentId);
     expect(`레벨 ${synced!.currentBlindLv}`).toBe('레벨 0');
+  });
+
+  /**
+   * 테이블 단위 재구성(3단계). 스냅샷 유실 판정과 정지 시간 보정은 별개의
+   * 축이라 위 테스트들과 겹치지 않는다.
+   */
+  describe('테이블 단위 재구성', () => {
+    it('스냅샷 없는 테이블만 재구성한다 — 한 대회에 둘이 섞여 있어도', async () => {
+      const { tournamentId, tableIds } = await seedOngoingTournament({ tableCount: 2 });
+      const [tableA, tableB] = tableIds;
+
+      const userA = await seatPlayer({ tournamentId, tableId: tableA, seatPosition: 0, stack: 8000 });
+      await prisma.table.update({ where: { id: tableA }, data: { buttonUser: 0 } });
+
+      await seatPlayer({ tournamentId, tableId: tableB, seatPosition: 3, stack: 4000 });
+      await prisma.table.update({ where: { id: tableB }, data: { buttonUser: 3 } });
+
+      // 테이블 A는 이미 핸드가 진행 중인 모양을 흉내 낸다 — 재구성이 절대
+      // 만들어 낼 수 없는 값(phase FLOP, 진행 중인 베팅, DB 스택과 다른 스택)
+      // 으로 일부러 채운다. "손대지 않았다"와 "새로 세웠다"가 같은 결과로
+      // 나오면 구별이 안 되므로, 재구성이 만들 결과와 확실히 다르게 만든다.
+      const liveA: TableState = {
+        phase: GamePhase.FLOP,
+        players: Array(9).fill(null),
+        buttonUser: 0,
+        currentTurnSeatIndex: 0,
+        pot: 500,
+        sidePots: [],
+        currentBet: 200,
+        smallBlind: 100,
+        ante: false,
+        tournamentId,
+      };
+      liveA.players[0] = {
+        id: userA,
+        tableId: tableA,
+        nickname: 'p',
+        seatIndex: 0,
+        stack: 7800, // DB currentStack(8000)과 다르다 — 핸드 진행 중의 값
+        bet: 200,
+        hasFolded: false,
+        hasChecked: false,
+        isAllIn: false,
+        totalContributed: 200,
+      };
+      await redisService.saveSnapShot(tableA, liveA);
+      const aBefore = JSON.stringify(await redisService.getSnapShot(tableA));
+
+      // 테이블 B는 스냅샷을 만든 적이 없다(세션 시작 흐름을 거치지 않았다).
+
+      await recovery.recoverAll();
+
+      expect(JSON.stringify(await redisService.getSnapShot(tableA))).toBe(aBefore);
+      const bAfter = await redisService.getSnapShot(tableB);
+      expect(bAfter).not.toBeNull();
+      expect(bAfter!.players[3]).toMatchObject({ stack: 4000 });
+    });
+
+    it('PLAYING만 앉힌다 — ELIMINATED의 좌석 행이 남아 있어도', async () => {
+      const { tournamentId, tableIds } = await seedOngoingTournament();
+      const [tableId] = tableIds;
+      await prisma.table.update({ where: { id: tableId }, data: { buttonUser: 0 } });
+      await seatPlayer({ tournamentId, tableId, seatPosition: 0, stack: 9000 });
+      await seatPlayer({
+        tournamentId, tableId, seatPosition: 3, stack: 0,
+        status: PlayerStatus.ELIMINATED,
+      });
+
+      await recovery.recoverAll();
+
+      const state = await redisService.getSnapShot(tableId);
+      expect(state!.players[3]).toBeNull();
+      expect(state!.players[0]).not.toBeNull();
+    });
+
+    it('스택을 currentStack에서 읽는다', async () => {
+      const { tournamentId, tableIds } = await seedOngoingTournament();
+      const [tableId] = tableIds;
+      await prisma.table.update({ where: { id: tableId }, data: { buttonUser: 0 } });
+      await seatPlayer({ tournamentId, tableId, seatPosition: 2, stack: 13579 });
+
+      await recovery.recoverAll();
+
+      const state = await redisService.getSnapShot(tableId);
+      expect(state!.players[2]!.stack).toBe(13579);
+    });
+
+    it('버튼을 Table.buttonUser에서 읽는다', async () => {
+      const { tournamentId, tableIds } = await seedOngoingTournament();
+      const [tableId] = tableIds;
+      await seatPlayer({ tournamentId, tableId, seatPosition: 4, stack: 5000 });
+      await prisma.table.update({ where: { id: tableId }, data: { buttonUser: 4 } });
+
+      await recovery.recoverAll();
+
+      const state = await redisService.getSnapShot(tableId);
+      expect(state!.buttonUser).toBe(4);
+    });
+
+    it('좌석 비트맵이 스냅샷 점유 좌석과 일치한다', async () => {
+      const { tournamentId, tableIds } = await seedOngoingTournament();
+      const [tableId] = tableIds;
+      await prisma.table.update({ where: { id: tableId }, data: { buttonUser: 1 } });
+      await seatPlayer({ tournamentId, tableId, seatPosition: 1, stack: 5000 });
+      await seatPlayer({ tournamentId, tableId, seatPosition: 6, stack: 5000 });
+
+      await recovery.recoverAll();
+
+      const bitmap = await redis.hget(`tournament:${tournamentId}:seat`, `table:${tableId}`);
+      const occupied = bitmap!.split('').map((b) => b === '1');
+      const state = await redisService.getSnapShot(tableId);
+      const expectedOccupied = state!.players.map((p) => p !== null);
+      expect(occupied).toEqual(expectedOccupied);
+    });
+
+    it('유저 컨텍스트를 세운다', async () => {
+      const { tournamentId, tableIds } = await seedOngoingTournament();
+      const [tableId] = tableIds;
+      await prisma.table.update({ where: { id: tableId }, data: { buttonUser: 0 } });
+      const userId = await seatPlayer({ tournamentId, tableId, seatPosition: 0, stack: 5000 });
+
+      await recovery.recoverAll();
+
+      const ctx = await redisService.getUserContext(tournamentId, userId);
+      expect(ctx).toMatchObject({ tableId, seatIndex: 0, status: 'PLAYING' });
+    });
+
+    it('블라인드를 현재 레벨로 맞춘다', async () => {
+      // 레벨 duration이 1분씩 둘 — 70초 전에 시작했다고 하면 레벨 인덱스 1
+      // (두 번째 레벨, sb 200) 한가운데다.
+      const { tournamentId, tableIds, structure } = await seedOngoingTournament({
+        startedAtMsAgo: 70_000,
+      });
+      const [tableId] = tableIds;
+      await prisma.table.update({ where: { id: tableId }, data: { buttonUser: 0 } });
+      await seatPlayer({ tournamentId, tableId, seatPosition: 0, stack: 5000 });
+
+      await recovery.recoverAll();
+
+      const state = await redisService.getSnapShot(tableId);
+      expect(state!.smallBlind).toBe(structure[1].sb);
+    });
+
+    it('buttonUser가 null이면 그 테이블 재구성이 실패한다 — 다른 테이블은 복구된다', async () => {
+      const { tournamentId, tableIds } = await seedOngoingTournament({ tableCount: 2 });
+      const [okTable, brokenTable] = tableIds;
+      await prisma.table.update({ where: { id: okTable }, data: { buttonUser: 0 } });
+      await seatPlayer({ tournamentId, tableId: okTable, seatPosition: 0, stack: 5000 });
+      // brokenTable은 buttonUser를 세우지 않는다 — 시작 트랜잭션이 반드시
+      // 채워야 하는데, 여기 오면 버그다.
+      await seatPlayer({ tournamentId, tableId: brokenTable, seatPosition: 0, stack: 5000 });
+
+      await expect(recovery.recoverAll()).resolves.toBeUndefined();
+
+      expect(await redisService.getSnapShot(okTable)).not.toBeNull();
+      expect(await redisService.getSnapShot(brokenTable)).toBeNull();
+    });
   });
 });

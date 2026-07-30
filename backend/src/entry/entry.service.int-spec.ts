@@ -163,6 +163,76 @@ describe('EntryService.enterSeat', () => {
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
 
+  /**
+   * T31 결정 5: 대회가 ONGOING이고 이 테이블에 이미 좌석 행(사람)이 있는데
+   * 스냅샷이 없으면 `emptyTableState` fallback 대신 던진다. 이 상태는 부팅
+   * 복구(`RecoveryService`)가 아직 그 테이블을 세우지 못한 순간이다 — 여기서
+   * 빈 스냅샷을 만들면 그 테이블의 나머지 전원이 스냅샷에서 사라지고, 나중에
+   * 도는 재구성이 오염된 위에서 돈다.
+   *
+   * u2를 미리 이 테이블에 앉혀 "지킬 상태가 있다"는 신호(`_count.tablePlayers
+   * > 0`)를 만든다 — 이게 없으면 이 테이블은 그냥 아무도 앉은 적 없는 새
+   * 테이블과 구별이 안 되고, 아래 "새 테이블" 테스트와 서로를 가린다.
+   */
+  it('ONGOING이고 이 테이블에 이미 사람이 있는데 스냅샷이 없으면 빈 스냅샷을 만들지 않고 던진다', async () => {
+    await participate('u1', '00000001');
+    await participate('u2', '00000002');
+    await prisma.tournament.update({
+      where: { id: TOURNAMENT }, data: { status: TournamentStatus.ONGOING },
+    });
+    // 세션 시작 흐름 없이 좌석 행만 직접 만든다 — Redis가 통째로 죽어
+    // 스냅샷만 사라진 상태를 흉내 낸다.
+    await prisma.tablePlayer.create({
+      data: { tournamentId: TOURNAMENT, tableId: TABLE, userId: 'u2', nickname: 'u2', seatPosition: 1 },
+    });
+
+    await expect(
+      service.enterSeat(TOURNAMENT, { otp: '00000001', tableId: TABLE, seatIndex: 0 }),
+    ).rejects.toThrow();
+
+    // 핵심 단언: 빈 스냅샷이 생기지 않았다. 던지기만 하고 상태를 만들면
+    // 다음 재구성이 오염된 위에서 돈다.
+    expect(await snapshot()).toBeNull();
+  });
+
+  /**
+   * 리뷰에서 드러난 경계: 상점이 대회 도중 `createTable`로 새 테이블을 열면
+   * ONGOING인데도 그 테이블은 스냅샷이 없는 상태로 시작한다(누구도 앉은 적이
+   * 없으므로). 이건 Redis 유실이 아니라 정상이다 — 위 가드가 좌석 행
+   * 유무(`_count.tablePlayers`)로 이 경우를 가른다. 이 테스트가 없으면 가드를
+   * "ONGOING이면 무조건 던지기"로 너무 넓게 걸어도 초록일 수 있다.
+   */
+  it('ONGOING이어도 아무도 앉은 적 없는 새 테이블은 fallback으로 스냅샷을 만든다', async () => {
+    await participate('u1', '00000001');
+    await prisma.tournament.update({
+      where: { id: TOURNAMENT }, data: { status: TournamentStatus.ONGOING },
+    });
+
+    const { accessToken } = await service.enterSeat(TOURNAMENT, {
+      otp: '00000001', tableId: TABLE, seatIndex: 0,
+    });
+
+    expect(accessToken).toEqual(expect.any(String));
+    expect(await snapshot()).not.toBeNull();
+  });
+
+  /**
+   * 가드가 대회 시작 전 정상 경로도 깨지 않는다는 것을 확인한다.
+   */
+  it('시작 전 첫 착석은 여전히 fallback으로 스냅샷을 만든다', async () => {
+    await participate('u1', '00000001');
+    // beforeEach가 TOURNAMENT를 PENDING으로 세운다 — 대회 시작 전이다.
+
+    const { accessToken } = await service.enterSeat(TOURNAMENT, {
+      otp: '00000001', tableId: TABLE, seatIndex: 0,
+    });
+
+    expect(accessToken).toEqual(expect.any(String));
+    const state = await snapshot();
+    expect(state).not.toBeNull();
+    expect(state!.players[0]).toMatchObject({ id: 'u1' });
+  });
+
   it('탈락한 참가자는 다시 앉지 못한다', async () => {
     await participate('u1', '00000001');
     await prisma.tournamentParticipation.updateMany({
@@ -623,9 +693,14 @@ describe('EntryService.enterSeat — 칩은 좌석보다 오래 산다', () => {
       where: { tournamentId_userId: { tournamentId: TOURNAMENT, userId: 'u1' } },
       data: { currentStack: 23400 },
     });
-    // 상점이 좌석을 해제한 것과 같은 상태 — 좌석 행만 사라진다.
+    // 상점이 좌석을 해제한 것과 같은 상태 — 좌석 행만 사라진다. 스냅샷
+    // 전체를 지우지 않는다(실제 `releaseSeats`도 그 좌석 하나만 비운다) —
+    // 통째로 지우면 "ONGOING인데 스냅샷이 없다"는 T31의 재구성 대상 상태가
+    // 되어 버려 이 테스트의 의도(좌석 해제)와 다른 것을 흉내 내게 된다.
     await prisma.tablePlayer.deleteMany({ where: { tournamentId: TOURNAMENT, userId: 'u1' } });
-    await redis.del(`table:state:${TABLE}`);
+    const released = (await redisService.getSnapShot(TABLE))!;
+    released.players[0] = null;
+    await redisService.saveSnapShot(TABLE, released);
 
     await service.enterSeat(TOURNAMENT, { otp: '11111111', tableId: TABLE, seatIndex: 5 });
 

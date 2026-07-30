@@ -134,9 +134,22 @@ export class EntryService {
   ) {
     // 어떤 쓰기보다도 먼저 확인한다. 트랜잭션이 락 밖에 있으므로, 락 안에서
     // 확인하면 이미 DB에 좌석을 만든 뒤에야 403을 던지는 순서가 된다.
+    //
+    // 대회 상태를 여기서 함께 읽는다. 락 안에서 다시 읽으면 넣을 이유가 없는
+    // 읽기가 TTL 예산만 먹는다.
+    //
+    // 좌석 수(`_count.tablePlayers`)도 함께 얹는다 — ONGOING이지만 아직 아무도
+    // 앉은 적 없는 새 테이블(상점이 `createTable`로 막 연 테이블)과, 사람이
+    // 있었는데 Redis가 죽어 스냅샷만 사라진 테이블을 가르는 기준이다. 이
+    // 카운트는 이 트랜잭션이 좌석을 만들기 **전**에 읽으므로 지금 들어오는
+    // 사람 자신은 세지 않는다.
     const table = await this.prisma.table.findUnique({
       where: { tournamentId_id: { tournamentId, id: dto.tableId } },
-      select: { id: true },
+      select: {
+        id: true,
+        tournament: { select: { status: true } },
+        _count: { select: { tablePlayers: true } },
+      },
     });
     if (!table) {
       throw new ForbiddenException('이 대회에 속하지 않은 테이블입니다.');
@@ -208,8 +221,30 @@ export class EntryService {
         throw new ConflictException('좌석 정보가 바뀌었습니다. 다시 시도해 주세요.');
       }
 
-      const state =
-        (await this.redis.getSnapShot(dto.tableId)) ?? this.emptyTableState(tournamentId);
+      const snapshot = await this.redis.getSnapShot(dto.tableId);
+      if (!snapshot && table.tournament.status === TournamentStatus.ONGOING && table._count.tablePlayers > 0) {
+        // 진행 중인 대회고, 이 테이블에 이미 좌석 행이 있는데 스냅샷이 없다
+        // = Redis를 잃었고 아직 재구성되지 않았다. 여기서 emptyTableState로
+        // 새 상태를 만들면 이 테이블의 나머지 전원이 스냅샷에서 사라지고
+        // buttonUser는 0, smallBlind는 100으로 굳는다. DB에는 다 남아 있는데
+        // 스냅샷만 한 명이 된다. 그리고 나중에 도는 재구성이 이미 오염된
+        // 위에서 돈다.
+        //
+        // `_count.tablePlayers === 0`은 다른 뜻이다 — 상점이 `createTable`로
+        // 막 연 새 테이블처럼 애초에 아무도 앉은 적 없는 테이블이다. 그런
+        // 테이블은 스냅샷이 없는 것이 정상이고(재구성 대상도 아니다 —
+        // `RecoveryService`도 좌석 행이 없는 테이블은 건너뛴다), 여기서까지
+        // 막으면 새 테이블의 첫 착석이 항상 409를 받는다.
+        //
+        // 이 가드는 선택이 아니다. 부팅 복구가 실패를 대회 단위로 격리하는
+        // 순간(RecoveryService), 스냅샷 없이 서버가 뜨는 상태가 정상 경로에
+        // 들어온다. 그때 이 자리가 격리를 파괴로 바꾼다.
+        //
+        // fallback 자체는 남긴다 — 대회 시작 전 첫 착석이 스냅샷을 만드는
+        // 정상 경로다.
+        throw new ConflictException('테이블 상태를 복구하는 중입니다. 잠시 후 다시 시도해 주세요.');
+      }
+      const state = snapshot ?? this.emptyTableState(tournamentId);
       const occupant = state.players[dto.seatIndex];
 
       // 위에서 DB 주인이 우리임을 확인했으므로, 점유자가 다른 사람이면 그

@@ -213,6 +213,24 @@ export class RedisService {
     )) as string | null;
   }
 
+  /**
+   * 좌석 비트맵을 통째로 새로 쓴다. **재구성 전용이다.**
+   *
+   * `updateSeatBitmapMany`를 쓸 수 없다 — 그쪽 Lua는 필드가 없으면 아무것도
+   * 만들지 않고 null을 돌려준다. 지워진 테이블을 되살리지 않기 위한 규칙이고,
+   * 예전에 그것이 없어서 설명되지 않는 500이 났다. 재구성은 정확히 그 반대
+   * 방향(없는 필드를 만드는 것)이라 경로를 가른다.
+   */
+  async rebuildSeatBitmap(tournamentId: string, tableId: string, seatIndexes: number[]) {
+    const bitmap = Array(RedisService.SEAT_COUNT).fill('0');
+    for (const i of seatIndexes) bitmap[i] = '1';
+    await this.redis.hset(
+      `tournament:${tournamentId}:seat`,
+      `table:${tableId}`,
+      bitmap.join(''),
+    );
+  }
+
   async getTournamentTables(tournamentId: string) {
     const key = `tournament:${tournamentId}:seat`;
     const raw = await this.redis.hgetall(key);
