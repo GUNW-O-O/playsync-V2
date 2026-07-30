@@ -354,10 +354,11 @@ describe('RecoveryService', () => {
       await recovery.recoverAll();
 
       const bitmap = await redis.hget(`tournament:${tournamentId}:seat`, `table:${tableId}`);
-      const occupied = bitmap!.split('').map((b) => b === '1');
-      const state = await redisService.getSnapShot(tableId);
-      const expectedOccupied = state!.players.map((p) => p !== null);
-      expect(occupied).toEqual(expectedOccupied);
+      // 좌석 1과 6만 채워졌다. 스냅샷에서 파생시키지 않고 리터럴로 고정한다 —
+      // 비트맵과 스냅샷이 둘 다 같은 `p.seatPosition`에서 나오므로, 둘 다
+      // 같은 off-by-one을 공유하면 서로를 가려서 초록이 될 수 있다
+      // (CLAUDE.md 네 번째 가짜 초록의 정확한 형태).
+      expect(bitmap).toBe('010000100');
     });
 
     it('유저 컨텍스트를 세운다', async () => {
@@ -369,7 +370,9 @@ describe('RecoveryService', () => {
       await recovery.recoverAll();
 
       const ctx = await redisService.getUserContext(tournamentId, userId);
-      expect(ctx).toMatchObject({ tableId, seatIndex: 0, status: 'PLAYING' });
+      // entry.service.ts가 착석 때 쓰는 값과 같은 'ACTIVE'다. 'PLAYING'을
+      // 쓰면 착석과 재구성의 어휘가 갈린다.
+      expect(ctx).toMatchObject({ tableId, seatIndex: 0, status: 'ACTIVE' });
     });
 
     it('블라인드를 현재 레벨로 맞춘다', async () => {
@@ -388,19 +391,91 @@ describe('RecoveryService', () => {
       expect(state!.smallBlind).toBe(structure[1].sb);
     });
 
-    it('buttonUser가 null이면 그 테이블 재구성이 실패한다 — 다른 테이블은 복구된다', async () => {
+    /**
+     * 리뷰에서 뒤집힌 것: `buttonUser === null`은 버그가 아니라 정상 경로다.
+     * 채우는 자리가 핸드 종료 체크포인트뿐이라, 대회 시작 시점에 비어 있던
+     * 테이블이나 대회 도중 `createTable`로 새로 연 테이블은 핸드를 한 번도
+     * 끝낸 적이 없어 null인 채로 재구성을 맞는다. 이런 테이블에서는 앉은
+     * 누구나 정당한 첫 버튼이므로 무작위로 뽑는다(`initializeGame`이 시작
+     * 시점에 하는 것과 같은 방식).
+     */
+    it('buttonUser가 null이면 앉은 사람 중에서 첫 버튼을 뽑는다', async () => {
+      const { tournamentId, tableIds } = await seedOngoingTournament();
+      const [tableId] = tableIds;
+      // buttonUser를 세우지 않는다 — 핸드를 한 번도 끝낸 적 없는 테이블이다.
+      await seatPlayer({ tournamentId, tableId, seatPosition: 2, stack: 5000 });
+      await seatPlayer({ tournamentId, tableId, seatPosition: 5, stack: 5000 });
+
+      await recovery.recoverAll();
+
+      const state = await redisService.getSnapShot(tableId);
+      expect([2, 5]).toContain(state!.buttonUser);
+    });
+
+    /**
+     * 테이블 단위 격리를 증명하는 입력. `buttonUser === null`은 이제 정상
+     * 경로라 실패 사유로 쓸 수 없다 — 대신 "앉힐 PLAYING이 아무도 없어
+     * 버튼을 뽑을 근거가 없다"로 brokenTable을 실패시킨다. 좌석 행은 있지만
+     * (그래서 재구성 대상에는 들어온다) 그 참가가 이미 ELIMINATED라 아무도
+     * 앉힐 수 없는 상태다.
+     *
+     * **brokenTable을 okTable보다 먼저 만든다.** `tableOrder` asc로 순회하므로
+     * 실패하는 테이블이 먼저 처리된다 — 테이블 단위 try/catch가 없으면 예외가
+     * 루프를 통째로 끊어 okTable은 순회조차 되지 않는다. okTable을 먼저
+     * 만들면(우연히 이미 처리된 뒤 실패가 나서) catch가 없어도 초록으로
+     * 보일 수 있어 격리를 증명하지 못한다.
+     */
+    it('한 테이블의 재구성이 실패해도 다른 테이블은 복구된다', async () => {
       const { tournamentId, tableIds } = await seedOngoingTournament({ tableCount: 2 });
-      const [okTable, brokenTable] = tableIds;
+      const [brokenTable, okTable] = tableIds;
+      // brokenTable: 좌석 행은 있지만 유일한 참가자가 ELIMINATED다 — 앉힐
+      // 사람이 없어 첫 버튼을 뽑을 근거가 없다.
+      await seatPlayer({
+        tournamentId, tableId: brokenTable, seatPosition: 0, stack: 0,
+        status: PlayerStatus.ELIMINATED,
+      });
       await prisma.table.update({ where: { id: okTable }, data: { buttonUser: 0 } });
       await seatPlayer({ tournamentId, tableId: okTable, seatPosition: 0, stack: 5000 });
-      // brokenTable은 buttonUser를 세우지 않는다 — 시작 트랜잭션이 반드시
-      // 채워야 하는데, 여기 오면 버그다.
-      await seatPlayer({ tournamentId, tableId: brokenTable, seatPosition: 0, stack: 5000 });
 
       await expect(recovery.recoverAll()).resolves.toBeUndefined();
 
-      expect(await redisService.getSnapShot(okTable)).not.toBeNull();
       expect(await redisService.getSnapShot(brokenTable)).toBeNull();
+      expect(await redisService.getSnapShot(okTable)).not.toBeNull();
+    });
+
+    /**
+     * Important 5: 좌석 0인 테이블도 좌석 비트맵 **필드**는 되살아나야 한다.
+     * 필드가 없으면 `getTournamentTables`(hgetall)가 그 테이블을 아예 목록에서
+     * 빼먹어, 상점 좌석 화면과 참가자용 대회 정보 양쪽에서 사라진다.
+     */
+    it('좌석 0인 테이블도 비트맵 필드를 되살린다 — 목록에서 사라지지 않는다', async () => {
+      const { tournamentId, tableIds } = await seedOngoingTournament({ tableCount: 2 });
+      const [seatedTable, emptyTable] = tableIds;
+      await prisma.table.update({ where: { id: seatedTable }, data: { buttonUser: 0 } });
+      await seatPlayer({ tournamentId, tableId: seatedTable, seatPosition: 0, stack: 5000 });
+      // emptyTable: 좌석 행도 비트맵 필드도 없다 — Redis를 통째로 잃은
+      // 상태를 흉내 낸다(실제로는 `createTable`이 `setSeatBitmap`으로 필드를
+      // 만들어 두지만, 그 필드까지 함께 사라진 경우다).
+
+      await recovery.recoverAll();
+
+      const tables = await redisService.getTournamentTables(tournamentId);
+      const emptyEntry = tables.find((t) => t.tableId === emptyTable);
+      expect(emptyEntry).toBeDefined();
+      expect(emptyEntry!.seatStatus.every((s) => s === false)).toBe(true);
+    });
+
+    it('좌석 0인 테이블에 비트맵이 이미 있으면 덮어쓰지 않는다', async () => {
+      const { tournamentId, tableIds } = await seedOngoingTournament();
+      const [tableId] = tableIds;
+      // 좌석 행 없이도 비트맵은 이미 있을 수 있다(정상 상태 — `createTable`이
+      // 세워 둔 것). 특이한 패턴을 심어 두고 재구성 후에도 그대로인지 본다.
+      await redis.hset(`tournament:${tournamentId}:seat`, `table:${tableId}`, '111000000');
+
+      await recovery.recoverAll();
+
+      const bitmap = await redis.hget(`tournament:${tournamentId}:seat`, `table:${tableId}`);
+      expect(bitmap).toBe('111000000');
     });
   });
 });

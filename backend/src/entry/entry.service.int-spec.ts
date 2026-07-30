@@ -196,6 +196,62 @@ describe('EntryService.enterSeat', () => {
   });
 
   /**
+   * 리뷰 finding(Important 2): 가드가 트랜잭션 **뒤**(락 안)에만 있으면
+   * u1의 `tablePlayer.create` + `status=PLAYING`이 이미 커밋된 뒤에야 409를
+   * 받는다. 안내대로 다른 좌석으로 재시도하면 `enterSeat` 맨 앞의 `seated`
+   * 검사가 방금 커밋된 0번 행을 찾아 "이미 다른 좌석에 앉아 있습니다"를
+   * 던진다 — 부팅 복구 없이는 빠져나올 수 없는 좌석 없는 PLAYING 상태에
+   * 묶인다. `claimSeat`이 락 밖 `table` 조회 직후 같은 조건의 빠른 경로를
+   * 두어 이걸 막는다.
+   */
+  it('막힌 착석은 좌석 행도 PLAYING 전환도 남기지 않는다 — 트랜잭션 커밋 전에 막는다', async () => {
+    await participate('u1', '00000001');
+    await participate('u2', '00000002');
+    await prisma.tournament.update({
+      where: { id: TOURNAMENT }, data: { status: TournamentStatus.ONGOING },
+    });
+    await prisma.tablePlayer.create({
+      data: { tournamentId: TOURNAMENT, tableId: TABLE, userId: 'u2', nickname: 'u2', seatPosition: 1 },
+    });
+
+    await expect(
+      service.enterSeat(TOURNAMENT, { otp: '00000001', tableId: TABLE, seatIndex: 0 }),
+    ).rejects.toThrow();
+
+    // 지금 테스트는 스냅샷만 보므로 이 잔여물(u1의 좌석 행)을 못 잡는다 —
+    // 좌석 행 개수를 직접 단언해야 트랜잭션이 실제로 안 돌았음을 증명한다.
+    expect(await prisma.tablePlayer.count({ where: { tableId: TABLE } })).toBe(1);
+    const u1 = await prisma.tournamentParticipation.findUniqueOrThrow({
+      where: { tournamentId_userId: { tournamentId: TOURNAMENT, userId: 'u1' } },
+    });
+    expect(u1.status).toBe(PlayerStatus.WAITING);
+  });
+
+  /**
+   * 리뷰 finding(Important 3): 가드를 `status === ONGOING`으로만 좁히면 이
+   * 구멍이 남는다 — PENDING 대회에서 u2가 착석해 스냅샷이 살아 있다가
+   * Redis가 죽거나(FLUSHDB) 24시간 TTL로 스냅샷만 사라지면, u1의 착석이
+   * `_count.tablePlayers > 0`인데도 status가 PENDING이라 가드를 피해
+   * `emptyTableState`로 u1 혼자만 있는 스냅샷을 만든다. 그 위에서 대회가
+   * 시작되면 u2는 영원히 빠진 채 대회가 돈다. `!== FINISHED`로 넓혀야 막힌다.
+   */
+  it('PENDING이어도 이미 사람이 있는 테이블에 스냅샷이 없으면 던진다', async () => {
+    await participate('u1', '00000001');
+    await participate('u2', '00000002');
+    // beforeEach가 TOURNAMENT를 PENDING으로 세운다.
+    await prisma.tablePlayer.create({
+      data: { tournamentId: TOURNAMENT, tableId: TABLE, userId: 'u2', nickname: 'u2', seatPosition: 1 },
+    });
+    // 스냅샷은 만들지 않는다 — Redis 유실이나 TTL 만료를 흉내 낸다.
+
+    await expect(
+      service.enterSeat(TOURNAMENT, { otp: '00000001', tableId: TABLE, seatIndex: 0 }),
+    ).rejects.toThrow();
+
+    expect(await snapshot()).toBeNull();
+  });
+
+  /**
    * 리뷰에서 드러난 경계: 상점이 대회 도중 `createTable`로 새 테이블을 열면
    * ONGOING인데도 그 테이블은 스냅샷이 없는 상태로 시작한다(누구도 앉은 적이
    * 없으므로). 이건 Redis 유실이 아니라 정상이다 — 위 가드가 좌석 행

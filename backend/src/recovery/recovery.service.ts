@@ -101,9 +101,12 @@ export class RecoveryService implements OnApplicationBootstrap {
     }
 
     // 3. **테이블 단위**로 Redis 키 셋을 본다. 대회 하나 안에서 어떤 테이블은
-    //    살아 있고 어떤 테이블만 유실될 수 있다(부분 유실).
+    //    살아 있고 어떤 테이블만 유실될 수 있다(부분 유실). orderBy는 순서
+    //    보장이 필요해서가 아니라(테이블마다 독립적으로 격리되므로 순서는
+    //    결과에 영향이 없다) 테스트를 결정적으로 만들기 위함이다.
     const tables = await this.prisma.table.findMany({
       where: { tournamentId },
+      orderBy: { tableOrder: 'asc' },
       select: {
         id: true,
         buttonUser: true,
@@ -112,12 +115,30 @@ export class RecoveryService implements OnApplicationBootstrap {
     });
 
     for (const table of tables) {
-      if (table.tablePlayers.length === 0) continue;
+      if (table.tablePlayers.length === 0) {
+        // 세울 게임 상태가 없다. 그래도 좌석 비트맵 **필드**가 없으면
+        // (Redis를 통째로 잃은 경우) 이 테이블이 좌석 목록에서 사라진다 —
+        // `getTournamentTables`는 hgetall이라 필드가 없는 테이블은 아예
+        // 안 보인다. 필드가 이미 있으면(정상적인 빈 테이블) 손대지 않는다.
+        const bitmap = await this.redis.getTableSeatStatus(tournamentId, table.id);
+        if (bitmap.length === 0) {
+          await this.redis.rebuildSeatBitmap(tournamentId, table.id, []);
+        }
+        continue;
+      }
 
       const existing = await this.redis.getSnapShot(table.id);
       if (existing) continue; // 살아 있다. 스냅샷에는 시간이 없으므로 손댈 것이 없다.
 
-      await this.rebuildTable(tournamentId, table);
+      // 테이블 단위로 격리한다. 한 테이블의 재구성이 실패해도(예: 앉힐
+      // PLAYING이 아무도 없다) 같은 대회의 다른 테이블까지 통째로 접히면
+      // 안 된다 — `recoverAll`의 대회 단위 catch만으로는 이 루프 중간에
+      // 던지는 순간 이후 테이블이 전부 스킵된다.
+      try {
+        await this.rebuildTable(tournamentId, table);
+      } catch (e) {
+        this.logger.error(`테이블 재구성 실패 (table=${table.id})`, e as Error);
+      }
     }
   }
 
@@ -137,11 +158,6 @@ export class RecoveryService implements OnApplicationBootstrap {
     buttonUser: number | null;
     tablePlayers: { userId: string; nickname: string | null; seatPosition: number }[];
   }) {
-    if (table.buttonUser === null) {
-      // 시작 트랜잭션이 반드시 채운다(Task 1). 여기 오면 버그다.
-      throw new Error(`ONGOING 테이블에 buttonUser가 없다 (table=${table.id})`);
-    }
-
     // 장부는 참가 행이다. **좌석 행만 보면 안 된다** — T29 이후 ELIMINATED와
     // AWARDED는 좌석 행이 남아 있을 수 있어서, 좌석만 보면 탈락자와 우승자를
     // 되살린다.
@@ -155,7 +171,13 @@ export class RecoveryService implements OnApplicationBootstrap {
     });
     const stackOf = new Map(participations.map(p => [p.userId, p.currentStack]));
 
-    const blind = await this.redis.getTournamentBlind(tournamentId);
+    // 대회 단위(2단계)가 이미 기준점을 밀어 뒀다. 여기서 캐시된 값을 그냥
+    // 읽으면(getTournamentBlind) 유실 직전에 마지막으로 폴링된 낡은 레벨이
+    // 나올 수 있다 — startPreFlop이 다음 핸드에서 어차피 덮어쓰므로 게임에는
+    // 무해하지만, 재구성이 세우는 첫 스냅샷 값 자체는 지금 시점의 진짜 레벨과
+    // 다를 수 있다. checkAndSyncBlindLevel로 지금 시각 기준 레벨을 강제
+    // 재계산한다.
+    const blind = await this.redis.checkAndSyncBlindLevel(tournamentId);
     if (!blind) throw new Error(`블라인드 정보가 없다 (tournament=${tournamentId})`);
     const level = blind.blindStructure[blind.currentBlindLv];
 
@@ -179,10 +201,23 @@ export class RecoveryService implements OnApplicationBootstrap {
       seated.push(p.seatPosition);
     }
 
+    // `Table.buttonUser`가 null인 것은 버그가 아니다 — 채우는 자리는 핸드
+    // 종료 체크포인트뿐이라(시작 트랜잭션은 "그 시점에 사람이 앉아 있던"
+    // 테이블만 채운다), null은 "이 테이블이 핸드를 끝낸 적이 없다"와 같은
+    // 뜻이다. 대회 시작 시점에 비어 있던 테이블, 대회 도중 `createTable`로
+    // 새로 연 테이블이 둘 다 이 상태로 들어온다. 핸드를 끝낸 적 없는
+    // 테이블에서는 앉은 누구나 정당한 첫 버튼이므로, `initializeGame`이
+    // 시작 시점에 하는 것과 같은 방식(무작위)으로 뽑는다.
+    //
+    // 앉힐 사람이 아무도 없으면(PLAYING이 하나도 없다) 뽑을 근거가 없다 —
+    // 이때만 이 테이블의 재구성을 실패로 본다. `Table.buttonUser`에 다시
+    // 쓰지는 않는다. 다음 핸드 종료 체크포인트가 정식으로 채운다.
+    const buttonUser = table.buttonUser ?? this.drawFirstButton(table.id, seated);
+
     const state: TableState = {
       phase: GamePhase.WAITING,
       players,
-      buttonUser: table.buttonUser,
+      buttonUser,
       currentTurnSeatIndex: -1,
       pot: 0,
       sidePots: [],
@@ -202,14 +237,30 @@ export class RecoveryService implements OnApplicationBootstrap {
     // isKicked), 재구성이 PLAYING만 앉히므로 킥된 사람은 스냅샷에 없다 — 즉
     // 안 세워도 지금은 틀리지 않는다. 그래도 세운다: 착석과 컨텍스트가 짝이라는
     // 불변식(entry.service.ts:267)을 재구성만 예외로 두면, 이 키를 읽는 코드가
-    // 하나 붙는 순간 조용히 깨진다.
+    // 하나 붙는 순간 조용히 깨진다. 값은 `entry.service.ts`가 착석 때 쓰는
+    // 것과 같은 'ACTIVE'다 — 'PLAYING'을 쓰면 어휘가 갈려서, 나중에
+    // `=== 'ACTIVE'`를 보는 코드가 하나 붙는 순간 재구성된 행만 조용히
+    // 달라진다.
     for (const seat of seated) {
       const p = players[seat]!;
-      await this.redis.setUserContext(tournamentId, p.id, table.id, seat, 'PLAYING');
+      await this.redis.setUserContext(tournamentId, p.id, table.id, seat, 'ACTIVE');
     }
 
     this.logger.warn(
-      `테이블을 DB로 재구성했다 (table=${table.id}, 좌석 ${seated.length}개, 버튼 ${table.buttonUser})`,
+      `테이블을 DB로 재구성했다 (table=${table.id}, 좌석 ${seated.length}개, 버튼 ${buttonUser})`,
     );
+  }
+
+  /**
+   * 핸드를 한 번도 끝낸 적 없는 테이블의 첫 버튼을 뽑는다.
+   * `initializeGame`(`session.service.ts`)이 대회 시작 시점에 하는 것과 같은
+   * 방식 — 앉은 사람 중 무작위. 앉힐 사람이 없으면 뽑을 근거가 없으므로
+   * 이 테이블의 재구성 자체를 실패로 본다(호출자의 테이블 단위 격리가 잡는다).
+   */
+  private drawFirstButton(tableId: string, seated: number[]): number {
+    if (seated.length === 0) {
+      throw new Error(`앉힐 사람이 없어 첫 버튼을 뽑을 수 없다 (table=${tableId})`);
+    }
+    return seated[Math.floor(Math.random() * seated.length)];
   }
 }
