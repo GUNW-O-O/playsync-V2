@@ -12,6 +12,7 @@ import { StoreModule } from './store/store.module';
 import { WsModule } from './ws/ws.module';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { EntryModule } from './entry/entry.module';
+import { RecoveryModule } from './recovery/recovery.module';
 
 @Module({
   imports:[
@@ -35,6 +36,7 @@ import { EntryModule } from './entry/entry.module';
     StoreModule,
     WsModule,
     EntryModule,
+    RecoveryModule,
   ],
 })
 export class AppModule {}

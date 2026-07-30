@@ -10,14 +10,13 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PlayerStatus, Prisma, TournamentStatus } from '@prisma/client';
 import { CreateBlindStructureDto } from 'shared/dto/blind-structure.dto';
 import { CreateTournamentDto, UpdateTournamentDto } from 'shared/dto/tournament.dto';
-import { BlindField, Dashboard } from 'shared/types/tournamentMeta';
-import { getCurrentBlindLevel, parseBlindStructure } from 'shared/util/util';
 import { generateDealerOtp, hashDealerOtp } from 'src/dealer/dealer-otp';
 import { OtpAttempts } from 'src/dealer/otp-attempts';
 import { GamePhase, TableState } from 'src/game-engine/types';
 import { parsePayouts, PrizePayout } from 'src/playsync/prize';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
+import { buildTournamentMeta } from './tournament-meta';
 
 /**
  * 대회를 시작할 수 있는 최소 인원.
@@ -35,21 +34,6 @@ import { RedisService } from 'src/redis/redis.service';
  */
 function minPlayersToStart(): number {
   return Number(process.env.MIN_PLAYERS_TO_START ?? 6);
-}
-
-/**
- * 대회를 시작하려면 상금 분배율이 있어야 한다.
- *
- * 생성 경로는 이미 막고 있지만, 컬럼 기본값이 `[]`라 그 이전에 만들어진 행은
- * 비어 있을 수 있다. 시작한 뒤에 발견하면 이미 사람이 다 앉은 뒤고, 더 나쁘게는
- * 상금을 지급하는 순간까지 아무도 모른다.
- */
-function startablePayouts(raw: unknown): PrizePayout[] {
-  try {
-    return parsePayouts((raw ?? []) as PrizePayout[]);
-  } catch (e) {
-    throw new BadRequestException(`상금 분배율이 올바르지 않습니다: ${(e as Error).message}`);
-  }
 }
 
 @Injectable()
@@ -434,36 +418,7 @@ export class SessionService {
 
     const startedAt = new Date();
     if (!game) throw new NotFoundException('세션을 찾을 수 없습니다.');
-    const blindStructure = parseBlindStructure(game.blindStructure.structure);
-    const blindInfo = getCurrentBlindLevel(blindStructure, startedAt.getTime());
-
-    const dashboard: Dashboard = {
-      isRegistrationOpen: game.isRegistrationOpen,
-      totalPlayer: game.totalPlayers,
-      activePlayer: game.activePlayers,
-      // DB가 누적한 값을 그대로 쓴다. `entryFee * totalPlayers`로 다시 계산하면
-      // 같은 금액을 두 방식으로 구하는 셈이라, 참가 경로가 하나라도 달라지면
-      // 전광판과 지급이 어긋난다.
-      totalBuyinAmount: game.totalBuyinAmount,
-      rebuyUntil: game.rebuyUntil,
-      avgStack: game.avgStack,
-      entryFee: game.entryFee,
-      tournamentName: game.name,
-      startStack: game.startStack,
-      itmCount: game.itmCount,
-      prizePool: game.totalBuyinAmount,
-      // 금액은 여기서 굳히지 않는다. Redis에서 읽을 때 그때의 풀로 파생된다 —
-      // 리바인으로 풀이 커지면 전광판이 따라 올라야 하기 때문이다.
-      prizes: startablePayouts(game.prizePayouts).map(p => ({ ...p, amount: 0 })),
-    }
-    const blindField: BlindField = {
-      isBreak: false,
-      startedAt: startedAt.getTime(),
-      currentBlindLv: blindInfo.currentIndex,
-      nextLevelAt: blindInfo.nextLevelAt,
-      serverTime: startedAt.getTime(),
-      blindStructure: blindStructure,
-    }
+    const { dashboard, blindField } = buildTournamentMeta(game, startedAt.getTime());
 
     const minPlayers = minPlayersToStart();
     if (game.totalPlayers < minPlayers) {
