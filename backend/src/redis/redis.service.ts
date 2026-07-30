@@ -213,6 +213,27 @@ export class RedisService {
     )) as string | null;
   }
 
+  /**
+   * 좌석 비트맵을 통째로 새로 쓴다. **재구성 전용이다.**
+   *
+   * `updateSeatBitmapMany`를 쓸 수 없다 — 그쪽 Lua는 필드가 없으면 아무것도
+   * 만들지 않고 null을 돌려준다. 지워진 테이블을 되살리지 않기 위한 규칙이고,
+   * 예전에 그것이 없어서 설명되지 않는 500이 났다. 재구성은 정확히 그 반대
+   * 방향(없는 필드를 만드는 것)이라 경로를 가른다.
+   */
+  async rebuildSeatBitmap(tournamentId: string, tableId: string, seatIndexes: number[]) {
+    const key = `tournament:${tournamentId}:seat`;
+    const bitmap = Array(RedisService.SEAT_COUNT).fill('0');
+    for (const i of seatIndexes) bitmap[i] = '1';
+    await this.redis.hset(key, `table:${tableId}`, bitmap.join(''));
+    // 이 키를 쓰는 나머지 전부(setSeatBitmap, UPDATE_SEAT_BIT,
+    // UPDATE_SEAT_BITS_MANY, setUserContext)가 24시간 TTL을 유지한다. 여기서
+    // 빠뜨리면 Redis를 통째로 잃은 뒤 재구성이 만드는 키만 영구 키가 되고,
+    // 유령 테이블을 청소하는 그 장치(UPDATE_SEAT_BIT 주석 참고)에서 이
+    // 필드만 빠진다.
+    await this.redis.expire(key, 86400);
+  }
+
   async getTournamentTables(tournamentId: string) {
     const key = `tournament:${tournamentId}:seat`;
     const raw = await this.redis.hgetall(key);
@@ -344,27 +365,54 @@ export class RedisService {
   }
 
   async setTournamentBlind(id: string, blindField: BlindField) {
-    await this.redis.hset(`tournament:${id}:info`, 'blindField', JSON.stringify(blindField));
+    const key = `tournament:${id}:info`;
+    await this.redis.hset(key, 'blindField', JSON.stringify(blindField));
+    // 같은 키(`tournament:{id}:info`)의 `setTournamentMeta`(`:278`)는
+    // `expire`를 부르는데 이쪽엔 없었다. `hset`은 기존 TTL을 리셋하지
+    // 않으므로, 빠뜨리면 이 키는 대회 시작 후 정확히 24시간에 죽는다 —
+    // `RecoveryService`의 기준점 밀기가 이 세터의 새 호출자다.
+    await this.redis.expire(key, 86400);
   }
 
   /**
  * 토너먼트의 현재 블라인드 상태를 확인하고, 시간이 경과했다면 자동으로 업데이트합니다.
  * @returns 최신 블라인드 정보 (업데이트된 경우 반영됨)
+ *
+ * `force`는 **기준점(`startedAt`)이 밖에서 바뀐 뒤** 쓴다(부팅 복구). 아래
+ * 두 게이트가 모두 "기준점은 그대로"를 전제로 하고 있어서, 기준점이 움직인
+ * 직후에는 둘 다 잘못된 답을 낸다.
+ *
+ * 1. 캐시 조기 반환은 `nextLevelAt`을 믿는데, 그 값이 낡은 기준점에서 나온
+ *    것이면 아직 미래여도 의미가 없다.
+ * 2. 쓰기 게이트는 레벨과 `isBreak`만 본다. 기준점이 밀렸는데 레벨이 그대로면
+ *    `nextLevelAt`이 낡은 채로 남아 전광판 카운트다운만 어긋난다.
+ *
+ * 파생값(`currentBlindLv`·`nextLevelAt`·`isBreak`)을 다시 만드는 식과 등록
+ * 마감 판정을 **이 함수 하나에만** 두려고 인자로 뚫었다. 복구가 같은 계산을
+ * 복제하면 마감 내리기가 거기서 빠진다.
  */
-  async checkAndSyncBlindLevel(tournamentId: string): Promise<BlindField | null> {
+  async checkAndSyncBlindLevel(
+    tournamentId: string,
+    options?: { force?: boolean },
+  ): Promise<BlindField | null> {
     const blind = await this.getTournamentBlind(tournamentId);
     if (!blind) return null;
 
+    const force = options?.force ?? false;
     const now = Date.now();
     // 최적화: 아직 다음 레벨 시간이 되지 않았다면 현재 상태 그대로 반환
     // (이미 휴식 중이라면 blind.isBreak가 true인 상태로 반환됨)
-    if (blind.nextLevelAt && now < blind.nextLevelAt) {
+    if (!force && blind.nextLevelAt && now < blind.nextLevelAt) {
       return { ...blind, serverTime: now };
     }
     // 시간 경과 시에만 상세 계산 수행
     const calculated = getCurrentBlindLevel(blind.blindStructure, blind.startedAt);
     // 레벨 인덱스가 바뀌었거나, 휴식 상태(isBreak)가 변경되었을 때만 업데이트
-    if (calculated.currentIndex !== blind.currentBlindLv || calculated.isBreak !== blind.isBreak) {
+    if (
+      force ||
+      calculated.currentIndex !== blind.currentBlindLv ||
+      calculated.isBreak !== blind.isBreak
+    ) {
       const updatedBlind = {
         ...blind,
         currentBlindLv: calculated.currentIndex,

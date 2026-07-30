@@ -224,6 +224,50 @@ describe('RedisService.updateSeatBitmap', () => {
 });
 
 /**
+ * 재구성 전용 `rebuildSeatBitmap`. 이 키를 쓰는 나머지 전부(`setSeatBitmap`,
+ * `UPDATE_SEAT_BIT`, `UPDATE_SEAT_BITS_MANY`, `setUserContext`)가 24시간 TTL을
+ * 유지하는데 이것만 빠뜨리면, Redis를 통째로 잃은 뒤 재구성이 새로 만드는
+ * 키만 영구 키가 된다.
+ */
+describe('RedisService.rebuildSeatBitmap', () => {
+  let redis: Redis;
+  let service: RedisService;
+
+  const TOURNAMENT = 'rebuild-tournament-1';
+  const TABLE = 'rebuild-table-1';
+  const key = `tournament:${TOURNAMENT}:seat`;
+  const field = `table:${TABLE}`;
+
+  beforeAll(() => {
+    redis = createTestRedis();
+    service = new RedisService(redis);
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+  });
+
+  beforeEach(async () => {
+    await flushTestRedis(redis);
+  });
+
+  it('점유 좌석대로 비트맵을 새로 쓴다', async () => {
+    await service.rebuildSeatBitmap(TOURNAMENT, TABLE, [1, 6]);
+
+    expect(await redis.hget(key, field)).toBe('010000100');
+  });
+
+  it('TTL을 세운다 — 다른 좌석 비트맵 메서드와 같은 24시간', async () => {
+    await service.rebuildSeatBitmap(TOURNAMENT, TABLE, []);
+
+    const ttl = await redis.ttl(key);
+    // TTL이 없으면 -1이다. 값 자체(86400초)까지 정확히 볼 필요는 없다 —
+    // "TTL이 세워져 있는가"가 본론이다.
+    expect(ttl).toBeGreaterThan(0);
+  });
+});
+
+/**
  * 등록 마감(rebuyUntil) 처리.
  *
  * 마감은 "레벨이 바뀌는 순간"에만 검사된다. 그런데 레벨 계산은 저장된 상태가
@@ -235,6 +279,48 @@ describe('RedisService.updateSeatBitmap', () => {
  * isRegistrationOpen(해시 필드) 두 곳에 나뉘어 있어서다 — 둘의 갱신이 실제로
  * 같은 키에 반영되는지까지 봐야 의미가 있다.
  */
+/**
+ * 리뷰 finding(Minor 2): 같은 키(`tournament:{id}:info`)의 `setTournamentMeta`는
+ * `expire`를 부르는데 `setTournamentBlind`는 부르지 않았다. `hset`은 기존
+ * TTL을 리셋하지 않으므로, 빠뜨리면 이 키는 대회 시작 후 정확히 24시간에
+ * 죽는다. `RecoveryService`의 기준점 밀기가 이 세터의 새 호출자다.
+ */
+describe('RedisService.setTournamentBlind — TTL', () => {
+  let redis: Redis;
+  let service: RedisService;
+
+  const TOURNAMENT = 'tournament-blind-ttl';
+  const infoKey = `tournament:${TOURNAMENT}:info`;
+
+  beforeAll(() => {
+    redis = createTestRedis();
+    service = new RedisService(redis);
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+  });
+
+  beforeEach(async () => {
+    await flushTestRedis(redis);
+  });
+
+  it('TTL을 세운다 — setTournamentMeta와 같은 24시간', async () => {
+    await service.setTournamentBlind(TOURNAMENT, {
+      isBreak: false,
+      startedAt: Date.now(),
+      currentBlindLv: 0,
+      nextLevelAt: Date.now() + 600000,
+      serverTime: Date.now(),
+      blindStructure: [{ lv: 1, sb: 100, ante: false, duration: 20 }],
+    });
+
+    const ttl = await redis.ttl(infoKey);
+    // TTL이 없으면 -1이다. 값 자체(86400초)까지 정확히 볼 필요는 없다.
+    expect(ttl).toBeGreaterThan(0);
+  });
+});
+
 describe('RedisService.checkAndSyncBlindLevel — 등록 마감', () => {
   let redis: Redis;
   let service: RedisService;

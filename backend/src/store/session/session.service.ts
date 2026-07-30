@@ -10,14 +10,13 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PlayerStatus, Prisma, TournamentStatus } from '@prisma/client';
 import { CreateBlindStructureDto } from 'shared/dto/blind-structure.dto';
 import { CreateTournamentDto, UpdateTournamentDto } from 'shared/dto/tournament.dto';
-import { BlindField, Dashboard } from 'shared/types/tournamentMeta';
-import { getCurrentBlindLevel, parseBlindStructure } from 'shared/util/util';
 import { generateDealerOtp, hashDealerOtp } from 'src/dealer/dealer-otp';
 import { OtpAttempts } from 'src/dealer/otp-attempts';
 import { GamePhase, TableState } from 'src/game-engine/types';
 import { parsePayouts, PrizePayout } from 'src/playsync/prize';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
+import { buildTournamentMeta } from './tournament-meta';
 
 /**
  * 대회를 시작할 수 있는 최소 인원.
@@ -35,21 +34,6 @@ import { RedisService } from 'src/redis/redis.service';
  */
 function minPlayersToStart(): number {
   return Number(process.env.MIN_PLAYERS_TO_START ?? 6);
-}
-
-/**
- * 대회를 시작하려면 상금 분배율이 있어야 한다.
- *
- * 생성 경로는 이미 막고 있지만, 컬럼 기본값이 `[]`라 그 이전에 만들어진 행은
- * 비어 있을 수 있다. 시작한 뒤에 발견하면 이미 사람이 다 앉은 뒤고, 더 나쁘게는
- * 상금을 지급하는 순간까지 아무도 모른다.
- */
-function startablePayouts(raw: unknown): PrizePayout[] {
-  try {
-    return parsePayouts((raw ?? []) as PrizePayout[]);
-  } catch (e) {
-    throw new BadRequestException(`상금 분배율이 올바르지 않습니다: ${(e as Error).message}`);
-  }
 }
 
 @Injectable()
@@ -382,7 +366,7 @@ export class SessionService {
    * 몇 번을 돌려도 같은 결과이기 때문이다.
    */
   async startSession(id: string) {
-    const { startedAt } = await this.initializeGame(id);
+    const { startedAt, buttons } = await this.initializeGame(id);
 
     // 참가자 상태는 여기서 건드리지 않는다. `PLAYING`은 **착석**이 올린다
     // (T28의 `EntryService`). 예전에는 이 자리에서 대회의 참가자 전원을
@@ -391,9 +375,24 @@ export class SessionService {
     // `findFirst({ where: { status: PLAYING } })`가 한 번도 앉지 않은 사람을
     // 우승자로 뽑을 수 있었다.
     return await this.prismaService.$transaction(async (tx) => {
+      // 첫 버튼 추첨 결과를 시작과 같은 트랜잭션에 남긴다. 이것이 없으면
+      // 첫 핸드가 끝나기 전에 죽었을 때 복구가 읽을 버튼이 없다 — 핸드 종료
+      // 체크포인트가 첫 독자가 되기 전까지 null인 구간이 생긴다.
+      for (const b of buttons) {
+        await tx.table.update({
+          where: { id: b.tableId },
+          data: { buttonUser: b.buttonUser },
+        });
+      }
+
       // startedAt은 준비 단계가 정한 값을 그대로 쓴다. 여기서 다시 찍으면
-      // Redis의 블라인드 기준 시각과 어긋난다 — 블라인드 레벨은 startedAt으로
-      // 부터의 경과 시간으로 계산되므로, DB를 읽는 쪽은 다른 레벨을 얻는다.
+      // 대회 시작 시각이 Redis에 올린 블라인드 기준점보다 뒤가 되어, 시작
+      // 직후 경과 시간이 음수 방향으로 벌어진다.
+      //
+      // 단 이 둘은 **같은 값을 유지해야 하는 관계가 아니다**(T31). 이 컬럼은
+      // 대회가 실제로 시작한 시각이고 영구히 밀리지 않는다. Redis의
+      // BlindField.startedAt은 진행 시간의 기준점이라 장애 정지만큼 뒤로
+      // 밀린다. 시작 시점에 두 값이 같은 것은 정합이 아니라 t=0의 우연이다.
       return await tx.tournament.update({
         where: { id },
         data: { status: TournamentStatus.ONGOING, startedAt },
@@ -419,36 +418,7 @@ export class SessionService {
 
     const startedAt = new Date();
     if (!game) throw new NotFoundException('세션을 찾을 수 없습니다.');
-    const blindStructure = parseBlindStructure(game.blindStructure.structure);
-    const blindInfo = getCurrentBlindLevel(blindStructure, startedAt.getTime());
-
-    const dashboard: Dashboard = {
-      isRegistrationOpen: game.isRegistrationOpen,
-      totalPlayer: game.totalPlayers,
-      activePlayer: game.activePlayers,
-      // DB가 누적한 값을 그대로 쓴다. `entryFee * totalPlayers`로 다시 계산하면
-      // 같은 금액을 두 방식으로 구하는 셈이라, 참가 경로가 하나라도 달라지면
-      // 전광판과 지급이 어긋난다.
-      totalBuyinAmount: game.totalBuyinAmount,
-      rebuyUntil: game.rebuyUntil,
-      avgStack: game.avgStack,
-      entryFee: game.entryFee,
-      tournamentName: game.name,
-      startStack: game.startStack,
-      itmCount: game.itmCount,
-      prizePool: game.totalBuyinAmount,
-      // 금액은 여기서 굳히지 않는다. Redis에서 읽을 때 그때의 풀로 파생된다 —
-      // 리바인으로 풀이 커지면 전광판이 따라 올라야 하기 때문이다.
-      prizes: startablePayouts(game.prizePayouts).map(p => ({ ...p, amount: 0 })),
-    }
-    const blindField: BlindField = {
-      isBreak: false,
-      startedAt: startedAt.getTime(),
-      currentBlindLv: blindInfo.currentIndex,
-      nextLevelAt: blindInfo.nextLevelAt,
-      serverTime: startedAt.getTime(),
-      blindStructure: blindStructure,
-    }
+    const { dashboard, blindField } = buildTournamentMeta(game, startedAt.getTime());
 
     const minPlayers = minPlayersToStart();
     if (game.totalPlayers < minPlayers) {
@@ -487,7 +457,13 @@ export class SessionService {
       tableStates as { tableId: string; state: TableState }[],
     );
 
-    return { startedAt };
+    // 뽑은 버튼을 호출자에게 넘긴다. 여기서 DB에 쓰지 않는 이유는 이 메서드가
+    // "아직 시작이 아니다"라는 계약을 갖기 때문이다 — 커밋은 startSession의
+    // 트랜잭션 하나뿐이어야 실패 시 PENDING으로 남아 재시도가 성립한다.
+    const buttons = (tableStates as { tableId: string; state: TableState }[])
+      .map(t => ({ tableId: t.tableId, buttonUser: t.state.buttonUser }));
+
+    return { startedAt, buttons };
   }
 
   // 세션 완료

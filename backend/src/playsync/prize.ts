@@ -9,6 +9,8 @@
  * 만들 수 없는 편이, 모르는 비율로 돈이 나가는 것보다 낫다.
  */
 
+import { BadRequestException } from '@nestjs/common';
+
 export interface PrizePayout {
   /** 등수. 1부터 연속해야 한다. */
   place: number;
@@ -45,6 +47,21 @@ export function parsePayouts(payouts: PrizePayout[]): PrizePayout[] {
   }
 
   return sorted;
+}
+
+/**
+ * 대회를 시작하려면 상금 분배율이 있어야 한다.
+ *
+ * 생성 경로는 이미 막고 있지만, 컬럼 기본값이 `[]`라 그 이전에 만들어진 행은
+ * 비어 있을 수 있다. 시작한 뒤에 발견하면 이미 사람이 다 앉은 뒤고, 더 나쁘게는
+ * 상금을 지급하는 순간까지 아무도 모른다.
+ */
+export function startablePayouts(raw: unknown): PrizePayout[] {
+  try {
+    return parsePayouts((raw ?? []) as PrizePayout[]);
+  } catch (e) {
+    throw new BadRequestException(`상금 분배율이 올바르지 않습니다: ${(e as Error).message}`);
+  }
 }
 
 /**

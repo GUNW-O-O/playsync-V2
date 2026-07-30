@@ -134,12 +134,43 @@ export class EntryService {
   ) {
     // 어떤 쓰기보다도 먼저 확인한다. 트랜잭션이 락 밖에 있으므로, 락 안에서
     // 확인하면 이미 DB에 좌석을 만든 뒤에야 403을 던지는 순서가 된다.
+    //
+    // 대회 상태와 좌석 수(`_count.tablePlayers`)를 여기서 함께 읽는다 —
+    // `shouldBlockEmptySnapshot`(아래)의 입력이다. 락 안에서 다시 읽으면
+    // 넣을 이유가 없는 읽기가 TTL 예산만 먹는다. 이 카운트는 아래 트랜잭션이
+    // 좌석을 만들기 **전**에 읽으므로 지금 들어오는 사람 자신은 세지 않는다.
+    //
+    // 락 밖에서 읽으므로 아주 좁은 창이 남는다: 새 테이블에 두 사람이 거의
+    // 동시에 들어와 둘 다 `_count === 0`을 읽은 **뒤** 그 사이에 Redis가
+    // 유실되면, 늦게 락을 잡은 쪽이 `emptyTableState`로 앞선 사람을 지운다.
+    // 창은 최대 락 대기(5초)이고 그 안에 Redis가 죽어야 한다 — 가드를 넣기
+    // 전보다 좁아졌고, 락 안에 조회를 더하는 비용이 이 확률에 비해 크므로
+    // 감수한다(최종 리뷰).
     const table = await this.prisma.table.findUnique({
       where: { tournamentId_id: { tournamentId, id: dto.tableId } },
-      select: { id: true },
+      select: {
+        id: true,
+        tournament: { select: { status: true } },
+        _count: { select: { tablePlayers: true } },
+      },
     });
     if (!table) {
       throw new ForbiddenException('이 대회에 속하지 않은 테이블입니다.');
+    }
+
+    // 빠른 경로 — 아래 트랜잭션이 좌석을 커밋하기 **전에** 같은 조건을 본다.
+    // 이게 없으면: u1이 0번으로 들어와 tablePlayer.create + status=PLAYING이
+    // 커밋된 **뒤에야** 락 안에서 409를 받는다. 안내대로 다른 좌석으로
+    // 재시도하면 `enterSeat` 맨 앞의 `seated` 검사가 방금 커밋된 0번 행을
+    // 찾아 "이미 다른 좌석에 앉아 있습니다"를 던진다 — 부팅 복구 없이는
+    // 빠져나올 수 없는 좌석 없는 PLAYING 상태에 묶인다.
+    //
+    // 락 안의 검사(아래)는 그대로 남긴다 — 스냅샷은 이 지점과 락 사이에도
+    // 사라질 수 있으므로 권위 있는 마지막 판정이 필요하다. 이건 그 앞에
+    // 세우는 방어선이다.
+    const preSnapshot = await this.redis.getSnapShot(dto.tableId);
+    if (this.shouldBlockEmptySnapshot(table, preSnapshot)) {
+      throw new ConflictException('테이블 상태를 복구하는 중입니다. 잠시 후 다시 시도해 주세요.');
     }
 
     if (!who.alreadySeated) {
@@ -208,8 +239,11 @@ export class EntryService {
         throw new ConflictException('좌석 정보가 바뀌었습니다. 다시 시도해 주세요.');
       }
 
-      const state =
-        (await this.redis.getSnapShot(dto.tableId)) ?? this.emptyTableState(tournamentId);
+      const snapshot = await this.redis.getSnapShot(dto.tableId);
+      if (this.shouldBlockEmptySnapshot(table, snapshot)) {
+        throw new ConflictException('테이블 상태를 복구하는 중입니다. 잠시 후 다시 시도해 주세요.');
+      }
+      const state = snapshot ?? this.emptyTableState(tournamentId);
       const occupant = state.players[dto.seatIndex];
 
       // 위에서 DB 주인이 우리임을 확인했으므로, 점유자가 다른 사람이면 그
@@ -270,6 +304,52 @@ export class EntryService {
     await this.redis.updateSeatBitmap(tournamentId, dto.tableId, dto.seatIndex, true);
     const tableStatus = await this.redis.getTournamentTables(tournamentId);
     this.eventEmitter.emit('SEAT_LIST_UPDATED', { tournamentId, state: tableStatus });
+  }
+
+  /**
+   * `emptyTableState` fallback 대신 던져야 하는가.
+   *
+   * 조건은 "이 테이블에 이미 좌석 행이 있는데 스냅샷이 없다"다. 좌석 행이
+   * 있다는 것은 지킬 상태가 있다는 뜻이고, 스냅샷이 없다는 것은 Redis를
+   * 잃었고 아직 재구성(`RecoveryService`)되지 않았다는 뜻이다. 여기서
+   * `emptyTableState`로 새 상태를 만들면 이 테이블의 나머지 전원이
+   * 스냅샷에서 사라지고 buttonUser는 0, smallBlind는 100으로 굳는다 — DB에는
+   * 다 남아 있는데 스냅샷만 한 명이 되고, 나중에 도는 재구성이 이미 오염된
+   * 위에서 돈다.
+   *
+   * `_count.tablePlayers === 0`은 다른 뜻이다 — 상점이 `createTable`로 막 연
+   * 새 테이블처럼 애초에 아무도 앉은 적 없는 테이블이다. 그런 테이블은
+   * 스냅샷이 없는 것이 정상이고(재구성 대상도 아니다 — `RecoveryService`도
+   * 좌석 행이 없는 테이블은 건너뛴다), 여기서까지 막으면 새 테이블의 첫
+   * 착석이 항상 409를 받는다.
+   *
+   * **대회 상태는 `ONGOING`만 보지 않는다.** `!== FINISHED`로 넓힌다 — 좌석
+   * 행이 있는 테이블에 스냅샷이 없는 것은 PENDING이든 SYNCING이든 ONGOING
+   * 이든 똑같이 "Redis를 잃었다"는 뜻이기 때문이다. 좁게 두면 이 구멍이
+   * 남는다: PENDING 대회에서 u1·u2가 착석해 스냅샷이 살아 있다가 Redis가
+   * 죽거나(FLUSHDB) 24시간 TTL로 스냅샷만 사라지면, u3의 착석이
+   * `_count.tablePlayers > 0`인데도 status가 PENDING이라 가드를 피해
+   * `emptyTableState`로 u3 혼자만 있는 스냅샷을 만든다. 그 위에서 대회가
+   * 시작되면(`initializeGame`은 "스냅샷 없으면 거부"만 보고, 이 테이블은
+   * 스냅샷이 **있으므로** 통과한다) u1·u2는 영원히 빠진 채 대회가 돈다 —
+   * `RecoveryService`는 ONGOING만 훑으므로 스스로 못 고친다.
+   *
+   * **감수하는 것**: 넓히면 시작 전 대회도 좌석 행이 있는 테이블의 스냅샷
+   * 유실에 막힌다 — 상점이 손을 써야 한다(재구성 코드가 PENDING까지
+   * 커버하지 않는다. 범위 밖 — PENDING에는 아직 `blindField`가 없어서
+   * 재구성이 다른 경로가 된다). 이 리포는 "에러는 시끄럽게 나오는 게 맞다"가
+   * 규칙이고, 시작 전에는 칩이 움직인 적도 핸드가 돈 적도 없어 잃는 것이
+   * 적다. 조용히 오염된 채 시작하는 것보다 시끄럽게 막는 쪽을 택한다.
+   */
+  private shouldBlockEmptySnapshot(
+    table: { tournament: { status: TournamentStatus }; _count: { tablePlayers: number } },
+    snapshot: TableState | null,
+  ): boolean {
+    return (
+      !snapshot &&
+      table.tournament.status !== TournamentStatus.FINISHED &&
+      table._count.tablePlayers > 0
+    );
   }
 
   /**

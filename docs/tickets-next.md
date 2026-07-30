@@ -1629,6 +1629,261 @@ Task 4(두 테이블 시나리오)는 **의심에서 시작해 세 번 빨간불
 
 ---
 
+## T31 — 서버 장애 복구
+
+**항목**: `docs/backlog.md`의 B2 절(축소본 — `buttonUser` 영속화 + 누적
+정지시간 필드 + 재구성 함수 하나). 선행 문서
+[`2026-07-30-server-recovery-design.md`](./superpowers/specs/2026-07-30-server-recovery-design.md),
+계획 [`2026-07-30-server-recovery.md`](./superpowers/plans/2026-07-30-server-recovery.md)
+**범위**: `backend/prisma/schema.prisma`(+마이그레이션),
+`backend/src/store/session/session.service.ts`,
+`backend/src/store/session/tournament-meta.ts`(신설),
+`backend/src/playsync/playsync.service.ts`, `backend/src/playsync/prize.ts`,
+`backend/src/recovery/`(신설 — `heartbeat.service.ts`, `recovery.service.ts`,
+`recovery.module.ts`), `backend/src/redis/redis.service.ts`,
+`backend/src/entry/entry.service.ts`, `backend/src/app.module.ts`,
+`backend/src/scenario/`
+**프론트 영향**: 없음 — 엔드포인트도 화면도 만들지 않는다. 재구성은 상점이
+판단할 일이 아니라 플랫폼의 책임이라는 판단이다.
+
+### 문제
+
+Redis AOF는 켜져 있다(`docker-compose.yml`의 `--appendonly yes`). 그런데
+**되살리는 코드가 하나도 없었다.** 서버가 다시 뜨면 Redis에 무엇이 있든
+없든 아무도 확인하지 않았고, 두 가지가 별개로 깨진다.
+
+- **블라인드가 앞질러 간다.** 레벨은 `startedAt`과 현재 시각의 차이로 매번
+  다시 계산된다. 장애로 20분 서 있었으면 복구 직후 레벨이 그만큼 앞서
+  있다 — 아무도 플레이하지 않은 20분이 진행 시간으로 들어간다.
+- **버튼 위치를 잃는다.** `TableState.buttonUser`가 Redis 스냅샷에만 있고
+  DB 어디에도 없다. 스냅샷이 사라지면 다음 핸드 블라인드가 엉뚱한 사람에게
+  간다.
+
+그리고 `TournamentParticipation.currentStack`은 그때 **읽는 코드가
+0이었다**(쓰기만 셋). 체크포인트는 찍히는데 그걸로 되돌리는 경로가 없었다 —
+이 티켓의 재구성 함수가 첫 독자가 됐다.
+
+### 결정
+
+네 태스크로 잘랐다 — 스키마(T1), 하트비트와 대회 단위 시간 보정(T2), 테이블
+단위 재구성과 `entry` 가드(T3), 시나리오와 문서(T4, 이 절).
+
+**1. 두 `startedAt`을 다른 뜻으로 갈라 선언한다.** `Tournament.startedAt`(대회가
+실제로 시작된 시각)과 `BlindField.startedAt`(블라인드 시계의 기준점)은 이름이
+같고, `startSession`이 **일부러** 같은 값으로 맞추고 있었다. 정지 시간을
+보정하는 가장 단순한 방법은 블라인드 기준점을 뒤로 미는 것인데, 두 값이
+같은 것이라면 미는 순간 `Tournament.startedAt`도 거짓이 된다 — "이 대회는
+20분 늦게 시작했다"가 사용자에게 보이는 DB 값에 남는다. 그래서 뜻을 가른다.
+`Tournament.startedAt`은 **절대 안 밀리고**, `BlindField.startedAt`(진행
+시간의 기준점)은 밀린다. 시작 시점에 두 값이 같은 것은 정합이 아니라 t=0의
+우연이다.
+
+> **스톱워치 모델(`elapsedMs` + `resumedAt`)을 기각했다.** 경과 시간을
+> wall-clock 차이 대신 누적으로 들고 가는 안도 검토했다. 이점으로 꼽힌 것은
+> "장애 정지와 운영자 수동 정지가 같은 메커니즘이 된다"였는데, **그 이점은
+> 요구사항이 아니다.** 홀덤에서 운영자가 핸드 중간에 대회를 끊는 상황은
+> 없다 — 있는 것은 예정된 휴식이고 그건 이미 블라인드 구조표의 `lv === 99`가
+> 표현한다. 없는 요구를 위해 `getCurrentBlindLevel`의 시그니처와 `BlindField`를
+> 바꾸고 기존 테스트를 손보는 것은 비용만 남는다. 뜻을 가르는 것으로 같은
+> 결과가 나오고 시그니처는 그대로다.
+
+`Tournament.pausedMs Int @default(0)`는 **누적**이다(`increment`, 대입이
+아니다) — 대회 하나가 장애를 두 번 겪을 수 있고, 그러면 `BlindField.startedAt`은
+이미 첫 번째만큼 밀려 있으므로 두 번째는 더해야 맞다. 스냅샷이 통째로
+사라졌을 때는 `BlindField`를 `Tournament.startedAt + pausedMs`를 기준점으로
+다시 세운다 — 이 값이 없으면 재구성 함수가 블라인드 시계를 세울 재료가 없다.
+
+**2. 하트비트는 서버 단위 한 행이고, Redis ping이 조건이다.** "한 행사장 한
+프로세스"가 배치 단위라(`backlog.md`) 대회마다 찍을 이유가 없다. DB에 쓴다 —
+Redis에 쓰면 정확히 필요한 순간(Redis가 날아간 케이스)에 하트비트도 같이
+사라진다. **Redis ping이 성공했을 때만 찍는다** — 시각만 찍으면 "서버는
+살아 있고 Redis만 죽은" 구간(모든 게임 경로가 스냅샷을 못 읽어 던지는 상태)을
+정지 시간 0으로 놓친다. **임계값을 두지 않는다** — 정상 재시작 5초도 5초
+밀리는 것이 맞다. 그 5초 동안 대회는 진짜로 돌지 않았다. 구현 수단은
+`setInterval` + `onApplicationBootstrap`/`onModuleDestroy`다 — `@nestjs/schedule`이
+리포에 없고 BullMQ 반복 잡은 at-least-once라 하트비트에 중복이 노이즈가 된다.
+
+**3. `buttonUser`만 DB에서 파생되지 않는다 — 역사의 함수라서.**
+`TableState`의 필드를 전부 훑으면 나머지는 전부 **현재 사실**에서 나온다
+(좌석은 `TablePlayer.seatPosition`, 스택은 `TournamentParticipation.currentStack`,
+블라인드는 `Tournament.startedAt + pausedMs`로 다시 계산). `phase`·`pot`·
+`bet`류는 핸드 경계(`WAITING`, 0)로 리셋하면 그만이다. 그런데 버튼은 "지난
+핸드에 누가 버튼이었나"에서만 나온다 — 현재 상태를 아무리 봐도 뽑을 수
+없다. `Table.buttonUser Int?`로 **좌석 인덱스**를 적는다(`userId`가 아니라 —
+`findNextActiveSeat`가 이미 빈 좌석을 건너뛰므로 좌표계가 같은 인덱스 쪽이
+공짜다). 쓰는 자리는 **이미 있는 체크포인트** 둘이다 — 핸드 종료 체크포인트
+(`syncTableInventoryToDb`, `currentStack`과 같은 트랜잭션)와 시작 트랜잭션
+(`initializeGame`이 뽑은 첫 버튼). 새 쓰기 경로를 만들지 않는다.
+
+**4. 재구성은 부팅 시 자동이고, 판정 기준은 스냅샷 유무다.** 서버는 "정상
+재시작이었나 Redis가 날아갔나"를 추측하지 않는다 — 지금 무엇이 없는지만
+본다. 판정 단위가 **둘**이라는 점이 중요하다 — 블라인드 시계는 대회 하나에
+하나(대회 단위), 스냅샷과 좌석 비트맵은 테이블마다(테이블 단위)다. 섞으면
+테이블 수만큼 블라인드가 밀린다. 실패는 **대회 단위**로 격리하고(대회 하나
+때문에 다른 대회까지 못 뜨면 안 된다), Task 3 리뷰 이후로는 **테이블
+단위**로도 격리한다(아래 "작업 중 추가로 나온 것" C1).
+
+**5. `entry`의 빈 스냅샷 fallback을 대회 시작 전으로 가둔다 — 이것이 부팅
+실패 격리의 전제다.** `entry.service.ts`의 `emptyTableState` fallback은
+대회 시작 **전** 첫 착석에는 필요하다(스냅샷을 처음 만드는 경로). 그런데
+결정 4가 실패를 대회 단위로 격리하는 순간, 스냅샷 없이 서버가 뜬 상태가
+정상 경로에 들어온다 — 그때 대회 진행 중 재입장 한 명이 도착해 `entry`가
+빈 스냅샷을 만들면, 그 테이블의 나머지 전원이 스냅샷에서 사라지고 재구성이
+이미 오염된 위에서 돈다. **격리가 파괴로 바뀐다.** 그래서 이 가드는 선택이
+아니다 — 재구성을 부팅 시 **자동**으로 두는 이유이기도 하다(사람이 누르는
+방식이면 그 버튼보다 `entry`가 먼저 도착할 수 있다).
+
+### 작업 중 추가로 나온 것
+
+**Task 3 리뷰(opus)가 Task 1의 설계 문서가 잘못 짚은 것 하나를 뒤집었다.**
+설계 문서(브리프)는 `Table.buttonUser === null`이면 "시작 트랜잭션이 채우므로
+일어나면 버그"라고 적었고, 처음 구현은 그렇게 던졌다. 리뷰가 뒤집었다:
+`initializeGame`은 **시작 시점에 사람이 앉아 있던** 테이블만 버튼을 채운다.
+대회 시작 시점에 비어 있던 테이블, 대회 도중 `createTable`로 새로 연 테이블은
+**핸드를 한 번도 끝낸 적이 없어서** null인 채로 정상적으로 재구성을 맞는다 —
+채우는 자리가 핸드 **종료** 체크포인트뿐이기 때문이다. 그래서:
+
+- null이면 던지는 대신 **앉은 사람 중에서 무작위로 첫 버튼을 뽑는다**
+  (`initializeGame`이 대회 시작 시점에 하는 것과 같은 방식). 앉힐 사람이
+  아무도 없을 때만(참가가 전부 `ELIMINATED`) 진짜로 실패로 본다.
+- 원래 3단계(테이블 루프)에 **테이블 단위 try/catch가 없었다** — 한
+  테이블이 던지면 그 대회의 나머지 테이블 순회가 중단되고, `recoverAll`의
+  대회 단위 catch까지 예외가 올라간다. `recoverAll`의 주석이 약속한 "실패는
+  대회 단위로 격리한다"가 실제로는 안 지켜지고 있었다. 테이블 단위
+  try/catch를 더했다.
+
+같은 리뷰가 `entry` 가드에서도 셋을 더 잡았다.
+
+- **가드가 DB 쓰기 뒤에 있었다(I2).** `claimSeat`의 "어떤 쓰기보다도 먼저"
+  규칙 위반이다 — 409를 받은 사람의 좌석 행이 이미 커밋된 채 남아, 다른
+  좌석으로 재시도해도 `enterSeat` 맨 앞의 "이미 다른 좌석에 앉아 있습니다"에
+  영구히 묶인다. 락 밖 빠른 경로를 추가했다.
+- **`=== ONGOING`이라 `PENDING`이 뚫렸다(I3).** 시작 전 대회가 스냅샷을
+  잃은 채 착석이 들어오면 `emptyTableState`가 조용히 새 스냅샷을 만들고,
+  대회가 시작되면(`initializeGame`은 "스냅샷 없으면 거부"만 보는데 이
+  테이블은 스냅샷이 **있으므로** 통과) 먼저 앉았던 사람들이 영원히 빠진
+  채로 대회가 돈다 — `RecoveryService`는 `ONGOING`만 훑으므로 스스로 못
+  고친다. `status !== FINISHED`로 넓혔다. **감수한 것**: 시작 전 대회도
+  좌석 행이 있는 테이블의 스냅샷 유실에 시끄럽게 막힌다(상점이 손을 써야
+  한다) — 재구성 코드는 `PENDING`까지 커버하지 않는다(`blindField`가
+  없어 다른 경로가 된다). 조용히 오염된 채 시작하는 것보다 낫다는 판단이다.
+- **좌석 0인 테이블은 비트맵도 복구되지 않았다(I5).** `getTournamentTables`가
+  `hgetall`이라 필드 자체가 없는 테이블은 목록에서 통째로 사라진다. 빈
+  비트맵을 세우되(단 이미 있으면 덮지 않는다) 재구성이 채운다.
+
+**`rebuildSeatBitmap`을 `updateSeatBitmapMany`와 별도 메서드로 갈랐다(I4와도
+연결).** `UPDATE_SEAT_BITS_MANY`(기존 Lua)는 **필드가 없으면 아무것도 하지
+않는다**가 load-bearing이다 — 예전에 "없으면 9칸짜리 빈 비트맵을 만들고
+비트를 세운다"였다가, 탈락으로 지워진 테이블을 상점이 닫은 뒤 뒤늦게 도착한
+비트 내리기가 그 필드를 되살려 유령 테이블이 24시간 목록에 떠 있는 사고가
+났다(같은 파일의 `UPDATE_SEAT_BIT` 주석). 재구성은 정확히 그 반대 방향
+(없는 필드를 **만드는 것**)이라 경로를 가른다 — 기존 메서드에 "없으면
+만들기" 분기를 얹으면 그 사고가 재발할 조건을 다시 열게 된다.
+`rebuildSeatBitmap`은 TTL(24시간, 같은 키를 쓰는 나머지 writer 전부가
+지키는 것)도 빠뜨리지 않는다(I4) — 안 지키면 재구성이 만든 필드만 영구
+키가 되어, 유령 테이블을 청소하는 그 장치(필드 없으면 손대지 않기)에서
+이 필드만 빠진다.
+
+### RED 확인 방법
+
+Task 1~3은 각 단계에서 실패하는 테스트로 재현한 뒤 고쳤다(상세 수치는
+`.superpowers/sdd/2026-07-30-server-recovery/task-{1,2,3}-report.md`) — 시작
+트랜잭션이 버튼을 쓰기 전 `Received: null`, 체크포인트가 버튼을 쓰기 전
+`Expected: "버튼 5" / Received: "버튼 0"`, `pausedMs`를 대입으로 바꾸면
+`Expected: > 85029 / Received: 30006`, 블라인드 이동을 테이블 수만큼
+반복하면 `Expected: < 75000 / Received: 180033`, 재구성의 `PLAYING` 필터를
+지우면 탈락자가 스냅샷에 되살아남, `entry` 가드를 넣기 전에는
+`rejects.toThrow()`가 `resolved`로 나옴.
+
+Task 4(이 절, 시나리오)는 **새 단언마다 그것을 깨뜨릴 입력이 있는지** 직접
+제품 코드를 되돌려 확인했다.
+
+- **"A의 스냅샷은 바이트 단위로 그대로"** — `rebuildTable` 진입 조건
+  (`if (existing) continue;`)을 `if (false && existing) continue;`로 바꿔
+  살아 있는 테이블도 재구성하게 강제하고 이 시나리오만 실행:
+  ```
+  Expected: "...\"hasFolded\":false,\"hasChecked\":false,\"isAllIn\":false,...\"timerEpoch\":9}"
+  Received: "...\"hasFolded\":false,\"hasChecked\":false,\"isAllIn\":false,...}" (timerEpoch 없음, 필드 순서도 다름)
+  ```
+  재구성이 만드는 객체가 원래 스냅샷과 필드 순서·내용 모두 다르다는 것을
+  실제로 확인했다 — `JSON.stringify` 비교라 필드 순서 차이만으로도 이
+  단언이 걸린다는 뜻이고, 그만큼 민감하다.
+- **"밀린 양이 정지 시간과 같다(2배가 아니다)"** — 대회 단위 블라인드
+  이동(`startedAt: blind.startedAt + downtime`)을 `+ downtime * 2`로 바꿔
+  "테이블 루프 안에서 두 번 미는" 회귀를 흉내 내고 실행:
+  ```
+  Expected: < 50000
+  Received:   80028
+  ```
+  다운타임 40000ms의 정확히 2배 근처가 나왔다 — 이 시나리오가 실제로
+  "대회당 한 번"이라는 불변식에 닿아 있다는 근거다.
+
+둘 다 확인 후 되돌리고 `git diff`로 `recovery.service.ts`가 원상태인 것을
+확인한 다음 스코프 재실행으로 PASS를 재확인했다.
+
+### 테스트
+
+| 파일 | 계층 | 무엇 |
+|---|---|---|
+| `store/session/session.service.int-spec.ts` | 통합 | 시작 트랜잭션이 `Table.buttonUser`를 같은 트랜잭션에 쓴다 |
+| `playsync/playsync.service.int-spec.ts` | 통합 | 핸드 종료 체크포인트가 `Table.buttonUser`를 쓴다 |
+| `store/session/tournament-meta.spec.ts` | 단위(신설) | `buildTournamentMeta` 추출 — `isBreak` 전달, 대시보드·블라인드 필드 구성 |
+| `recovery/heartbeat.service.int-spec.ts` | 통합(신설) | Redis ping 성공 시에만 하트비트를 찍음, 실패 시 찍지 않음 |
+| `recovery/recovery.service.int-spec.ts` | 통합(신설) | `pausedMs` 누적(대입이면 실패), 블라인드 기준점이 **대회당 한 번만** 밀림(테이블 셋이어도), `blindField` 유실 시 `startedAt + pausedMs`로 재구성, 대회 하나 실패해도 다른 대회는 복구, 블라인드가 정지 시간만큼 되돌아옴, 스냅샷 없는 테이블만 재구성(있는 테이블은 손대지 않음), `PLAYING`만 앉힘, 버튼을 `Table.buttonUser`에서 읽음, `buttonUser` null이면 무작위로 뽑음, 앉힐 사람이 없으면 그 테이블만 실패, 좌석 비트맵·유저 컨텍스트 복원, 빈 테이블도 비트맵 필드 복원(이미 있으면 안 덮음) |
+| `redis/redis.service.int-spec.ts` | 통합 | `rebuildSeatBitmap`이 TTL을 세움, 필드가 없어도 새로 만듦(`updateSeatBitmapMany`와 반대) |
+| `entry/entry.service.int-spec.ts` | 통합 | `ONGOING`+스냅샷 없음+좌석 행 있음이면 409(빈 스냅샷 fallback 금지), 시작 전 첫 착석은 fallback 그대로, 락 밖 빠른 경로가 좌석 행을 남기지 않음 |
+| `scenario/server-recovery.int-spec.ts` | 시나리오(신설) | 테이블 둘(A 한 핸드, B 세 핸드) → B의 스냅샷만 지움(부분 유실) → 하트비트를 과거로 되돌리고 블라인드 시계도 함께 되돌림 → `recoverAll` → 칩 총량 보존, A 스냅샷 바이트 동일, B `buttonUser`가 마지막 체크포인트 값과 같음(0이 아닌 값으로 확인 — 초기값과 헷갈리지 않게), 좌석 비트맵 리터럴 일치, 블라인드 레벨이 정지 시간만큼만 되돌아옴(2배면 실패) → B에서 핸드 하나 더 진행 |
+
+기준선 갱신: contract 44 (2 스위트) / 백엔드 단위 176 (16 스위트,
+`tournament-meta.spec.ts` 신설) / 프론트 단위 52 (14 파일) / 통합 321
+(26 스위트, `heartbeat.service.int-spec.ts`·`recovery.service.int-spec.ts`·
+`scenario/server-recovery.int-spec.ts` 신설) / 타입 에러 0.
+
+### 남긴 것 — 감수한 것
+
+- **핸드 중간은 복구되지 않는다.** `pot`·`bet`·`currentTurnSeatIndex`는
+  체크포인트 사이에만 존재한다. 카드가 물리라 그 핸드는 사람이 다시
+  딜한다 — 시스템이 지킬 선은 핸드 경계다. 액션마다 DB를 쓰면 더 밀 수
+  있지만, 그러면 락 구간에 DB 왕복이 들어가 "락 안에서 무한 대기 없음"에
+  정면으로 부딪힌다(T8~T29가 지켜 온 규칙).
+- **`buttonUser`가 최대 한 핸드 낡다.** 체크포인트 주기가 그것이다.
+- **버튼 한 바퀴의 공정성이 어긋날 수 있다.** 좌석 인덱스로 적으므로,
+  복구 시점에 그 좌석이 비어 있으면 `findNextActiveSeat`가 다음 사람을
+  집는다. 동작은 하고 순서의 공정성만 어긋난다 — 다운타임 중에는 좌석이
+  얼어붙어(모든 좌석 변경 경로가 스냅샷을 먼저 읽고 없으면 던진다) 이
+  창이 거의 없고, 복구는 딜러가 보고 있는 상황이라 육안으로 고칠 수 있다.
+- **정지 시간이 최대 한 하트비트 주기(30초)만큼 과소계상된다.** 마지막
+  하트비트 이후 죽기까지의 구간이다. 레벨이 분 단위라 무해하다.
+- **태블릿만 끊긴 정지는 잡지 못한다.** 서버와 Redis가 정상인데 행사장
+  WiFi만 끊기면 하트비트는 계속 찍히고 블라인드는 계속 오른다. 운영자의
+  수동 레벨 지정이 이 케이스를 위한 것인데, `backlog.md`가 이미 범위
+  밖으로 뺐다(위 B2 절, "운영자 조작 화면" — 재구성이 자동이라 상점이
+  판단할 것이 남지 않는다는 판단).
+- **시작 전 대회는 좌석 유실에 시끄럽게 막힌다(I3).** 재구성이 `PENDING`을
+  다루지 않는다 — `blindField`가 아직 없어 다른 경로가 된다. 조용한
+  오염보다 낫다는 판단이지만, 상점이 수동으로 손을 써야 한다.
+- **여러 서버는 다루지 않는다.** 하트비트가 단일 행이라 서버가 둘이면
+  서로를 덮어쓴다 — "한 행사장 한 프로세스"가 배치 단위라는 전제(B9는
+  하지 않는다) 그대로다.
+- **감사 로그가 없다.** 언제 어떤 복구가 돌았는지 로그로만 남는다(B10).
+- **`Tournament.activePlayers`는 재구성이 재계산하지 않는다.** DB 누적값을
+  그대로 읽는다 — 노쇼가 있으면 자동 마무리 게이트가 여전히 안 걸리는
+  문제(T30)는 이 티켓이 손대지 않았다.
+- **좌석 비트맵만 잃은 부분 유실은 스스로 낫지 않는다(최종 리뷰 Minor 1).**
+  재구성의 판정 기준은 스냅샷 유무뿐이다 — 좌석 행이 있고 스냅샷이 살아
+  있으면 그 테이블은 손대지 않는다. 그런데 좌석 비트맵은
+  `tournament:{id}:seat` 키 하나에 대회의 모든 테이블이 들어 있어서, 그
+  키만(개별 필드 만료, maxmemory 축출, 부분 AOF 손상) 잃는 것이 스냅샷과
+  독립적으로 가능하다 — 이때 `getTournamentTables`가 그 테이블들을 목록에서
+  통째로 지우고, `entry`의 가드도 스냅샷 기준이라 막지 못하며,
+  `UPDATE_SEAT_BIT`는 필드가 없으면 아무것도 하지 않으므로 착석으로도
+  낫지 않는다. 지배적인 실제 케이스(Redis 통째 유실)에서는 스냅샷도 함께
+  사라지므로 현재 판정으로 덮이지만, 고치려면 비트맵과 스냅샷 중 어느 쪽을
+  권위로 볼지 정해야 하는 설계 결정이라 이 티켓 범위 밖으로 남겼다
+  (`docs/backlog.md`의 B2 절에 항목을 남겼다).
+
+---
+
 <!--
 티켓 서술 형식 (1단계에서 쓰던 것):
 

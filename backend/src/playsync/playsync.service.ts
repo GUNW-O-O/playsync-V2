@@ -216,15 +216,27 @@ export class PlaysyncService {
    * 아무 에러 없이 지나갔다(T28 최종 리뷰). `update`는 P2025로 즉시 터지고,
    * 아래 `catch`가 유한 재시도 경로로 보낸다.
    */
-  public async syncTableInventoryToDb(state: TableState): Promise<boolean> {
-    const updates = state.players
-      .filter(p => p !== null)
-      .map(p => this.prisma.tournamentParticipation.update({
-        where: {
-          tournamentId_userId: { tournamentId: state.tournamentId, userId: p.id },
-        },
-        data: { currentStack: p.stack },
-      }));
+  public async syncTableInventoryToDb(tableId: string, state: TableState): Promise<boolean> {
+    // 버튼도 같은 트랜잭션이다. 스택과 버튼이 갈라지면 복구가 "칩은 이 핸드,
+    // 버튼은 저 핸드"인 상태를 만든다. 체크포인트가 원자적이어야 DB가 항상
+    // **어떤 한 핸드의 끝**을 가리킨다.
+    //
+    // `updateMany`가 아니라 `update`인 이유는 위 스택과 같다 — 대상이 0행이면
+    // 조용히 성공한다.
+    const updates = [
+      ...state.players
+        .filter(p => p !== null)
+        .map(p => this.prisma.tournamentParticipation.update({
+          where: {
+            tournamentId_userId: { tournamentId: state.tournamentId, userId: p.id },
+          },
+          data: { currentStack: p.stack },
+        })),
+      this.prisma.table.update({
+        where: { id: tableId },
+        data: { buttonUser: state.buttonUser },
+      }),
+    ];
     try {
       await this.prisma.$transaction(updates);
       return true;
@@ -254,7 +266,7 @@ export class PlaysyncService {
       async () => {
         const state = await this.redis.getSnapShot(tableId);
         if (!state) throw new Error('테이블을 찾을 수 없습니다.');
-        const ok = await this.syncTableInventoryToDb(state);
+        const ok = await this.syncTableInventoryToDb(tableId, state);
         if (!ok) throw new Error('DB 동기화 실패');
         return true;
       },
