@@ -328,6 +328,44 @@ describe('RecoveryService', () => {
   });
 
   /**
+   * **입력이 자기모순이 아닌 것이 이 테스트의 핵심이다.**
+   *
+   * 위 '레벨이 되돌아온다'는 `startedAt`이 90초 전인데 `nextLevelAt`을 과거로
+   * 둔다 — 그 조합은 제품 코드가 만들 수 없다(`getCurrentBlindLevel`은 둘을
+   * 항상 같이 계산한다). 일관된 입력만 놓고 보면 사실 **레벨은 밀기만으로도
+   * 옳다**: 기준점을 D만큼 밀고 실제 시계도 D만큼 흘러 경과가 상쇄되므로,
+   * 캐시에 든 레벨이 곧 죽은 시점의 레벨이고 그게 재개할 레벨이다.
+   *
+   * 갈리는 곳은 하나다. 하트비트 주기(30초)라 측정된 D는 실제 정지보다 최대
+   * 그만큼 **크다**. 과잉 보정으로 민 기준점의 레벨이 한 칸 내려가는데, 캐시는
+   * 낡은 레벨을 들고 있다 — 캐시 분기가 켜져 있으면 전광판과 다음 핸드가 서로
+   * 다른 레벨을 본다.
+   *
+   * 여기 입력은 제품 코드가 실제로 쓸 수 있는 값이다: 레벨 duration이 1분,
+   * 경과 70초 → 인덱스 1, `nextLevelAt = startedAt + 120초`(미래). 35초를
+   * 밀면 경과가 35초가 되어 인덱스 0으로 내려간다.
+   */
+  it('과잉 보정으로 레벨이 한 칸 내려가면 캐시도 따라 내려간다', async () => {
+    const { tournamentId, structure } = await seedOngoingTournament();
+    const startedAt = Date.now() - 70_000;
+    await redisService.setTournamentBlind(tournamentId, {
+      isBreak: false,
+      startedAt,
+      currentBlindLv: 1,
+      nextLevelAt: startedAt + 120_000, // 기준점에서 파생된 값 그대로 — 미래다
+      serverTime: Date.now(),
+      blindStructure: structure,
+    });
+
+    await setHeartbeatAgo(35_000);
+    await recovery.recoverAll();
+
+    // 캐시 분기가 켜져 있으므로, 강제 갱신이 없으면 여기서 낡은 레벨 1이 나온다.
+    const synced = await redisService.checkAndSyncBlindLevel(tournamentId);
+    expect(`레벨 ${synced!.currentBlindLv}`).toBe('레벨 0');
+  });
+
+  /**
    * 테이블 단위 재구성(3단계). 스냅샷 유실 판정과 정지 시간 보정은 별개의
    * 축이라 위 테스트들과 겹치지 않는다.
    */

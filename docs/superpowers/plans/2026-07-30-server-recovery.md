@@ -651,16 +651,30 @@ export class RecoveryService implements OnApplicationBootstrap {
 }
 ```
 
-**정정(최종 리뷰 Important 1).** 아래 문단은 틀렸다 — 기준점을 밀면 거기서
-파생된 캐시(`currentBlindLv`, `nextLevelAt`, `isBreak`)도 함께 다시 세워야
-한다. `checkAndSyncBlindLevel`(`redis.service.ts:382`)에는 캐시 최적화 조기
-반환(`if (blind.nextLevelAt && now < blind.nextLevelAt) return { ...blind };`)이
-있어서, 재계산이 항상 도는 것이 아니다. `startedAt`만 밀면 낡은 `nextLevelAt`이
-그대로 나가 전광판 카운트다운이 0에 닿은 뒤 다운타임만큼 멈춘다. `nextLevelAt`에
-downtime을 더하는 것만으로도 부족하다 — 이번엔 캐시 분기가 켜지면서 낡은
-`currentBlindLv`가 나가 밀기가 되돌리려던 레벨 자체가 안 돌아온다. 실제
-구현(`recovery.service.ts`)은 민 기준점을 `getCurrentBlindLevel`에 다시 먹여
-파생 셋을 통째로 다시 만든다.
+**정정(최종 리뷰 Important 1).** 아래 문단은 절반만 맞다.
+
+맞는 절반: **레벨은 밀기만으로 이미 옳다.** 기준점을 D만큼 밀었는데 실제 시계도
+D만큼 흘렀으므로 경과 시간이 상쇄돼, 부팅 시점의 레벨이 죽은 시점의 레벨과 같다 —
+그게 재개할 레벨이다. 다음 핸드가 어느 경로로 레벨을 읽든(핸드 중에는
+`TableState`, 핸드 시작에는 `checkAndSyncBlindLevel`) 그 값을 본다. 서버가 상태를
+안 들고 기준점에서 파생시키는 설계가 여기서 값을 한다.
+
+틀린 절반: 그 파생 **앞에 캐시가 있다.** `checkAndSyncBlindLevel`
+(`redis.service.ts`)에는 조기 반환(`if (blind.nextLevelAt && now <
+blind.nextLevelAt) return { ...blind };`)이 있고, 쓰기도 레벨·`isBreak`가 바뀔
+때만 한다. 둘 다 "기준점은 그대로"를 전제해서, 기준점이 밖에서 움직인 직후에는
+답을 못 낸다. 결과 둘:
+
+1. 레벨이 그대로면 쓰기 게이트가 안 열려 `nextLevelAt`이 낡은 채로 남는다 —
+   전광판 카운트다운이 0에 닿은 뒤 다운타임만큼 멈춘다.
+2. 하트비트 주기(30초) 때문에 측정된 D는 실제 정지보다 최대 그만큼 크다. 과잉
+   보정으로 민 기준점의 레벨이 한 칸 내려가면, 캐시가 낡은 레벨을 들고 있어
+   전광판과 다음 핸드가 서로 다른 레벨을 본다.
+
+그래서 실제 구현은 기준점을 민 뒤 `checkAndSyncBlindLevel(id, { force: true })`로
+캐시를 다시 세운다. 파생식을 `recovery`에 복제하지 않는 이유는 재계산이 등록 마감
+내리기(`curLv >= rebuyUntil`)를 함께 하기 때문이다 — 복제하면 그 규칙이 복구
+경로에서만 빠진다.
 
 > ~~`blind`가 있을 때 `nextLevelAt`을 다시 계산하지 않는 이유:
 > `checkAndSyncBlindLevel`(`redis.service.ts:353`)이 `startedAt`으로부터 매번

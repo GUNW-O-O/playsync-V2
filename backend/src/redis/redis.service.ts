@@ -377,21 +377,42 @@ export class RedisService {
   /**
  * 토너먼트의 현재 블라인드 상태를 확인하고, 시간이 경과했다면 자동으로 업데이트합니다.
  * @returns 최신 블라인드 정보 (업데이트된 경우 반영됨)
+ *
+ * `force`는 **기준점(`startedAt`)이 밖에서 바뀐 뒤** 쓴다(부팅 복구). 아래
+ * 두 게이트가 모두 "기준점은 그대로"를 전제로 하고 있어서, 기준점이 움직인
+ * 직후에는 둘 다 잘못된 답을 낸다.
+ *
+ * 1. 캐시 조기 반환은 `nextLevelAt`을 믿는데, 그 값이 낡은 기준점에서 나온
+ *    것이면 아직 미래여도 의미가 없다.
+ * 2. 쓰기 게이트는 레벨과 `isBreak`만 본다. 기준점이 밀렸는데 레벨이 그대로면
+ *    `nextLevelAt`이 낡은 채로 남아 전광판 카운트다운만 어긋난다.
+ *
+ * 파생값(`currentBlindLv`·`nextLevelAt`·`isBreak`)을 다시 만드는 식과 등록
+ * 마감 판정을 **이 함수 하나에만** 두려고 인자로 뚫었다. 복구가 같은 계산을
+ * 복제하면 마감 내리기가 거기서 빠진다.
  */
-  async checkAndSyncBlindLevel(tournamentId: string): Promise<BlindField | null> {
+  async checkAndSyncBlindLevel(
+    tournamentId: string,
+    options?: { force?: boolean },
+  ): Promise<BlindField | null> {
     const blind = await this.getTournamentBlind(tournamentId);
     if (!blind) return null;
 
+    const force = options?.force ?? false;
     const now = Date.now();
     // 최적화: 아직 다음 레벨 시간이 되지 않았다면 현재 상태 그대로 반환
     // (이미 휴식 중이라면 blind.isBreak가 true인 상태로 반환됨)
-    if (blind.nextLevelAt && now < blind.nextLevelAt) {
+    if (!force && blind.nextLevelAt && now < blind.nextLevelAt) {
       return { ...blind, serverTime: now };
     }
     // 시간 경과 시에만 상세 계산 수행
     const calculated = getCurrentBlindLevel(blind.blindStructure, blind.startedAt);
     // 레벨 인덱스가 바뀌었거나, 휴식 상태(isBreak)가 변경되었을 때만 업데이트
-    if (calculated.currentIndex !== blind.currentBlindLv || calculated.isBreak !== blind.isBreak) {
+    if (
+      force ||
+      calculated.currentIndex !== blind.currentBlindLv ||
+      calculated.isBreak !== blind.isBreak
+    ) {
       const updatedBlind = {
         ...blind,
         currentBlindLv: calculated.currentIndex,

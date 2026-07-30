@@ -3,7 +3,6 @@ import { PlayerStatus, TournamentStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { buildTournamentMeta } from 'src/store/session/tournament-meta';
-import { getCurrentBlindLevel } from 'shared/util/util';
 // 엔진의 좌석 타입과 Prisma 모델 이름이 둘 다 `TablePlayer`다. 이 파일은
 // 양쪽을 다 쓰므로 import에서 가른다.
 import { TablePlayer as SeatPlayer, TableState, GamePhase } from 'src/game-engine/types';
@@ -121,32 +120,33 @@ export class RecoveryService implements OnApplicationBootstrap {
     const blind = await this.redis.getTournamentBlind(tournamentId);
     if (blind) {
       if (downtime > 0) {
-        // 기준점을 밀면 **거기서 파생된 캐시도 같이 다시 세운다.** blindField는
-        // 기준점(`startedAt`) 하나와 그로부터 파생된 셋(`currentBlindLv`,
-        // `nextLevelAt`, `isBreak`)으로 되어 있고, `checkAndSyncBlindLevel`은
-        // `now < nextLevelAt`이면 재계산 없이 그 셋을 그대로 내보낸다
-        // (`redis.service.ts`의 캐시 분기).
-        //
-        // 그래서 `startedAt`만 밀면 두 값이 어긋난 채로 남는다. 밀린 기준점의
-        // `nextLevelAt`은 아직 과거라 재계산 경로에 걸려 레벨은 맞게 나오지만,
-        // 전광판 카운트다운은 0에 닿은 뒤 다운타임만큼 멈춘 채로 남는다.
-        // 반대로 `nextLevelAt`까지 같이 밀면서 `currentBlindLv`를 그대로 두면
-        // 이번엔 캐시 분기가 **켜져서** 낡은 레벨을 그대로 내보낸다 — 밀기가
-        // 되돌리려던 레벨 자체가 안 돌아온다.
-        //
-        // 파생값은 파생식으로 다시 만드는 것이 맞다. `checkAndSyncBlindLevel`이
-        // 쓰는 것과 같은 `getCurrentBlindLevel`을 같은 입력(민 기준점)에
-        // 먹인다 — 계산이 두 곳이 되는 것이 아니라, 캐시를 무효화하는 쪽이
-        // 캐시를 다시 채우는 것이다.
-        const startedAt = blind.startedAt + downtime;
-        const calculated = getCurrentBlindLevel(blind.blindStructure, startedAt);
+        // 기준점만 민다. blindField의 나머지 셋(`currentBlindLv`,
+        // `nextLevelAt`, `isBreak`)은 기준점에서 파생된 캐시다.
         await this.redis.setTournamentBlind(tournamentId, {
           ...blind,
-          startedAt,
-          currentBlindLv: calculated.currentIndex,
-          nextLevelAt: calculated.nextLevelAt,
-          isBreak: calculated.isBreak,
+          startedAt: blind.startedAt + downtime,
         });
+
+        // 그리고 그 캐시를 다시 세운다.
+        //
+        // **레벨 자체는 밀기만으로 이미 옳다.** 기준점을 D만큼 밀었는데 실제
+        // 시계도 D만큼 흘렀으므로 경과 시간이 상쇄돼, 부팅 시점의 레벨이 죽은
+        // 시점의 레벨과 같다 — 그게 재개할 레벨이다. 캐시가 들고 있는 값이
+        // 바로 그 값이고, 다음 핸드는 어느 경로로든 그 값을 쓴다.
+        //
+        // 다시 세우는 이유는 둘이다.
+        // 1. 레벨이 안 바뀌면 평소 경로의 쓰기 게이트가 안 열려 `nextLevelAt`이
+        //    낡은 채로 남는다 — 전광판 카운트다운이 0에 닿은 뒤 다운타임만큼
+        //    멈춘다.
+        // 2. 하트비트 주기(30초) 때문에 D는 실제 정지보다 최대 그만큼 크다.
+        //    과잉 보정으로 민 기준점의 레벨이 한 칸 내려가는 경우, 캐시가 낡은
+        //    레벨을 들고 있으면 전광판과 다음 핸드가 서로 다른 레벨을 본다.
+        //
+        // 파생식을 여기에 복제하지 않는 이유는 재계산이 등록 마감
+        // 내리기(`curLv >= rebuyUntil`)를 함께 하기 때문이다 — 복제하면 그
+        // 규칙이 복구 경로에서만 빠진다. `force`가 필요한 것은 평소 경로의 두
+        // 게이트가 "기준점은 그대로"를 전제하기 때문이다.
+        await this.redis.checkAndSyncBlindLevel(tournamentId, { force: true });
       }
     } else {
       // 메타를 통째로 잃었다. DB로 다시 세운다. 기준점은 대회가 실제로
