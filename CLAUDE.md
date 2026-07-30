@@ -75,7 +75,7 @@ npm run test:int       # 통합 테스트 (컨테이너 기동부터 자동)
 현재 기준선 (T31 완료 시점):
 
 ```
-contract       44  (2 suites)
+contract       60  (3 suites)
 백엔드 단위   177  (16 suites)
 프론트 단위    52  (14 files)
 통합          326  (26 suites)

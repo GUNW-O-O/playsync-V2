@@ -11,3 +11,4 @@
 export * from "./action";
 export * from "./dealer-action";
 export * from "./ws-ticket";
+export * from "./table-state";
