@@ -345,11 +345,16 @@ describe('SessionService.startSession', () => {
     const tables = opts.tables ?? [{ id: 'table-1', tablePlayers: [{ seatPosition: 0 }] }];
 
     const update = jest.fn().mockResolvedValue({});
+    const tableUpdate = jest.fn().mockResolvedValue({});
     const prisma = {
       tournament: { findUnique: jest.fn().mockResolvedValue(gameRow(tables)), update },
       $transaction: jest.fn(async (fn: any) =>
         typeof fn === 'function'
-          ? fn({ tournament: { update }, tournamentParticipation: { updateMany: jest.fn() } })
+          ? fn({
+              tournament: { update },
+              tournamentParticipation: { updateMany: jest.fn() },
+              table: { update: tableUpdate },
+            })
           : undefined,
       ),
     };
@@ -369,7 +374,7 @@ describe('SessionService.startSession', () => {
     const service = new SessionService(
       prisma as any, redis as any, {} as any, { emit: jest.fn() } as any,
     );
-    return { service, prisma, update, setTournamentMeta, saveInitialTableSnapshots };
+    return { service, prisma, update, tableUpdate, setTournamentMeta, saveInitialTableSnapshots };
   };
 
   it('사람이 앉은 테이블에 스냅샷이 없으면 시작을 거부한다', async () => {

@@ -1271,3 +1271,93 @@ describe('SessionService.releaseSeats', () => {
       .toBe('409 / 좌석행 2');
   });
 });
+
+/**
+ * T31 — 시작 트랜잭션이 첫 버튼 추첨 결과를 DB에 남기는지.
+ *
+ * `initializeGame`이 테이블마다 버튼을 랜덤으로 뽑지만(session.service.ts:468)
+ * 예전에는 그 값이 Redis 스냅샷에만 있었다. 첫 핸드가 끝나기 전에 서버가
+ * 죽으면 재구성이 읽을 버튼이 DB 어디에도 없었다. `startSession`의 트랜잭션이
+ * `Table.buttonUser`를 같은 트랜잭션으로 쓰는지 확인한다.
+ */
+describe('SessionService.startSession — 버튼 좌석 영속화', () => {
+  let prisma: PrismaClient;
+  let redis: Redis;
+  let redisService: RedisService;
+  let sessionService: SessionService;
+  let tournamentId: string;
+  let tableId: string;
+
+  beforeAll(() => {
+    prisma = createTestPrisma();
+    redis = createTestRedis();
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+    await closeTestPrisma(prisma);
+  });
+
+  beforeEach(async () => {
+    await truncateAll(prisma);
+    await flushTestRedis(redis);
+
+    redisService = new RedisService(redis);
+    sessionService = new SessionService(
+      prisma as unknown as PrismaService, redisService, new OtpAttempts(redis), new EventEmitter2(),
+    );
+
+    ({ tournamentId, tableId } = await seedTournamentWithTable(prisma));
+
+    // 준비: 착석 2명. seat()·putSnapshot()과 같은 모양이지만 이 describe는
+    // 자기 스냅샷을 직접 만든다 — releaseSeats 블록의 헬퍼는 그 describe
+    // 스코프에 갇혀 있다.
+    for (const [userId, seatIndex] of [['u1', 0], ['u2', 1]] as [string, number][]) {
+      await prisma.user.create({ data: { id: userId, nickname: userId, password: 'x' } });
+      await prisma.tournamentParticipation.create({
+        data: {
+          userId, tournamentId, playerOtp: `otp${seatIndex}0000`,
+          status: 'PLAYING', currentStack: 30000,
+        },
+      });
+      await prisma.tablePlayer.create({
+        data: { tournamentId, tableId, userId, nickname: userId, seatPosition: seatIndex },
+      });
+    }
+
+    // initializeGame은 착석한 테이블에 스냅샷이 이미 있어야 시작을 허용한다
+    // (스냅샷 없는 테이블은 거부 — session.service.ts:478). 실제로는 입장이
+    // 첫 착석에서 만드는 초기 상태다.
+    await redisService.saveInitialTableSnapshots([{
+      tableId,
+      state: {
+        phase: GamePhase.WAITING,
+        players: [
+          { id: 'u1', tableId, nickname: 'u1', seatIndex: 0, stack: 30000, bet: 0, hasFolded: false, isAllIn: false, hasChecked: false, totalContributed: 0 },
+          { id: 'u2', tableId, nickname: 'u2', seatIndex: 1, stack: 30000, bet: 0, hasFolded: false, isAllIn: false, hasChecked: false, totalContributed: 0 },
+          ...Array(7).fill(null),
+        ],
+        pot: 0, currentBet: 0, buttonUser: 0, currentTurnSeatIndex: -1,
+        sidePots: [], ante: false, tournamentId, smallBlind: 100,
+      },
+    }]);
+  });
+
+  it('시작 트랜잭션이 뽑은 버튼 좌석을 DB에 남긴다', async () => {
+    process.env.MIN_PLAYERS_TO_START = '0';
+    try {
+      await sessionService.startSession(tournamentId);
+    } finally {
+      delete process.env.MIN_PLAYERS_TO_START;
+    }
+
+    const table = await prisma.table.findUniqueOrThrow({
+      where: { id: tableId },
+      select: { buttonUser: true },
+    });
+    const snapshot = await redisService.getSnapShot(tableId);
+
+    expect(table.buttonUser).not.toBeNull();
+    expect(`DB ${table.buttonUser}`).toBe(`DB ${snapshot!.buttonUser}`);
+  });
+});

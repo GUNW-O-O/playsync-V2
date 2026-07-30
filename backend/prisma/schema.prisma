@@ -136,6 +136,17 @@ model Tournament {
   createdAt  DateTime  @default(now())
   startedAt  DateTime?
   finishedAt DateTime?
+
+  /// 장애로 정지한 **누적** 시간(ms). 블라인드 시계의 기준점을 이만큼 뒤로
+  /// 민다.
+  ///
+  /// 누적인 이유: 대회 하나가 두 번 장애를 겪을 수 있고, 그때 Redis의
+  /// 기준점은 이미 첫 번째만큼 밀려 있으므로 두 번째는 더해야 맞다.
+  /// 덮어쓰면 첫 번째가 사라진다.
+  ///
+  /// `startedAt`과 뜻이 다르다. `startedAt`은 대회가 실제로 시작한 시각이고
+  /// 절대 밀리지 않는다. 미는 것은 Redis `BlindField.startedAt`이다.
+  pausedMs Int @default(0)
 }
 
 model Table {
@@ -148,6 +159,17 @@ model Table {
   tournament    Tournament    @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
 
   tablePlayers TablePlayer[]
+
+  /// 직전 핸드의 버튼 좌석. `TablePlayer.seatPosition`과 같은 좌표계다.
+  ///
+  /// `TableState`의 필드 중 DB에서 파생되지 않는 유일한 값이다 — 나머지는
+  /// 현재 사실(누가 어디 앉았고 칩이 얼마인가)에서 나오는데 버튼만 "지난
+  /// 핸드에 누가 버튼이었나"의 함수다. 그래서 스냅샷을 잃으면 이것만
+  /// 복구할 근거가 없다.
+  ///
+  /// 시작 전에는 값이 없다(`null`). 시작 트랜잭션이 첫 추첨 결과를 쓰고,
+  /// 그 뒤에는 핸드 종료 체크포인트가 갱신한다.
+  buttonUser Int?
 
   @@unique([tournamentId, id])
   // 번호는 물리 테이블을 가리킨다. 겹치면 딜러와 전광판이 서로 다른 테이블을
@@ -229,4 +251,18 @@ model DealerSession {
   tournamentId String     @unique
   tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
   tables       Table[]
+}
+
+/// 서버가 마지막으로 살아 있던 시각. 행이 하나다 — "한 행사장 한 프로세스"가
+/// 배치 단위라(backlog.md의 B9) 이 서버가 죽으면 그가 든 모든 대회가 같이
+/// 죽는다. 대회별로 다른 다운타임이 나올 수 없다.
+///
+/// Redis가 아니라 DB에 산다. Redis에 두면 Redis를 잃은 케이스에서 하트비트도
+/// 같이 사라져 다운타임을 알 방법이 없어진다 — 정확히 필요한 순간에 없다.
+///
+/// `@updatedAt`을 쓰지 않는다. 이 값은 **Redis ping이 성공했을 때만** 올라가야
+/// 하므로, 조건과 값의 관계가 코드 한 자리에 보여야 한다.
+model ServerHeartbeat {
+  id     String   @id @default("singleton")
+  beatAt DateTime
 }

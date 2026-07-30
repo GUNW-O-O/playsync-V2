@@ -518,8 +518,118 @@ describe('PlaysyncService.syncTableInventoryToDb', () => {
       sidePots: [], ante: false, tournamentId: TOURNAMENT, smallBlind: 100,
     };
 
-    const ok = await service.syncTableInventoryToDb(state);
+    const ok = await service.syncTableInventoryToDb(TABLE, state);
 
     expect(`체크포인트 ${ok ? '성공' : '실패'}`).toBe('체크포인트 실패');
+  });
+});
+
+/**
+ * T31 — 핸드 종료 체크포인트가 버튼 좌석도 같은 트랜잭션에 남기는지.
+ *
+ * 위 블록은 실패 경로(장부에 없는 사람)만 본다 — 거기서는 `Table` 행 자체가
+ * 없어도 참가 갱신이 먼저 P2025로 죽으므로 버튼 갱신 여부를 볼 수 없다.
+ * 여기서는 성공 경로를 봐야 하므로 `Table`·`TournamentParticipation` 행이
+ * 실제로 존재해야 한다.
+ */
+describe('PlaysyncService.syncTableInventoryToDb — 버튼 좌석', () => {
+  let redis: Redis;
+  let queueConnection: Redis;
+  let queue: Queue;
+  let prisma: PrismaClient;
+  let redisService: RedisService;
+  let playsync: PlaysyncService;
+  let tableId: string;
+  let tournamentId: string;
+
+  beforeAll(() => {
+    redis = createTestRedis();
+    queueConnection = createTestRedis({ maxRetriesPerRequest: null });
+    queue = new Queue('player-timeout', { connection: queueConnection });
+    prisma = createTestPrisma();
+  });
+
+  afterAll(async () => {
+    await queue.close();
+    await queueConnection.quit();
+    await redis.quit();
+    await closeTestPrisma(prisma);
+  });
+
+  beforeEach(async () => {
+    await truncateAll(prisma);
+    await flushTestRedis(redis);
+
+    redisService = new RedisService(redis);
+    playsync = new PlaysyncService(
+      queue, redisService, prisma as unknown as PrismaService, new EventEmitter2(),
+    );
+
+    const owner = await prisma.user.create({
+      data: { nickname: 'btn-owner', password: 'x', role: 'STORE_ADMIN' },
+    });
+    const store = await prisma.store.create({
+      data: { name: '버튼 체크포인트 상점', ownerId: owner.id },
+    });
+    const blind = await prisma.blindStructure.create({
+      data: {
+        name: '버튼 체크포인트 구조', storeId: store.id,
+        structure: [{ lv: 1, sb: 100, ante: false, duration: 20 }],
+      },
+    });
+    const tournament = await prisma.tournament.create({
+      data: {
+        name: '버튼 체크포인트 대회', type: 'TOURNAMENT', storeId: store.id, blindId: blind.id,
+        dealerOtpHash: 'unused-hash', startStack: 10000, avgStack: 10000, entryFee: 1000,
+        rebuyUntil: 5, isRegistrationOpen: true, itmCount: 1,
+        prizePayouts: [{ place: 1, percent: 100 }],
+      },
+    });
+    tournamentId = tournament.id;
+    const dealerSession = await prisma.dealerSession.create({ data: { tournamentId } });
+    const table = await prisma.table.create({
+      data: { tableOrder: 1, tournamentId, dealerId: dealerSession.id, buttonUser: 0 },
+    });
+    tableId = table.id;
+
+    await prisma.user.create({ data: { id: 'btn-u1', nickname: 'btn-u1', password: 'x' } });
+    await prisma.tournamentParticipation.create({
+      data: {
+        userId: 'btn-u1', tournamentId, playerOtp: 'btnotp01',
+        status: 'PLAYING', currentStack: 9000,
+      },
+    });
+
+    await redisService.saveInitialTableSnapshots([{
+      tableId,
+      state: {
+        phase: GamePhase.HAND_END,
+        players: [
+          {
+            id: 'btn-u1', tableId, nickname: 'btn-u1', seatIndex: 0,
+            stack: 9000, bet: 0, hasFolded: false, isAllIn: false,
+            hasChecked: false, totalContributed: 0,
+          },
+          ...Array(8).fill(null),
+        ],
+        pot: 0, currentBet: 0, buttonUser: 0, currentTurnSeatIndex: -1,
+        sidePots: [], ante: false, tournamentId, smallBlind: 100,
+      },
+    }]);
+  });
+
+  it('핸드 종료 체크포인트가 버튼 좌석도 같은 트랜잭션에 남긴다', async () => {
+    const state = await redisService.getSnapShot(tableId);
+    state!.buttonUser = 5;
+    await redisService.saveSnapShot(tableId, state!);
+
+    const ok = await playsync.syncTableInventoryToDb(tableId, state!);
+    expect(ok).toBe(true);
+
+    const table = await prisma.table.findUniqueOrThrow({
+      where: { id: tableId },
+      select: { buttonUser: true },
+    });
+    expect(`버튼 ${table.buttonUser}`).toBe('버튼 5');
   });
 });
