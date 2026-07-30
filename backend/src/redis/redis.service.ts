@@ -365,7 +365,13 @@ export class RedisService {
   }
 
   async setTournamentBlind(id: string, blindField: BlindField) {
-    await this.redis.hset(`tournament:${id}:info`, 'blindField', JSON.stringify(blindField));
+    const key = `tournament:${id}:info`;
+    await this.redis.hset(key, 'blindField', JSON.stringify(blindField));
+    // 같은 키(`tournament:{id}:info`)의 `setTournamentMeta`(`:278`)는
+    // `expire`를 부르는데 이쪽엔 없었다. `hset`은 기존 TTL을 리셋하지
+    // 않으므로, 빠뜨리면 이 키는 대회 시작 후 정확히 24시간에 죽는다 —
+    // `RecoveryService`의 기준점 밀기가 이 세터의 새 호출자다.
+    await this.redis.expire(key, 86400);
   }
 
   /**

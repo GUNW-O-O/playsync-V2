@@ -651,9 +651,22 @@ export class RecoveryService implements OnApplicationBootstrap {
 }
 ```
 
-`blind`가 있을 때 `nextLevelAt`을 다시 계산하지 않는 이유: `checkAndSyncBlindLevel`
-(`redis.service.ts:353`)이 `startedAt`으로부터 매번 다시 계산하고, 여러 칸을 한
-번에 뛰는 것도 이미 처리한다(`:378` 주석). 여기서 손대면 같은 계산이 두 곳이 된다.
+**정정(최종 리뷰 Important 1).** 아래 문단은 틀렸다 — 기준점을 밀면 거기서
+파생된 캐시(`currentBlindLv`, `nextLevelAt`, `isBreak`)도 함께 다시 세워야
+한다. `checkAndSyncBlindLevel`(`redis.service.ts:382`)에는 캐시 최적화 조기
+반환(`if (blind.nextLevelAt && now < blind.nextLevelAt) return { ...blind };`)이
+있어서, 재계산이 항상 도는 것이 아니다. `startedAt`만 밀면 낡은 `nextLevelAt`이
+그대로 나가 전광판 카운트다운이 0에 닿은 뒤 다운타임만큼 멈춘다. `nextLevelAt`에
+downtime을 더하는 것만으로도 부족하다 — 이번엔 캐시 분기가 켜지면서 낡은
+`currentBlindLv`가 나가 밀기가 되돌리려던 레벨 자체가 안 돌아온다. 실제
+구현(`recovery.service.ts`)은 민 기준점을 `getCurrentBlindLevel`에 다시 먹여
+파생 셋을 통째로 다시 만든다.
+
+> ~~`blind`가 있을 때 `nextLevelAt`을 다시 계산하지 않는 이유:
+> `checkAndSyncBlindLevel`(`redis.service.ts:353`)이 `startedAt`으로부터 매번
+> 다시 계산하고, 여러 칸을 한 번에 뛰는 것도 이미 처리한다(`:378` 주석). 여기서
+> 손대면 같은 계산이 두 곳이 된다.~~ — 이 문단이 놓친 것은 그 재계산이 캐시
+> 조기 반환 뒤에서만 일어난다는 점이다.
 
 - [ ] **Step 7: `RecoveryModule`을 만들고 `app.module.ts`에 등록한다**
 

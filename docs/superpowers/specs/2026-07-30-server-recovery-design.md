@@ -189,7 +189,7 @@ Redis 왕복이 성공할 때만 찍으면 그 구간도 자동으로 다운타�
 `@nestjs/schedule`이 리포에 없다. BullMQ는 있지만(`@nestjs/bullmq`) 반복 잡은
 Redis에 살고 at-least-once라 하트비트에는 중복이 노이즈다.
 
-**`setInterval` + `onModuleInit`/`onModuleDestroy`로 간다.** 새 의존성 0, 새 큐
+**`setInterval` + `onApplicationBootstrap`/`onModuleDestroy`로 간다.** 새 의존성 0, 새 큐
 0. `prisma.service.ts:53`이 이미 같은 라이프사이클 패턴을 쓰고 있어 배선이
 같다. Redis ping 조건이 코드에 명시적으로 보이는 것도 이쪽이다.
 

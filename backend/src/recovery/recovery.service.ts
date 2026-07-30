@@ -3,6 +3,7 @@ import { PlayerStatus, TournamentStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { buildTournamentMeta } from 'src/store/session/tournament-meta';
+import { getCurrentBlindLevel } from 'shared/util/util';
 // 엔진의 좌석 타입과 Prisma 모델 이름이 둘 다 `TablePlayer`다. 이 파일은
 // 양쪽을 다 쓰므로 import에서 가른다.
 import { TablePlayer as SeatPlayer, TableState, GamePhase } from 'src/game-engine/types';
@@ -45,22 +46,58 @@ export class RecoveryService implements OnApplicationBootstrap {
    * 그 안전성은 `entry`의 빈 스냅샷 fallback 금지에 의존한다(Task 3).
    */
   async recoverAll(): Promise<void> {
-    const downtime = await this.downtimeMs();
-    if (downtime === null) {
-      this.logger.log('하트비트가 없다 — 최초 부팅으로 보고 정지 시간 보정을 건너뛴다');
-    }
-
-    const tournaments = await this.prisma.tournament.findMany({
-      where: { status: TournamentStatus.ONGOING },
-      select: { id: true },
-    });
-
-    for (const t of tournaments) {
-      try {
-        await this.recoverTournament(t.id, downtime ?? 0);
-      } catch (e) {
-        this.logger.error(`대회 복구 실패 (tournament=${t.id})`, e as Error);
+    try {
+      const downtime = await this.downtimeMs();
+      if (downtime === null) {
+        this.logger.log('하트비트가 없다 — 최초 부팅으로 보고 정지 시간 보정을 건너뛴다');
       }
+
+      // 읽은 다운타임을 **소비 표시**한다. `HeartbeatService.beatOnce()`를
+      // 그대로 재사용하지 않는 이유는 그쪽이 Redis ping 성공을 조건으로 걸기
+      // 때문이다 — Redis가 아직 안 올라왔으면 찍지 않는데, Redis가 죽어
+      // 있다는 사실은 "이 구간은 이미 다운타임에 계상됐다"는 사실을 바꾸지
+      // 않는다. 그래서 여기서는 조건 없이 찍는다.
+      //
+      // 이 줄이 없으면: 하트비트 주기(30초) 안에 프로세스가 다시 뜰 때마다
+      // (컨테이너 재시작 루프, dev watch 재시작, 장애 중 운영자의 연속
+      // 재시작) 같은 구간을 몇 번이고 또 더한다 — `pausedMs`가 재시작
+      // 횟수에 비례해 불어나고, 되돌릴 API도 화면도 없다.
+      //
+      // **감수 지점.** 루프 **앞**에서 찍으므로, 아래 루프 중간에 프로세스가
+      // 죽으면 아직 처리하지 못한 대회는 이번 다운타임 보정을 잃는다. 그
+      // 손실은 유한하고 한 방향이다(과소계상 = 블라인드가 조금 앞선다) —
+      // 위에서 설명한 무한하고 누적되는 손실보다 낫다는 판단이다. 대회별로
+      // 소비 표시를 따로 남기려면 `Tournament`에 `recoveredBeatAt` 같은
+      // 컬럼이 필요한데, 이 티켓 범위에서는 과하다.
+      const now = new Date();
+      await this.prisma.serverHeartbeat.upsert({
+        where: { id: 'singleton' },
+        create: { id: 'singleton', beatAt: now },
+        update: { beatAt: now },
+      });
+
+      const tournaments = await this.prisma.tournament.findMany({
+        where: { status: TournamentStatus.ONGOING },
+        select: { id: true },
+      });
+
+      for (const t of tournaments) {
+        try {
+          await this.recoverTournament(t.id, downtime ?? 0);
+        } catch (e) {
+          this.logger.error(`대회 복구 실패 (tournament=${t.id})`, e as Error);
+        }
+      }
+    } catch (e) {
+      // `downtimeMs()`·위 하트비트 갱신·`tournament.findMany`는 대회
+      // 하나에 걸린 일이 아니라 이 함수 자체의 전제라, 위 대회 단위 catch가
+      // 감싸지 못한다. 여기서 안 잡으면 `onApplicationBootstrap`이 실패해
+      // 프로세스가 `listen()` 앞에서 멈춘다 — 헬스체크가 있는 배치에서는
+      // 그 자체가 재시작 루프의 방아쇠가 되고, 그 루프가 위 하트비트 소비
+      // 표시가 막으려는 문제를 다시 증폭시킨다. "복구 실패가 서비스 부재보다
+      // 낫다"는 판단은 이 파일 전체의 전제다 — 대회 단위 실패만 그 전제를
+      // 지키고 있었으므로 여기서도 같은 전제를 지킨다.
+      this.logger.error('부팅 복구 자체가 실패했다 — 서비스는 계속 띄운다', e as Error);
     }
   }
 
@@ -84,9 +121,31 @@ export class RecoveryService implements OnApplicationBootstrap {
     const blind = await this.redis.getTournamentBlind(tournamentId);
     if (blind) {
       if (downtime > 0) {
+        // 기준점을 밀면 **거기서 파생된 캐시도 같이 다시 세운다.** blindField는
+        // 기준점(`startedAt`) 하나와 그로부터 파생된 셋(`currentBlindLv`,
+        // `nextLevelAt`, `isBreak`)으로 되어 있고, `checkAndSyncBlindLevel`은
+        // `now < nextLevelAt`이면 재계산 없이 그 셋을 그대로 내보낸다
+        // (`redis.service.ts`의 캐시 분기).
+        //
+        // 그래서 `startedAt`만 밀면 두 값이 어긋난 채로 남는다. 밀린 기준점의
+        // `nextLevelAt`은 아직 과거라 재계산 경로에 걸려 레벨은 맞게 나오지만,
+        // 전광판 카운트다운은 0에 닿은 뒤 다운타임만큼 멈춘 채로 남는다.
+        // 반대로 `nextLevelAt`까지 같이 밀면서 `currentBlindLv`를 그대로 두면
+        // 이번엔 캐시 분기가 **켜져서** 낡은 레벨을 그대로 내보낸다 — 밀기가
+        // 되돌리려던 레벨 자체가 안 돌아온다.
+        //
+        // 파생값은 파생식으로 다시 만드는 것이 맞다. `checkAndSyncBlindLevel`이
+        // 쓰는 것과 같은 `getCurrentBlindLevel`을 같은 입력(민 기준점)에
+        // 먹인다 — 계산이 두 곳이 되는 것이 아니라, 캐시를 무효화하는 쪽이
+        // 캐시를 다시 채우는 것이다.
+        const startedAt = blind.startedAt + downtime;
+        const calculated = getCurrentBlindLevel(blind.blindStructure, startedAt);
         await this.redis.setTournamentBlind(tournamentId, {
           ...blind,
-          startedAt: blind.startedAt + downtime,
+          startedAt,
+          currentBlindLv: calculated.currentIndex,
+          nextLevelAt: calculated.nextLevelAt,
+          isBreak: calculated.isBreak,
         });
       }
     } else {
@@ -213,6 +272,23 @@ export class RecoveryService implements OnApplicationBootstrap {
     // 이때만 이 테이블의 재구성을 실패로 본다. `Table.buttonUser`에 다시
     // 쓰지는 않는다. 다음 핸드 종료 체크포인트가 정식으로 채운다.
     const buttonUser = table.buttonUser ?? this.drawFirstButton(table.id, seated);
+
+    // 버튼을 뽑은 뒤(= 이 재구성이 성공한다고 확정된 뒤)에 한다. `PLAYING`이
+    // 아닌 좌석 행(킥된 참가자, 우승자)을 남기면 좌석 하나가 죽는다 — 비트맵과
+    // 스냅샷은 그 자리를 비어 있다고 말하는데, `@@unique([tableId, seatPosition])`이
+    // 새 착석을 P2002로 막고 `releaseSeats`는 검사 1(스냅샷 점유자 대조)이
+    // 통과하지 않아 상점도 치울 수 없다 — 대회가 끝날 때까지 그 좌석과 그
+    // 테이블(occupied > 0)이 함께 묶인다. 장부(참가 행)는 건드리지 않는다 —
+    // `ELIMINATED`/`AWARDED`는 그대로 남아야 멱등 키가 유지된다.
+    const orphans = table.tablePlayers.filter(p => !stackOf.has(p.userId));
+    if (orphans.length > 0) {
+      await this.prisma.tablePlayer.deleteMany({
+        where: { tableId: table.id, seatPosition: { in: orphans.map(p => p.seatPosition) } },
+      });
+      this.logger.warn(
+        `참가가 끝난 좌석 행 ${orphans.length}개를 재구성과 함께 정리했다 (table=${table.id})`,
+      );
+    }
 
     const state: TableState = {
       phase: GamePhase.WAITING,

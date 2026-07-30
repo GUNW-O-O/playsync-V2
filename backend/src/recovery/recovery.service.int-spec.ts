@@ -143,11 +143,16 @@ describe('RecoveryService', () => {
 
   it('하트비트 행이 없으면 정지 시간 보정을 건너뛴다', async () => {
     const { tournamentId } = await seedOngoingTournament();
+    // 0은 컬럼 기본값과 같아서, "건드리지 않았다"와 "0으로 잘못 되돌렸다"를
+    // 구별하지 못한다(`increment: 0`으로 바꿔도 초록이다 — 최종 리뷰
+    // "판별력이 약한 것"). 0이 아닌 값을 미리 심어 실제로 손대지 않았음을
+    // 증명한다.
+    await prisma.tournament.update({ where: { id: tournamentId }, data: { pausedMs: 4242 } });
 
     await recovery.recoverAll();
 
     const t = await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } });
-    expect(t.pausedMs).toBe(0);
+    expect(t.pausedMs).toBe(4242);
   });
 
   it('정지 시간을 누적한다 — 두 번 복구하면 합이 더해진다', async () => {
@@ -167,6 +172,33 @@ describe('RecoveryService', () => {
 
     // 대입(`=`)이면 second가 30초쯤이 되어 빨개진다.
     expect(second).toBeGreaterThan(first + 25_000);
+  });
+
+  /**
+   * 최종 리뷰 Critical 1: `recoverAll`이 소비한 다운타임을 하트비트로 다시
+   * 찍지 않으면, 하트비트 주기(30초) 안에 프로세스가 다시 뜰 때(컨테이너
+   * 재시작 루프, dev watch, 운영자의 연속 재시작) 같은 구간을 또 더한다.
+   * 위 '정지 시간을 누적한다' 테스트는 두 번째 호출 전에
+   * `setHeartbeatAgo`로 하트비트를 **테스트가 직접 다시 찍어서** 이 결함에
+   * 닿지 않는다 — 여기서는 그 사이에 아무것도 다시 찍지 않는다.
+   */
+  it('복구가 하트비트를 소비한다 — 곧바로 다시 복구해도 두 번 더하지 않는다', async () => {
+    const { tournamentId } = await seedOngoingTournament();
+    await setHeartbeatAgo(60_000);
+
+    await recovery.recoverAll();
+    const first = (
+      await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } })
+    ).pausedMs;
+
+    // 하트비트를 다시 찍지 않는다 — 30초 안에 프로세스가 다시 뜬 상황이다.
+    await recovery.recoverAll();
+    const second = (
+      await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } })
+    ).pausedMs;
+
+    // 지금 코드는 second ≈ first + 60000이 되어 빨개진다.
+    expect(second - first).toBeLessThan(2_000);
   });
 
   it('블라인드 기준점을 대회당 한 번만 민다 — 테이블이 셋이어도', async () => {
@@ -195,6 +227,26 @@ describe('RecoveryService', () => {
     expect(blind).not.toBeNull();
     const expectedBaseAt = t.startedAt!.getTime() + t.pausedMs;
     expect(Math.abs(blind!.startedAt - expectedBaseAt)).toBeLessThan(1000);
+  });
+
+  /**
+   * 리뷰 finding(Important 2): 등록 마감을 **닫는** 유일한 코드는
+   * `checkAndSyncBlindLevel`(Redis)뿐이고, DB의 `Tournament.isRegistrationOpen`은
+   * 생성 시에만 쓰인다. `blindField`를 통째로 잃어 `buildTournamentMeta`로
+   * 다시 세울 때 DB 컬럼을 그대로 실으면, 이미 레벨로 마감됐던 등록이
+   * `true`로 되돌아간다 — 그 위에서 리바인이 다시 열리고 포인트가 실제로
+   * 빠진다.
+   */
+  it('메타를 다시 세울 때 등록 마감을 되돌리지 않는다', async () => {
+    // rebuyUntil을 지난 레벨에 있는 대회. blindField 없음 → 재구성 분기(2단계).
+    const { tournamentId } = await seedOngoingTournament({ startedAtMsAgo: 70_000 });
+    await prisma.tournament.update({ where: { id: tournamentId }, data: { rebuyUntil: 2 } });
+
+    await recovery.recoverAll();
+
+    const info = await redis.hget(`tournament:${tournamentId}:info`, 'isRegistrationOpen');
+    // 지금 코드는 DB 컬럼(true)을 그대로 실어 '1'이 나온다.
+    expect(`등록 ${info}`).toBe('등록 0');
   });
 
   it('한 대회의 복구가 실패해도 다른 대회는 복구된다', async () => {
@@ -245,6 +297,34 @@ describe('RecoveryService', () => {
 
     const synced = await redisService.checkAndSyncBlindLevel(tournamentId);
     expect(`레벨 ${synced!.currentBlindLv}`).toBe('레벨 0');
+  });
+
+  /**
+   * 최종 리뷰 Important 1: `nextLevelAt`은 `startedAt`에서 파생된 캐시다.
+   * 기준점만 밀고 파생값을 그대로 두면, `checkAndSyncBlindLevel`의 캐시
+   * 조기 반환(`now < nextLevelAt`)이 낡은 경계를 그대로 내보내 전광판
+   * 카운트다운이 0에 닿은 뒤 다운타임만큼 멈춘 채로 남는다.
+   *
+   * `nextLevelAt`을 **미래**로 두는 것이 핵심이다 — 위 '레벨이 되돌아온다'
+   * 테스트처럼 과거로 두면 캐시 분기를 건너뛰어 이 결함이 있는 입력을
+   * 스위트가 아예 비워 둔다. 반대로 그 테스트는 파생값을 **다시 계산하지
+   * 않고 더하기만** 하는 고침을 잡는다(캐시 분기가 켜지면서 낡은
+   * `currentBlindLv`가 나온다). 둘이 서로 어긋나는 입력이라 각각이 증명된다.
+   */
+  it('기준점을 밀 때 nextLevelAt도 같이 민다 — 캐시 분기가 낡은 경계를 내보내지 않는다', async () => {
+    const { tournamentId, structure } = await seedOngoingTournament();
+    const nextLevelAt = Date.now() + 40_000; // 미래 — 캐시 분기에 걸리는 입력
+    await redisService.setTournamentBlind(tournamentId, {
+      isBreak: false, startedAt: Date.now() - 20_000, currentBlindLv: 0,
+      nextLevelAt, serverTime: Date.now(), blindStructure: structure,
+    });
+
+    await setHeartbeatAgo(30_000);
+    await recovery.recoverAll();
+
+    const synced = await redisService.checkAndSyncBlindLevel(tournamentId);
+    // 지금 코드는 nextLevelAt이 그대로라 delta ≈ 0이 되어 빨개진다.
+    expect(synced!.nextLevelAt - nextLevelAt).toBeGreaterThan(25_000);
   });
 
   /**
@@ -308,7 +388,7 @@ describe('RecoveryService', () => {
       const [tableId] = tableIds;
       await prisma.table.update({ where: { id: tableId }, data: { buttonUser: 0 } });
       await seatPlayer({ tournamentId, tableId, seatPosition: 0, stack: 9000 });
-      await seatPlayer({
+      const eliminatedUserId = await seatPlayer({
         tournamentId, tableId, seatPosition: 3, stack: 0,
         status: PlayerStatus.ELIMINATED,
       });
@@ -318,6 +398,19 @@ describe('RecoveryService', () => {
       const state = await redisService.getSnapShot(tableId);
       expect(state!.players[3]).toBeNull();
       expect(state!.players[0]).not.toBeNull();
+
+      // 좌석 행까지 지워야 그 자리가 실제로 다시 팔린다. 남기면 비트맵은
+      // 0인데 `@@unique([tableId, seatPosition])`의 P2002로 막히는 죽은
+      // 좌석이 된다(리뷰 finding Important 3).
+      expect(await prisma.tablePlayer.count({ where: { tableId, seatPosition: 3 } })).toBe(0);
+      expect(await prisma.tablePlayer.count({ where: { tableId, seatPosition: 0 } })).toBe(1);
+
+      // 반대 방향: 장부(참가 행)는 건드리지 않는다. `ELIMINATED`가 그대로
+      // 남아야 상금·탈락 처리의 멱등 키가 유지된다.
+      const participation = await prisma.tournamentParticipation.findUniqueOrThrow({
+        where: { tournamentId_userId: { tournamentId, userId: eliminatedUserId } },
+      });
+      expect(participation.status).toBe(PlayerStatus.ELIMINATED);
     });
 
     it('스택을 currentStack에서 읽는다', async () => {

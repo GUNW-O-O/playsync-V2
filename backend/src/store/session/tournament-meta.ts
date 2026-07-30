@@ -42,8 +42,20 @@ export function buildTournamentMeta(
   const blindStructure = parseBlindStructure(game.blindStructure.structure);
   const blindInfo = getCurrentBlindLevel(blindStructure, blindBaseAt);
 
+  // 마감을 **닫는** 유일한 코드는 Redis만 쓴다(`redis.service.ts`의
+  // `checkAndSyncBlindLevel` — `curLv >= rebuyUntil`이면 `isRegistrationOpen`을
+  // '0'으로 내린다). `Tournament.isRegistrationOpen`(DB 컬럼)은 생성 시에만
+  // 쓰여서 레벨이 지나가도 `true`인 채로 남는다. 그래서 이 함수가 DB 컬럼을
+  // 그대로 실어 보내면, `blindField`를 통째로 잃어 이 경로로 다시 세우는
+  // 순간 이미 닫혔던 마감이 되돌아간다 — 그 위에서 리바인이 다시 열리고
+  // 포인트가 실제로 빠진다(T31 최종 리뷰 Important 2). 기준점의 레벨로
+  // `checkAndSyncBlindLevel`과 같은 판정식을 여기서도 적용해 마감을
+  // 파생시킨다. 대회 시작(`initializeGame`)은 기준점이 항상 레벨 0이고
+  // `rebuyUntil`은 그보다 크므로 이 식이 시작 경로에 영향을 주지 않는다.
+  const curLv = blindStructure[blindInfo.currentIndex]?.lv ?? 0;
+
   const dashboard: Dashboard = {
-    isRegistrationOpen: game.isRegistrationOpen,
+    isRegistrationOpen: game.isRegistrationOpen && curLv < game.rebuyUntil,
     totalPlayer: game.totalPlayers,
     activePlayer: game.activePlayers,
     // DB가 누적한 값을 그대로 쓴다. `entryFee * totalPlayers`로 다시 계산하면

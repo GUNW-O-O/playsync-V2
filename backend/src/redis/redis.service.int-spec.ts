@@ -279,6 +279,48 @@ describe('RedisService.rebuildSeatBitmap', () => {
  * isRegistrationOpen(해시 필드) 두 곳에 나뉘어 있어서다 — 둘의 갱신이 실제로
  * 같은 키에 반영되는지까지 봐야 의미가 있다.
  */
+/**
+ * 리뷰 finding(Minor 2): 같은 키(`tournament:{id}:info`)의 `setTournamentMeta`는
+ * `expire`를 부르는데 `setTournamentBlind`는 부르지 않았다. `hset`은 기존
+ * TTL을 리셋하지 않으므로, 빠뜨리면 이 키는 대회 시작 후 정확히 24시간에
+ * 죽는다. `RecoveryService`의 기준점 밀기가 이 세터의 새 호출자다.
+ */
+describe('RedisService.setTournamentBlind — TTL', () => {
+  let redis: Redis;
+  let service: RedisService;
+
+  const TOURNAMENT = 'tournament-blind-ttl';
+  const infoKey = `tournament:${TOURNAMENT}:info`;
+
+  beforeAll(() => {
+    redis = createTestRedis();
+    service = new RedisService(redis);
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+  });
+
+  beforeEach(async () => {
+    await flushTestRedis(redis);
+  });
+
+  it('TTL을 세운다 — setTournamentMeta와 같은 24시간', async () => {
+    await service.setTournamentBlind(TOURNAMENT, {
+      isBreak: false,
+      startedAt: Date.now(),
+      currentBlindLv: 0,
+      nextLevelAt: Date.now() + 600000,
+      serverTime: Date.now(),
+      blindStructure: [{ lv: 1, sb: 100, ante: false, duration: 20 }],
+    });
+
+    const ttl = await redis.ttl(infoKey);
+    // TTL이 없으면 -1이다. 값 자체(86400초)까지 정확히 볼 필요는 없다.
+    expect(ttl).toBeGreaterThan(0);
+  });
+});
+
 describe('RedisService.checkAndSyncBlindLevel — 등록 마감', () => {
   let redis: Redis;
   let service: RedisService;

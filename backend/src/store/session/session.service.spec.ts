@@ -377,6 +377,25 @@ describe('SessionService.startSession', () => {
     return { service, prisma, update, tableUpdate, setTournamentMeta, saveInitialTableSnapshots };
   };
 
+  /**
+   * 리뷰 finding(Minor 3): `tableUpdate` 목이 트랜잭션이 죽지 않게 하는
+   * 스캐폴딩으로만 쓰이고 어떤 테스트도 그 호출을 단언하지 않았다. "시작
+   * 트랜잭션이 버튼을 쓴다"를 단위 계층에서 한 줄로 볼 수 있는데 쓰지 않은
+   * 셈이다(제품 코드 자체는 통합 테스트가 이미 덮는다).
+   */
+  it('시작 트랜잭션이 테이블의 buttonUser를 쓴다', async () => {
+    const { service, tableUpdate } = setup();
+
+    await service.startSession('t1');
+
+    // 기본 seed: 테이블 하나, 좌석 하나(seatPosition 0) — 뽑을 수 있는
+    // 버튼이 0 하나뿐이라 결정적이다.
+    expect(tableUpdate).toHaveBeenCalledWith({
+      where: { id: 'table-1' },
+      data: { buttonUser: 0 },
+    });
+  });
+
   it('사람이 앉은 테이블에 스냅샷이 없으면 시작을 거부한다', async () => {
     // 조용히 빼고 진행하면 그 테이블만 상태 없이 시작한다. DB에는 사람이 앉아
     // 있고 PLAYING인데, 딜러는 첫 액션에서 '테이블 상태를 찾을 수 없습니다'를

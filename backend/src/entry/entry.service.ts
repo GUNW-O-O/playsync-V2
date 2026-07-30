@@ -139,6 +139,13 @@ export class EntryService {
     // `shouldBlockEmptySnapshot`(아래)의 입력이다. 락 안에서 다시 읽으면
     // 넣을 이유가 없는 읽기가 TTL 예산만 먹는다. 이 카운트는 아래 트랜잭션이
     // 좌석을 만들기 **전**에 읽으므로 지금 들어오는 사람 자신은 세지 않는다.
+    //
+    // 락 밖에서 읽으므로 아주 좁은 창이 남는다: 새 테이블에 두 사람이 거의
+    // 동시에 들어와 둘 다 `_count === 0`을 읽은 **뒤** 그 사이에 Redis가
+    // 유실되면, 늦게 락을 잡은 쪽이 `emptyTableState`로 앞선 사람을 지운다.
+    // 창은 최대 락 대기(5초)이고 그 안에 Redis가 죽어야 한다 — 가드를 넣기
+    // 전보다 좁아졌고, 락 안에 조회를 더하는 비용이 이 확률에 비해 크므로
+    // 감수한다(최종 리뷰).
     const table = await this.prisma.table.findUnique({
       where: { tournamentId_id: { tournamentId, id: dto.tableId } },
       select: {
@@ -161,7 +168,8 @@ export class EntryService {
     // 락 안의 검사(아래)는 그대로 남긴다 — 스냅샷은 이 지점과 락 사이에도
     // 사라질 수 있으므로 권위 있는 마지막 판정이 필요하다. 이건 그 앞에
     // 세우는 방어선이다.
-    if (this.shouldBlockEmptySnapshot(table, await this.redis.getSnapShot(dto.tableId))) {
+    const preSnapshot = await this.redis.getSnapShot(dto.tableId);
+    if (this.shouldBlockEmptySnapshot(table, preSnapshot)) {
       throw new ConflictException('테이블 상태를 복구하는 중입니다. 잠시 후 다시 시도해 주세요.');
     }
 
