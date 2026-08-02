@@ -65,20 +65,25 @@ npm run test           # 단위 테스트 (인프라 없음, 2초)
 npm run test:int       # 통합 테스트 (컨테이너 기동부터 자동)
 ```
 
-개발용 인프라는 `cd backend && docker-compose up -d` (PostgreSQL + Redis).
+개발용 인프라는 `cd backend && docker compose up -d`. PostgreSQL + Redis를 띄우고
+`seed` 서비스가 마이그레이션과 데모 시드를 한 번 돌리고 끝난다. 호스트에서 바로
+돌리려면 `npm run seed -w backend` — 같은 `backend/prisma/seed.ts`다.
+
+**시드는 지우고 다시 만든다.** 데모가 매번 같은 화면에서 시작해야 해서고, 그래서
+개발 DB의 기존 데이터가 사라진다. 통합 테스트는 별도 컨테이너(5433/6380)라 무관하다.
 
 ### 베이스라인
 
 타입 에러 0건, 테스트 전부 통과가 정상이다. CI(`.github/workflows/ci.yml`)가
 타입 체크 · 테스트 · 빌드를 돌린다.
 
-현재 기준선 (T31 완료 시점):
+현재 기준선 (T32 완료 시점):
 
 ```
 contract       60  (3 suites)
 백엔드 단위   177  (16 suites)
 프론트 단위    52  (14 files)
-통합          326  (26 suites)
+통합          328  (27 suites)
 타입 에러       0
 ```
 

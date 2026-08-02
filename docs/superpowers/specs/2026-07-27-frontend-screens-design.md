@@ -138,6 +138,16 @@
 
 ### `(player)` — 참가자 폰, 로그인만 요구
 
+> **이 절은 T28보다 앞선 서술이라 좌석 부분이 틀리다.** `POST /tournaments/payment`는
+> 이제 `{tournamentId}` 하나만 받는다 — 좌석 확정이 결제에서 입장으로 옮겨가면서
+> (T28) `acquireSeatLock`도 폐기됐다. 그래서 `/tournaments/[id]/seat`(좌석 선택)와
+> 좌석 경합 409 모달은 **없어진 화면**이고, 경합은 태블릿 쪽에서 `P2002`로 난다.
+> `/ticket`도 테이블·좌석 번호를 보여줄 수 없다(참가 행에 좌석 필드가 없다) —
+> 보여줄 것은 OTP뿐이다. 아래 표와 집계는 화면별 명세를 쓸 때 함께 고친다.
+>
+> **포인트 충전과 거래 내역도 뺐다(T32).** 데모가 보여줄 것은 대회 참여와 OTP
+> 흐름이고, 잔고는 시드가 세운다.
+
 | 경로 | 하는 일 | 덮이는 것 | 데이터 | 나가는 곳 |
 |---|---|---|---|---|
 | `/tournaments` | 가맹점 이름 검색 | — | `GET /tournaments/stores?id=` | 상점 대회 목록 |
@@ -145,7 +155,7 @@
 | `/tournaments/[id]` | 참가비·시작스택·상금분배·블라인드 확인 | — | `GET /tournaments/:id` | 좌석 선택 |
 | `/tournaments/[id]/seat` | 빈 좌석 선택 후 참가비 결제 | **좌석 경합 실패**(409) | `seatStatus` 비트맵 / `POST /tournaments/payment` | 참가 완료 |
 | `/tournaments/[id]/ticket` | 참가 OTP·테이블·좌석 번호 표시 | — | **미정 — 참가 OTP 없음 (B1)** | 끝. 폰 역할 종료 |
-| `/me` | 포인트 잔고, 참가 이력, 거래 내역 | — | **미정 — `GET /user/add` 하나뿐** | — |
+| `/me` | 참가 이력, 참가 OTP 재확인 | — | `GET /user/me/participations` | 끝. 폰 역할 종료 |
 
 ### `(terminal)` — 좌석 태블릿·딜러 태블릿, 공개
 
@@ -250,17 +260,11 @@ MVP 범위다. 대시보드 통계, 가맹점 문의, 계정 정지는 넣지 �
 
 화면을 세는 과정에서 나왔다. 전부 B6 이후에 처리한다.
 
-**보안 — `POST /auth/join`이 가입자 전원에게 `STORE_ADMIN`을 준다.**
-
-```ts
-// backend/src/auth/auth.service.ts:35
-data: { nickname: dto.nickname, password: hashedPassword, role: Role.STORE_ADMIN },
-```
-
-누구나 회원가입만 하면 `/stores/*` 가드를 통과하고, `POST /store`로 상점을,
-`POST /store/sessions`로 대회를 만들 수 있다. 프론트 미들웨어도 이 역할을 그대로
-신뢰한다. SaaS 온보딩으로 가면 자연히 고쳐진다 — 가입은 `USER`만 만들고
-`STORE_ADMIN`은 플랫폼이 발급한다. **B6 필수 항목.**
+~~**보안 — `POST /auth/join`이 가입자 전원에게 `STORE_ADMIN`을 준다.**~~
+**해결(T32).** 누구나 회원가입만 하면 `/stores/*` 가드를 통과하고 상점과 대회를
+만들 수 있었다. 상점 계정을 따로 만드는 경로가 없어 수동 테스트가 회원가입으로
+대신하던 잔재였다. 가입은 이제 `USER`만 만들고, `STORE_ADMIN`은 시드가
+발급한다 — SaaS 온보딩 화면이 설 자리이고 그 화면은 범위 밖이다.
 
 **`POST /store` 가드가 `STORE_ADMIN`을 허용한다.** SaaS라면 `PLATFORM_ADMIN`
 전용이어야 한다.

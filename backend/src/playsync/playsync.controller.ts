@@ -1,5 +1,4 @@
-import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
-import { PlayerActionDto } from 'shared/dto/playsync.dto';
+import { Controller, Get, Param, Req, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 import { PlaysyncService } from './playsync.service';
 
@@ -8,18 +7,6 @@ export class PlaysyncController {
   
   constructor(private readonly playsyncService: PlaysyncService) { }
   
-  @Get()
-  @UseGuards(JwtAuthGuard)
-  async findMyTable(@Req() req) {
-    const userId = req.user.userId;
-    const isDealer = req.user.role === 'DEALER';
-    const tableId = req.user.tableId;
-    if(isDealer) {
-      return await this.playsyncService.findDealerTable(tableId);
-    }
-    return await this.playsyncService.findMyTables(userId);
-  }
-  
   @Get(':id')
   @UseGuards(JwtAuthGuard)
   async joinTable(@Param('id') id: string, @Req() req) {
@@ -27,13 +14,11 @@ export class PlaysyncController {
     return await this.playsyncService.joinTable(id, userId);
   }
   
-  @Post(':id')
-  @UseGuards(JwtAuthGuard)
-  async handlePlayerAction(@Req() req, @Param('id') tableId: string, dto: PlayerActionDto) {
-    const userId = req.user.userId;
-    return await this.playsyncService.handleAction(userId, tableId, dto);
-  }
-  
+  // 액션 제출은 WS `PLAYER_ACTION` 하나뿐이다. 여기 있던 `POST :id`는 지웠다 —
+  // `dto`에 `@Body()`가 없어 Nest가 아무것도 주입하지 않았고(항상 undefined),
+  // 그래서 한 번도 동작한 적이 없다. 되살릴 이유도 없다: 인바운드 검증
+  // (contract의 `.strict()` zod 스키마)은 게이트웨이에만 있어서, 이 경로는
+  // 검증 없이 게임 상태를 쓰는 두 번째 문이 된다.
   @Get('dashboard/:tournamentId')
   async getDashboard(@Param('tournamentId') tournamentId: string) {
     return await this.playsyncService.getDashboardInfo(tournamentId);

@@ -8,7 +8,7 @@
 
 ```
 TypeScript · NestJS 11 · Next.js · PostgreSQL · Redis · zod contract · npm workspaces
-contract 60 · 백엔드 단위 177 · 프론트 52 · 통합 326 · 시나리오 11 · 타입 에러 0
+contract 60 · 백엔드 단위 177 · 프론트 52 · 통합 328 · 시나리오 11 · 타입 에러 0
 ```
 
 > **이 리포지토리가 하는 일**
@@ -27,7 +27,7 @@ V1은 혼자 짜고 혼자 눌러보며 완성한 MVP다. V2는 같은 코드를
 
 | | V1 | V2 |
 |---|---|---|
-| 검증 | 크롬 창 6개 띄워 손으로 눌러보기 | 단위 177 / 통합 326 / 시나리오 11. 실제 Redis·PostgreSQL 컨테이너 |
+| 검증 | 크롬 창 6개 띄워 손으로 눌러보기 | 단위 177 / 통합 328 / 시나리오 11. 실제 Redis·PostgreSQL 컨테이너 |
 | 테스트 코드 | `nest g` 스캐폴드 18개. 전부 `toBeDefined`고 경로를 못 잡아 import에서 죽고 있었다 | 버그마다 실패하는 테스트를 먼저 쓴다(TDD) |
 | CI | 없음 | 타입 체크 · 테스트 · 빌드 (`.github/workflows/ci.yml`) |
 | 코드 리뷰 | 없음 (1인 개발) | `backend/src` 전수 리뷰 → [`review.md`](./docs/review.md) → 27개 발견 |
@@ -396,7 +396,7 @@ npm workspaces 모노레포.
 
 ```
 contract       60  (3 suites)      백엔드 단위   177  (16 suites)
-프론트 단위    52  (14 files)      통합         326  (26 suites)
+프론트 단위    52  (14 files)      통합         328  (27 suites)
 ```
 
 1단계를 닫은 시점이 contract 44 / 단위 122 / 통합 199였다. 늘어난 것은 전부
@@ -440,8 +440,7 @@ contract       60  (3 suites)      백엔드 단위   177  (16 suites)
 Node.js와 Docker가 필요하다.
 
 ```bash
-cd backend && docker-compose up -d   # PostgreSQL + Redis
-npx prisma migrate dev               # 마이그레이션
+cd backend && docker compose up -d   # PostgreSQL + Redis + 마이그레이션 + 데모 시드
 
 # 루트에서
 npm run dev:backend    # NestJS watch (http://localhost:3001)
@@ -449,6 +448,19 @@ npm run dev:frontend   # Next dev     (http://localhost:3000)
 npm run test           # 단위 테스트. 인프라 없이 2초
 npm run test:int       # 통합 테스트. 컨테이너 기동부터 자동
 ```
+
+`compose up`의 `seed` 서비스가 마이그레이션과 시드를 한 번 돌리고 끝난다.
+호스트에서 바로 돌리는 빠른 길도 있다 — `npm run seed -w backend`. 어느 쪽이든
+같은 [`backend/prisma/seed.ts`](./backend/prisma/seed.ts)다.
+
+**시드는 덮어쓰지 않고 지우고 다시 만든다.** 데모가 매번 같은 화면에서
+시작해야 하기 때문이다. 그래서 개발 DB의 기존 데이터가 사라진다.
+
+시드가 세우는 것은 **무대까지**다 — 상점·대회(`PENDING`)·테이블 둘·결제를
+마친 참가자 일곱. 착석도 대회 시작도 하지 않는다. 그 둘이 화면에서 보여줄
+장면 자체이기 때문이다(입장은 OTP를 받는 순간 좌석을 확정하고, 시작은 버튼을
+추첨해 스냅샷을 올리는 트랜잭션이다). 딜러 OTP는 해시로만 저장되므로 시드가
+stdout에 찍는 값이 유일한 열람 경로다.
 
 `backend/.env`:
 

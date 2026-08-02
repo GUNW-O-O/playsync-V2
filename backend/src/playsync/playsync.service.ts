@@ -47,33 +47,6 @@ export class PlaysyncService {
     }
   }
 
-  async findMyTables(userId: string) {
-    const players = await this.prisma.tablePlayer.findMany({
-      where: { userId: userId },
-      include: {
-        tournament: {
-          select: {
-            name: true,
-          }
-        },
-        table: {
-          select: {
-            tableOrder: true,
-          }
-        }
-      }
-    });
-    if (!players) return null;
-    return players;
-  }
-  async findDealerTable(tableId: string) {
-    const table = await this.prisma.table.findMany({
-      where: { id: tableId }
-    });
-    if (!table) return null;
-    return table;
-  }
-
   /**
    * @param expectedTimerEpoch 타임아웃 프로세서가 넘기는 타이머 세대.
    *   자기가 예약된 세대가 아니면 낡은 잡이므로 아무것도 하지 않는다.
