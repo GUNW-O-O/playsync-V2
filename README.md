@@ -447,6 +447,7 @@ npm run dev:backend    # NestJS watch (http://localhost:3001)
 npm run dev:frontend   # Next dev     (http://localhost:3000)
 npm run test           # 단위 테스트. 인프라 없이 2초
 npm run test:int       # 통합 테스트. 컨테이너 기동부터 자동
+npm run test:e2e       # 촬영 하네스(Playwright). 개발 서버는 떠 있으면 재사용
 ```
 
 `compose up`의 `seed` 서비스가 마이그레이션과 시드를 한 번 돌리고 끝난다.
@@ -461,6 +462,10 @@ npm run test:int       # 통합 테스트. 컨테이너 기동부터 자동
 장면 자체이기 때문이다(입장은 OTP를 받는 순간 좌석을 확정하고, 시작은 버튼을
 추첨해 스냅샷을 올리는 트랜잭션이다). 딜러 OTP는 해시로만 저장되므로 시드가
 stdout에 찍는 값이 유일한 열람 경로다.
+
+같은 내용이 리포 루트 `.demo-seed.json`에도 떨어진다(gitignore). 촬영 스크립트가
+대회를 이름이 아니라 **id로** 가리키기 위해서다 — 자세한 것은
+[`frontend/e2e/README.md`](./frontend/e2e/README.md)에 있다.
 
 `backend/.env`:
 
