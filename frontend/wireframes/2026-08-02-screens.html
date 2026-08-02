@@ -1,0 +1,1274 @@
+<title>Playsync V2 — 와이어프레임</title>
+<style>
+  /* ─────────────────────────────────────────────────────────────
+     세 개의 세계. 하나의 시스템으로 묶지 않는다.
+
+     ① 상점 콘솔 — DESIGN.md(Carbon) 그대로. 사무실 PC 앞 60cm.
+     ② 참가자 폰 — Carbon 톤만. 좁은 폭에 맞춰 밀도를 푼다.
+     ③ 전광판 · 태블릿 — Carbon 아님. 읽는 거리와 조명이 다르다.
+
+     태블릿 둘은 **스크롤이 없다.** 16:9 안에서 전부 끝나야 한다 —
+     의자에 고정된 기기라 손가락으로 화면을 밀 이유가 없어야 하고,
+     밀어야 보이는 정보가 있으면 그건 못 본 정보다.
+     ───────────────────────────────────────────────────────────── */
+
+  :root {
+    --page:        #f7f7f5;
+    --page-ink:    #161616;
+    --page-muted:  #56565a;
+    --page-line:   #dcdcd8;
+    --page-accent: #0f62fe;
+    --page-card:   #ffffff;
+
+    /* ① Carbon — 상점 콘솔 · 폰 */
+    --canvas:     #ffffff;
+    --surface:    #f4f4f4;
+    --ink:        #161616;
+    --ink-muted:  #525252;
+    --ink-subtle: #8c8c8c;
+    --hairline:   #e0e0e0;
+    --blue:       #0f62fe;
+
+    /* ③-a 전광판 */
+    --sb-bg:    #08090a;
+    --sb-ink:   #ffffff;
+    --sb-dim:   #6e7479;
+    --sb-live:  #ffb000;
+    --sb-break: #3ddc97;
+
+    /* ③-b 태블릿 */
+    --tb-bg:     #101315;
+    --tb-panel:  #191d20;
+    --tb-line:   #2b3134;
+    --tb-ink:    #eef2f3;
+    --tb-muted:  #9aa4a8;
+    --tb-sub:    #6b7579;
+    --tb-act:    #4cc2a8;
+    --felt:      #123b33;
+    --felt-edge: #1c5347;
+    --felt-rail: #2a1c14;
+    --card-face: #e9e4d8;
+
+    --ok:   #24a148;
+    --warn: #f1c21b;
+    --err:  #da1e28;
+
+    --sans: ui-sans-serif, system-ui, "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+    --mono: ui-monospace, "Cascadia Mono", Consolas, "D2Coding", monospace;
+    --cond: "Arial Narrow", "Roboto Condensed", "Helvetica Neue Condensed", var(--sans);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root { --page:#131316; --page-ink:#ececef; --page-muted:#9a9aa2; --page-line:#2c2c32; --page-accent:#6ba0ff; --page-card:#1b1b20; }
+  }
+  :root[data-theme="dark"] { --page:#131316; --page-ink:#ececef; --page-muted:#9a9aa2; --page-line:#2c2c32; --page-accent:#6ba0ff; --page-card:#1b1b20; }
+  :root[data-theme="light"] { --page:#f7f7f5; --page-ink:#161616; --page-muted:#56565a; --page-line:#dcdcd8; --page-accent:#0f62fe; --page-card:#ffffff; }
+
+  *, *::before, *::after { box-sizing: border-box; }
+
+  body {
+    margin: 0; background: var(--page); color: var(--page-ink);
+    font-family: var(--sans); font-size: 16px; line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--page-accent); }
+  :focus-visible { outline: 2px solid var(--page-accent); outline-offset: 2px; }
+
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 24px 120px; }
+
+  header.masthead { padding: 72px 0 40px; border-bottom: 1px solid var(--page-line); margin-bottom: 48px; }
+  .eyebrow { font-size: 13px; letter-spacing: 0.08em; color: var(--page-muted); margin: 0 0 20px; }
+  h1 { font-size: clamp(34px, 5.2vw, 58px); font-weight: 300; line-height: 1.12; letter-spacing: -0.4px; margin: 0 0 24px; text-wrap: balance; }
+  .lede { max-width: 62ch; font-size: 18px; line-height: 1.55; color: var(--page-muted); margin: 0 0 10px; }
+  .lede strong { color: var(--page-ink); font-weight: 600; }
+  .lede code, .band-note code, .sources code, .qcard code { font-family: var(--mono); font-size: 0.92em; }
+
+  .worlds { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); margin-top: 28px; }
+  .world { border: 1px solid var(--page-line); background: var(--page-card); padding: 14px 16px; }
+  .world b { display: block; font-size: 14px; margin-bottom: 4px; }
+  .world span { font-size: 13px; color: var(--page-muted); line-height: 1.5; display: block; }
+
+  section.band { margin: 0 0 96px; }
+  .band-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px 20px; padding-bottom: 14px; border-bottom: 1px solid var(--page-line); margin-bottom: 12px; }
+  .band-head h2 { font-size: 30px; font-weight: 400; letter-spacing: -0.2px; margin: 0; }
+  .band-meta { font-family: var(--mono); font-size: 13px; color: var(--page-muted); }
+  .band-note { max-width: 68ch; color: var(--page-muted); font-size: 15px; margin: 0 0 32px; }
+  .band-note strong { color: var(--page-ink); }
+
+  .screen { margin: 0 0 44px; }
+  .screen-label { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; margin: 0 0 12px; }
+  .screen-label .route { font-family: var(--mono); font-size: 14px; font-weight: 600; }
+  .screen-label .job { font-size: 14px; color: var(--page-muted); }
+  .screen-label .overlay-tag { font-size: 12px; letter-spacing: 0.04em; color: var(--page-muted); border: 1px solid var(--page-line); padding: 2px 8px; }
+
+  .frame { border: 1px solid var(--page-line); overflow: hidden; }
+  .frame.carbon { background: var(--canvas); color: var(--ink); letter-spacing: 0.16px; }
+  .frame.tbl    { background: var(--tb-bg);  color: var(--tb-ink); }
+  .frame.score  { background: var(--sb-bg);  color: var(--sb-ink); }
+
+  .frame-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 7px 14px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.03em; }
+  .frame.carbon .frame-bar { background: var(--surface); color: var(--ink-subtle); border-bottom: 1px solid var(--hairline); }
+  .frame.tbl    .frame-bar { background: var(--tb-panel); color: var(--tb-sub); border-bottom: 1px solid var(--tb-line); }
+
+  .frame-body { padding: 22px; }
+
+  /* 태블릿: 16:9 안에서 전부 끝난다. 안쪽 어디에도 스크롤이 없다. */
+  .tablet { aspect-ratio: 16 / 9; display: flex; flex-direction: column; overflow: hidden; }
+  .tablet > .t-bar { flex: 0 0 auto; }
+  .tablet > .t-main { flex: 1 1 auto; min-height: 0; display: flex; }
+  .tablet > .t-foot { flex: 0 0 auto; padding: 10px 14px 12px; border-top: 1px solid var(--tb-line); }
+
+  .sources { display: grid; grid-template-columns: 100px 1fr; gap: 4px 14px; margin: 12px 0 0; padding: 12px 14px; background: var(--page-card); border: 1px solid var(--page-line); font-size: 13px; }
+  .sources dt { color: var(--page-muted); font-size: 12px; letter-spacing: 0.04em; line-height: 1.35; }
+  .sources dd { margin: 0; }
+  .sources strong { color: var(--page-ink); }
+
+  .row { display: flex; gap: 12px; }
+  .row.wrap { flex-wrap: wrap; }
+  .row.between { justify-content: space-between; }
+  .row.center { align-items: center; }
+  .col { display: flex; flex-direction: column; gap: 12px; }
+  .grow { flex: 1 1 0; min-width: 0; }
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  .kicker { font-size: 11px; letter-spacing: 0.06em; margin: 0 0 4px; }
+  .frame.carbon .kicker { color: var(--ink-subtle); }
+  .frame.tbl    .kicker { color: var(--tb-sub); }
+
+  .stat { display: flex; flex-direction: column; gap: 2px; }
+  .stat .v { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 26px; font-weight: 300; line-height: 1.1; }
+  .stat .v.sm { font-size: 19px; }
+
+  .tile { padding: 16px; }
+  .frame.carbon .tile { border: 1px solid var(--hairline); }
+  .frame.carbon .tile.raised { background: var(--surface); }
+  .frame.tbl    .tile { border: 1px solid var(--tb-line); background: var(--tb-panel); }
+
+  .btn { display: inline-flex; align-items: center; justify-content: center; padding: 12px 16px; font-size: 14px; border: 1px solid transparent; white-space: nowrap; }
+  .frame.carbon .btn.primary   { background: var(--blue); color: #fff; }
+  .frame.carbon .btn.secondary { background: var(--ink); color: #fff; }
+  .frame.carbon .btn.tertiary  { color: var(--blue); border-color: var(--blue); }
+  .frame.carbon .btn.ghost     { color: var(--ink-muted); border-color: var(--hairline); }
+  .frame.tbl .btn.primary   { background: var(--tb-act); color: #06201a; font-weight: 600; }
+  .frame.tbl .btn.secondary { background: var(--tb-line); color: var(--tb-ink); }
+  .frame.tbl .btn.ghost     { color: var(--tb-muted); border-color: var(--tb-line); }
+  .frame.tbl .btn.danger    { background: #a2191f; color: #fff; }
+  .btn.sm { padding: 7px 10px; font-size: 12.5px; }
+  .btn.big { padding: 14px 16px; font-size: 15px; }
+  .btn.xl  { padding: 18px 18px; font-size: 18px; font-weight: 600; }
+  .btn[data-disabled] { opacity: 0.35; }
+
+  .field { padding: 11px 14px; font-size: 14px; border-bottom: 1px solid; }
+  .frame.carbon .field { background: var(--surface); border-bottom-color: var(--ink); color: var(--ink-subtle); }
+  .frame.tbl    .field { background: var(--tb-panel); border-bottom-color: var(--tb-sub); color: var(--tb-sub); }
+
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; font-size: 12px; }
+  .pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .pill.ok   { color: var(--ok);  background: rgba(36,161,72,0.12); }
+  .pill.warn { color: #8a6d0b;    background: rgba(241,194,27,0.18); }
+  .pill.err  { color: var(--err); background: rgba(218,30,40,0.12); }
+  .pill.idle { color: var(--ink-subtle); background: var(--surface); }
+  .frame.tbl .pill.warn { color: var(--warn); background: rgba(241,194,27,0.14); }
+  .frame.tbl .pill.err  { color: #ff8389;     background: rgba(218,30,40,0.20); }
+  .frame.tbl .pill.idle { color: var(--tb-sub); background: var(--tb-panel); }
+
+  .rule { height: 1px; }
+  .frame.carbon .rule { background: var(--hairline); }
+  .frame.tbl    .rule { background: var(--tb-line); }
+
+  table.list { width: 100%; border-collapse: collapse; font-size: 14px; }
+  table.list th { text-align: left; font-size: 11px; font-weight: 400; letter-spacing: 0.06em; padding: 8px 12px; }
+  table.list td { padding: 10px 12px; }
+  .frame.carbon table.list th { color: var(--ink-subtle); background: var(--surface); }
+  .frame.carbon table.list td { border-top: 1px solid var(--hairline); }
+  .frame.tbl table.list th { color: var(--tb-sub); background: var(--tb-panel); }
+  .frame.tbl table.list td { border-top: 1px solid var(--tb-line); }
+  table.list td.n { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  .muted { color: var(--ink-muted); }
+  .frame.tbl .muted { color: var(--tb-muted); }
+  .subtle { font-size: 13px; color: var(--ink-subtle); }
+  .frame.tbl .subtle { color: var(--tb-sub); }
+
+  .check { width: 16px; height: 16px; display: inline-block; vertical-align: -3px; border: 1px solid var(--ink-subtle); background: var(--canvas); }
+  .check[data-on] { background: var(--blue); border-color: var(--blue); position: relative; }
+  .check[data-on]::after { content: ""; position: absolute; left: 4px; top: 1px; width: 5px; height: 9px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(42deg); }
+
+  /* ── 콘솔의 테이블 도식 ─────────────────────────────────── */
+
+  .seatmap { position: relative; aspect-ratio: 3 / 2; background: var(--surface); border: 1px solid var(--hairline); }
+  .seatmap .oval { position: absolute; inset: 16% 10%; border: 1px solid var(--ink-subtle); border-radius: 46% / 58%; background: var(--canvas); }
+  .mseat { position: absolute; width: 74px; margin-left: -37px; margin-top: -19px; padding: 5px 6px; text-align: center; background: var(--canvas); border: 1px solid var(--hairline); font-size: 10.5px; line-height: 1.3; }
+  .mseat .i  { display: block; font-family: var(--mono); color: var(--ink-subtle); font-size: 9.5px; }
+  .mseat .nm { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mseat .st { display: block; font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--ink-muted); font-size: 10px; }
+  .mseat[data-empty] { border-style: dashed; color: var(--ink-subtle); background: transparent; }
+  .mseat[data-sel]   { border-color: var(--blue); box-shadow: 0 0 0 2px rgba(15,98,254,0.22); }
+  .mdealer { position: absolute; left: 50%; top: 7%; transform: translate(-50%,-50%); padding: 5px 12px; font-size: 10.5px; letter-spacing: 0.06em; background: var(--ink); color: #fff; }
+
+  /* ── 전광판 ────────────────────────────────────────────── */
+
+  .sb { padding: 30px 34px 26px; }
+  .sb-top { display: flex; justify-content: space-between; align-items: baseline; font-family: var(--cond); font-size: 15px; letter-spacing: 0.16em; color: var(--sb-dim); text-transform: uppercase; padding-bottom: 16px; border-bottom: 1px solid #1b1f22; }
+  .sb-main { display: flex; gap: 44px; align-items: flex-end; padding: 26px 0 28px; flex-wrap: wrap; }
+  .sb-block { display: flex; flex-direction: column; gap: 6px; }
+  .sb-cap { font-family: var(--cond); font-size: 14px; letter-spacing: 0.18em; color: var(--sb-dim); text-transform: uppercase; }
+  .sb-huge { font-family: var(--cond); font-variant-numeric: tabular-nums; font-size: clamp(56px, 12vw, 140px); font-weight: 700; line-height: 0.86; letter-spacing: -0.01em; }
+  .sb-huge.live { color: var(--sb-live); }
+  .sb-mid { font-family: var(--cond); font-variant-numeric: tabular-nums; font-size: clamp(26px, 4.4vw, 48px); font-weight: 700; line-height: 1; color: var(--sb-dim); }
+  .sb-strip { display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid #1b1f22; }
+  .sb-cell { padding: 18px 4px 4px; }
+  .sb-cell + .sb-cell { border-left: 1px solid #1b1f22; padding-left: 20px; }
+  .sb-cell .n { font-family: var(--cond); font-variant-numeric: tabular-nums; font-size: clamp(30px, 5vw, 54px); font-weight: 700; line-height: 1; }
+  .sb-prizes { display: flex; gap: 34px; flex-wrap: wrap; border-top: 1px solid #1b1f22; margin-top: 22px; padding-top: 18px; }
+  .sb-prize { display: flex; align-items: baseline; gap: 10px; }
+  .sb-prize .p { font-family: var(--cond); font-size: 17px; letter-spacing: 0.14em; color: var(--sb-dim); }
+  .sb-prize .a { font-family: var(--cond); font-variant-numeric: tabular-nums; font-size: clamp(22px, 3.2vw, 34px); font-weight: 700; }
+
+  .sb-break-screen { padding: 54px 34px; text-align: center; }
+  .sb-break-screen .lbl { font-family: var(--cond); font-size: clamp(20px, 3vw, 30px); letter-spacing: 0.3em; color: var(--sb-break); text-transform: uppercase; margin-bottom: 14px; }
+  .sb-break-screen .clock { font-family: var(--cond); font-variant-numeric: tabular-nums; font-size: clamp(70px, 15vw, 170px); font-weight: 700; line-height: 0.9; color: var(--sb-break); }
+  .sb-break-screen .next { font-family: var(--cond); font-size: clamp(17px, 2.4vw, 26px); letter-spacing: 0.14em; color: var(--sb-dim); margin-top: 20px; }
+
+  /* ── 펠트 ──────────────────────────────────────────────── */
+
+  /* 좌우 여백은 좌석이 레일 밖으로 걸터앉을 자리다 — 실제로 사람은 테이블
+     가장자리에 앉지 안쪽에 앉지 않는다. */
+  .felt-col { flex: 1 1 auto; min-width: 0; padding: 12px 32px; display: flex; align-items: center; justify-content: center; }
+  .t-side { flex: 0 0 232px; border-left: 1px solid var(--tb-line); padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; background: #0c0f10; overflow: hidden; }
+
+  .felt-holder { width: 100%; max-width: 460px; }
+  .felt {
+    position: relative; aspect-ratio: 3 / 2;
+    border-radius: 44% / 56%;
+    background: radial-gradient(ellipse at 50% 44%, var(--felt-edge) 0%, var(--felt) 60%, #0c2c25 100%);
+    border: 5px solid var(--felt-rail);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06);
+  }
+
+  .dealer-post { position: absolute; left: 50%; transform: translate(-50%,-50%); padding: 4px 13px; background: var(--felt-rail); color: #d8c3ae; border: 1px solid #4a3627; font-size: 10px; letter-spacing: 0.14em; white-space: nowrap; }
+  .dealer-post.top { top: 1%; }
+  .dealer-post.bottom { top: 99%; }
+
+  .seat { position: absolute; width: 76px; margin-left: -38px; margin-top: -18px; padding: 4px 6px; background: var(--tb-panel); border: 1px solid var(--tb-line); font-size: 10.5px; line-height: 1.28; }
+  .seat .i  { display: block; font-family: var(--mono); font-size: 9px; color: var(--tb-sub); }
+  .seat .nm { display: block; color: var(--tb-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .seat .st { display: block; font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--tb-muted); }
+  .seat[data-state="me"]     { border-color: var(--tb-act); background: #16302a; }
+  .seat[data-state="me"] .nm { color: var(--tb-act); font-weight: 600; }
+  .seat[data-state="turn"]   { border-color: var(--warn); box-shadow: 0 0 0 2px rgba(241,194,27,0.28); }
+  .seat[data-state="folded"] { opacity: 0.34; }
+  .seat[data-state="allin"]  { border-color: var(--warn); }
+  .seat[data-state="empty"]  { border-style: dashed; background: transparent; color: var(--tb-sub); }
+  .seat .badge { position: absolute; top: -7px; right: -7px; width: 17px; height: 17px; border-radius: 50%; display: grid; place-items: center; font-family: var(--mono); font-size: 9px; font-weight: 700; background: #f4f4f4; color: #161616; }
+  .seat .bet { position: absolute; left: 50%; transform: translateX(-50%); bottom: -17px; font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 10px; color: var(--warn); white-space: nowrap; }
+
+  .pot { position: absolute; left: 50%; top: 24%; transform: translate(-50%,-50%); text-align: center; }
+  .pot .k { font-size: 9.5px; letter-spacing: 0.14em; color: #78b7a7; }
+  .pot .v { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 26px; font-weight: 300; color: #eefbf6; line-height: 1.05; }
+  .pot .side { font-family: var(--mono); font-size: 10px; color: #92cfc0; }
+
+  /* ★ 시그니처 — 카드의 개수는 보이고 얼굴은 보이지 않는다 */
+  .board { position: absolute; left: 50%; top: 56%; transform: translate(-50%,-50%); display: flex; flex-direction: column; align-items: center; gap: 7px; }
+  .board-slots { display: flex; gap: 6px; }
+  .slot { width: 32px; height: 45px; }
+  .slot[data-dealt] { background: var(--card-face); box-shadow: 0 1px 3px rgba(0,0,0,0.45); }
+  .slot:not([data-dealt]) { border: 1px dashed rgba(190,230,218,0.38); background: rgba(0,0,0,0.22); box-shadow: inset 0 1px 3px rgba(0,0,0,0.4); }
+  .board-cap { font-size: 9.5px; letter-spacing: 0.06em; color: #87c2b3; text-align: center; }
+
+  .actionbar { display: flex; gap: 8px; }
+  .actionbar .btn { flex: 1 1 0; }
+  .slider { margin-top: 8px; height: 28px; background: var(--tb-panel); border: 1px solid var(--tb-line); display: flex; align-items: center; padding: 0 12px; gap: 12px; font-family: var(--mono); font-size: 11px; color: var(--tb-muted); }
+  .slider .track { flex: 1; height: 3px; background: var(--tb-line); position: relative; }
+  .slider .track::after { content: ""; position: absolute; left: 34%; top: 50%; width: 12px; height: 12px; margin: -6px 0 0 -6px; background: var(--tb-act); }
+
+  /* 대기 화면의 자리 고르기 도식.
+     번호 버튼 아홉 개를 한 줄로 늘어놓으면 "4번"이 방 안 어디인지 알 수 없다.
+     게임 화면과 같은 배치·같은 번호를 작게 보여줘 눈앞의 의자와 겹치게 한다. */
+  .pickmap { position: relative; aspect-ratio: 5 / 3; max-width: 330px; }
+  .pickmap .oval {
+    position: absolute; inset: 14% 12%;
+    border-radius: 44% / 56%;
+    background: radial-gradient(ellipse at 50% 44%, var(--felt-edge) 0%, var(--felt) 70%);
+    border: 3px solid var(--felt-rail);
+  }
+  .pickmap .dealer-post { top: 5%; font-size: 9px; padding: 3px 10px; }
+  .pseat {
+    position: absolute; width: 28px; height: 28px; margin: -14px 0 0 -14px;
+    display: grid; place-items: center;
+    font-family: var(--mono); font-size: 12px;
+    background: var(--tb-panel); border: 1px solid var(--tb-line); color: var(--tb-ink);
+  }
+  .pseat[data-taken] { border-style: dashed; color: var(--tb-sub); background: transparent; }
+  .pseat[data-pick]  { background: var(--tb-act); border-color: var(--tb-act); color: #06201a; font-weight: 700; }
+
+  /* 페이즈 표시 — 옆 열 맨 위 */
+  .phase-box { border: 1px solid var(--tb-line); background: var(--tb-panel); padding: 10px 12px; }
+  .phase-name { font-size: 21px; font-weight: 600; line-height: 1.1; letter-spacing: 0.02em; }
+  .phase-mini { display: flex; gap: 4px; margin-top: 8px; }
+  .phase-mini i { width: 15px; height: 21px; display: block; }
+  .phase-mini i[data-dealt] { background: var(--card-face); }
+  .phase-mini i:not([data-dealt]) { border: 1px dashed var(--tb-sub); }
+  .phase-sub { font-size: 11px; color: var(--tb-sub); margin-top: 6px; }
+
+  .overlay-stage { position: relative; background: var(--tb-bg); }
+  .scrim { position: absolute; inset: 0; background: repeating-linear-gradient(135deg, rgba(255,255,255,0.028) 0 8px, transparent 8px 16px); }
+  .modal { position: relative; max-width: 430px; margin: 0 auto; background: var(--tb-panel); border: 1px solid var(--tb-line); padding: 24px; }
+  .modal.wide { max-width: 560px; }
+  .countdown { height: 4px; background: var(--tb-line); margin-top: 16px; position: relative; }
+  .countdown::after { content: ""; position: absolute; inset: 0 42% 0 0; background: var(--warn); }
+  .countdown.slow::after { inset: 0 22% 0 0; background: var(--tb-act); }
+
+  .rank-group { border: 1px solid var(--tb-line); background: var(--tb-panel); padding: 9px 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .rank-group .place { font-family: var(--mono); font-size: 12px; color: var(--tb-sub); min-width: 34px; }
+  .chip-name { padding: 4px 10px; font-size: 12.5px; border: 1px solid var(--tb-act); color: var(--tb-act); }
+  .chip-name.pending { border-color: var(--tb-line); color: var(--tb-sub); border-style: dashed; }
+
+  .phones { display: flex; flex-wrap: wrap; gap: 28px; }
+  .phone-frame { width: 300px; flex: 0 0 auto; }
+  .phone-frame .frame-body { padding: 18px; }
+
+  .closing { border-top: 1px solid var(--page-line); padding-top: 40px; }
+  .closing h2 { font-size: 26px; font-weight: 400; margin: 0 0 20px; }
+  .qgrid { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+  .qcard { background: var(--page-card); border: 1px solid var(--page-line); padding: 18px; }
+  .qcard h3 { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
+  .qcard p { margin: 0; font-size: 14px; color: var(--page-muted); line-height: 1.55; }
+  .qcard.fixed { border-left: 3px solid var(--page-accent); }
+
+  @media (max-width: 900px) {
+    .tablet { aspect-ratio: auto; }
+    .tablet > .t-main { flex-direction: column; }
+    .t-side { flex: 0 0 auto; border-left: 0; border-top: 1px solid var(--tb-line); }
+  }
+  @media (max-width: 720px) {
+    .wrap { padding: 0 16px 80px; }
+    .seat { width: 68px; margin-left: -34px; font-size: 9.5px; }
+    .mseat { width: 58px; margin-left: -29px; font-size: 9.5px; }
+    .slot { width: 22px; height: 31px; }
+    .sources { grid-template-columns: 1fr; gap: 2px 0; }
+    .sources dt { margin-top: 8px; }
+    .sb-strip { grid-template-columns: repeat(2, 1fr); }
+    .sb-cell + .sb-cell { border-left: 0; padding-left: 4px; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+
+<div class="wrap">
+
+<header class="masthead">
+  <p class="eyebrow">Playsync V2 · 와이어프레임 · 4판 · 2026-08-02</p>
+  <h1>화면은 방을 흉내 내지 않는다. 보는 사람이 선 자리에서 방을 그린다.</h1>
+  <p class="lede">
+    온라인 홀덤은 <strong>보는 사람을 항상 화면 아래</strong>에 놓고 테이블을 돌린다.
+    여기서도 그 원리는 같은데, <strong>보는 사람이 둘</strong>이라 결과가 갈린다 —
+    참가자 태블릿은 딜러가 건너편(위)에 있고, 딜러 태블릿은 딜러가 자기 앞(아래)에 있다.
+    같은 테이블을 180° 돌려 그린 것이다.
+  </p>
+  <p class="lede">
+    고개를 들면 진짜 테이블이 있다. <strong>화면이 눈과 어긋나는 순간 그게 곧 오조작이다.</strong>
+  </p>
+
+  <div class="worlds">
+    <div class="world"><b>상점 콘솔</b><span><code>DESIGN.md</code>(Carbon) 그대로. 사무실 PC 앞 60cm.</span></div>
+    <div class="world"><b>참가자 폰</b><span>Carbon 톤만. 좁은 폭에 맞춰 밀도를 푼다.</span></div>
+    <div class="world"><b>전광판</b><span>Carbon 아님. 10m 밖에서 읽는다. 굵고, 크고, 세 가지만.</span></div>
+    <div class="world"><b>태블릿 둘</b><span>Carbon 아님. 16:9 안에서 끝난다 — <strong>스크롤이 없다.</strong></span></div>
+  </div>
+</header>
+
+<!-- ══════════════════════════════════════════════════════════
+     1. 상점 콘솔
+     ══════════════════════════════════════════════════════════ -->
+<section class="band" id="console">
+  <div class="band-head">
+    <h2>상점 콘솔</h2>
+    <span class="band-meta">상점 PC · STORE_ADMIN · Carbon</span>
+  </div>
+  <p class="band-note">
+    운영자가 대회를 열고, 시작하고, 사람을 옮기고, 닫는다. <strong>등록 마감 버튼은
+    없다</strong> — 레벨이 <code>rebuyUntil</code>에 닿으면 서버가 닫는다. 화면은 상태만 보여준다.
+  </p>
+
+  <div class="screen">
+    <div class="screen-label">
+      <span class="route">/stores/[storeId]/tournaments/[id]</span>
+      <span class="job">대회 하나를 운영하는 자리</span>
+    </div>
+
+    <div class="frame carbon">
+      <div class="frame-bar"><span>플레이싱크 강남점 › 데모 토너먼트</span><span>owner</span></div>
+      <div class="frame-body">
+        <div class="col" style="gap:20px">
+
+          <div class="row between wrap" style="align-items:flex-start; gap:16px">
+            <div>
+              <p class="kicker">대회</p>
+              <div style="font-size:30px; font-weight:300; line-height:1.15">데모 토너먼트</div>
+              <div class="row center" style="gap:8px; margin-top:8px">
+                <span class="pill ok">진행 중 · 레벨 1</span>
+                <span class="pill ok">등록 열림</span>
+                <span class="subtle">레벨 3까지 리바인</span>
+              </div>
+            </div>
+            <div class="row" style="gap:8px">
+              <span class="btn ghost">대회 정보 수정</span>
+              <span class="btn ghost">전광판 열기</span>
+            </div>
+          </div>
+
+          <div class="rule"></div>
+
+          <div class="row wrap" style="gap:28px">
+            <div class="stat"><span class="kicker">남은 인원</span><span class="v">7</span></div>
+            <div class="stat"><span class="kicker">총 참가</span><span class="v">7</span></div>
+            <div class="stat"><span class="kicker">프라이즈풀</span><span class="v">350,000</span></div>
+            <div class="stat"><span class="kicker">참가비</span><span class="v sm">50,000</span></div>
+            <div class="stat"><span class="kicker">평균 스택</span><span class="v sm">5,000</span></div>
+          </div>
+
+          <div class="rule"></div>
+
+          <div>
+            <div class="row between center wrap" style="gap:10px; margin-bottom:12px">
+              <div>
+                <p class="kicker" style="margin:0 0 2px">좌석</p>
+                <span class="subtle">옮길 사람의 자리를 고른다. 여러 명을 한 번에 뺄 수 있다.</span>
+              </div>
+              <div class="row center" style="gap:8px">
+                <span class="btn ghost sm">1번 테이블</span>
+                <span class="btn tertiary sm">2번 테이블</span>
+                <span class="btn ghost sm">테이블 추가</span>
+              </div>
+            </div>
+
+            <div class="row wrap" style="gap:20px; align-items:stretch">
+              <div class="grow" style="min-width:300px">
+                <div class="seatmap">
+                  <div class="oval"></div>
+                  <div class="mdealer">딜러</div>
+                  <div class="mseat" style="left:73%; top:15%"><span class="i">1</span><span class="nm">player3</span><span class="st">2,600</span></div>
+                  <div class="mseat" data-sel style="left:92%; top:35%"><span class="i">2</span><span class="nm">player5</span><span class="st">5,000</span></div>
+                  <div class="mseat" style="left:94%; top:60%"><span class="i">3</span><span class="nm">player1</span><span class="st">4,200</span></div>
+                  <div class="mseat" style="left:78%; top:82%"><span class="i">4</span><span class="nm">demo</span><span class="st">5,400</span></div>
+                  <div class="mseat" data-sel style="left:50%; top:90%"><span class="i">5</span><span class="nm">player6</span><span class="st">1,200</span></div>
+                  <div class="mseat" data-empty style="left:22%; top:82%"><span class="i">6</span><span class="nm">빈 자리</span><span class="st">—</span></div>
+                  <div class="mseat" data-empty style="left:6%;  top:60%"><span class="i">7</span><span class="nm">빈 자리</span><span class="st">—</span></div>
+                  <div class="mseat" data-empty style="left:8%;  top:35%"><span class="i">8</span><span class="nm">빈 자리</span><span class="st">—</span></div>
+                  <div class="mseat" data-empty style="left:27%; top:15%"><span class="i">9</span><span class="nm">빈 자리</span><span class="st">—</span></div>
+                </div>
+              </div>
+
+              <div style="flex:0 0 250px; min-width:230px" class="col">
+                <div class="tile raised">
+                  <p class="kicker">고른 자리 2</p>
+                  <table class="list" style="margin:-4px -4px 0">
+                    <tbody>
+                      <tr><td><span class="check" data-on></span> 2번 · player5</td><td class="n" style="text-align:right">5,000</td></tr>
+                      <tr><td><span class="check" data-on></span> 5번 · player6</td><td class="n" style="text-align:right">1,200</td></tr>
+                      <tr><td class="subtle"><span class="check"></span> 1번 · player3</td><td class="n subtle" style="text-align:right">2,600</td></tr>
+                      <tr><td class="subtle"><span class="check"></span> 3번 · player1</td><td class="n subtle" style="text-align:right">4,200</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <span class="btn primary" style="width:100%">고른 자리 해제</span>
+                <p class="subtle" style="margin:0">
+                  해제해도 칩은 그대로다 — 자리만 잃는다. 안내받은 테이블로 걸어가서
+                  참가 OTP를 다시 넣으면 그 자리가 자기 자리가 된다.
+                </p>
+                <div class="rule"></div>
+                <span class="btn ghost" data-disabled style="width:100%">테이블 닫기 · 5명 남음</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="rule"></div>
+
+          <div class="tile raised">
+            <div class="row between center wrap" style="gap:14px">
+              <div>
+                <p class="kicker">딜러 OTP</p>
+                <div class="num" style="font-size:26px; letter-spacing:0.16em">342741</div>
+                <div class="subtle" style="margin-top:4px">해시로만 저장한다. 이 화면을 벗어나면 재발급만 가능하다.</div>
+              </div>
+              <div class="row" style="gap:8px">
+                <span class="btn ghost">재발급</span>
+                <span class="btn ghost">딜러 전원 내보내기</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="row between center wrap" style="gap:12px">
+            <span class="subtle">마무리는 상금 정산이 끝나야 열린다.</span>
+            <span class="btn secondary" data-disabled>대회 마무리</span>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <dl class="sources">
+      <dt>좌석 해제</dt>
+      <dd><code>POST :id/tables/:tableId/seats/release</code> — 몸통이 <code>{ seats: [{ seatIndex, userId }] }</code>다. <strong>테이블 통째가 아니라 사람별이고, 화면이 누가 어느 자리에 있는지 알아야 보낼 수 있다.</strong> 그래서 테이블 도식이 선택이 아니라 필수다.</dd>
+      <dt>그 외 쓰기</dt>
+      <dd><code>PATCH :id/start</code> · <code>:id/complete</code> · <code>POST :id/dealer-otp/reissue</code> · <code>:id/dealer-session/revoke</code> · <code>POST :id/tables</code> · <code>DELETE :id/tables/:tableId</code></dd>
+      <dt>막히는 것</dt>
+      <dd>핸드 진행 중에는 <code>409 핸드 진행 중에는 좌석을 해제할 수 없습니다</code>. 화면이 낡았으면 <code>409 좌석 정보가 바뀌었습니다</code> — 서버가 스냅샷과 DB를 각각 대조한다.</dd>
+      <dt>번호</dt>
+      <dd>화면은 <strong>1~9</strong>, API는 <code>seatIndex</code> <strong>0~8</strong>. 물리 의자 번호가 1부터라 화면이 그것을 따르고, 변환은 한 곳에서만 한다.</dd>
+    </dl>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════
+     2. 전광판
+     ══════════════════════════════════════════════════════════ -->
+<section class="band" id="display">
+  <div class="band-head">
+    <h2>전광판</h2>
+    <span class="band-meta">벽걸이 TV · 1초 폴링 · Carbon 아님</span>
+  </div>
+  <p class="band-note">
+    방 건너편에서 읽는다. 여기서 <code>DESIGN.md</code>를 그대로 쓰면 안 된다 —
+    Carbon의 weight-300 디스플레이와 14px 표는 <strong>모니터 앞 한 사람</strong>을 위한 것이다.
+    전광판이 답하는 질문은 셋뿐이다: <strong>지금 얼마인가 · 언제 오르나 · 몇 명 남았나.</strong>
+  </p>
+
+  <div class="screen">
+    <div class="screen-label">
+      <span class="route">.../[tournamentId]/display</span>
+      <span class="job">평상시</span>
+    </div>
+
+    <div class="frame score">
+      <div class="sb">
+        <div class="sb-top">
+          <span>데모 토너먼트 · 플레이싱크 강남점</span>
+          <span>등록 마감 레벨 3</span>
+        </div>
+
+        <div class="sb-main">
+          <div class="sb-block">
+            <span class="sb-cap">Level 1 · 블라인드</span>
+            <span class="sb-huge">100 / 200</span>
+          </div>
+          <div class="sb-block">
+            <span class="sb-cap">다음 레벨</span>
+            <span class="sb-huge live">2:14</span>
+          </div>
+          <div class="sb-block" style="padding-bottom:6px">
+            <span class="sb-cap">다음</span>
+            <span class="sb-mid">200 / 400</span>
+          </div>
+        </div>
+
+        <div class="sb-strip">
+          <div class="sb-cell"><span class="sb-cap">남은 인원</span><div class="n">7</div></div>
+          <div class="sb-cell"><span class="sb-cap">총 참가</span><div class="n">7</div></div>
+          <div class="sb-cell"><span class="sb-cap">평균 스택</span><div class="n">5,000</div></div>
+          <div class="sb-cell"><span class="sb-cap">프라이즈풀</span><div class="n">350,000</div></div>
+        </div>
+
+        <div class="sb-prizes">
+          <div class="sb-prize"><span class="p">1ST</span><span class="a">175,000</span></div>
+          <div class="sb-prize"><span class="p">2ND</span><span class="a">105,000</span></div>
+          <div class="sb-prize"><span class="p">3RD</span><span class="a">70,000</span></div>
+        </div>
+      </div>
+    </div>
+
+    <dl class="sources">
+      <dt>읽기</dt>
+      <dd><code>GET /playsync/dashboard/:tournamentId</code>를 <strong>1초마다 폴링</strong>한다.</dd>
+      <dt>보기 전용이<br>아니다</dt>
+      <dd>
+        조회가 곧 시계를 미는 일이다. <code>getFullTournamentInfo</code>가 읽을 때마다
+        <code>checkAndSyncBlindLevel</code>을 부르고, 그것이 <strong>레벨을 올리고 등록을 닫는
+        유일한 코드</strong>다. 레벨은 저장된 값이 아니라 기준점과 지금 시각의 차이에서
+        파생되므로, 아무도 묻지 않으면 아무것도 갱신되지 않는다.
+      </dd>
+      <dt>미는 주체가<br>둘이다</dt>
+      <dd>
+        전광판 폴링과 <code>startPreFlop</code>(핸드 시작). 게임에 쓰이는 블라인드는
+        핸드 시작이 그때 다시 계산하므로 전광판이 꺼져 있어도 <strong>틀리지 않는다</strong>.
+        갈라지는 곳은 <strong>휴식</strong>이다 — 휴식 중에는 핸드 시작이 거부되므로 그 구간을
+        미는 것은 폴링뿐이다.
+      </dd>
+      <dt>운영 전제</dt>
+      <dd><strong>상점은 대회를 여는 동안 이 화면을 틀어 둔다.</strong> 서버에 별도 타이머를 두지 않는 이유가 이것이다 — 상태를 미는 코드가 <code>checkAndSyncBlindLevel</code> 한 곳뿐이라야 레벨과 마감이 두 갈래로 자라지 않는다.</dd>
+      <dt>뺀 것</dt>
+      <dd>테이블별 착석 목록. 방 안 사람은 자기 테이블을 이미 알고, 멀리서 읽을 수 없는 크기라 자리만 차지했다.</dd>
+    </dl>
+  </div>
+
+  <div class="screen">
+    <div class="screen-label">
+      <span class="route">.../[tournamentId]/display</span>
+      <span class="overlay-tag">상태가 바뀐 화면</span>
+      <span class="job">휴식 — 방 전체가 알아야 한다</span>
+    </div>
+
+    <div class="frame score">
+      <div class="sb-break-screen">
+        <div class="lbl">휴식</div>
+        <div class="clock">1:48</div>
+        <div class="next">다음 · LEVEL 4 · 500 / 1,000 · 등록 마감</div>
+      </div>
+    </div>
+
+    <dl class="sources">
+      <dt>왜 통째로<br>바꾸나</dt>
+      <dd>휴식은 <strong>방 안 전원의 행동이 바뀌는 순간</strong>이다. 배지 하나로는 담배 피우러 나간 사람이 못 본다. 남은 시간 하나만 남기고 나머지를 지운다.</dd>
+      <dt>판정</dt>
+      <dd><code>BlindField.isBreak</code>. 서버가 <code>lv === 99</code>인 레벨을 휴식으로 본다 — 화면이 판단하지 않는다.</dd>
+      <dt>이 시간에<br>하는 일</dt>
+      <dd>테이블 합치기. 좌석 해제는 핸드 사이에만 열리는데, 휴식 중에는 딜러가 핸드를 시작할 수 없어 테이블이 자연히 그 상태에 머문다.</dd>
+    </dl>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════
+     3. 좌석 태블릿
+     ══════════════════════════════════════════════════════════ -->
+<section class="band" id="table">
+  <div class="band-head">
+    <h2>좌석 태블릿</h2>
+    <span class="band-meta">16:9 가로 · 스크롤 없음 · 공개(참가 OTP)</span>
+  </div>
+  <p class="band-note">
+    의자에 고정된 기기. 아는 것은 URL 하나(<code>?store=</code>)뿐이라 대회가 바뀌어도
+    손댈 것이 없다. <strong>자리는 사람이 고른다</strong> — 직원이 안내를 돕고, 잘못 앉으면
+    딜러가 내보낸다. 기기가 자리를 기억하면 그게 곧 기기별 설정이 되어 대회마다
+    스무 대를 손봐야 한다.
+  </p>
+
+  <!-- 대기 화면 -->
+  <div class="screen">
+    <div class="screen-label">
+      <span class="route">/table?store=xxx</span>
+      <span class="job">기기의 기본 상태. 여기로 항상 되돌아온다</span>
+    </div>
+
+    <div class="frame tbl">
+      <div class="tablet">
+        <div class="t-bar frame-bar"><span>플레이싱크 강남점</span><span>전체화면 · 화면 꺼짐 방지</span></div>
+        <div class="t-main">
+          <div class="grow" style="padding:20px 22px; display:flex; flex-direction:column; justify-content:center; min-width:0">
+            <p class="kicker">진행 중</p>
+            <div style="font-size:clamp(20px,2.6vw,28px); font-weight:300; line-height:1.15">데모 토너먼트</div>
+            <div class="muted" style="margin-top:4px; font-size:13px">레벨 1 · 100 / 200 · 남은 인원 7</div>
+
+            <div class="rule" style="margin:16px 0"></div>
+
+            <div class="row center between" style="gap:8px; margin-bottom:8px">
+              <p class="kicker" style="margin:0">앉을 자리</p>
+              <div class="row" style="gap:6px">
+                <span class="btn ghost sm">1번 테이블</span>
+                <span class="btn primary sm">2번 테이블</span>
+              </div>
+            </div>
+
+            <div class="pickmap">
+              <div class="oval"></div>
+              <div class="dealer-post top">딜 러</div>
+              <div class="pseat" style="left:71.6%; top:10.3%">1</div>
+              <div class="pseat" style="left:92.0%; top:31.7%">2</div>
+              <div class="pseat" data-taken style="left:94.6%; top:60.9%">3</div>
+              <div class="pseat" data-pick  style="left:78.3%; top:85.5%">4</div>
+              <div class="pseat" style="left:50%;   top:95%">5</div>
+              <div class="pseat" data-taken style="left:21.7%; top:85.5%">6</div>
+              <div class="pseat" style="left:5.4%;  top:60.9%">7</div>
+              <div class="pseat" style="left:8.0%;  top:31.7%">8</div>
+              <div class="pseat" style="left:28.4%; top:10.3%">9</div>
+            </div>
+
+            <p class="subtle" style="margin:8px 0 0">
+              점선은 이미 사람이 앉은 자리다. <strong>지금 앉은 의자</strong>를 누른다 —
+              배치는 눈앞의 테이블 그대로다.
+            </p>
+          </div>
+
+          <div class="t-side" style="flex-basis:270px">
+            <p class="kicker" style="margin:0">참가 OTP</p>
+            <div class="field num" style="font-size:22px; letter-spacing:0.2em; padding:10px 12px">⋅⋅⋅⋅ ⋅⋅⋅⋅</div>
+            <div class="row" style="gap:5px"><span class="btn ghost sm grow">1</span><span class="btn ghost sm grow">2</span><span class="btn ghost sm grow">3</span></div>
+            <div class="row" style="gap:5px"><span class="btn ghost sm grow">4</span><span class="btn ghost sm grow">5</span><span class="btn ghost sm grow">6</span></div>
+            <div class="row" style="gap:5px"><span class="btn ghost sm grow">7</span><span class="btn ghost sm grow">8</span><span class="btn ghost sm grow">9</span></div>
+            <div class="row" style="gap:5px"><span class="btn ghost sm grow">지우기</span><span class="btn ghost sm grow">0</span></div>
+            <span class="btn primary">2번 테이블 4번 위치 참가</span>
+            <p class="subtle" style="margin:0">폰의 <strong>내 참가</strong>에서 확인한다.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <dl class="sources">
+      <dt>읽기</dt>
+      <dd><code>GET /tournaments/stores/:storeId</code> → <code>GET /dealer/:tournamentId</code>(테이블 목록) · <code>renderSeatList</code> WS로 빈 자리 표시</dd>
+      <dt>쓰기</dt>
+      <dd><code>POST /tournaments/:id/enter</code> — <code>{ otp, tableId, seatIndex }</code>. 응답은 <strong>좌석 토큰</strong>이고, 이 기기는 사용자 로그인을 하지 않는다.</dd>
+      <dt>실패</dt>
+      <dd><code>401</code> 인증 정보가 올바르지 않습니다 · <code>409</code> 이미 다른 좌석에 앉아 있습니다 · 같은 자리를 동시에 노리면 늦게 온 쪽이 진다</dd>
+      <dt>왜 도식인가</dt>
+      <dd>
+        번호 버튼 아홉 개를 한 줄로 늘어놓으면 <strong>"4번"이 방 안 어디인지 알 수 없다.</strong>
+        게임 화면과 같은 배치·같은 번호를 작게 보여주면 눈앞의 의자와 그대로 겹쳐,
+        고를 때 이미 맞는지 확인된다.
+      </dd>
+      <dt>잘못 앉으면</dt>
+      <dd>딜러가 <strong>내보내기</strong>로 뺀다. 사람이 고르는 방식을 택한 이유가 이것이다 — 되돌리는 수단이 이미 있고, 직원이 옆에서 안내한다.</dd>
+    </dl>
+  </div>
+
+  <!-- 게임 화면 -->
+  <div class="screen">
+    <div class="screen-label">
+      <span class="route">/table/[tableId]</span>
+      <span class="job">앉아 있는 동안 보는 유일한 화면</span>
+    </div>
+
+    <div class="frame tbl">
+      <div class="tablet">
+        <div class="t-bar frame-bar">
+          <span>2번 테이블 · 4번 자리 · demo</span>
+          <span>레벨 1 (100 / 200) · 다음 2:14</span>
+        </div>
+
+        <div class="t-main">
+          <div class="felt-col">
+            <div class="felt-holder">
+              <div class="felt">
+                <div class="dealer-post top">딜 러</div>
+
+                <div class="pot">
+                  <div class="k">팟</div>
+                  <div class="v">2,400</div>
+                  <div class="side">사이드팟 1 · 900</div>
+                </div>
+
+                <!-- ★ 시그니처 — 몇 장이 깔렸는지는 보이고, 무엇인지는 보이지 않는다 -->
+                <div class="board">
+                  <div class="board-slots">
+                    <div class="slot" data-dealt></div>
+                    <div class="slot" data-dealt></div>
+                    <div class="slot" data-dealt></div>
+                    <div class="slot" data-dealt></div>
+                    <div class="slot"></div>
+                  </div>
+                  <div class="board-cap">무늬는 테이블 위에 있습니다</div>
+                </div>
+
+                <!-- 딜러 12시. 딜러 왼쪽부터 시계 방향 1~9. 회전하지 않는다.
+                     좌석은 타원 위 등간격(28°~332°, 38° 간격)이고, 레일 밖으로
+                     걸터앉는다 — 사람이 테이블 가장자리에 앉는 그대로다. -->
+                <div class="seat" data-state="idle"   style="left:71.6%; top:10.3%"><span class="i">1</span><span class="nm">player3</span><span class="st">2,600</span></div>
+                <div class="seat" data-state="idle"   style="left:92.0%; top:31.7%"><span class="i">2</span><span class="nm">player5</span><span class="st">5,000</span><span class="badge">D</span></div>
+                <div class="seat" data-state="folded" style="left:94.6%; top:60.9%"><span class="i">3</span><span class="nm">player1</span><span class="st">4,200</span></div>
+                <div class="seat" data-state="me"     style="left:78.3%; top:85.5%"><span class="i">4</span><span class="nm">나</span><span class="st">5,400</span><span class="bet">400</span></div>
+                <div class="seat" data-state="turn"   style="left:50%;   top:95%"><span class="i">5</span><span class="nm">player6</span><span class="st">1,200</span><span class="bet">400</span></div>
+                <div class="seat" data-state="allin"  style="left:21.7%; top:85.5%"><span class="i">6</span><span class="nm">player7</span><span class="st">0 · 올인</span><span class="bet">1,200</span></div>
+                <div class="seat" data-state="empty"  style="left:5.4%;  top:60.9%"><span class="i">7</span><span class="nm">빈 자리</span><span class="st">—</span></div>
+                <div class="seat" data-state="folded" style="left:8.0%;  top:31.7%"><span class="i">8</span><span class="nm">player2</span><span class="st">7,900</span></div>
+                <div class="seat" data-state="empty"  style="left:28.4%; top:10.3%"><span class="i">9</span><span class="nm">빈 자리</span><span class="st">—</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="t-side">
+            <div class="phase-box">
+              <p class="kicker" style="margin:0 0 2px">지금</p>
+              <div class="phase-name">턴</div>
+              <div class="phase-mini">
+                <i data-dealt></i><i data-dealt></i><i data-dealt></i><i data-dealt></i><i></i>
+              </div>
+              <div class="phase-sub">보드 4장 · 리버 한 장 남음</div>
+            </div>
+
+            <div>
+              <p class="kicker">내 스택</p>
+              <div class="num" style="font-size:27px; font-weight:300; line-height:1.05">5,400</div>
+              <div class="subtle num">27 BB</div>
+            </div>
+
+            <div class="rule"></div>
+
+            <div class="col" style="gap:6px; font-size:12.5px">
+              <div class="row between"><span class="muted">낸 금액</span><span class="num">400</span></div>
+              <div class="row between"><span class="muted">콜</span><span class="num">400</span></div>
+              <div class="row between"><span class="muted">최소 레이즈</span><span class="num">800</span></div>
+            </div>
+
+            <div class="rule"></div>
+
+            <div>
+              <p class="kicker">차례</p>
+              <div class="row center" style="gap:8px">
+                <span class="pill idle">5번 자리</span>
+                <span class="subtle num">11초</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="t-foot">
+          <div class="actionbar">
+            <span class="btn ghost big" data-disabled>폴드</span>
+            <span class="btn ghost big" data-disabled>콜 400</span>
+            <span class="btn primary big" data-disabled>레이즈 1,200</span>
+            <span class="btn secondary big" data-disabled>올인</span>
+          </div>
+          <div class="slider"><span>800</span><span class="track"></span><span>5,400</span></div>
+        </div>
+      </div>
+    </div>
+
+    <dl class="sources">
+      <dt>읽기</dt>
+      <dd><code>GET /playsync/:tableId</code>(초기 상태) → <code>/playsync?tableId=&amp;ticket=</code> WS <code>renderGame</code></dd>
+      <dt>쓰기</dt>
+      <dd>WS <code>PLAYER_ACTION</code>만. REST 액션 경로는 없다 — 인바운드 검증이 게이트웨이에만 있어서 두 번째 문을 만들지 않는다.</dd>
+      <dt>보드</dt>
+      <dd>
+        <strong>깔린 장수는 보이고, 무늬는 보이지 않는다.</strong> 채워진 칸이 깔린 카드,
+        점선 칸이 아직 안 나온 카드다 — 이것만으로 페이즈가 읽힌다(플랍 3 · 턴 4 · 리버 5).
+        무늬는 서버에 없고 앞으로도 없다. 눈앞의 테이블에 있다.
+      </dd>
+      <dt>페이즈</dt>
+      <dd>오른쪽 열 맨 위에 이름으로도 적는다. 펠트의 칸과 <strong>같은 사실을 두 형태로</strong> 보여주는 것이라, 멀리서는 칸이, 확인할 때는 이름이 읽힌다.</dd>
+      <dt>배치</dt>
+      <dd><strong>회전하지 않는다.</strong> 딜러가 화면 위, 4번 의자에 앉은 사람은 화면에서도 4번이다.</dd>
+      <dt>스크롤</dt>
+      <dd>없다. 상태줄 · 펠트 · 액션바가 16:9 안에서 끝난다. 밀어야 보이는 정보는 못 본 정보다.</dd>
+    </dl>
+  </div>
+
+  <!-- 리바인 -->
+  <div class="screen">
+    <div class="screen-label">
+      <span class="route">/table/[tableId]</span>
+      <span class="overlay-tag">덮이는 것</span>
+      <span class="job">칩이 0이 됐고, 아직 리바인 구간이다</span>
+    </div>
+
+    <div class="frame tbl">
+      <div class="frame-bar"><span>2번 테이블 · 4번 자리</span><span>핸드 종료</span></div>
+      <div class="overlay-stage" style="padding:22px">
+        <div class="scrim"></div>
+        <div class="modal">
+          <p class="kicker">칩이 떨어졌습니다</p>
+          <div style="font-size:23px; font-weight:300; line-height:1.25; margin-bottom:10px">
+            50,000 포인트로 5,000 칩을 다시 받습니다
+          </div>
+          <div class="muted" style="font-size:14px">레벨 3까지 리바인할 수 있습니다. 답하지 않으면 탈락합니다.</div>
+          <div class="countdown"></div>
+          <div class="row between center" style="margin-top:8px">
+            <span class="subtle num">9초</span>
+            <span class="subtle">보유 450,000</span>
+          </div>
+          <div class="row" style="gap:10px; margin-top:20px">
+            <span class="btn ghost grow big">그만하기</span>
+            <span class="btn primary grow big">리바인</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <dl class="sources">
+      <dt>쓰기</dt>
+      <dd>WS <code>REBUY_RESPONSE</code> — <code>{ accept: boolean }</code>. 거절과 잘못된 요청이 구분되도록 <code>accept</code>는 필수다.</dd>
+      <dt>제한</dt>
+      <dd>15초. 사람 입력이라 이 구간만 락 밖에서 돈다 — 대신 테이블이 <code>HAND_END</code>에 묶여 다음 핸드가 시작되지 않는다.</dd>
+    </dl>
+  </div>
+
+  <!-- 탈락 -->
+  <div class="screen">
+    <div class="screen-label">
+      <span class="route">/table/[tableId]</span>
+      <span class="overlay-tag">덮이는 것</span>
+      <span class="job">여기서 이 사람의 대회가 끝난다</span>
+    </div>
+
+    <div class="frame tbl">
+      <div class="frame-bar"><span>2번 테이블 · 4번 자리</span><span>탈락</span></div>
+      <div class="overlay-stage" style="padding:22px">
+        <div class="scrim"></div>
+        <div class="modal" style="text-align:center">
+          <p class="kicker">수고하셨습니다</p>
+          <div style="font-size:26px; font-weight:300; line-height:1.25; margin-bottom:14px">
+            데모 토너먼트가 끝났습니다
+          </div>
+          <div class="muted" style="font-size:14px; line-height:1.6">
+            순위와 상금은 <strong style="color:var(--tb-ink)">폰의 내 참가</strong>에서 확인하세요.
+          </div>
+          <div class="countdown slow"></div>
+          <div class="subtle" style="margin-top:8px">7초 뒤 대기 화면으로 돌아갑니다</div>
+          <span class="btn ghost" style="width:100%; margin-top:20px">지금 돌아가기</span>
+        </div>
+      </div>
+    </div>
+
+    <dl class="sources">
+      <dt>왜 순위를<br>안 띄우나</dt>
+      <dd>
+        이 기기는 다음 사람이 앉을 자리다. 순위·상금은 <strong>사람에게 붙는 정보</strong>이고
+        폰이 이미 그것을 들고 있다(<code>GET /user/me/participations</code>) — 좌석에 고정된
+        기기에 남겨 둘 이유가 없다. 태블릿은 항상 같은 화면으로 되돌아온다는
+        원칙과도 같은 방향이다.
+      </dd>
+      <dt>복귀</dt>
+      <dd>자동으로 대기 화면(<code>/table?store=</code>)으로. 좌석 토큰은 여기서 버린다.</dd>
+    </dl>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════
+     4. 딜러 콘솔
+     ══════════════════════════════════════════════════════════ -->
+<section class="band" id="dealer">
+  <div class="band-head">
+    <h2>딜러 콘솔</h2>
+    <span class="band-meta">16:9 가로 · 스크롤 없음 · 공개(딜러 OTP)</span>
+  </div>
+  <p class="band-note">
+    딜러가 실물 카드를 돌리는 사이 한 손으로 쓴다. 게임을 진행시키는 것은 서버가
+    아니라 이 화면의 클릭이고, <strong>승자는 계산되지 않고 입력된다.</strong>
+    좌석 태블릿과 <strong>같은 테이블을 180° 돌려</strong> 그린다 — 딜러는 자기 자리가
+    화면 아래에 있어야 눈앞의 배치와 곧바로 겹친다.
+  </p>
+
+  <div class="screen">
+    <div class="screen-label">
+      <span class="route">/dealer/table/[tableId]</span>
+      <span class="job">핸드를 시작하고, 자리를 비운 사람을 처리한다</span>
+    </div>
+
+    <div class="frame tbl">
+      <div class="tablet">
+        <div class="t-bar frame-bar"><span>2번 테이블 · 딜러</span><span>레벨 1 (100 / 200) · 다음 2:14</span></div>
+
+        <div class="t-main">
+          <div class="felt-col">
+            <div class="felt-holder">
+              <div class="felt">
+                <div class="dealer-post bottom">딜 러 · 나</div>
+
+                <div class="pot">
+                  <div class="k">팟</div>
+                  <div class="v">2,400</div>
+                  <div class="side">사이드팟 1 · 900</div>
+                </div>
+
+                <div class="board">
+                  <div class="board-slots">
+                    <div class="slot" data-dealt></div>
+                    <div class="slot" data-dealt></div>
+                    <div class="slot" data-dealt></div>
+                    <div class="slot" data-dealt></div>
+                    <div class="slot"></div>
+                  </div>
+                  <div class="board-cap">턴 · 4장</div>
+                </div>
+
+                <!-- 딜러 6시. 같은 좌석 번호를 정확히 180° 돌린 것이다 —
+                     참가자 화면의 (x, y)가 여기서는 (100-x, 100-y)다. -->
+                <div class="seat" data-state="idle"   style="left:28.4%; top:89.7%"><span class="i">1</span><span class="nm">player3</span><span class="st">2,600</span></div>
+                <div class="seat" data-state="idle"   style="left:8.0%;  top:68.3%"><span class="i">2</span><span class="nm">player5</span><span class="st">5,000</span><span class="badge">D</span></div>
+                <div class="seat" data-state="folded" style="left:5.4%;  top:39.1%"><span class="i">3</span><span class="nm">player1</span><span class="st">4,200</span></div>
+                <div class="seat" data-state="idle"   style="left:21.7%; top:14.5%"><span class="i">4</span><span class="nm">demo</span><span class="st">5,400</span></div>
+                <div class="seat" data-state="turn"   style="left:50%;   top:5%"><span class="i">5</span><span class="nm">player6</span><span class="st">1,200</span></div>
+                <div class="seat" data-state="allin"  style="left:78.3%; top:14.5%"><span class="i">6</span><span class="nm">player7</span><span class="st">0 · 올인</span></div>
+                <div class="seat" data-state="empty"  style="left:94.6%; top:39.1%"><span class="i">7</span><span class="nm">빈 자리</span><span class="st">—</span></div>
+                <div class="seat" data-state="folded" style="left:92.0%; top:68.3%"><span class="i">8</span><span class="nm">player2</span><span class="st">7,900</span></div>
+                <div class="seat" data-state="empty"  style="left:71.6%; top:89.7%"><span class="i">9</span><span class="nm">빈 자리</span><span class="st">—</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="t-side" style="flex-basis:252px">
+            <div class="row between center">
+              <span class="pill idle">턴 · 진행 중</span>
+              <span class="subtle">착석 6명</span>
+            </div>
+            <div class="subtle">버튼 · 2번 자리</div>
+
+            <div class="rule"></div>
+
+            <p class="kicker" style="margin:0">자리를 비운 사람</p>
+            <p class="subtle" style="margin:0">자리를 눌러 고른 뒤 처리한다.</p>
+            <div class="row" style="gap:6px">
+              <span class="btn ghost sm grow">폴드시키기</span>
+              <span class="btn ghost sm grow">내보내기</span>
+            </div>
+            <p class="subtle" style="margin:0">
+              <strong>폴드시키기</strong>는 이번 핸드만 넘긴다.
+              <strong>내보내기</strong>는 자리에서 뺀다 — 잘못 앉은 사람을 되돌리는 수단이기도 하다.
+              칩은 남고 참가 OTP로 다시 앉는다.
+            </p>
+
+            <div style="margin-top:auto">
+              <div class="tile" style="border-color:#a2191f; padding:10px 12px">
+                <div class="row center" style="gap:8px; margin-bottom:4px">
+                  <span class="pill err">저장 실패</span>
+                </div>
+                <div class="subtle" style="margin-bottom:8px">
+                  칩 배분은 끝났고 기록만 남지 않았습니다. 저장될 때까지 다음 핸드는 시작되지 않습니다.
+                </div>
+                <span class="btn danger sm" style="width:100%">다시 저장</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="t-foot">
+          <div class="actionbar">
+            <span class="btn primary xl" style="flex:2 1 0">승자 결정</span>
+            <span class="btn ghost big" data-disabled>핸드 시작</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <dl class="sources">
+      <dt>들어오는 곳</dt>
+      <dd><code>/dealer?store=xxx</code> → 대회·테이블 선택 → <code>POST /dealer/auth</code></dd>
+      <dt>쓰기</dt>
+      <dd>WS <code>DEALER_ACTION</code> 5종 — <code>START_PRE_FLOP</code> · <code>RESOLVE_WINNERS</code> · <code>DEALER_FOLD</code> · <code>DEALER_KICK</code> · <code>RETRY_CHECKPOINT</code></dd>
+      <dt>배치</dt>
+      <dd><strong>딜러가 화면 아래.</strong> 좌석 태블릿과 같은 테이블·같은 번호를 180° 돌린 것이다. 딜러는 하루에 수백 번 이 화면과 눈앞을 오가므로, 겹쳐 보이는 것이 곧 속도다.</dd>
+      <dt>저장 실패</dt>
+      <dd>별도 이벤트가 아니라 스냅샷의 <code>dbSyncStatus</code> 필드다. 재접속한 단말도 같은 것을 봐야 해서 기존 브로드캐스트 경로를 탄다.</dd>
+      <dt>스크롤</dt>
+      <dd>없다. 좌석 목록을 표로 두지 않고 <strong>펠트의 자리를 직접 누르게</strong> 바꾼 이유이기도 하다 — 9행짜리 표는 16:9 안에 안 들어간다.</dd>
+    </dl>
+  </div>
+
+  <div class="screen">
+    <div class="screen-label">
+      <span class="route">/dealer/table/[tableId]</span>
+      <span class="overlay-tag">덮이는 것</span>
+      <span class="job">시스템에 정답이 없는 유일한 입력</span>
+    </div>
+
+    <div class="frame tbl">
+      <div class="frame-bar"><span>2번 테이블 · 쇼다운</span><span>팟 2,400 · 사이드팟 1개</span></div>
+      <div class="overlay-stage" style="padding:22px">
+        <div class="scrim"></div>
+        <div class="modal wide">
+          <p class="kicker">승자 결정</p>
+          <div style="font-size:22px; font-weight:300; line-height:1.25; margin-bottom:6px">이긴 순서대로 자리를 누르세요</div>
+          <div class="muted" style="font-size:13.5px">같이 이겼으면 한 줄에 같이 넣습니다. 넣지 않은 사람은 순위가 없습니다.</div>
+
+          <div class="col" style="gap:8px; margin-top:20px">
+            <div class="rank-group">
+              <span class="place">1위</span>
+              <span class="chip-name">4번 · demo</span>
+              <span class="chip-name">6번 · player7</span>
+            </div>
+            <div class="rank-group">
+              <span class="place">2위</span>
+              <span class="chip-name">2번 · player5</span>
+            </div>
+            <div class="rank-group" style="border-style:dashed">
+              <span class="place">3위</span>
+              <span class="chip-name pending">자리를 누르세요</span>
+            </div>
+          </div>
+
+          <div class="rule" style="margin:20px 0 14px"></div>
+
+          <div class="row between center wrap" style="gap:12px">
+            <div>
+              <span class="btn ghost">보드 하이</span>
+              <div class="subtle" style="margin-top:6px; max-width:30ch">남은 전원이 똑같이 나눠 갖습니다</div>
+            </div>
+            <div class="row" style="gap:8px">
+              <span class="btn ghost">되돌리기</span>
+              <span class="btn primary big">2,400 배분</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <dl class="sources">
+      <dt>쓰기</dt>
+      <dd>WS <code>RESOLVE_WINNERS</code> — <code>winnerGroups: [["demo","player7"], ["player5"]]</code></dd>
+      <dt>왜 평면<br>배열이 아닌가</dt>
+      <dd>커뮤니티 카드가 그대로 모두의 최고 핸드가 되면(<strong>보드 하이</strong>) 남은 전원이 팟을 나눈다. 순위 배열로는 표현할 방법이 없어, 먼저 찍힌 사람이 전부 가져가는데도 칩 총량은 맞아서 아무 검사도 울지 않았다.</dd>
+      <dt>보드 하이</dt>
+      <dd>별도 엔드포인트를 만들지 않는다. 폴드하지 않은 전원을 한 그룹으로 채워 같은 명령으로 보낸다 — <strong>돈이 나가는 경로는 하나여야 한다.</strong></dd>
+    </dl>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════
+     5. 참가자 폰
+     ══════════════════════════════════════════════════════════ -->
+<section class="band" id="phone">
+  <div class="band-head">
+    <h2>참가자 폰</h2>
+    <span class="band-meta">로그인만 · Carbon 톤</span>
+  </div>
+  <p class="band-note">
+    폰의 역할은 <strong>참가 OTP를 받는 것과 끝난 뒤 순위를 보는 것</strong>이다. 그 사이의
+    조작은 전부 좌석 태블릿이다. 좌석을 고르는 화면도 없다 — 돈만 내고, 걸어가서,
+    안내받은 자리에 앉는다.
+  </p>
+
+  <div class="phones">
+    <div class="phone-frame">
+      <div class="screen-label"><span class="route">/tournaments/[id]</span></div>
+      <div class="frame carbon">
+        <div class="frame-bar"><span>데모 토너먼트</span><span>demo</span></div>
+        <div class="frame-body">
+          <div class="col" style="gap:16px">
+            <div>
+              <p class="kicker">플레이싱크 강남점</p>
+              <div style="font-size:23px; font-weight:300; line-height:1.2">데모 토너먼트</div>
+              <div style="margin-top:8px"><span class="pill ok">등록 열림</span></div>
+            </div>
+            <div class="rule"></div>
+            <div class="col" style="gap:10px">
+              <div class="row between"><span class="muted">참가비</span><span class="num">50,000</span></div>
+              <div class="row between"><span class="muted">시작 스택</span><span class="num">5,000</span></div>
+              <div class="row between"><span class="muted">리바인</span><span class="num">레벨 3까지</span></div>
+              <div class="row between"><span class="muted">현재 참가</span><span class="num">7명</span></div>
+            </div>
+            <div class="rule"></div>
+            <div>
+              <p class="kicker">블라인드</p>
+              <table class="list">
+                <tbody>
+                  <tr><td>레벨 1</td><td class="n" style="text-align:right">100 / 200</td></tr>
+                  <tr><td>레벨 2</td><td class="n" style="text-align:right">200 / 400</td></tr>
+                  <tr><td>레벨 3</td><td class="n" style="text-align:right">300 / 600</td></tr>
+                  <tr><td class="muted">휴식</td><td class="n muted" style="text-align:right">2분</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <span class="btn primary big" style="width:100%">50,000 포인트로 참가</span>
+            <div class="subtle" style="text-align:center">참가하면 좌석 번호가 아니라 참가 OTP를 받는다</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="phone-frame">
+      <div class="screen-label"><span class="route">/me</span></div>
+      <div class="frame carbon">
+        <div class="frame-bar"><span>내 참가</span><span>demo</span></div>
+        <div class="frame-body">
+          <div class="col" style="gap:16px">
+            <div class="tile" style="border-color:var(--blue)">
+              <p class="kicker">참가 OTP · 데모 토너먼트</p>
+              <div class="num" style="font-size:36px; letter-spacing:0.12em; line-height:1.15">5252 7006</div>
+              <div class="rule" style="margin:14px 0"></div>
+              <div class="subtle">
+                자리에 앉아 태블릿에 넣는다. <strong>몇 번이든 다시 쓸 수 있다</strong> —
+                자리를 옮기거나 태블릿이 꺼져도 이 번호로 돌아온다.
+              </div>
+            </div>
+            <div>
+              <p class="kicker">지난 참가</p>
+              <table class="list">
+                <tbody>
+                  <tr><td>목요일 딥스택<div class="subtle">2026-07-28</div></td><td class="n" style="text-align:right">3위<div class="subtle">+70,000</div></td></tr>
+                  <tr><td>주말 터보<div class="subtle">2026-07-21</div></td><td class="n subtle" style="text-align:right">탈락</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <dl class="sources">
+    <dt>읽기</dt>
+    <dd><code>GET /tournaments/stores?id=</code> · <code>GET /tournaments/stores/:storeId</code> · <code>GET /tournaments/:id</code> · <code>GET /user/me/participations</code></dd>
+    <dt>쓰기</dt>
+    <dd><code>POST /tournaments/payment</code> — 몸통은 <code>{ tournamentId }</code> 하나다</dd>
+    <dt>탈락 뒤</dt>
+    <dd>태블릿이 순위를 띄우지 않고 이 화면으로 보낸다. 순위와 상금은 <strong>사람에게 붙는 정보</strong>라 좌석에 고정된 기기가 아니라 폰에 남는다.</dd>
+    <dt>없앤 것</dt>
+    <dd>좌석 선택 화면과 좌석 경합 모달. 좌석 확정이 결제에서 입장으로 옮겨가면서 사라졌다.</dd>
+  </dl>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section class="closing">
+  <h2>4판에서 고친 것</h2>
+  <div class="qgrid">
+    <div class="qcard fixed">
+      <h3>자리 고르기도 도식으로</h3>
+      <p>
+        3판의 대기 화면은 번호 버튼 아홉 개를 한 줄로 늘어놓았다. 그러면
+        <strong>"4번"이 방 안 어디인지 알 수 없다.</strong> 게임 화면과 같은 배치·같은 번호를
+        작게 보여준다 — 고르는 순간 눈앞의 의자와 겹쳐 보이므로 확인이 함께 끝난다.
+        버튼 문구도 <strong>"2번 테이블 4번 위치 참가"</strong>로 자리를 그대로 읽는다.
+      </p>
+    </div>
+    <div class="qcard fixed">
+      <h3>좌석이 레일에 걸터앉는다</h3>
+      <p>
+        3판은 좌석이 타원 안쪽에 몰려 위와 양옆이 붙어 보였다. 등간격을
+        28°~332°로 다시 잡고 좌석 폭을 줄여, <strong>사람이 테이블 가장자리에 앉듯</strong>
+        레일 밖으로 걸치게 했다. 딜러 화면은 정확히 <code>(100−x, 100−y)</code>다.
+      </p>
+    </div>
+  </div>
+
+  <h2 style="margin-top:44px">3판에서 고친 것</h2>
+  <div class="qgrid">
+    <div class="qcard fixed">
+      <h3>딜러는 화면 아래</h3>
+      <p>
+        참가자 태블릿은 딜러가 위(건너편), 딜러 태블릿은 딜러가 아래(자기 앞).
+        <strong>같은 테이블을 180° 돌린 것</strong>이고 좌석 번호는 그대로다.
+        딜러는 하루에 수백 번 화면과 눈앞을 오가므로 겹쳐 보이는 것이 곧 속도다.
+      </p>
+    </div>
+    <div class="qcard fixed">
+      <h3>보드가 페이즈를 말한다</h3>
+      <p>
+        채워진 칸이 깔린 카드, 점선 칸이 아직 안 나온 카드다.
+        <strong>장수는 보이고 무늬는 보이지 않는다</strong> — 무늬는 서버에 없고 눈앞에 있다.
+        오른쪽 열에 페이즈 이름도 적어 같은 사실을 두 형태로 준다.
+      </p>
+    </div>
+    <div class="qcard fixed">
+      <h3>태블릿은 스크롤이 없다</h3>
+      <p>
+        2판은 액션바가 16:9 밖에 있어 실제로는 스크롤이 생겼다. 상태줄·펠트·액션바를
+        전부 안으로 넣고 펠트를 줄였다. 딜러 화면의 9행 좌석 표도 없앴다 —
+        <strong>펠트의 자리를 직접 누른다.</strong>
+      </p>
+    </div>
+    <div class="qcard fixed">
+      <h3>탈락은 폰으로 보낸다</h3>
+      <p>
+        순위·상금은 사람에게 붙는 정보이고 폰이 이미 들고 있다. 태블릿은
+        <strong>"폰에서 확인하세요"</strong> 한 줄과 7초 카운트다운 뒤 대기 화면으로
+        돌아간다. 다음 사람이 앉을 자리이기 때문이다.
+      </p>
+    </div>
+    <div class="qcard fixed">
+      <h3>전광판은 틀어 둔다</h3>
+      <p>
+        서버에 별도 타이머를 두지 않는다. 상태를 미는 코드가
+        <code>checkAndSyncBlindLevel</code> <strong>한 곳뿐</strong>이라야 레벨과 마감이 두 갈래로
+        자라지 않는다. 대회를 여는 동안 전광판을 켜 두는 것이 운영 절차다.
+      </p>
+    </div>
+    <div class="qcard fixed">
+      <h3>좌석 보정은 만들지 않는다</h3>
+      <p>
+        상점이 해제하고 사람이 OTP로 다시 앉는 경로가 이미 그 일을 한다.
+        화면 목록의 "좌석 보정" 항목은 <strong>삭제</strong>한다.
+      </p>
+    </div>
+  </div>
+</section>
+
+</div>
