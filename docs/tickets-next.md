@@ -1884,6 +1884,151 @@ Task 4(이 절, 시나리오)는 **새 단언마다 그것을 깨뜨릴 입력�
 
 ---
 
+## T32 — 수동 테스트 잔재를 걷고 데모 시드를 만든다
+
+**항목**: 프론트 착수(B7) 직전 정리. 백로그 항목이 아니라, 화면을 그리기 전에
+**무엇이 실제 경로이고 무엇이 수동 테스트용으로 남은 것인지** 갈라야 해서 잡았다
+**범위**: `backend/src/auth/`, `backend/src/user/`, `backend/src/playsync/`,
+`backend/src/app.controller.ts`·`app.service.ts`(삭제),
+`backend/prisma/seed.ts`(신설), `backend/prisma.config.ts`,
+`backend/docker-compose.yml`, `backend/.env.example`,
+`backend/src/scenario/full-flow.int-spec.ts`
+**프론트 영향**: 있음 — `POST /auth/join`이 만드는 역할이 `STORE_ADMIN`에서
+`USER`로 바뀐다. 회원가입 화면의 의미가 달라진다
+
+### 문제
+
+MVP를 손으로 확인하던 시절의 코드가 라우트를 단 채로 남아 있었다. 화면이
+없어서 아무도 부르지 않았을 뿐이고, 프론트를 그리기 시작하면 그중 어느 것이
+"쓰라고 있는 것"인지 구분되지 않는다.
+
+**`POST /auth/join`이 가입자 전원에게 `STORE_ADMIN`을 줬다.**
+
+```ts
+// auth.service.ts:35
+data: { nickname: dto.nickname, password: hashedPassword, role: Role.STORE_ADMIN },
+```
+
+상점 계정을 따로 만드는 경로가 없어 회원가입으로 대신하던 것이다. 그 상태에서는
+누구나 가입만 하면 `/stores/*` 가드(`@Roles(STORE_ADMIN, PLATFORM_ADMIN)`)를
+통과해 상점과 대회를 만든다. 프론트 미들웨어도 이 역할을 그대로 신뢰한다.
+
+**`GET /user/add`가 부를 때마다 10000 포인트를 올렸다.** GET이 쓰기이고,
+`addPoint`의 반환값을 `await`만 하고 버려 응답이 비어 있었다. 주석도
+`// 임시 포인트 추가 메소드`였다.
+
+**`POST /playsync/:id`는 한 번도 동작한 적이 없다.**
+
+```ts
+async handlePlayerAction(@Req() req, @Param('id') tableId: string, dto: PlayerActionDto) {
+```
+
+`dto`에 `@Body()`가 없어 Nest가 아무것도 주입하지 않는다 — 항상 `undefined`가
+`handleAction`으로 내려갔다. 그리고 인바운드 검증(contract의 `.strict()` zod
+스키마)은 게이트웨이에만 있으므로, 되살아나면 **검증 없이 게임 상태를 쓰는
+두 번째 문**이 된다.
+
+나머지: `GET /playsync`(호출자 0)와 그것만 쓰던 서비스 메서드 둘,
+주석으로 남은 `@Post('signup')`(가리키는 `authService.signup`은 이미 없다)과
+`@Post('points/add')`, `app.module.ts`에 **등록조차 되지 않은**
+`AppController`/`AppService`(그래서 `GET /`는 애초에 존재하지 않았다),
+`docker-compose.yml` 하단의 주석 처리된 backend 서비스 블록.
+
+### 결정
+
+**`createStoreAdmin`은 지우지 않고 라우트만 끊는다.** 잔재는 서비스 메서드가
+아니라 **배선**이다. SaaS라면 상점 계정은 플랫폼이 발급하고, 그 자리를 지금은
+시드가 대신한다. 메서드를 지우면 시드가 같은 코드를 다시 쓰게 된다.
+
+**충전 경로는 되살리지 않는다.** 화면 목록에서 포인트 충전·거래 내역을 뺐고
+(데모가 보여줄 것은 대회 참여와 OTP 흐름이다), 실제 결제 연동은 이 프로젝트
+밖이다. 잔고는 시드가 세운다.
+
+**시드는 무대까지만 세운다.** 착석도 대회 시작도 하지 않는다. 그 둘이
+데모가 보여줄 장면 자체이기 때문이다 — 입장은 OTP를 받는 순간 좌석을
+확정하는 경로이고(T28), 시작은 버튼을 추첨해 스냅샷을 올리는 트랜잭션이다.
+미리 만들어 두면 그 장면이 사라진다.
+
+**참가자 한 명(`demo`)은 결제도 시키지 않는다.** 폰 흐름(대회 검색 → 상세 →
+참가 → OTP 수령)을 처음부터 찍을 수 있어야 한다. 나머지 일곱은 결제까지
+마쳐 두어 태블릿 입장을 바로 시연한다 — 시작 게이트가 `totalPlayers >= 6`이라
+일곱이면 충족된다.
+
+**덮어쓰지 않고 지우고 다시 만든다.** upsert로 만들면 유니크 제약(닉네임,
+상점 이름, 블라인드 구조 이름)마다 분기가 생기고, "이전 시드의 대회가 남은 채로
+새 대회가 생긴" 상태가 조용히 만들어진다. Redis도 함께 비운다 — DB만 지우면
+지난 대회의 스냅샷이 남아 부팅 복구가 없는 대회의 상태를 들고 돈다.
+
+**블라인드 구조를 데모용으로 압축했고, 휴식을 리바인 종료 뒤에 놓았다.**
+레벨당 3분이다. 운영 구조(15~20분)로는 영상 안에서 블라인드가 한 번도 오르지
+않아 레벨업·마감·복구가 화면에 드러날 자리가 없다.
+
+휴식 위치는 압축의 부산물이 아니라 **버그를 피한 배치**다. 마감 판정이
+`curLv < rebuyUntil`인데 휴식의 `lv`는 99라, 휴식이 리바인 구간 중간에 끼면
+그 순간 등록이 닫히고 `checkAndSyncBlindLevel`은 닫기만 하므로 다시 열리지
+않는다. "리바인 마감 → 휴식 → 후반부"가 실제 토너먼트 순서이기도 하다.
+
+그리고 휴식 자리가 곧 **테이블 합치기**를 시연하는 자리다. `releaseSeats`가
+`GamePhase.WAITING`을 요구하는데(T29) 휴식 중에는 `startPreFlop`이 이미
+거부하므로 테이블이 자연히 그 상태에 머문다. 테이블을 둘로 여는 이유가
+이것이다 — 하나로는 "몇 명 탈락한 뒤 합친다"를 보여줄 수 없다.
+
+**좌석 비트맵을 시드가 직접 세운다.** `UPDATE_SEAT_BIT`은 필드가 없으면
+아무것도 하지 않으므로(T25 — 지워진 테이블이 착석으로 되살아나는 것을 막는
+설계다), 비트맵 없이 시작하면 사람이 앉아도 좌석 목록이 계속 비어 있다.
+정상 경로에서는 `createSession`·`createTable`이 같은 일을 한다.
+
+`RedisService`를 부르지 않고 두 줄(`hset` + `expire`)을 옮겨 적었다 —
+Nest 프로바이더라 모듈 그래프를 통째로 끌고 온다. 시드 하나 때문에 앱을
+부팅시키지 않는다.
+
+### 작업 중 추가로 나온 것
+
+**Prisma 7은 seed 설정을 `package.json`의 `prisma.seed`에서 읽지 않는다.**
+거기 두면 조용히 무시되고 `No seed command configured`가 뜬다. `prisma.config.ts`의
+`migrations.seed`로 옮겨야 한다. `module: nodenext`인 tsconfig 때문에
+`--compiler-options {"module":"commonjs"}`도 함께 필요하다.
+
+**시드 컨테이너는 `node_modules`를 호스트와 공유할 수 없다.** `bcrypt`가
+네이티브 모듈이라 Windows에서 설치한 바이너리가 리눅스 컨테이너에서 로드되지
+않는다. 이름 있는 볼륨을 따로 두고 컨테이너 안에서 `npm ci`를 돌린다 —
+첫 실행만 느리고 볼륨이 남는 한 이후는 건너뛴다. 호스트에서 바로 도는
+`npm run seed -w backend`가 빠른 길이고, 둘 다 같은 `prisma/seed.ts`다.
+
+**`db`·`redis`에 헬스체크를 붙였다.** `depends_on`의 기본값은 컨테이너가
+떴다는 뜻일 뿐 postgres가 접속을 받는다는 뜻이 아니라, 시드가 연결 거부로
+죽는다.
+
+**`DATABASE_PASSWORD`가 `.env.example`에 없었다.** compose가 계속 쓰고 있던
+값인데 문서화되지 않아서, 예시대로 채운 `.env`로는 `compose up`이 빈
+비밀번호를 넘긴다. 시드 서비스가 이 값으로 `DATABASE_URL`을 조립하면서 드러났다.
+
+**시나리오의 "포인트 충전" 단계가 `addPoint`를 쓰고 있었다.** 지운 메서드라
+잔고를 직접 세우도록 바꿨다. 이 단계가 검사하는 것은 충전이 아니라 **참가비가
+빠져나간 뒤에도 포인트 총합이 맞는가**이므로 검사의 값은 그대로다.
+
+### 테스트
+
+| 파일 | 계층 | 무엇 |
+|---|---|---|
+| `auth/auth.controller.int-spec.ts` | 통합(신설) | `POST /auth/join`이 만드는 **역할**과 비밀번호 해시 |
+
+역할을 단위 스펙으로 "컨트롤러가 `createUser`를 부른다"라고 단언하면 배선만
+보고 결과를 못 본다 — `createUser`가 나중에 역할을 올리면 그 스펙은 초록인 채로
+통과한다. 실제로 만들어진 행의 `role`을 읽는다.
+
+**RED 확인.** 컨트롤러를 `createStoreAdmin`으로 되돌리고 돌렸다.
+
+```
+Expected: "역할 USER"
+Received: "역할 STORE_ADMIN"
+```
+
+두 번째 검사(비밀번호 해시)는 되돌린 상태에서도 통과한다 — 두 메서드가 둘 다
+해시하기 때문이고, 그래서 두 검사가 서로 다른 것을 증명한다.
+
+---
+
 <!--
 티켓 서술 형식 (1단계에서 쓰던 것):
 

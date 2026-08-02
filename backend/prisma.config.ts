@@ -7,6 +7,12 @@ export default defineConfig({
   schema: "prisma/schema.prisma",
   migrations: {
     path: "prisma/migrations",
+    // Prisma 7부터 seed 설정이 package.json의 `prisma.seed`가 아니라 여기다.
+    // package.json에 두면 조용히 무시되고 "No seed command configured"가 뜬다.
+    //
+    // `module: commonjs`를 덮어쓰는 이유: 이 리포의 tsconfig는 `nodenext`인데
+    // ts-node가 그 설정으로 .ts를 ESM으로 해석해 `require` 기반 로딩과 어긋난다.
+    seed: 'ts-node --compiler-options {"module":"commonjs"} prisma/seed.ts',
   },
   datasource: {
     url: process.env.DATABASE_URL,

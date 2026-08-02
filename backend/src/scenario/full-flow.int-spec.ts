@@ -247,12 +247,16 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
   });
 
   it('5. 참가비를 낼 포인트를 충전한다', async () => {
-    // 임시 충전 경로다. 실제 결제 연동은 이 프로젝트 밖이다.
-    for (const nickname of PLAYERS) {
-      for (let i = 0; i < INITIAL_POINTS / 10000; i++) {
-        await userService.addPoint(userIds[nickname]);
-      }
-    }
+    // 충전 경로가 코드에 없다. 예전에는 `UserService.addPoint`(호출 한 번에
+    // 10000점)를 여기서 돌렸는데, 그건 수동 테스트용으로 만든 것이 `GET
+    // /user/add`로 라우트까지 달고 남아 있던 것이라 지웠다(T32). 실제 결제
+    // 연동은 이 프로젝트 밖이고(`docs/backlog.md`의 "아직 판단하지 않은 것"),
+    // 이 시나리오가 검사하는 것은 충전이 아니라 **참가비가 빠져나간 뒤에도
+    // 포인트 총합이 맞는가**다. 그래서 잔고를 직접 세운다.
+    await prisma.user.updateMany({
+      where: { nickname: { in: PLAYERS } },
+      data: { points: INITIAL_POINTS },
+    });
 
     expect(await pointsOf('alice')).toBe(INITIAL_POINTS);
   });
