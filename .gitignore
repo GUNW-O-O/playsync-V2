@@ -3,3 +3,14 @@ docs/etc
 # monorepo root
 node_modules/
 .claude/
+
+# 시드가 떨어뜨리는 데모 무대의 좌표(대회 id, 딜러 OTP, 참가 OTP).
+# 매번 새로 만들어지는 값이고 OTP가 평문으로 들어 있다.
+.demo-seed.json
+
+# Playwright 산출물. 영상은 다시 찍으면 되고, 리포에 남길 것은
+# 편집이 끝난 파일뿐이다.
+frontend/e2e/recordings/
+frontend/e2e/.artifacts/
+frontend/test-results/
+frontend/playwright-report/

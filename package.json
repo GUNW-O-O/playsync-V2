@@ -15,6 +15,8 @@
     "dev:backend": "npm run start:dev -w backend",
     "dev:frontend": "npm run dev -w frontend",
     "test": "npm run test -w @playsync/contract && npm run test -w backend && npm run test -w frontend",
-    "test:int": "npm run test:int -w backend"
+    "test:int": "npm run test:int -w backend",
+    "test:e2e": "npm run test:e2e -w frontend",
+    "seed": "npm run seed -w backend"
   }
 }

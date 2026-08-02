@@ -63,6 +63,7 @@ npm run dev:backend    # NestJS watch
 npm run dev:frontend   # Next dev
 npm run test           # 단위 테스트 (인프라 없음, 2초)
 npm run test:int       # 통합 테스트 (컨테이너 기동부터 자동)
+npm run test:e2e       # 촬영 하네스 (Playwright, 시드 + 개발 서버 필요)
 ```
 
 개발용 인프라는 `cd backend && docker compose up -d`. PostgreSQL + Redis를 띄우고
@@ -112,6 +113,9 @@ contract       60  (3 suites)
 | 단위 | `*.spec.ts` | 없음 | 엔진처럼 순수한 로직. 빨라야 TDD 루프가 돈다 |
 | 통합 | `*.int-spec.ts` | Redis + PostgreSQL | 락, 트랜잭션처럼 진짜 인프라라야 의미 있는 것 |
 | 시나리오 | `src/scenario/*.int-spec.ts` | 위와 같음 | **이음매**. 부품이 각각 옳은데 조립이 틀린 경우 |
+
+`frontend/e2e/`는 이 셋에 끼지 않는다. **회귀가 아니라 데모 영상을 만드는
+자리다**(T33). 화면을 단언하지 않으므로 B7이 화면을 고쳐도 빨개지지 않는다.
 
 시나리오 계층이 따로 있는 이유: 실제로 터진 버그 중에 **두 함수가 각각 옳은데
 순서만 틀린** 것이 있었다(대회 시작이 Redis 준비 전에 DB를 커밋했다). 어느 부품

@@ -1,7 +1,9 @@
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PlayerStatus, PrismaClient, Role, TournamentStatus } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
+import { writeFileSync } from 'fs';
 import Redis from 'ioredis';
+import { resolve } from 'path';
 import { Pool } from 'pg';
 import { generateDealerOtp, hashDealerOtp } from '../src/dealer/dealer-otp';
 import { generatePlayerOtp } from '../src/payment/player-otp';
@@ -86,6 +88,21 @@ const TABLE_COUNT = 2;
 
 const SEAT_COUNT = 9;
 
+const DEMO_PASSWORD = 'password123';
+
+/**
+ * 시드가 만든 것의 **기계가 읽는 사본**. 리포 루트에 떨어진다(`.gitignore`).
+ *
+ * stdout만으로는 촬영 스크립트가 대회를 가리킬 방법이 없다. id가 전부 cuid라
+ * 사람이 옮겨 적어야 하고, 시드를 다시 돌릴 때마다 바뀐다. 그렇다고 id를
+ * 고정값으로 박으면 이번엔 제품 코드가 만들어 내는 id와 다른 종류가 섞인다.
+ *
+ * 경로를 `__dirname` 기준으로 잡는 이유는 컨테이너의 작업 디렉터리가
+ * `/app/backend`라서다. 바인드 마운트(`../:/app`)로 `/app`이 곧 리포 루트이므로,
+ * 컨테이너로 돌리든 호스트로 돌리든 같은 파일 하나에 쓴다.
+ */
+const MANIFEST_PATH = resolve(__dirname, '../../.demo-seed.json');
+
 async function main() {
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) {
@@ -103,7 +120,7 @@ async function main() {
   try {
     await reset(prisma, redis);
 
-    const password = await bcrypt.hash('password123', 10);
+    const password = await bcrypt.hash(DEMO_PASSWORD, 10);
 
     await prisma.user.create({
       data: { nickname: 'platform', password, role: Role.PLATFORM_ADMIN },
@@ -207,6 +224,25 @@ async function main() {
       },
     });
 
+    const manifest = {
+      seededAt: new Date().toISOString(),
+      password: DEMO_PASSWORD,
+      store: { id: store.id, name: STORE_NAME },
+      tournament: {
+        id: tournament.id,
+        name: TOURNAMENT_NAME,
+        entryFee: ENTRY_FEE,
+        startStack: START_STACK,
+        rebuyUntil: REBUY_UNTIL,
+        blindStructure: BLIND_STRUCTURE,
+      },
+      dealerOtp,
+      tables,
+      players,
+      unpaidPlayer: UNPAID_PLAYER,
+    };
+    writeManifest(manifest);
+
     report({ tournament: tournament.id, store: store.id, dealerOtp, tables, players });
   } finally {
     await prisma.$disconnect();
@@ -252,6 +288,10 @@ async function setSeatBitmap(redis: Redis, tournamentId: string, tableId: string
   await redis.expire(key, 86400);
 }
 
+function writeManifest(manifest: unknown) {
+  writeFileSync(MANIFEST_PATH, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+}
+
 function report(data: {
   tournament: string;
   store: string;
@@ -276,6 +316,8 @@ function report(data: {
     '',
     '  참가 OTP (태블릿 입장용)',
     ...data.players.map((p) => `    ${p.nickname.padEnd(22)}${p.otp}`),
+    '',
+    `  같은 내용이 ${MANIFEST_PATH} 에도 있다 (촬영 스크립트가 읽는다).`,
     '',
   ];
   console.log(lines.join('\n'));
