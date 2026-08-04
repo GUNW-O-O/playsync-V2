@@ -16,6 +16,8 @@
 - 커밋 메시지·주석·문서는 한국어. PR 제목과 본문도 한국어.
 - 기준선을 내리지 않는다: 타입 에러 0건, contract 60 / 백엔드 단위 177 / 프론트 단위 52 / 통합 328. 프론트 단위는 이 티켓에서 늘어난다.
 - **시각을 단언하는 테스트를 쓰지 않는다.** 색·간격·클래스 이름을 테스트에 박으면 화면을 고칠 때마다 빨개진다.
+- **목 응답 모양을 지어내지 않는다.** 백엔드가 이미 다 있으므로, 단위 테스트의 `server.use(...)` 응답은 **백엔드 코드에서 실제 모양을 확인하고** 그 출처를 주석으로 남긴다(`// backend/src/payment/payment.service.ts:64 — { tournament, seatStatus }`). 지어낸 목이 실제로 두 번 사고를 냈다: Task 2의 대회 전환 레이스가 대회 하나짜리 배열에 가려졌고, Task 3의 `getStoreId`가 `{ tournament, seatStatus }` 봉투를 안 벗기는데 목에 `tournamentId`가 없어 그 경로에 닿지도 못했다.
+- **`frontend/e2e/`는 이제 회귀 계층이다.** T33에서는 데모 영상만 만드는 자리였고 화면을 단언하지 않았다. Task 8이 그 성격을 바꾼다 — 목이 못 잡는 것(봉투 모양, 키 이름, 상태 전이)을 **진짜 백엔드 상대로** 거기서 잡는다. `CLAUDE.md`와 `frontend/playwright.config.ts`의 "회귀가 아니라 영상" 서술도 같이 고친다.
 - 태블릿 화면(`.tbl`)은 16:9 안에서 끝난다. **스크롤이 생기면 그 화면은 틀린 것이다.**
 - 보드는 장수만 그린다(채운 칸 = 깔린 카드, 점선 칸 = 아직). 무늬는 서버에 없다.
 - 검증 명령(루트에서): `npm run typecheck`, `npm run test`, `npm run test -w frontend`
@@ -1048,6 +1050,81 @@ Expected: 3건 통과. 하네스는 화면을 단언하지 않으므로 **빨개
 ```bash
 git add frontend/src
 git commit -m "feat: 참가자 폰 화면 둘을 만들고 인증 경로 규약을 하나로 합친다"
+```
+
+---
+
+### Task 8: e2e를 회귀 계층으로 올린다
+
+**Files:**
+- Create: `frontend/e2e/terminal.spec.ts` — 좌석 대기 · 좌석 게임
+- Create: `frontend/e2e/dealer.spec.ts` — 딜러 대기 · 딜러 게임
+- Create: `frontend/e2e/console.spec.ts` — 전광판 · 상점 콘솔 · 참가자 폰
+- Modify: `frontend/playwright.config.ts` (머리말 주석)
+- Modify: `frontend/e2e/README.md`
+- Modify: `frontend/src/mocks/handlers.ts` 및 각 화면 테스트의 `server.use(...)` 주석
+
+**Interfaces:**
+- Consumes: Task 2~7이 만든 모든 라우트
+- Produces: 없음(마지막 태스크)
+
+**왜 이 태스크가 있나.** 목은 백엔드를 병렬로 만들던 시절의 도구다. 백엔드가 다 있는 지금 목 모양을 지어내면, **그 목이 틀렸다는 사실을 아무것도 알려주지 않는다.** 실제로 두 번 그랬다. 단위 테스트는 빨라야 TDD 루프가 도니 그대로 두되, **봉투·키 이름·상태 전이는 진짜 백엔드가 판정하게** 한다.
+
+- [ ] **Step 1: 시드를 세우고 서버를 띄운다**
+
+```bash
+cd backend && docker compose up -d
+npm run seed -w backend
+```
+
+시드는 지우고 다시 만든다 — 개발 DB의 기존 데이터가 사라진다. 통합 테스트는 별도 컨테이너(5433/6380)라 무관하다.
+
+- [ ] **Step 2: 실패하는 e2e를 먼저 만든다**
+
+각 화면마다 **목이 못 잡는 것 하나**를 고른다. 화면의 색이나 배치를 단언하지 않는다 — 백엔드에서 온 값이 화면에 실제로 도달했는지만 본다.
+
+```ts
+// frontend/e2e/terminal.spec.ts
+test('좌석 대기 화면이 시드된 대회 이름과 점유 좌석을 그대로 보여준다', async ({ page }) => {
+  const seed = JSON.parse(await fs.readFile('.demo-seed.json', 'utf-8'));
+  await page.goto(`/table?store=${seed.storeId}`);
+  await expect(page.getByText(seed.tournamentName)).toBeVisible();
+  // 시드가 앉혀 둔 자리는 누를 수 없다. 목이 아니라 Redis 비트맵이 판정한다.
+  await expect(page.getByTestId(`pick-seat-${seed.occupiedSeatIndex}`)).toBeDisabled();
+});
+```
+
+`.demo-seed.json`의 실제 키 이름은 `backend/prisma/seed.ts`를 열어 확인한다. **여기서도 지어내지 않는다.**
+
+- [ ] **Step 3: 실패를 확인한다**
+
+Run: `npm run test:e2e`
+Expected: 새 스펙이 실패한다. **실패 문구를 보고서에 그대로 옮긴다.** 시드 키 이름을 잘못 짚었으면 여기서 걸린다 — 그게 이 계층의 존재 이유다.
+
+- [ ] **Step 4: 화면을 고쳐 통과시킨다**
+
+여기서 실패하는 것은 대개 **단위 테스트의 목이 틀렸다는 뜻**이다. 화면을 고쳤으면 그 화면의 단위 테스트 목도 실제 모양으로 고치고, 응답 모양의 출처를 주석으로 남긴다.
+
+- [ ] **Step 5: 목의 출처를 전부 주석으로 못박는다**
+
+기존 화면 테스트의 `server.use(...)` 응답을 하나씩 백엔드 코드와 대조하고, 맞는 것에도 출처 주석을 붙인다. 어긋난 것은 고친다.
+
+`frontend/src/mocks/handlers.ts`의 전역 핸들러(`*/api/auth/login`)는 **Task 7이 지웠어야 한다.** 아직 남아 있으면 여기서 지운다 — 프로덕션 호출자가 0개인 경로다.
+
+- [ ] **Step 6: 문서의 "회귀가 아니다"를 고친다**
+
+`frontend/playwright.config.ts` 머리말, `frontend/e2e/README.md`, `CLAUDE.md`의 테스트 절이 전부 "`frontend/e2e/`는 회귀가 아니라 데모 영상을 만드는 자리"라고 적고 있다. **이제 둘 다다.** 왜 바뀌었는지를 적는다 — 목이 백엔드 병렬 개발의 도구였고 백엔드가 다 선 지금은 목이 틀려도 알려주는 것이 없어서다.
+
+- [ ] **Step 7: 전체 검증**
+
+Run: `npm run typecheck && npm run test && npm run test:e2e`
+Expected: 타입 에러 0건, 단위 전건 통과, e2e 전건 통과
+
+- [ ] **Step 8: 커밋**
+
+```bash
+git add frontend/e2e frontend/playwright.config.ts frontend/src CLAUDE.md
+git commit -m "test: e2e를 회귀 계층으로 올리고 목 응답을 백엔드에 맞춘다"
 ```
 
 ---
