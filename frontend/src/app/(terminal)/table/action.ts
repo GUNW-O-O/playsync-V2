@@ -6,7 +6,7 @@ const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
 const DEFAULT_ENTER_ERROR = 'OTP를 확인하세요.';
 
 /**
- * 실패 응답에서 안내 문구를 꺼낸다. `dealer/[id]/action.ts`의 `failureMessage`와
+ * 실패 응답에서 안내 문구를 꺼낸다. `dealer/action.ts`의 `failureMessage`와
  * 같은 모양이다 — NestJS 예외 필터의 본문은 `{ statusCode, message, error }`이고
  * `message`는 예외에서 온 문자열이거나 ValidationPipe에서 온 문자열 배열이다.
  */
@@ -49,7 +49,7 @@ export async function enterSeat(input: {
     sameSite: 'lax',
     path: '/',
     // 백엔드 JWT 만료가 1시간이다. 더 길게 잡으면 죽은 토큰으로 붙으려다
-    // 티켓 발급에서 401을 받는다(`dealer/[id]/action.ts`와 같은 근거).
+    // 티켓 발급에서 401을 받는다(`dealer/action.ts`와 같은 근거).
     maxAge: 60 * 60,
   });
 
