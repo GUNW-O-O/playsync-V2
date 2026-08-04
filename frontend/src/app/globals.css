@@ -25,6 +25,9 @@
   --color-sb-dim: var(--sb-dim);
   --color-sb-live: var(--sb-live);
   --color-sb-break: var(--sb-break);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-err: var(--err);
   --font-sans: var(--sans);
   --font-mono: var(--mono);
   --font-cond: var(--cond);

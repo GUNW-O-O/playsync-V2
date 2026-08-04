@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Keypad from '@/component/Keypad';
 
 /** 백엔드 `PLAYER_OTP_LENGTH`(`backend/src/payment/player-otp.ts`)와 같은 값.
@@ -70,6 +70,13 @@ export default function WaitingClient({
 
   const tournament = tournaments.find((t) => t.id === tournamentId) ?? null;
 
+  // 대회를 빠르게 두 번 이상 고르면 두 요청이 동시에 떠 있을 수 있고,
+  // 네트워크는 응답 순서를 보장하지 않는다 — 나중에 고른 대회의 응답이
+  // 먼저 오고, 먼저 고른 대회(이미 버려진 선택)의 응답이 늦게 와서 화면을
+  // 덮어쓸 수 있다. 요청마다 세대 번호를 매기고, 응답이 왔을 때 그 세대가
+  // "지금 가장 최근에 보낸 요청"이 아니면 버린다(Important 1 리뷰).
+  const tournamentRequestRef = useRef(0);
+
   // 상점에 진행 중인 대회가 여럿이면 화면에서 고를 수 있어야 한다
   // (와이어프레임 646–723행이 대회 이름을 상단에 보여준다). `page.tsx`는
   // 첫 번째 대회의 테이블·좌석만 미리 읽어 오므로, 다른 대회를 고르면
@@ -81,10 +88,16 @@ export default function WaitingClient({
     setSeatIndex(null);
     setError(null);
 
+    const requestId = ++tournamentRequestRef.current;
+
     const [session, nextSeatMap] = await Promise.all([
       fetch(`/api/dealer/${id}`, { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)),
       fetch(`/api/tournaments/${id}/seats`, { cache: 'no-store' }).then((r) => (r.ok ? r.json() : [])),
     ]);
+
+    // 그 사이 다른 대회를 또 골랐다면 이 응답은 낡았다 — 버린다.
+    if (tournamentRequestRef.current !== requestId) return;
+
     const nextTables = session?.tables ?? [];
     setTables(nextTables);
     setTableId(nextTables[0]?.id ?? '');
@@ -94,6 +107,13 @@ export default function WaitingClient({
   // 좌석 현황만 5초마다 다시 읽는다. WS로 하지 않은 이유는
   // `entry.service.ts`의 `getSeatMap` 주석에 있다 — 대기 중인 태블릿은 아직
   // 티켓을 받을 자격 증명(JWT)이 없다.
+  //
+  // 이 폴링도 `selectTournament`와 같은 out-of-order 위험이 있어 보이지만
+  // (대회를 바꾼 직후 이전 대회의 폴링 응답이 도착하는 경우), effect의
+  // `cancelled` 클로저가 이미 막는다 — `tournamentId`가 바뀌면 cleanup이
+  // 이전 클로저의 `cancelled`를 `true`로 만들고, 그 클로저를 캡처한 `poll`이
+  // 나중에 응답을 받아도 `setSeatMap`을 부르지 않는다. 이 효과 자체가
+  // `AbortController` 없는 세대 관리라 별도 카운터가 필요 없다.
   useEffect(() => {
     if (!tournamentId) return;
     let cancelled = false;
@@ -286,9 +306,7 @@ export default function WaitingClient({
           </button>
 
           {error && (
-            // `--err`은 `--color-err`로 @theme에 등록돼 있지 않다(`globals.css`).
-            // 유틸리티 클래스 대신 CSS 변수를 직접 쓴다.
-            <p role="alert" className="text-sm" style={{ color: 'var(--err)' }}>
+            <p role="alert" className="text-sm text-err">
               {error}
             </p>
           )}
