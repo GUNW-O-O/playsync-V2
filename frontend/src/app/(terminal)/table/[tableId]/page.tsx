@@ -1,5 +1,5 @@
 import { cookies } from 'next/headers';
-import GameClient from './GameClient';
+import SeatGameClient from './SeatGameClient';
 
 async function getInitialGameData(tableId: string) {
   const cookieStore = await cookies();
@@ -15,22 +15,34 @@ async function getInitialGameData(tableId: string) {
   return res.json();
 }
 
+/**
+ * 대기 화면(`/table?store=`)으로 돌아갈 때 쓸 매장 id를 구한다.
+ *
+ * `GET /playsync/:tableId`(위 `getInitialGameData`) 응답에는 storeId가
+ * 없다 — 테이블 상태는 매장을 모른다. `TableState.tournamentId`로 대회
+ * 정보(`GET /tournaments/:id`, `storeId` 포함)를 한 번 더 불러 얻는다.
+ */
+async function getStoreId(tournamentId: string | undefined): Promise<string | undefined> {
+  if (!tournamentId) return undefined;
+  const res = await fetch(`${process.env.BACKEND_URL}/tournaments/${tournamentId}`, { cache: 'no-store' });
+  if (!res.ok) return undefined;
+  const tournament = await res.json().catch(() => null);
+  return (tournament as { storeId?: string } | null)?.storeId;
+}
+
 export default async function GamePage({ params }: { params: Promise<{ tableId: string }> }) {
   const { tableId } = await params;
   const initialData = await getInitialGameData(tableId);
-  const cookieStore = await cookies();
-  // 딜러 여부만 서버에서 판정해 내린다. 토큰 자체는 내리지 않는다 — prop은
-  // RSC 페이로드로 직렬화되어 페이지 소스에 그대로 남기 때문이다.
-  const isDealer = initialData.seatIndex === -1 && !!cookieStore.get('dealerToken');
+  const storeId = await getStoreId(initialData?.tableState?.tournamentId);
 
   return (
-    <main className="h-screen bg-slate-900 overflow-hidden">
+    <main className="h-screen overflow-hidden bg-tb-bg">
       {initialData ? (
-        <GameClient
-          initIsDealer={isDealer}
+        <SeatGameClient
           tableId={tableId}
           initialData={initialData.tableState}
           seatIndex={initialData.seatIndex}
+          storeId={storeId}
         />
       ) : (
         <p>아직 게임이 시작되지 않았습니다.</p>

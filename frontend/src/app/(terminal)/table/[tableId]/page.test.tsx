@@ -2,12 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/mocks/server';
 
-// GameClient는 'use client' 컴포넌트고 PokerTable·ActionPanel 등 브라우저
-// 전용 의존성을 끌고 온다. 이 테스트가 보려는 건 page.tsx가 GameClient에
+// SeatGameClient는 'use client' 컴포넌트고 Felt·SeatActionPanel 등 브라우저
+// 전용 의존성을 끌고 온다. 이 테스트가 보려는 건 page.tsx가 SeatGameClient에
 // 넘기는 props뿐이므로, 실제 구현 대신 자리표시자로 바꿔 끌고 오는 것을
 // 막는다. 목이라도 GamePage가 반환하는 React 엘리먼트의 props 객체는 그대로
 // 보존되므로, 이 테스트의 핵심 단언(토큰 문자열이 안 실린다)에는 영향이 없다.
-vi.mock('./GameClient', () => ({ default: () => null }));
+vi.mock('./SeatGameClient', () => ({ default: () => null }));
 
 const cookieStore = { get: vi.fn() };
 vi.mock('next/headers', () => ({
@@ -23,7 +23,7 @@ const LEAKED_DEALER_TOKEN = 'leaked-dealer-jwt-value';
 
 /**
  * 이 브랜치의 유일한 핵심 불변식: httpOnly 쿠키로 읽은 액세스 토큰이
- * `GameClient`로 내려가는 어떤 prop에도 실리지 않는다.
+ * `SeatGameClient`로 내려가는 어떤 prop에도 실리지 않는다.
  *
  * `page.tsx`는 서버 컴포넌트다. Next App Router에서 서버 → 클라이언트 prop은
  * RSC 페이로드로 직렬화되어 페이지 HTML에 그대로 남는다(`view-source`로
@@ -44,7 +44,7 @@ describe('GamePage', () => {
     );
   });
 
-  it('accessToken 쿠키 값이 GameClient에 넘어가는 props 어디에도 없다', async () => {
+  it('accessToken 쿠키 값이 SeatGameClient에 넘어가는 props 어디에도 없다', async () => {
     cookieStore.get.mockImplementation((name: string) =>
       name === 'accessToken' ? { value: LEAKED_ACCESS_TOKEN } : undefined,
     );
@@ -54,7 +54,7 @@ describe('GamePage', () => {
     expect(JSON.stringify(element)).not.toContain(LEAKED_ACCESS_TOKEN);
   });
 
-  it('dealerToken 쿠키 값도 GameClient에 넘어가는 props 어디에도 없다', async () => {
+  it('dealerToken 쿠키 값도 SeatGameClient에 넘어가는 props 어디에도 없다', async () => {
     // 딜러 토큰은 승자 지정 권한을 가진 토큰이다 — 새면 곧 돈이다.
     cookieStore.get.mockImplementation((name: string) =>
       name === 'dealerToken' ? { value: LEAKED_DEALER_TOKEN } : undefined,
