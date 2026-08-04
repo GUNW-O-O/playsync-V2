@@ -159,6 +159,11 @@ export default function SeatGameClient({
   }
 
   const myPlayer = gameState && mySeatIndex !== null ? (gameState.players[mySeatIndex] ?? null) : null;
+  // 낸 금액·콜·최소 레이즈는 Felt의 좌석 카드엔 없는 값이다 — 펠트는 베팅액과
+  // 올인 여부만 그린다(리뷰 지적: 이걸 근거 없이 "중복"으로 보고 뺐었다).
+  const betPlaced = myPlayer?.bet ?? 0;
+  const toCall = gameState ? Math.max(0, gameState.currentBet - betPlaced) : 0;
+  const minRaise = gameState ? gameState.currentBet + gameState.smallBlind * 2 : 0;
 
   return (
     <div className="relative flex h-screen w-screen flex-col overflow-hidden bg-tb-bg text-tb-ink">
@@ -193,6 +198,23 @@ export default function SeatGameClient({
           <div>
             <p className="text-[11px] tracking-[0.06em] text-tb-sub">내 스택</p>
             <div className="text-2xl font-light text-tb-ink">{(myPlayer?.stack ?? 0).toLocaleString()}</div>
+          </div>
+
+          <div className="border-t border-tb-line" />
+
+          <div className="flex flex-col gap-1.5 text-xs">
+            <div className="flex items-center justify-between">
+              <span className="text-tb-muted">낸 금액</span>
+              <span className="font-mono text-tb-ink">{betPlaced.toLocaleString()}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-tb-muted">콜</span>
+              <span className="font-mono text-tb-ink">{toCall.toLocaleString()}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-tb-muted">최소 레이즈</span>
+              <span className="font-mono text-tb-ink">{minRaise.toLocaleString()}</span>
+            </div>
           </div>
 
           <div className="border-t border-tb-line" />

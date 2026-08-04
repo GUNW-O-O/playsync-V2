@@ -69,4 +69,53 @@ describe('GamePage', () => {
 
     expect(JSON.stringify(element)).not.toContain(LEAKED_DEALER_TOKEN);
   });
+
+  /**
+   * 리뷰 지적(Important): `GET /tournaments/:id`는 `{ tournament, seatStatus }`
+   * 봉투로 온다(`payment.service.ts`의 `getTournamentInfo`) — `storeId`는
+   * `tournament.storeId`에 있다. 봉투를 안 벗기고 최상위에서 `.storeId`를
+   * 읽으면 실제 성공 응답에서도 항상 undefined가 되고, 탈락한 참가자
+   * 전원이 `/table?store=`(빈 값)로 보내진다.
+   */
+  it('GET /tournaments/:id 봉투를 벗겨 tournament.storeId를 SeatGameClient storeId prop으로 넘긴다', async () => {
+    cookieStore.get.mockImplementation((name: string) =>
+      name === 'accessToken' ? { value: LEAKED_ACCESS_TOKEN } : undefined,
+    );
+    server.use(
+      http.get('http://backend.test/playsync/tbl-1', () =>
+        HttpResponse.json({ seatIndex: 0, tableState: { pot: 0, tournamentId: 'trn-1' } }),
+      ),
+      http.get('http://backend.test/tournaments/trn-1', () =>
+        HttpResponse.json({ tournament: { id: 'trn-1', storeId: 'store-9' }, seatStatus: [] }),
+      ),
+    );
+
+    const element = await GamePage({ params: Promise.resolve({ tableId: 'tbl-1' }) });
+
+    expect(element.props.children.props.storeId).toBe('store-9');
+  });
+
+  /**
+   * 리뷰 지적(Minor 1): `getStoreId`의 fetch가 네트워크 단절로 reject되면
+   * 탈락 복귀 주소 하나를 못 구했다고 게임 화면 전체가 500이 되는 건
+   * 균형이 안 맞는다. storeId 없이도(=undefined) 화면은 뜬다.
+   */
+  it('대회 정보 조회가 네트워크 실패해도 게임 화면은 그대로 뜬다', async () => {
+    cookieStore.get.mockImplementation((name: string) =>
+      name === 'accessToken' ? { value: LEAKED_ACCESS_TOKEN } : undefined,
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    server.use(
+      http.get('http://backend.test/playsync/tbl-1', () =>
+        HttpResponse.json({ seatIndex: 0, tableState: { pot: 0, tournamentId: 'trn-1' } }),
+      ),
+      http.get('http://backend.test/tournaments/trn-1', () => HttpResponse.error()),
+    );
+
+    // 던지지 않고 정상적으로 엘리먼트를 반환하는 것 자체가 이 테스트의 핵심이다.
+    const element = await GamePage({ params: Promise.resolve({ tableId: 'tbl-1' }) });
+
+    expect(element.props.children.props.storeId).toBeUndefined();
+    errorSpy.mockRestore();
+  });
 });
