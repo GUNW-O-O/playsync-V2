@@ -1,0 +1,42 @@
+/*
+ * 와이어프레임(frontend/wireframes/2026-08-02-screens.html)의 :root 변수를
+ * 그대로 옮긴 것이다. 값은 바꾸지 않는다 — 색과 간격의 판단은 이미 끝났다.
+ * 원본 출처: 위 파일 15–59행.
+ */
+:root {
+  /* ① Carbon — 상점 콘솔 · 폰 */
+  --canvas:     #ffffff;
+  --surface:    #f4f4f4;
+  --ink:        #161616;
+  --ink-subtle: #8c8c8c;
+  --hairline:   #e0e0e0;
+  --blue:       #0f62fe;
+
+  /* ③-a 전광판 */
+  --sb-bg:    #08090a;
+  --sb-ink:   #ffffff;
+  --sb-dim:   #6e7479;
+  --sb-live:  #ffb000;
+  --sb-break: #3ddc97;
+
+  /* ③-b 태블릿 */
+  --tb-bg:     #101315;
+  --tb-panel:  #191d20;
+  --tb-line:   #2b3134;
+  --tb-ink:    #eef2f3;
+  --tb-muted:  #9aa4a8;
+  --tb-sub:    #6b7579;
+  --tb-act:    #4cc2a8;
+  --felt:      #123b33;
+  --felt-edge: #1c5347;
+  --felt-rail: #2a1c14;
+  --card-face: #e9e4d8;
+
+  --ok:   #24a148;
+  --warn: #f1c21b;
+  --err:  #da1e28;
+
+  --sans: ui-sans-serif, system-ui, "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, "D2Coding", monospace;
+  --cond: "Arial Narrow", "Roboto Condensed", "Helvetica Neue Condensed", var(--sans);
+}
