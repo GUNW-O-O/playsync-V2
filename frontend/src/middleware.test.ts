@@ -85,6 +85,16 @@ describe('역할 가드', () => {
   it('일반 유저는 모바일 화면을 통과한다', () => {
     expectPass(middleware(request('/tournaments', 'USER')));
   });
+
+  // 예전에는 빈 본문 404를 그대로 내보내 백지가 떴다. 상태 코드가 404라
+  // 정보 노출 요건(그 자원이 존재한다는 사실을 숨긴다)은 이미 충족했으므로
+  // 상태 코드는 그대로 두고 본문만 채운다.
+  it('역할이 맞지 않으면 404를 유지하되 not-found 화면으로 rewrite한다', () => {
+    const res = middleware(request('/stores/s1/tournaments/t1', 'USER'));
+
+    expect(res.status).toBe(404);
+    expect(res.headers.get('x-middleware-rewrite')).toContain('/_not-found');
+  });
 });
 
 // 미들웨어는 next.config의 rewrite보다 먼저 돈다. matcher가 /api를 잡으면

@@ -562,6 +562,45 @@ export class SessionService {
   }
 
   /**
+   * 좌석 해제 화면의 입력. `POST .../seats/release`의 DTO(`ReleaseSeatItem`)가
+   * `seatIndex`뿐 아니라 `userId`도 요구한다 — 상점 콘솔이 조금 전에 그린
+   * 판을 보고 체크하는 사이 그 자리 사람이 바뀔 수 있어서다(T28이 핸드
+   * 도중 착석을 허용한다). 그런데 지금 있는 조회(`GET /tournaments/:id/seats`,
+   * `GET /tournaments/:id`, `GET /dealer/:id`)는 셋 다 가드가 없다 — 좌석
+   * 점유 여부만 줄 뿐 누가 앉았는지는 주지 않는다. 여기에 `tablePlayers`를
+   * 끼워 넣으면 userId와 닉네임이 그대로 공개된다.
+   *
+   * 그래서 새로 만든다. 재발급·내보내기와 같은 문(STORE_ADMIN 전용, 소유권
+   * 확인 첫 줄)을 쓴다 — 이 조회 자체가 해제라는 강한 동작의 입력이라서다.
+   *
+   * `seatPosition`(DB 컬럼)을 `seatIndex`로 바꿔 내보낸다 — 해제 DTO가 그
+   * 이름을 쓴다.
+   */
+  async getSeatOccupants(tournamentId: string, ownerId: string) {
+    await this.assertTournamentOwnership(tournamentId, ownerId);
+
+    const tables = await this.prismaService.table.findMany({
+      where: { tournamentId },
+      orderBy: { tableOrder: 'asc' },
+      include: {
+        tablePlayers: {
+          select: { seatPosition: true, userId: true, nickname: true },
+        },
+      },
+    });
+
+    return tables.map((table) => ({
+      tableId: table.id,
+      tableOrder: table.tableOrder,
+      players: table.tablePlayers.map((p) => ({
+        seatIndex: p.seatPosition,
+        userId: p.userId,
+        nickname: p.nickname,
+      })),
+    }));
+  }
+
+  /**
    * 태블릿이 토큰을 잃었을 때 쓰는 탈출구다. 해시로 저장하므로 원본을 다시
    * 보여줄 방법이 없고, 대신 새로 발급한다.
    *

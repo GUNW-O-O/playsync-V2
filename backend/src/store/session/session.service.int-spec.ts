@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { JwtService } from '@nestjs/jwt';
-import { GameType, PlayerStatus, PrismaClient, TournamentStatus } from '@prisma/client';
+import { GameType, PlayerStatus, PrismaClient, Role, TournamentStatus } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { CreateTournamentDto } from 'shared/dto/tournament.dto';
 import { DealerService } from 'src/dealer/dealer.service';
@@ -1359,5 +1359,83 @@ describe('SessionService.startSession — 버튼 좌석 영속화', () => {
 
     expect(table.buttonUser).not.toBeNull();
     expect(`DB ${table.buttonUser}`).toBe(`DB ${snapshot!.buttonUser}`);
+  });
+});
+
+/**
+ * T34 — 좌석 해제 화면의 입력.
+ *
+ * `getSeatOccupants`는 좌석 해제(`releaseSeats`)가 요구하는 `{ seatIndex,
+ * userId }`를 채우기 위한 조회다. 기존 좌석 조회 셋(`GET
+ * /tournaments/:id/seats`, `GET /tournaments/:id`, `GET /dealer/:id`)은
+ * 전부 가드가 없어서 여기에 얹으면 남의 대회 참가자의 userId·닉네임이
+ * 그대로 공개된다 — 그래서 재발급·내보내기와 같은 문(소유권 확인)을 쓴다.
+ *
+ * 두 번째 테스트가 이 엔드포인트의 존재 이유다. 소유권 검사가 지워지면
+ * 남의 대회 좌석 명단이 그대로 샌다.
+ */
+describe('SessionService.getSeatOccupants', () => {
+  let prisma: PrismaClient;
+  let redis: Redis;
+  let sessionService: SessionService;
+  let entryService: EntryService;
+  let tournamentId: string;
+  let tableId: string;
+  let ownerId: string;
+
+  beforeAll(() => {
+    prisma = createTestPrisma();
+    redis = createTestRedis();
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+    await closeTestPrisma(prisma);
+  });
+
+  beforeEach(async () => {
+    await truncateAll(prisma);
+    await flushTestRedis(redis);
+
+    const prismaService = prisma as unknown as PrismaService;
+    const redisService = new RedisService(redis);
+    sessionService = new SessionService(
+      prismaService, redisService, new OtpAttempts(redis), new EventEmitter2(),
+    );
+    entryService = new EntryService(
+      prismaService, redisService, new JwtService({ secret: 'seat-occupants-secret' }), new EventEmitter2(),
+    );
+
+    ({ ownerId, tournamentId, tableId } = await seedTournamentWithTable(prisma));
+  });
+
+  it('앉은 사람의 좌석과 userId를 준다', async () => {
+    // 좌석 확정 경로(EntryService.enterSeat)로 실제로 앉힌다. TablePlayer
+    // 행을 손으로 만들면 claimSeat의 실제 동작(닉네임을 참가 유저에서
+    // 가져오는 것 등)과 이 조회가 서로 다른 가정을 하고 있어도 안 걸린다.
+    const player = await prisma.user.create({ data: { nickname: '테스터', password: 'x' } });
+    await prisma.tournamentParticipation.create({
+      data: {
+        userId: player.id, tournamentId, playerOtp: 'seat0000',
+        status: PlayerStatus.WAITING, currentStack: 10000,
+      },
+    });
+    await entryService.enterSeat(tournamentId, { otp: 'seat0000', tableId, seatIndex: 3 });
+
+    const result = await sessionService.getSeatOccupants(tournamentId, ownerId);
+
+    expect(result).toEqual([
+      { tableId, tableOrder: 1, players: [{ seatIndex: 3, userId: player.id, nickname: '테스터' }] },
+    ]);
+  });
+
+  it('남의 대회는 거부한다', async () => {
+    const intruder = await prisma.user.create({
+      data: { nickname: '다른-상점주', password: 'x', role: Role.STORE_ADMIN },
+    });
+
+    await expect(
+      sessionService.getSeatOccupants(tournamentId, intruder.id),
+    ).rejects.toThrow(ForbiddenException);
   });
 });

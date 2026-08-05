@@ -94,4 +94,13 @@ export class SessionController {
     await this.sessionService.releaseSeats(tournamentId, tableId, dto.seats, req.user.userId);
     return { ok: true };
   }
+
+  // 좌석 해제의 입력이다. 남의 대회 참가자의 userId·닉네임이 그대로 나가면
+  // 안 되므로 다른 운영 조작 경로와 같은 문(STORE_ADMIN 전용, 소유권 확인)을
+  // 쓴다 — session.service.ts의 getSeatOccupants 주석 참고.
+  @Roles(Role.STORE_ADMIN)
+  @Get(':id/seats')
+  async getSeatOccupants(@Req() req, @Param('id') tournamentId: string) {
+    return await this.sessionService.getSeatOccupants(tournamentId, req.user.userId);
+  }
 }
