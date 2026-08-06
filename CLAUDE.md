@@ -78,18 +78,20 @@ npm run test:e2e       # 촬영 하네스 (Playwright, 시드 + 개발 서버 �
 타입 에러 0건, 테스트 전부 통과가 정상이다. CI(`.github/workflows/ci.yml`)가
 타입 체크 · 테스트 · 빌드를 돌린다.
 
-현재 기준선 (T32 완료 시점):
+현재 기준선 (T34 완료 시점):
 
 ```
-contract       60  (3 suites)
+contract       62  (4 suites)
 백엔드 단위   177  (16 suites)
-프론트 단위    52  (14 files)
-통합          328  (27 suites)
+프론트 단위    79  (21 files)
+통합          332  (27 suites)
+e2e            11  (4 files)
 타입 에러       0
 ```
 
 1단계 완료 시점은 contract 44 / 단위 122 / 통합 199였다. 프론트 테스트는 T22에서
-생겼다.
+생겼고 T34에서 화면과 함께 늘었다. e2e는 T33에서 생겨(3건) T34에서 회귀 계층이
+됐다 — 돌리려면 시드가 먼저다(`npm run seed -w backend && npm run test:e2e`).
 
 `tsc`가 이미 지운 파일의 에러를 계속 보고하면 `.tsbuildinfo`가 낡은 것이다.
 `incremental: true`라서 생기는 일이니 `backend/dist`를 지우고 다시 돌린다.
