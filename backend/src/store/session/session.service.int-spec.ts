@@ -35,6 +35,7 @@ describe('SessionService.createSession — OTP 해시 통합', () => {
   let sessionService: SessionService;
   let storeId: string;
   let blindId: string;
+  let ownerId: string;
 
   beforeAll(() => {
     prisma = createTestPrisma();
@@ -61,6 +62,7 @@ describe('SessionService.createSession — OTP 해시 통합', () => {
     const owner = await prisma.user.create({
       data: { nickname: 'owner', password: 'x', role: 'STORE_ADMIN' },
     });
+    ownerId = owner.id;
     const store = await prisma.store.create({
       data: { name: '테스트 상점', ownerId: owner.id },
     });
@@ -126,7 +128,7 @@ describe('SessionService.createSession — OTP 해시 통합', () => {
       // 로직이 아니라 응답에 해시가 실리는지 여부다.
       process.env.MIN_PLAYERS_TO_START = '0';
       try {
-        const started = await sessionService.startSession(created.id);
+        const started = await sessionService.startSession(created.id, ownerId);
         expect(started).not.toHaveProperty('dealerOtp');
         expect(started).not.toHaveProperty('dealerOtpHash');
       } finally {
@@ -161,7 +163,7 @@ describe('SessionService.createSession — OTP 해시 통합', () => {
 
       process.env.MIN_PLAYERS_TO_START = '0';
       try {
-        await sessionService.startSession(created.id);
+        await sessionService.startSession(created.id, ownerId);
       } finally {
         delete process.env.MIN_PLAYERS_TO_START;
       }
@@ -1287,6 +1289,7 @@ describe('SessionService.startSession — 버튼 좌석 영속화', () => {
   let sessionService: SessionService;
   let tournamentId: string;
   let tableId: string;
+  let ownerId: string;
 
   beforeAll(() => {
     prisma = createTestPrisma();
@@ -1307,7 +1310,7 @@ describe('SessionService.startSession — 버튼 좌석 영속화', () => {
       prisma as unknown as PrismaService, redisService, new OtpAttempts(redis), new EventEmitter2(),
     );
 
-    ({ tournamentId, tableId } = await seedTournamentWithTable(prisma));
+    ({ ownerId, tournamentId, tableId } = await seedTournamentWithTable(prisma));
 
     // 준비: 착석 2명. seat()·putSnapshot()과 같은 모양이지만 이 describe는
     // 자기 스냅샷을 직접 만든다 — releaseSeats 블록의 헬퍼는 그 describe
@@ -1346,7 +1349,7 @@ describe('SessionService.startSession — 버튼 좌석 영속화', () => {
   it('시작 트랜잭션이 뽑은 버튼 좌석을 DB에 남긴다', async () => {
     process.env.MIN_PLAYERS_TO_START = '0';
     try {
-      await sessionService.startSession(tournamentId);
+      await sessionService.startSession(tournamentId, ownerId);
     } finally {
       delete process.env.MIN_PLAYERS_TO_START;
     }
@@ -1359,6 +1362,31 @@ describe('SessionService.startSession — 버튼 좌석 영속화', () => {
 
     expect(table.buttonUser).not.toBeNull();
     expect(`DB ${table.buttonUser}`).toBe(`DB ${snapshot!.buttonUser}`);
+  });
+
+  // T34 — startSession에는 소유권 확인이 없었다. 서버 액션이 tournamentId를
+  // 클라이언트 값 그대로 넘기므로, 이게 없으면 A 상점 관리자가 B 상점 대회를
+  // 시작시킬 수 있었다. 다른 소유권 테스트(getSeatOccupants의 "남의 대회는
+  // 거부한다")와 같은 셋업을 따른다.
+  it('남의 대회는 시작할 수 없다', async () => {
+    const intruder = await prisma.user.create({
+      data: { nickname: '다른-상점주', password: 'x', role: 'STORE_ADMIN' },
+    });
+
+    process.env.MIN_PLAYERS_TO_START = '0';
+    try {
+      await expect(
+        sessionService.startSession(tournamentId, intruder.id),
+      ).rejects.toThrow(ForbiddenException);
+    } finally {
+      delete process.env.MIN_PLAYERS_TO_START;
+    }
+
+    const tournament = await prisma.tournament.findUniqueOrThrow({
+      where: { id: tournamentId },
+      select: { status: true },
+    });
+    expect(tournament.status).toBe(TournamentStatus.PENDING);
   });
 });
 

@@ -29,9 +29,11 @@ export class SessionController {
     return await this.sessionService.updateSession(id, dto);
   }
 
+  // 시작도 남의 대회를 건드릴 수 없어야 한다. 소유권 확인은 서비스 메서드
+  // 안이고, 다른 운영 조작 경로와 같은 이유다.
   @Patch(':id/start')
-  async start(@Param('id') id: string) {
-    return await this.sessionService.startSession(id);
+  async start(@Req() req, @Param('id') id: string) {
+    return await this.sessionService.startSession(id, req.user.userId);
   }
 
   @Patch(':id/complete')

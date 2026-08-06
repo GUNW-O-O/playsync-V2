@@ -39,8 +39,36 @@ export class PaymentService {
     });
   }
 
+  // `SessionService.getGameSession`을 재사용하지 않는다 — 그건 상점 콘솔의
+  // 소유자 조회용이라 tornamentParticipations·tablePlayers까지 include한다.
+  // 여기는 가드 없는 공개 라우트(`GET /tournaments/:id`)의 조회라 화면이
+  // 실제로 읽는 필드만 select한다 — 참가자 목록·좌석 배정 같은 남의 정보가
+  // 실려 나가지 않게.
   async getTournamentInfo(tournamentId: string) {
-    const tournament = await this.session.getGameSession(tournamentId);
+    const tournament = await this.prismaService.tournament.findUnique({
+      where: { id: tournamentId },
+      select: {
+        id: true,
+        name: true,
+        status: true,
+        type: true,
+        isRegistrationOpen: true,
+        entryFee: true,
+        startStack: true,
+        rebuyUntil: true,
+        itmCount: true,
+        prizePayouts: true,
+        totalPlayers: true,
+        activePlayers: true,
+        avgStack: true,
+        totalBuyinAmount: true,
+        storeId: true,
+        startedAt: true,
+        createdAt: true,
+        tables: true,
+        blindStructure: true,
+      },
+    });
     if (!tournament) throw new ConflictException('잘못된 세션 ID 입니다.');
     let seatStatus = await this.redisService.getTournamentTables(tournamentId);
     if (!seatStatus || seatStatus.length === 0) {

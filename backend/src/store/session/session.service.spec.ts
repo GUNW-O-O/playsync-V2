@@ -324,6 +324,8 @@ describe('SessionService.startSession', () => {
    * 한 번이 "시작했다"는 단일 순간이 되고, 그 전에 실패하면 PENDING으로 남아
    * 시작 버튼을 다시 누르는 것이 곧 재시도가 된다.
    */
+  const OWNER_ID = 'owner-1';
+
   const gameRow = (tables: unknown[]) => ({
     id: 't1',
     name: 'T',
@@ -338,6 +340,9 @@ describe('SessionService.startSession', () => {
     totalBuyinAmount: 6000,
     prizePayouts: [{ place: 1, percent: 100 }],
     blindStructure: { structure: [{ lv: 1, sb: 100, ante: false, duration: 20 }] },
+    // `assertTournamentOwnership`도 같은 mock `findUnique`를 타므로 store를
+    // 함께 담는다 — mock은 select를 해석하지 않고 통째로 돌려준다.
+    store: { ownerId: OWNER_ID },
     tables,
   });
 
@@ -386,7 +391,7 @@ describe('SessionService.startSession', () => {
   it('시작 트랜잭션이 테이블의 buttonUser를 쓴다', async () => {
     const { service, tableUpdate } = setup();
 
-    await service.startSession('t1');
+    await service.startSession('t1', OWNER_ID);
 
     // 기본 seed: 테이블 하나, 좌석 하나(seatPosition 0) — 뽑을 수 있는
     // 버튼이 0 하나뿐이라 결정적이다.
@@ -402,7 +407,7 @@ describe('SessionService.startSession', () => {
     // 이유도 모른 채 본다.
     const { service } = setup({ snapshot: null });
 
-    await expect(service.startSession('t1')).rejects.toThrow();
+    await expect(service.startSession('t1', OWNER_ID)).rejects.toThrow();
   });
 
   it('거부되면 DB에 아무것도 커밋하지 않는다', async () => {
@@ -410,7 +415,7 @@ describe('SessionService.startSession', () => {
     // 됐다. 대시보드도 블라인드도 없는 채로 시작된 대회가 남는다.
     const { service, prisma, update } = setup({ snapshot: null });
 
-    await expect(service.startSession('t1')).rejects.toThrow();
+    await expect(service.startSession('t1', OWNER_ID)).rejects.toThrow();
 
     expect(prisma.$transaction).not.toHaveBeenCalled();
     expect(update).not.toHaveBeenCalled();
@@ -421,7 +426,7 @@ describe('SessionService.startSession', () => {
     // 없다. 커밋이 뒤에 있어야 이 성질이 성립한다.
     const { service, prisma, update } = setup({ redisFails: true });
 
-    await expect(service.startSession('t1')).rejects.toThrow(/저장에 실패/);
+    await expect(service.startSession('t1', OWNER_ID)).rejects.toThrow(/저장에 실패/);
 
     expect(prisma.$transaction).not.toHaveBeenCalled();
     expect(update).not.toHaveBeenCalled();
@@ -436,7 +441,7 @@ describe('SessionService.startSession', () => {
     saveInitialTableSnapshots.mockImplementation(async () => { order.push('snapshots'); });
     prisma.$transaction.mockImplementation(async () => { order.push('commit'); });
 
-    await service.startSession('t1');
+    await service.startSession('t1', OWNER_ID);
 
     expect(order).toEqual(['meta', 'snapshots', 'commit']);
   });
@@ -448,7 +453,7 @@ describe('SessionService.startSession', () => {
     // 다른 레벨이 나온다.
     const { service, update, setTournamentMeta } = setup();
 
-    await service.startSession('t1');
+    await service.startSession('t1', OWNER_ID);
 
     const blindField = setTournamentMeta.mock.calls[0][2];
     const written = update.mock.calls
@@ -471,6 +476,8 @@ describe('SessionService 시작 최소 인원', () => {
    * 편의값으로 두면 설정을 빠뜨린 배포가 조용히 2로 뜬다. T10의
    * `JWT_SECRET='super-secret'`과 같은 실수다.
    */
+  const OWNER_ID = 'owner-1';
+
   const setup = (totalPlayers: number) => {
     const prisma = {
       tournament: {
@@ -488,6 +495,9 @@ describe('SessionService 시작 최소 인원', () => {
           totalBuyinAmount: 1000 * totalPlayers,
           prizePayouts: [{ place: 1, percent: 100 }],
           blindStructure: { structure: [{ lv: 1, sb: 100, ante: false, duration: 20 }] },
+          // `assertTournamentOwnership`도 이 mock을 탄다 — select를 해석하지
+          // 않고 통째로 돌려주므로 store를 같이 담아 둔다.
+          store: { ownerId: OWNER_ID },
           tables: [],
         }),
         update: jest.fn().mockResolvedValue({}),
@@ -516,19 +526,19 @@ describe('SessionService 시작 최소 인원', () => {
   });
 
   it('기본값은 6이다', async () => {
-    await expect(setup(5).startSession('t1')).rejects.toThrow(ConflictException);
-    await expect(setup(6).startSession('t1')).resolves.toBeDefined();
+    await expect(setup(5).startSession('t1', OWNER_ID)).rejects.toThrow(ConflictException);
+    await expect(setup(6).startSession('t1', OWNER_ID)).resolves.toBeDefined();
   });
 
   it('환경변수가 기본값을 이기고, 호출 시점에 읽는다', async () => {
     // 낮추는 쪽은 수동 테스트용이다 — 크롬 창을 두 개만 띄우고 돌리기 위한 것.
     process.env.MIN_PLAYERS_TO_START = '2';
-    await expect(setup(2).startSession('t1')).resolves.toBeDefined();
+    await expect(setup(2).startSession('t1', OWNER_ID)).resolves.toBeDefined();
 
     // 올리는 쪽까지 봐야 값을 실제로 읽는지 알 수 있다. 낮추는 쪽만 보면
     // 하드코딩된 2와 결과가 같아 변화를 못 본다.
     process.env.MIN_PLAYERS_TO_START = '9';
-    await expect(setup(3).startSession('t1')).rejects.toThrow(ConflictException);
+    await expect(setup(3).startSession('t1', OWNER_ID)).rejects.toThrow(ConflictException);
 
     // 모듈 로드 시점에 고정하면 테스트가 값을 바꿀 수 없다 — `rebuyTimeoutMs`와
     // 같은 이유로 호출 시점에 읽는다. 이 describe가 값을 바꿔가며 도는 것 자체가

@@ -20,23 +20,53 @@ function failureMessage(body: unknown): string {
 }
 
 /**
+ * 이 페이지가 백엔드에서 받는 원본 모양. `payment.service.ts`의
+ * `getTournamentInfo`가 `tables`·`blindStructure`까지 select하므로(1번
+ * 항목 참고) 콘솔이 실제로 쓰는 것보다 필드가 많다. TS 타입(`TournamentMeta`)만
+ * 좁혀 두고 그대로 클라이언트 컴포넌트에 넘기면, 컴파일 시점 계약과 달리
+ * RSC 페이로드에는 이 원본 행 전체가 그대로 직렬화된다 — 그래서 아래
+ * `toTournamentMeta`로 화면이 쓰는 필드만 직접 골라 넘긴다.
+ */
+type RawTournament = TournamentMeta & Record<string, unknown>;
+
+/** `GET /dealer/:tournamentId`의 `tables` 원소 — 대회 시작 시각 등 관리용
+ * 컬럼까지 그대로 붙어 있다. `RawTournament`와 같은 이유로 좁혀 넘긴다. */
+type RawTable = TableInfo & Record<string, unknown>;
+
+function toTournamentMeta(row: RawTournament): TournamentMeta {
+  return {
+    id: row.id,
+    name: row.name,
+    status: row.status,
+    isRegistrationOpen: row.isRegistrationOpen,
+    rebuyUntil: row.rebuyUntil,
+    entryFee: row.entryFee,
+    startStack: row.startStack,
+  };
+}
+
+function toTableInfo(row: RawTable): TableInfo {
+  return { id: row.id, tableOrder: row.tableOrder };
+}
+
+/**
  * 대회 메타. `GET /tournaments/:id`가 주는 `{ tournament, seatStatus }`
- * 봉투(`payment.service.ts:64`)의 `tournament` 쪽이다 — `SessionService.
- * getGameSession`이 만드는 값이라 필드가 이보다 많지만, 콘솔이 쓰는 것만 든다.
+ * 봉투(`payment.service.ts`의 `getTournamentInfo`)의 `tournament` 쪽이다 —
+ * 화면이 쓰는 필드만 `toTournamentMeta`로 추려 넘긴다.
  */
 async function fetchTournament(tournamentId: string): Promise<TournamentMeta | null> {
   const res = await fetch(`${BACKEND_URL}/tournaments/${tournamentId}`, { cache: 'no-store' });
   if (!res.ok) return null;
-  const envelope = (await res.json()) as { tournament: TournamentMeta | null };
-  return envelope.tournament ?? null;
+  const envelope = (await res.json()) as { tournament: RawTournament | null };
+  return envelope.tournament ? toTournamentMeta(envelope.tournament) : null;
 }
 
 /** `GET /dealer/:tournamentId` — 대회 필드 + `tables`(`tableOrder` 포함) 평평한 객체다. */
 async function fetchTables(tournamentId: string): Promise<TableInfo[]> {
   const res = await fetch(`${BACKEND_URL}/dealer/${tournamentId}`, { cache: 'no-store' });
   if (!res.ok) return [];
-  const data = (await res.json()) as { tables?: TableInfo[] };
-  return data.tables ?? [];
+  const data = (await res.json()) as { tables?: RawTable[] };
+  return (data.tables ?? []).map(toTableInfo);
 }
 
 /**

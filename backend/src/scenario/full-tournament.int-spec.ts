@@ -270,7 +270,7 @@ describe('시나리오 — 대회 하나를 끝까지', () => {
   });
 
   it('4. 대회가 시작된다', async () => {
-    await session.startSession(tournamentId);
+    await session.startSession(tournamentId, OWNER);
 
     const row = await prisma.tournament.findUnique({ where: { id: tournamentId } });
     expect(row!.status).toBe('ONGOING');

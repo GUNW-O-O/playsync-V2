@@ -364,8 +364,15 @@ export class SessionService {
    * 실패하면 `PENDING`으로 남으므로 **시작 버튼을 다시 누르는 것이 곧 재시도**다.
    * T9처럼 별도의 재시도 명령이 필요 없는 것은, 준비 단계가 전부 덮어쓰기라
    * 몇 번을 돌려도 같은 결과이기 때문이다.
+   *
+   * 소유권 확인이 첫 줄인 것은 다른 운영 조작(`createTable`, `deleteTable`,
+   * `reissueDealerOtp`, `revokeDealerSession`)과 같은 이유다 — 서버 액션이
+   * `tournamentId`를 클라이언트 값 그대로 넘기므로, 이게 없으면 A 상점
+   * 관리자가 B 상점 대회를 시작시킬 수 있다.
    */
-  async startSession(id: string) {
+  async startSession(id: string, ownerId: string) {
+    await this.assertTournamentOwnership(id, ownerId);
+
     const { startedAt, buttons } = await this.initializeGame(id);
 
     // 참가자 상태는 여기서 건드리지 않는다. `PLAYING`은 **착석**이 올린다
@@ -565,13 +572,19 @@ export class SessionService {
    * 좌석 해제 화면의 입력. `POST .../seats/release`의 DTO(`ReleaseSeatItem`)가
    * `seatIndex`뿐 아니라 `userId`도 요구한다 — 상점 콘솔이 조금 전에 그린
    * 판을 보고 체크하는 사이 그 자리 사람이 바뀔 수 있어서다(T28이 핸드
-   * 도중 착석을 허용한다). 그런데 지금 있는 조회(`GET /tournaments/:id/seats`,
-   * `GET /tournaments/:id`, `GET /dealer/:id`)는 셋 다 가드가 없다 — 좌석
-   * 점유 여부만 줄 뿐 누가 앉았는지는 주지 않는다. 여기에 `tablePlayers`를
-   * 끼워 넣으면 userId와 닉네임이 그대로 공개된다.
+   * 도중 착석을 허용한다). 그런데 지금 있는 조회 셋 다 가드가 없는 공개
+   * 라우트다 — `GET /tournaments/:id/seats`(entry.controller)와
+   * `GET /dealer/:id`는 지금은 redis 비트맵이나 테이블 뼈대만 줘서 누가
+   * 앉았는지는 안 새지만, `GET /tournaments/:id`(payment.service.ts의
+   * `getTournamentInfo`)는 `tablePlayers`까지 include하는 조회를 그대로
+   * 썼던 적이 있다 — 참가자 userId·닉네임이 공개 라우트로 그대로 나갔다는
+   * 뜻이다(그 조회는 이제 화면이 쓰는 필드만 select하도록 좁혔다,
+   * `payment.service.ts`의 `getTournamentInfo` 주석 참고).
    *
-   * 그래서 새로 만든다. 재발급·내보내기와 같은 문(STORE_ADMIN 전용, 소유권
-   * 확인 첫 줄)을 쓴다 — 이 조회 자체가 해제라는 강한 동작의 입력이라서다.
+   * 그래서 이 조회를 위해 셋 중 하나를 확장하지 않고 새로 만든다. 확장하면
+   * 다음에 또 같은 실수가 공개 라우트에 얹힌다. 재발급·내보내기와 같은 문
+   * (STORE_ADMIN 전용, 소유권 확인 첫 줄)을 쓴다 — 이 조회 자체가 해제라는
+   * 강한 동작의 입력이라서다.
    *
    * `seatPosition`(DB 컬럼)을 `seatIndex`로 바꿔 내보낸다 — 해제 DTO가 그
    * 이름을 쓴다.

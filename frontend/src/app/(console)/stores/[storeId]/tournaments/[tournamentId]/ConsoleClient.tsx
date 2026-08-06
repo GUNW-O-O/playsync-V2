@@ -6,8 +6,10 @@ import type { FullTournamentInfo } from '@playsync/contract';
 
 /**
  * 대회 메타. `GET /tournaments/:id`가 주는 `{ tournament, seatStatus }`
- * 봉투(`payment.service.ts:64`)의 `tournament` 쪽에서 이 화면이 쓰는 것만
- * 추린다 — `SessionService.getGameSession`이 실제로는 더 많은 필드를 준다.
+ * 봉투(`payment.service.ts`의 `getTournamentInfo`)의 `tournament` 쪽에서
+ * 이 화면이 쓰는 것만 추린다 — 그 조회는 `tables`·`blindStructure`까지
+ * select하므로 실제로는 더 많은 필드를 준다. `page.tsx`의 `toTournamentMeta`가
+ * 이 타입에 맞춰 필드를 고른다.
  */
 export type TournamentMeta = {
   id: string;
@@ -98,7 +100,13 @@ export default function ConsoleClient({
   const router = useRouter();
   const [activeTableId, setActiveTableId] = useState<string | null>(tables[0]?.id ?? null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [message, setMessage] = useState<string | null>(seatError);
+  // 좌석 조회 실패(`seatError`)는 조작 결과(`message`)와 별개 슬롯이다.
+  // `useState(seatError)`는 마운트 시점의 초깃값으로만 쓰이고, 이후
+  // `router.refresh()`가 새 `seatError`를 내려도 리렌더는 이 state를 다시
+  // 초기화하지 않는다 — 그래서 예전에는 조작 성공의 `setMessage(null)`이
+  // 아직 유효한 좌석 조회 실패 배너를 지웠다. `seatError`는 상태로 옮기지
+  // 않고 prop을 그대로 렌더한다.
+  const [message, setMessage] = useState<string | null>(null);
   // 재발급 이전에는 평문 OTP를 아는 곳이 없다 — 생성 시점의 평문은 이
   // 화면과 다른 요청·다른 순간에 이미 지나갔다(session.service.ts의
   // createSession 주석). 그래서 초기값은 항상 비어 있다.
@@ -204,6 +212,12 @@ export default function ConsoleClient({
             </a>
           </div>
         </div>
+
+        {seatError && (
+          <p role="alert" className="text-sm text-[var(--err)]">
+            {seatError}
+          </p>
+        )}
 
         {message && (
           <p role="alert" className="text-sm text-[var(--err)]">

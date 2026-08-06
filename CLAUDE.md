@@ -83,9 +83,9 @@ npm run test:e2e       # 촬영 하네스 (Playwright, 시드 + 개발 서버 �
 ```
 contract       62  (4 suites)
 백엔드 단위   177  (16 suites)
-프론트 단위    79  (21 files)
-통합          332  (27 suites)
-e2e            11  (4 files)
+프론트 단위    80  (22 files)
+통합          333  (27 suites)
+e2e            12  (4 files)
 타입 에러       0
 ```
 

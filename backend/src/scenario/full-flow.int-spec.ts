@@ -325,7 +325,7 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
   });
 
   it('9. 대회를 시작하면 DB와 Redis가 함께 준비된다', async () => {
-    await session.startSession(tournamentId);
+    await session.startSession(tournamentId, userIds.owner);
 
     const t = await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } });
     expect(t.status).toBe('ONGOING');

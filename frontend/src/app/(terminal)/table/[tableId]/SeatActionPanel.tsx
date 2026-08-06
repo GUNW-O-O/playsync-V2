@@ -65,7 +65,10 @@ export default function SeatActionPanel({
           <input
             type="range"
             min={state.currentBet + bigBlind}
-            max={Math.max(myPlayer.stack, state.currentBet + bigBlind)}
+            // `amount`는 총 베팅액이다(`table-engine.ts`의 `handleRaise`가
+            // `betAmount - player.bet`을 뺀다) — 낼 수 있는 최대 총액은
+            // `stack`이 아니라 `stack + bet`이다(올인 버튼과 같은 값).
+            max={Math.max(myPlayer.stack + myPlayer.bet, state.currentBet + bigBlind)}
             step={bigBlind || 1}
             value={raiseVal}
             onChange={(e) => setRaiseVal(Number(e.target.value))}

@@ -59,6 +59,16 @@ test('상점 콘솔이 시드된 대회와 테이블 둘을 보여준다', async
   for (const table of manifest.tables) {
     await expect(console_.getByTestId(`console-pick-table-${table.id}`)).toBeVisible();
   }
+
+  // 좌석 조회(`GET /store/sessions/:id/seats`)가 실패하면 `ConsoleClient`가
+  // `role="alert"` 배너를 띄운다(STORE_ADMIN 전용 가드 — 쿠키 토큰이
+  // 안 실리거나 거부되면 뜬다). 배너가 없다는 것 자체가 그 조회가 200이었다는
+  // 뜻이다 — 지금까지는 아무 스펙도 이걸 판정하지 않았다.
+  //
+  // `main` 안으로 좁힌다 — 개발 서버는 Next.js Dev Tools 오버레이가 페이지
+  // 바깥에 자기 `role="alert"` 라이브 리전을 항상 그려서, 좁히지 않으면
+  // 우리 배너가 없어도 그 빈 리전과 매치돼 개수가 흔들린다.
+  await expect(console_.getByRole('main').getByRole('alert')).toHaveCount(0);
 });
 
 test('시작 전 전광판은 대기 중을 그린다', async ({ stage, manifest, request }) => {
@@ -110,4 +120,24 @@ test('참가자 폰의 대회 상세가 백엔드의 참가비와 블라인드�
   await expect(
     phone.getByText(`${firstLevel.sb.toLocaleString()} / ${(firstLevel.sb * 2).toLocaleString()}`),
   ).toBeVisible();
+});
+
+/**
+ * 역할 불일치 404(`middleware.ts:37`)가 최종 응답에서도 실제로 404인지.
+ *
+ * `middleware.test.ts`는 `NextResponse.rewrite(..., { status: 404 })`가
+ * 반환하는 객체의 `.status`만 본다 — Next.js가 그 응답을 실제로 서빙할 때도
+ * 404를 내는지는 목이 못 잡는다(이 파일 상단 주석과 같은 이유). USER 계정으로
+ * 상점 콘솔 URL을 직접 열어 `page.goto`의 실제 HTTP 상태를 본다.
+ */
+test('참가자 계정으로 상점 콘솔 대회 상세를 열면 404다', async ({ stage, manifest }) => {
+  const player = manifest.players[0];
+  const phone = await stage('phone', 'phone-console-forbidden');
+
+  await signInOnPhone(phone, player.nickname, manifest.password);
+  const response = await phone.goto(
+    `/stores/${manifest.store.id}/tournaments/${manifest.tournament.id}`,
+  );
+
+  expect(response?.status()).toBe(404);
 });

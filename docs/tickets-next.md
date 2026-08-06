@@ -2227,10 +2227,42 @@ WS를 버렸다 — 대회 스코프 구독도 티켓을 요구하고 티켓은 
 `{ tournament: { name, status, ... } }`를 준다. 계획서를 따랐으면 단위 테스트는
 초록인데 화면이 비었을 것이다.
 
-돌린 것: 타입 에러 0건, contract 62 / 백엔드 단위 177 / 프론트 단위 79 /
-통합 332(27 suites), `npm run test:e2e` 11건 통과, `npm run build` 성공.
-백엔드 변경은 조회 하나(`getSeatMap`)뿐이고 그 스펙은 `entry.service`
-통합 29건 안에 있다.
+돌린 것: 타입 에러 0건, contract 62 / 백엔드 단위 177 / 프론트 단위 80 /
+통합 333(27 suites), `npm run test:e2e` 12건 통과, `npm run build` 성공.
+
+### 최종 리뷰가 잡은 것
+
+Critical 0, Important 3, Minor 8. 열하나를 다 고쳤다. 그중 **화면 티켓인데
+백엔드를 고치게 된 것 둘**이 이 리뷰의 값이다.
+
+- **공개 라우트가 참가자 전원을 실어 날랐다.** `GET /tournaments/:id`는
+  가드가 없는데 `getGameSession`을 재사용해 `tornamentParticipations`와
+  `tablePlayers`를 통째로 include하고 있었다 — 로그인 없이 대회 id 하나로
+  전원의 `userId`·닉네임·스택·좌석·상금이 나갔다. T29가 좌석 조회를
+  `STORE_ADMIN` 전용으로 새로 만들며 "공개 조회는 누가 앉았는지 주지
+  않는다"라고 적어 둔 근거가 **사실이 아니었다**. `getTournamentInfo`에
+  자기 `select`를 줘서 닫았고(`getGameSession`은 그대로 — 다른 호출자가
+  있다), 틀린 주석도 고쳤다. 즉 그 가드는 옆문이 열린 채로 서 있었다.
+- **`startSession`만 소유권 검사가 없었다.** 나머지 넷(테이블 열기/닫기,
+  좌석 해제, OTP 재발급)은 전부 첫 줄에 `assertTournamentOwnership`이
+  있는데 시작만 빠져 있었고, 이 티켓이 거기에 버튼을 붙였다 — A 상점
+  관리자가 B 상점 대회를 시작시킬 수 있었다. RED를 먼저 봤다:
+  `Received promise resolved instead of rejected / Resolved to value:
+  {..., "status": "ONGOING", ...}`.
+
+나머지 아홉은 화면 쪽이다. **테스트가 아무것도 지키지 않던 자리 하나**가
+같이 나왔다 — 펠트의 180° 회전은 `seatPosition`이 하는데 테스트는
+`seatOrder`(DOM 순서만 바꾼다)만 보고 있어서, `+ 180`을 지워도 전 계층이
+초록이었다. 딜러가 눈앞의 테이블과 뒤집힌 화면을 보는 것은 이 도메인에서
+곧 오조작이다. 두 방향의 좌표가 `(100-x, 100-y)`인지 보는 검사로 바꿨다.
+그 밖에 전광판 폴링의 세대 가드(`WaitingClient`가 이미 쓰던 것), 좌석
+해제된 사람에게 "대회가 끝났습니다"가 뜨던 문구, 레이즈 슬라이더 상한이
+낸 금액만큼 모자라던 것, 서버 컴포넌트가 백엔드 행을 통째로 RSC 페이로드에
+싣던 것을 고쳤다.
+
+**e2e가 하나 늘었다.** 역할 불일치 404가 미들웨어 객체에서만 404이고 실제
+서빙에서 200일 가능성을 목이 못 잡아서, `USER` 계정으로 콘솔 URL을 열어
+HTTP 상태를 본다 — 실측 404였다.
 
 ---
 

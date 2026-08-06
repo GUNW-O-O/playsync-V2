@@ -28,18 +28,27 @@ export default function DisplayClient({ tournamentId }: { tournamentId: string }
   // 태블릿마다 다른 숫자가 뜬다 — 매 폴링마다 이 값을 다시 잰다.
   const clockOffsetRef = useRef(0);
 
+  // 요청마다 세대 번호를 매긴다. 3초 간격 폴링이라 응답이 느리면 다음
+  // poll()이 이미 시작된 뒤 늦게 도착할 수 있고, 네트워크는 순서를 보장하지
+  // 않는다 — 그 느린 응답이 나중에 최신 값을 덮으면 전광판 레벨이 되돌아가고
+  // clockOffsetRef가 과거로 튄다. `WaitingClient.tsx`의 tournamentRequestRef와
+  // 같은 방식(가장 최근에 보낸 요청의 세대가 아니면 버린다).
+  const requestIdRef = useRef(0);
+
   useEffect(() => {
     let cancelled = false;
 
     async function poll() {
+      const requestId = ++requestIdRef.current;
+
       const res = await apiFetch(`/api/playsync/dashboard/${tournamentId}`);
-      if (cancelled || !res.ok) return;
+      if (cancelled || requestIdRef.current !== requestId || !res.ok) return;
 
       // Nest가 컨트롤러에서 null을 반환하면 response.send()가 본문을 비운
       // 200을 내보낸다 — res.json()은 그 자리에서 파싱 에러로 던진다. 그래서
       // 텍스트를 먼저 보고 빈 본문과 깨진 본문을 갈라낸다.
       const text = await res.text();
-      if (cancelled) return;
+      if (cancelled || requestIdRef.current !== requestId) return;
 
       if (text.length === 0) {
         // 시작 전에는 Redis 스냅샷이 없어 없는 대회와 구별되지 않는다.
