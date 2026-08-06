@@ -70,7 +70,11 @@ describe('WaitingClient — 대회 전환', () => {
     const fetchMock = vi.fn(
       (url: string) =>
         new Promise((resolve) => {
-          (pending[url] ??= []).push(resolve);
+          // 클라이언트 조회는 `apiFetch`를 지나므로 오리진이 앞에 붙어
+          // 나간다(`lib/api.ts` + `vitest.setup.ts`). 테스트는 경로로만
+          // 응답을 짚는다 — 오리진은 이 테스트가 보려는 것이 아니다.
+          const path = url.replace(process.env.NEXT_PUBLIC_API_BASE ?? '', '');
+          (pending[path] ??= []).push(resolve);
         }),
     );
     vi.stubGlobal('fetch', fetchMock);

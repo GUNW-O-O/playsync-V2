@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { DealerAction } from '@playsync/contract';
 import Felt from '@/component/felt/Felt';
+import { apiFetch } from '@/lib/api';
 import { GamePhase, TableState } from '@/app/types/game';
 import WinnerOverlay, { type WinnerCandidate } from './WinnerOverlay';
 
@@ -59,7 +60,7 @@ export default function DealerGameClient({
     // 들어오지 않는다 — 쿠키를 읽는 것은 route handler(서버)뿐이다.
     (async () => {
       try {
-        const res = await fetch('/api/ws-ticket', { method: 'POST' });
+        const res = await apiFetch('/api/ws-ticket', { method: 'POST' });
         if (!res.ok) {
           const body = await res.json().catch(() => null);
           const message = (body as { message?: unknown } | null)?.message;

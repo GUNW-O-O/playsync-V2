@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { PlayerAction } from '@playsync/contract';
 import Felt from '@/component/felt/Felt';
+import { apiFetch } from '@/lib/api';
 import { TableState } from '@/app/types/game';
 import SeatActionPanel from './SeatActionPanel';
 import RebuyOverlay, { type RebuyPrompt } from './RebuyOverlay';
@@ -76,7 +77,7 @@ export default function SeatGameClient({
     // 실패도 같은 자리에서 잡힌다.
     (async () => {
       try {
-        const res = await fetch('/api/ws-ticket', { method: 'POST' });
+        const res = await apiFetch('/api/ws-ticket', { method: 'POST' });
         if (!res.ok) {
           const body = await res.json().catch(() => null);
           const message = (body as { message?: unknown } | null)?.message;

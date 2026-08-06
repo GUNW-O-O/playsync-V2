@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Keypad from '@/component/Keypad';
+import { apiFetch } from '@/lib/api';
 
 /** 백엔드 `PLAYER_OTP_LENGTH`(`backend/src/payment/player-otp.ts`)와 같은 값.
  * contract 패키지에 없다 — 참가 OTP 발급은 백엔드 전용 흐름이라 프론트가
@@ -91,8 +92,10 @@ export default function WaitingClient({
     const requestId = ++tournamentRequestRef.current;
 
     const [session, nextSeatMap] = await Promise.all([
-      fetch(`/api/dealer/${id}`, { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)),
-      fetch(`/api/tournaments/${id}/seats`, { cache: 'no-store' }).then((r) => (r.ok ? r.json() : [])),
+      apiFetch(`/api/dealer/${id}`, { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)),
+      apiFetch(`/api/tournaments/${id}/seats`, { cache: 'no-store' }).then((r) =>
+        r.ok ? r.json() : [],
+      ),
     ]);
 
     // 그 사이 다른 대회를 또 골랐다면 이 응답은 낡았다 — 버린다.
@@ -119,7 +122,7 @@ export default function WaitingClient({
     let cancelled = false;
 
     async function poll() {
-      const res = await fetch(`/api/tournaments/${tournamentId}/seats`, { cache: 'no-store' });
+      const res = await apiFetch(`/api/tournaments/${tournamentId}/seats`, { cache: 'no-store' });
       if (!cancelled && res.ok) {
         setSeatMap(await res.json());
       }

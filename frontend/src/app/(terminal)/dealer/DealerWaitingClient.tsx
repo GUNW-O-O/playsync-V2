@@ -3,6 +3,7 @@
 import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Keypad from '@/component/Keypad';
+import { apiFetch } from '@/lib/api';
 
 /** 백엔드 `DealerDto`(`backend/shared/dto/dealer.dto.ts`)의
  * `@Matches(/^[0-9]{6}$/)`와 같은 값. 참가 OTP(8자리, `table/WaitingClient.tsx`의
@@ -63,7 +64,7 @@ export default function DealerWaitingClient({
 
     const requestId = ++tournamentRequestRef.current;
 
-    const session = await fetch(`/api/dealer/${id}`, { cache: 'no-store' }).then((r) =>
+    const session = await apiFetch(`/api/dealer/${id}`, { cache: 'no-store' }).then((r) =>
       r.ok ? r.json() : null,
     );
 
