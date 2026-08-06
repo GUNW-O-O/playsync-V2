@@ -764,3 +764,49 @@ describe('EntryService.enterSeat — 칩은 좌석보다 오래 산다', () => {
     expect(`재착석 스택 ${state.players[5]!.stack}`).toBe('재착석 스택 23400');
   });
 });
+
+// 좌석 대기 화면(T34)이 읽는 조회. `getSeatMap`은 Redis 비트맵만 보고 DB를
+// 건드리지 않으므로, 위 두 describe처럼 대회를 시딩할 필요가 없다 —
+// `PrismaService`는 생성자 타입만 맞추면 되고 실제로 호출되지 않는다.
+describe('EntryService.getSeatMap', () => {
+  let redis: Redis;
+  let redisService: RedisService;
+  let service: EntryService;
+
+  beforeAll(() => {
+    redis = createTestRedis();
+    redisService = new RedisService(redis);
+    service = new EntryService(
+      {} as unknown as PrismaService,
+      redisService,
+      new JwtService({ secret: 'entry-spec-secret' }),
+      new EventEmitter2(),
+    );
+  });
+
+  beforeEach(async () => {
+    await flushTestRedis(redis);
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+  });
+
+  it('좌석 비트맵이 없는 대회는 빈 배열이다', async () => {
+    const result = await service.getSeatMap('없는-대회-id');
+    expect(result).toEqual([]);
+  });
+
+  it('앉은 자리만 true로 나온다', async () => {
+    const tournamentId = 'entry-seatmap-tournament-1';
+    const tableId = 'entry-seatmap-table-1';
+    await redisService.setSeatBitmap(tournamentId, tableId);
+    await redisService.updateSeatBitmap(tournamentId, tableId, 3, true);
+
+    const result = await service.getSeatMap(tournamentId);
+
+    expect(result).toEqual([
+      { tableId, seatStatus: [false, false, false, true, false, false, false, false, false] },
+    ]);
+  });
+});

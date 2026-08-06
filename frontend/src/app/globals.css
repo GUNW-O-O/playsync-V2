@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./wireframe-tokens.css";
 
 :root {
   --background: #ffffff;
@@ -8,8 +9,28 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-felt: var(--felt);
+  --color-felt-edge: var(--felt-edge);
+  --color-felt-rail: var(--felt-rail);
+  --color-card-face: var(--card-face);
+  --color-tb-bg: var(--tb-bg);
+  --color-tb-panel: var(--tb-panel);
+  --color-tb-line: var(--tb-line);
+  --color-tb-ink: var(--tb-ink);
+  --color-tb-muted: var(--tb-muted);
+  --color-tb-sub: var(--tb-sub);
+  --color-tb-act: var(--tb-act);
+  --color-sb-bg: var(--sb-bg);
+  --color-sb-ink: var(--sb-ink);
+  --color-sb-dim: var(--sb-dim);
+  --color-sb-live: var(--sb-live);
+  --color-sb-break: var(--sb-break);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-err: var(--err);
+  --font-sans: var(--sans);
+  --font-mono: var(--mono);
+  --font-cond: var(--cond);
 }
 
 @media (prefers-color-scheme: dark) {

@@ -1,4 +1,4 @@
-import { Body, Controller, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post } from '@nestjs/common';
 import { EnterTournamentDto } from 'shared/dto/entry.dto';
 import { EntryService } from './entry.service';
 
@@ -13,5 +13,10 @@ export class EntryController {
   @Post(':id/enter')
   async enter(@Param('id') tournamentId: string, @Body() dto: EnterTournamentDto) {
     return await this.entryService.enterSeat(tournamentId, dto);
+  }
+
+  @Get(':id/seats')
+  async seats(@Param('id') tournamentId: string) {
+    return await this.entryService.getSeatMap(tournamentId);
   }
 }

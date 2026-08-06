@@ -274,12 +274,15 @@ describe('PaymentService.getTournamentInfo — 테이블이 없는 대회', () =
   function makeService(tables: { id: string }[], totalPlayers: number) {
     const row = { id: TOURNAMENT, totalPlayers, tables };
     const prisma = {
+      // getTournamentInfo가 이제 자기 select로 직접 조회하므로(더 이상
+      // SessionService.getGameSession을 거치지 않는다), 두 번의
+      // findUnique 호출(첫 조회 + 좌석 비트맵 재구성용 조회) 모두 이
+      // 하나로 받는다.
       tournament: { findUnique: async () => row },
     } as unknown as PrismaService;
-    const session = { getGameSession: async () => row } as unknown as SessionService;
 
     return new PaymentService(
-      {} as unknown as UserService, session, prisma, redisService,
+      {} as unknown as UserService, {} as unknown as SessionService, prisma, redisService,
     );
   }
 

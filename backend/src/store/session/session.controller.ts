@@ -29,9 +29,11 @@ export class SessionController {
     return await this.sessionService.updateSession(id, dto);
   }
 
+  // 시작도 남의 대회를 건드릴 수 없어야 한다. 소유권 확인은 서비스 메서드
+  // 안이고, 다른 운영 조작 경로와 같은 이유다.
   @Patch(':id/start')
-  async start(@Param('id') id: string) {
-    return await this.sessionService.startSession(id);
+  async start(@Req() req, @Param('id') id: string) {
+    return await this.sessionService.startSession(id, req.user.userId);
   }
 
   @Patch(':id/complete')
@@ -93,5 +95,14 @@ export class SessionController {
   ) {
     await this.sessionService.releaseSeats(tournamentId, tableId, dto.seats, req.user.userId);
     return { ok: true };
+  }
+
+  // 좌석 해제의 입력이다. 남의 대회 참가자의 userId·닉네임이 그대로 나가면
+  // 안 되므로 다른 운영 조작 경로와 같은 문(STORE_ADMIN 전용, 소유권 확인)을
+  // 쓴다 — session.service.ts의 getSeatOccupants 주석 참고.
+  @Roles(Role.STORE_ADMIN)
+  @Get(':id/seats')
+  async getSeatOccupants(@Req() req, @Param('id') tournamentId: string) {
+    return await this.sessionService.getSeatOccupants(tournamentId, req.user.userId);
   }
 }

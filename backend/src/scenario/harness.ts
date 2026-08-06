@@ -197,7 +197,7 @@ export async function setupTournament(
     await seatPlayer(created.id, table.id, seat, id);
   }
 
-  await session.startSession(created.id);
+  await session.startSession(created.id, SCENARIO.owner);
 
   const stateKey = `table:state:${table.id}`;
 

@@ -108,6 +108,23 @@ export class EntryService {
   }
 
   /**
+   * 좌석 점유 현황.
+   *
+   * 가드가 없다 — 좌석 대기 화면은 **앉기 전**에 이걸 읽어야 하는데, 그
+   * 시점의 태블릿은 자격 증명이 하나도 없다. 같은 화면이 부르는
+   * `POST /tournaments/:id/enter`가 이미 공개인 것과 같은 이유다(OTP 자체가
+   * 자격 증명이라 그 앞에 가드를 세울 수 없다).
+   *
+   * WS(`renderSeatList`)로 하지 않은 이유: 대회 스코프 구독도 티켓을 요구하고
+   * (`ws.gateway.ts` handleConnection), 티켓은 JWT를 보고 발급된다. 게이트웨이의
+   * "신뢰의 출처가 티켓 소비다"에 예외를 내는 값이 "좌석 도식이 1초 빠르다"뿐이라
+   * 폴링을 택했다. 동시 지정의 최종 판정은 그대로 `enter`의 409다.
+   */
+  async getSeatMap(tournamentId: string) {
+    return await this.redis.getTournamentTables(tournamentId);
+  }
+
+  /**
    * 좌석을 DB와 스냅샷에 반영한다.
    *
    * DB 트랜잭션은 락 **밖**에서 돈다. 두 사람이 같은 의자를 노리는 경합의

@@ -33,8 +33,9 @@ export function middleware(request: NextRequest): NextResponse {
   const rule = ROLE_RULES.find((r) => startsWithSegment(pathname, r.prefix));
 
   // 역할이 맞지 않으면 404다. 403은 그 자원이 존재한다는 사실을 알려준다.
+  // 상태 코드는 그대로 두고 본문만 채운다 — 빈 본문이면 백지가 뜬다.
   if (rule && !rule.allow.includes(session.role)) {
-    return new NextResponse(null, { status: 404 });
+    return NextResponse.rewrite(new URL('/_not-found', request.url), { status: 404 });
   }
 
   return NextResponse.next();

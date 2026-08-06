@@ -2114,6 +2114,158 @@ Received: "대회 undefined"
 
 ---
 
+## T34 — 화면 열하나를 그린다
+
+**항목**: B7 (프론트 재구성). 설계는
+[`2026-08-04-frontend-screens-build-design.md`](./superpowers/specs/2026-08-04-frontend-screens-build-design.md),
+계획은 [`2026-08-04-t34-frontend-screens.md`](./superpowers/plans/2026-08-04-t34-frontend-screens.md)
+**범위**: `frontend/src/app/` 전면, `frontend/src/component/`(신설),
+`frontend/e2e/`, `packages/contract/src/dashboard.ts`(신설),
+`backend/src/entry/`(조회 하나 추가), `frontend/src/middleware.ts`
+**프론트 영향**: 이 티켓이 곧 프론트다
+
+### 문제
+
+와이어프레임(`frontend/wireframes/2026-08-02-screens.html`)이 면 다섯 · 화면
+열하나를 확정했는데, 실제 화면은 MVP 시절의 것 몇 개뿐이었다. 그리고 백엔드에는
+**호출자가 0개인 엔드포인트**가 쌓여 있었다 — 딜러 OTP 재발급, 좌석 해제,
+테이블 열기/닫기, 참가 OTP 조회. 기능이 없는 것이 아니라 **누를 자리가 없었다.**
+
+### 결정
+
+**세 시각 체계를 CSS 변수로 가르고 그 위에 라우트를 얹는다.** Carbon(콘솔·폰) ·
+태블릿 · 전광판. 값은 와이어프레임에서 그대로 옮긴다 — 색·간격·타이포를 새로
+정하지 않는다. 새로 정하면 도면이 두 벌이 된다.
+
+**태블릿 둘은 WS, 전광판은 REST 폴링.** 폴링이 곧 블라인드 시계를 미는
+유일한 경로이기 때문이다(`getFullTournamentInfo` → `checkAndSyncBlindLevel`).
+서버에 별도 타이머를 두면 상태를 미는 코드가 둘이 되고 레벨과 등록 마감이 두
+갈래로 자란다. **그래서 전광판은 대회 내내 틀어 둔다**가 운영 전제가 됐다.
+
+**좌석 현황은 공개 REST(`GET /tournaments/:id/seats`)다.** `renderSeatList`
+WS를 버렸다 — 대회 스코프 구독도 티켓을 요구하고 티켓은 JWT를 보고 발급되는데,
+좌석 대기 화면은 **앉기 전**에 이걸 읽어야 하고 그 시점의 태블릿에는 자격
+증명이 하나도 없다. 게이트웨이의 "신뢰의 출처는 티켓 소비다"에 예외를 내서
+얻는 것이 "좌석 도식이 1초 빠르다"뿐이라 폴링을 택했다. 동시 지정의 최종
+판정은 그대로 `enter`의 409다(같은 화면이 부르는 `POST .../enter`가 이미
+공개인 것과 같은 자리 — OTP 자체가 자격 증명이라 그 앞에 가드를 세울 수 없다).
+
+**탈락은 프론트가 유추한다.** 서버는 "너 탈락했다"를 보내지 않는다. 클라가 받는
+것은 `renderGame`과 `REBUY_PROMPT` 둘뿐이라, 내 좌석이 스냅샷에서 사라지면
+탈락으로 본다. 서버에 탈락 이벤트를 새로 만드는 대안을 버렸다 — 틀려도 잃는
+것이 화면 전환 타이밍뿐이고, 순위와 상금은 폰이 들고 있다. 대신 **리바인
+프롬프트 중에는 유추하지 않는다**(리바인 구간에도 좌석이 잠깐 빈다).
+
+**보드는 장수만 그린다.** 무늬는 서버에 없고 앞으로도 없다 — 카드는 물리다.
+
+**태블릿에 영구 설정을 두지 않는다.** 진입점이 `/table?store=`와
+`/dealer?store=`고, `/dealer/[id]`는 지웠다. URL에 대회가 박히면 그게 곧
+기기별 설정이라 대회마다 손으로 고쳐야 한다.
+
+**역할 불일치는 404를 유지하되 본문을 채운다.** 403은 그 자원이 존재한다는
+사실을 알려준다. 상태 코드는 그대로 두고 `/_not-found`로 rewrite했다.
+
+**목을 회귀의 기준에서 내렸다.** 목은 백엔드를 병렬로 만들던 시절의 도구고,
+백엔드가 다 선 지금은 **목이 틀려도 알려주는 것이 없다.** 이 티켓에서 실제로
+두 번 사고가 났다 — Task 2의 대회 전환 레이스가 대회 하나짜리 목 배열에
+가려졌고, Task 3의 `getStoreId`가 `{ tournament, seatStatus }` 봉투를 안
+벗기는데 목에 그 봉투가 없어 그 경로에 닿지도 못했다. 그래서 (1) 단위 테스트의
+목은 백엔드 코드에서 모양을 확인하고 출처를 주석으로 남기고, (2) 봉투 모양 ·
+키 이름 · 상태 전이는 `frontend/e2e/`가 **진짜 백엔드 상대로** 잡는다.
+전역 목 핸들러(`*/api/auth/login`)는 지웠다 — 프로덕션 호출자가 0개인 경로였다.
+
+**인증 경로 규약을 하나로 합쳤다.** 서버 액션·서버 컴포넌트는 브라우저를
+거치지 않으므로 `BACKEND_URL` 직통을 유지하고, 클라이언트 fetch만 `apiFetch`로
+모았다(rewrite를 타는 쪽). 둘을 한 함수로 합치는 대안을 버렸다 — 서버에서
+`/api/...`를 부르면 자기 자신을 한 번 더 거치게 된다.
+
+### 작업 중 추가로 나온 것
+
+- **`GET /playsync/dashboard/:id`의 빈 본문 200.** 시작 전에는 Redis 스냅샷이
+  없어 `null`이 나가고, 없는 대회와 구별되지 않는다. 전광판은 이 구간을
+  에러가 아니라 **"대기 중"**으로 그린다. `res.json()`은 빈 본문에서 파싱
+  에러로 죽으므로 텍스트를 먼저 본다.
+- **딜러가 아무도 앉지 않은 테이블에 들어가면 백엔드가 500을 찍는다**
+  (`TableState ... not found`). 스냅샷을 만드는 유일한 지점이 착석이라
+  (`EntryService`) 빈 테이블에는 스냅샷이 없다. 화면은 빈 펠트로 서므로
+  딜러가 막히지는 않지만, 조회 하나가 500으로 로그를 남긴다. 화면 티켓에서
+  건드리지 않았다 — 백엔드 응답을 바꾸는 일이다.
+- **`PLATFORM_ADMIN`이 콘솔을 열면 좌석 정보를 못 받는다.** 미들웨어는
+  `/stores`에 둘 다 들이는데 `GET /store/sessions/:id/seats`는 `STORE_ADMIN`
+  전용이다. 화면에서 역할 분기로 숨기지 않고 서버가 준 문구를 그대로 배너로
+  띄웠다 — 권한의 진실은 백엔드 한 곳이다.
+- **e2e 스펙이 상태를 남긴다.** `terminal.spec.ts`가 사람을 앉히므로 반복
+  실행에는 시드를 다시 깔아야 한다. 파일 이름의 알파벳 순서가 곧 실행
+  순서라(워커 하나), 읽기만 하는 `console.spec.ts`를 앞에, 앉히는
+  `terminal.spec.ts`를 뒤에 뒀다 — 그 사이의 `harness.spec.ts`가 "무대는 아직
+  `PENDING`"을 단언하기 때문이다.
+
+### 테스트
+
+| 파일 | 계층 | 무엇 |
+|---|---|---|
+| `frontend/src/component/felt/seatOrder.test.ts` | 단위 | 좌석 아홉이 빠지지 않고, 두 방향이 서로의 역순이다 |
+| `frontend/src/app/(terminal)/table/WaitingClient.test.tsx` | 단위 | 점유 좌석 비활성, 409 문구, 대회 전환의 out-of-order 응답 |
+| `frontend/src/app/(terminal)/table/[tableId]/*.test.tsx` | 단위 | 티켓 실패 처리, 토큰이 prop에 없다, 탈락 트리거 둘이 서로를 가리지 않는다 |
+| `frontend/src/app/(terminal)/dealer/**/*.test.*` | 단위 | 보드 하이, 폴드한 사람 제외, phase 게이팅, `DEALER_KICK` 페이로드 |
+| `packages/contract/src/dashboard.spec.ts` | 단위 | 아웃바운드 스트립, 휴식 레벨 통과 |
+| `.../display/DisplayClient.test.tsx` | 단위 | 평상시 → 빈 본문 → 대기 중 **전이** |
+| `frontend/src/app/(player)/me/page.test.tsx` | 단위 | 참가 OTP, 끝난 대회의 순위·상금, 빈 목록, 조회 실패 |
+| `frontend/src/app/(player)/tournaments/[id]/JoinPanel.test.tsx` | 단위 | 실패 문구, 성공 시 `/me`로 |
+| `frontend/src/middleware.test.ts` | 단위 | 역할 불일치가 404를 유지하며 본문을 갖는다 |
+| `frontend/e2e/{console,dealer,terminal}.spec.ts` | e2e(회귀) | 봉투 · 키 이름 · 상태 전이를 진짜 백엔드가 판정 |
+
+**RED를 먼저 봤다.** 예: `/me`는 `Failed to resolve import "./page"`,
+`JoinPanel`은 같은 모양, e2e의 폰 둘은 로그인 완료를 URL로 기다린 탓에
+`getByText('32082808')` / `getByText('데모 토너먼트')`가 `element(s) not found`로
+죽었다 — 성공 시 `redirect('/')`가 다시 `/login`으로 돌아와 주소가 그대로라
+기다림이 즉시 통과하고 쿠키보다 먼저 다음 화면을 열었다. 완료의 신호를
+쿠키로 바꿔 초록이 됐다.
+
+**목이 지어낸 모양을 실제로 한 번 더 걸렀다.** 계획서의 `/me` 목은
+`{ tournamentName }`이었는데 백엔드(`user.service.ts:66-81`)는
+`{ tournament: { name, status, ... } }`를 준다. 계획서를 따랐으면 단위 테스트는
+초록인데 화면이 비었을 것이다.
+
+돌린 것: 타입 에러 0건, contract 62 / 백엔드 단위 177 / 프론트 단위 80 /
+통합 333(27 suites), `npm run test:e2e` 12건 통과, `npm run build` 성공.
+
+### 최종 리뷰가 잡은 것
+
+Critical 0, Important 3, Minor 8. 열하나를 다 고쳤다. 그중 **화면 티켓인데
+백엔드를 고치게 된 것 둘**이 이 리뷰의 값이다.
+
+- **공개 라우트가 참가자 전원을 실어 날랐다.** `GET /tournaments/:id`는
+  가드가 없는데 `getGameSession`을 재사용해 `tornamentParticipations`와
+  `tablePlayers`를 통째로 include하고 있었다 — 로그인 없이 대회 id 하나로
+  전원의 `userId`·닉네임·스택·좌석·상금이 나갔다. T29가 좌석 조회를
+  `STORE_ADMIN` 전용으로 새로 만들며 "공개 조회는 누가 앉았는지 주지
+  않는다"라고 적어 둔 근거가 **사실이 아니었다**. `getTournamentInfo`에
+  자기 `select`를 줘서 닫았고(`getGameSession`은 그대로 — 다른 호출자가
+  있다), 틀린 주석도 고쳤다. 즉 그 가드는 옆문이 열린 채로 서 있었다.
+- **`startSession`만 소유권 검사가 없었다.** 나머지 넷(테이블 열기/닫기,
+  좌석 해제, OTP 재발급)은 전부 첫 줄에 `assertTournamentOwnership`이
+  있는데 시작만 빠져 있었고, 이 티켓이 거기에 버튼을 붙였다 — A 상점
+  관리자가 B 상점 대회를 시작시킬 수 있었다. RED를 먼저 봤다:
+  `Received promise resolved instead of rejected / Resolved to value:
+  {..., "status": "ONGOING", ...}`.
+
+나머지 아홉은 화면 쪽이다. **테스트가 아무것도 지키지 않던 자리 하나**가
+같이 나왔다 — 펠트의 180° 회전은 `seatPosition`이 하는데 테스트는
+`seatOrder`(DOM 순서만 바꾼다)만 보고 있어서, `+ 180`을 지워도 전 계층이
+초록이었다. 딜러가 눈앞의 테이블과 뒤집힌 화면을 보는 것은 이 도메인에서
+곧 오조작이다. 두 방향의 좌표가 `(100-x, 100-y)`인지 보는 검사로 바꿨다.
+그 밖에 전광판 폴링의 세대 가드(`WaitingClient`가 이미 쓰던 것), 좌석
+해제된 사람에게 "대회가 끝났습니다"가 뜨던 문구, 레이즈 슬라이더 상한이
+낸 금액만큼 모자라던 것, 서버 컴포넌트가 백엔드 행을 통째로 RSC 페이로드에
+싣던 것을 고쳤다.
+
+**e2e가 하나 늘었다.** 역할 불일치 404가 미들웨어 객체에서만 404이고 실제
+서빙에서 200일 가능성을 목이 못 잡아서, `USER` 계정으로 콘솔 URL을 열어
+HTTP 상태를 본다 — 실측 404였다.
+
+---
+
 <!--
 티켓 서술 형식 (1단계에서 쓰던 것):
 

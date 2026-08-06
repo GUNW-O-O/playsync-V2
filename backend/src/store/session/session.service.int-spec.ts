@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { JwtService } from '@nestjs/jwt';
-import { GameType, PlayerStatus, PrismaClient, TournamentStatus } from '@prisma/client';
+import { GameType, PlayerStatus, PrismaClient, Role, TournamentStatus } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { CreateTournamentDto } from 'shared/dto/tournament.dto';
 import { DealerService } from 'src/dealer/dealer.service';
@@ -35,6 +35,7 @@ describe('SessionService.createSession — OTP 해시 통합', () => {
   let sessionService: SessionService;
   let storeId: string;
   let blindId: string;
+  let ownerId: string;
 
   beforeAll(() => {
     prisma = createTestPrisma();
@@ -61,6 +62,7 @@ describe('SessionService.createSession — OTP 해시 통합', () => {
     const owner = await prisma.user.create({
       data: { nickname: 'owner', password: 'x', role: 'STORE_ADMIN' },
     });
+    ownerId = owner.id;
     const store = await prisma.store.create({
       data: { name: '테스트 상점', ownerId: owner.id },
     });
@@ -126,7 +128,7 @@ describe('SessionService.createSession — OTP 해시 통합', () => {
       // 로직이 아니라 응답에 해시가 실리는지 여부다.
       process.env.MIN_PLAYERS_TO_START = '0';
       try {
-        const started = await sessionService.startSession(created.id);
+        const started = await sessionService.startSession(created.id, ownerId);
         expect(started).not.toHaveProperty('dealerOtp');
         expect(started).not.toHaveProperty('dealerOtpHash');
       } finally {
@@ -161,7 +163,7 @@ describe('SessionService.createSession — OTP 해시 통합', () => {
 
       process.env.MIN_PLAYERS_TO_START = '0';
       try {
-        await sessionService.startSession(created.id);
+        await sessionService.startSession(created.id, ownerId);
       } finally {
         delete process.env.MIN_PLAYERS_TO_START;
       }
@@ -1287,6 +1289,7 @@ describe('SessionService.startSession — 버튼 좌석 영속화', () => {
   let sessionService: SessionService;
   let tournamentId: string;
   let tableId: string;
+  let ownerId: string;
 
   beforeAll(() => {
     prisma = createTestPrisma();
@@ -1307,7 +1310,7 @@ describe('SessionService.startSession — 버튼 좌석 영속화', () => {
       prisma as unknown as PrismaService, redisService, new OtpAttempts(redis), new EventEmitter2(),
     );
 
-    ({ tournamentId, tableId } = await seedTournamentWithTable(prisma));
+    ({ ownerId, tournamentId, tableId } = await seedTournamentWithTable(prisma));
 
     // 준비: 착석 2명. seat()·putSnapshot()과 같은 모양이지만 이 describe는
     // 자기 스냅샷을 직접 만든다 — releaseSeats 블록의 헬퍼는 그 describe
@@ -1346,7 +1349,7 @@ describe('SessionService.startSession — 버튼 좌석 영속화', () => {
   it('시작 트랜잭션이 뽑은 버튼 좌석을 DB에 남긴다', async () => {
     process.env.MIN_PLAYERS_TO_START = '0';
     try {
-      await sessionService.startSession(tournamentId);
+      await sessionService.startSession(tournamentId, ownerId);
     } finally {
       delete process.env.MIN_PLAYERS_TO_START;
     }
@@ -1359,5 +1362,108 @@ describe('SessionService.startSession — 버튼 좌석 영속화', () => {
 
     expect(table.buttonUser).not.toBeNull();
     expect(`DB ${table.buttonUser}`).toBe(`DB ${snapshot!.buttonUser}`);
+  });
+
+  // T34 — startSession에는 소유권 확인이 없었다. 서버 액션이 tournamentId를
+  // 클라이언트 값 그대로 넘기므로, 이게 없으면 A 상점 관리자가 B 상점 대회를
+  // 시작시킬 수 있었다. 다른 소유권 테스트(getSeatOccupants의 "남의 대회는
+  // 거부한다")와 같은 셋업을 따른다.
+  it('남의 대회는 시작할 수 없다', async () => {
+    const intruder = await prisma.user.create({
+      data: { nickname: '다른-상점주', password: 'x', role: 'STORE_ADMIN' },
+    });
+
+    process.env.MIN_PLAYERS_TO_START = '0';
+    try {
+      await expect(
+        sessionService.startSession(tournamentId, intruder.id),
+      ).rejects.toThrow(ForbiddenException);
+    } finally {
+      delete process.env.MIN_PLAYERS_TO_START;
+    }
+
+    const tournament = await prisma.tournament.findUniqueOrThrow({
+      where: { id: tournamentId },
+      select: { status: true },
+    });
+    expect(tournament.status).toBe(TournamentStatus.PENDING);
+  });
+});
+
+/**
+ * T34 — 좌석 해제 화면의 입력.
+ *
+ * `getSeatOccupants`는 좌석 해제(`releaseSeats`)가 요구하는 `{ seatIndex,
+ * userId }`를 채우기 위한 조회다. 기존 좌석 조회 셋(`GET
+ * /tournaments/:id/seats`, `GET /tournaments/:id`, `GET /dealer/:id`)은
+ * 전부 가드가 없어서 여기에 얹으면 남의 대회 참가자의 userId·닉네임이
+ * 그대로 공개된다 — 그래서 재발급·내보내기와 같은 문(소유권 확인)을 쓴다.
+ *
+ * 두 번째 테스트가 이 엔드포인트의 존재 이유다. 소유권 검사가 지워지면
+ * 남의 대회 좌석 명단이 그대로 샌다.
+ */
+describe('SessionService.getSeatOccupants', () => {
+  let prisma: PrismaClient;
+  let redis: Redis;
+  let sessionService: SessionService;
+  let entryService: EntryService;
+  let tournamentId: string;
+  let tableId: string;
+  let ownerId: string;
+
+  beforeAll(() => {
+    prisma = createTestPrisma();
+    redis = createTestRedis();
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+    await closeTestPrisma(prisma);
+  });
+
+  beforeEach(async () => {
+    await truncateAll(prisma);
+    await flushTestRedis(redis);
+
+    const prismaService = prisma as unknown as PrismaService;
+    const redisService = new RedisService(redis);
+    sessionService = new SessionService(
+      prismaService, redisService, new OtpAttempts(redis), new EventEmitter2(),
+    );
+    entryService = new EntryService(
+      prismaService, redisService, new JwtService({ secret: 'seat-occupants-secret' }), new EventEmitter2(),
+    );
+
+    ({ ownerId, tournamentId, tableId } = await seedTournamentWithTable(prisma));
+  });
+
+  it('앉은 사람의 좌석과 userId를 준다', async () => {
+    // 좌석 확정 경로(EntryService.enterSeat)로 실제로 앉힌다. TablePlayer
+    // 행을 손으로 만들면 claimSeat의 실제 동작(닉네임을 참가 유저에서
+    // 가져오는 것 등)과 이 조회가 서로 다른 가정을 하고 있어도 안 걸린다.
+    const player = await prisma.user.create({ data: { nickname: '테스터', password: 'x' } });
+    await prisma.tournamentParticipation.create({
+      data: {
+        userId: player.id, tournamentId, playerOtp: 'seat0000',
+        status: PlayerStatus.WAITING, currentStack: 10000,
+      },
+    });
+    await entryService.enterSeat(tournamentId, { otp: 'seat0000', tableId, seatIndex: 3 });
+
+    const result = await sessionService.getSeatOccupants(tournamentId, ownerId);
+
+    expect(result).toEqual([
+      { tableId, tableOrder: 1, players: [{ seatIndex: 3, userId: player.id, nickname: '테스터' }] },
+    ]);
+  });
+
+  it('남의 대회는 거부한다', async () => {
+    const intruder = await prisma.user.create({
+      data: { nickname: '다른-상점주', password: 'x', role: Role.STORE_ADMIN },
+    });
+
+    await expect(
+      sessionService.getSeatOccupants(tournamentId, intruder.id),
+    ).rejects.toThrow(ForbiddenException);
   });
 });
