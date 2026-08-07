@@ -27,15 +27,19 @@ async function signInAsOwner(page: Page, token: string) {
  * 폰은 사람이 직접 로그인한다 — 서버 액션이 백엔드로 바로 나가는 유일한
  * 인증 경로(`auth/action.ts`)를 실제로 한 번 지나기 위해서다.
  *
- * URL로 완료를 기다리지 않는다. 성공 시 `redirect('/')`가 다시 `/login`으로
- * 돌아오므로(`src/app/page.tsx`) 주소가 그대로라 기다림이 즉시 통과해 버리고,
- * 쿠키가 심기기 전에 다음 화면을 여는 경합이 된다. 실제로 이 스펙이 그
- * 경합으로 처음 빨갰다. 완료의 신호는 **쿠키**다.
+ * 완료의 신호는 **쿠키**다. 예전에는 성공 시 `redirect('/')`가 다시
+ * `/login`으로 돌아와서(`src/app/page.tsx`) 주소가 그대로였고, URL로
+ * 기다리면 즉시 통과해 쿠키가 심기기 전에 다음 화면을 여는 경합이 됐다.
+ * 지금은 USER가 `/me`로 간다(`auth/action.ts`의 `landingPath`). 그래도
+ * 쿠키로 기다리는 것은 그대로 둔다 — 로그인의 결과물은 이동이 아니라
+ * 쿠키이고, 착지 지점은 역할과 `next`에 따라 갈린다.
  */
 async function signInOnPhone(page: Page, nickname: string, password: string) {
   await page.goto('/login');
-  await page.getByPlaceholder('Nickname').fill(nickname);
-  await page.getByPlaceholder('Password').fill(password);
+  // placeholder가 아니라 label로 찾는다. 입력을 시작하면 사라지는 값을
+  // 셀렉터로 쓰면, 화면이 label을 갖췄는지 여부를 아무도 판정하지 않는다.
+  await page.getByLabel('닉네임').fill(nickname);
+  await page.getByLabel('비밀번호').fill(password);
   await page.getByRole('button', { name: '로그인' }).click();
 
   await expect
@@ -86,17 +90,63 @@ test('시작 전 전광판은 대기 중을 그린다', async ({ stage, manifest
   await expect(board.getByText('대기 중')).toBeVisible();
 });
 
-test('참가자 폰이 시드된 참가 OTP를 그대로 보여준다', async ({ stage, manifest }) => {
+test('참가자 폰이 시드된 참가 OTP를 조회 뒤에 보여준다', async ({ stage, manifest }) => {
   const player = playerByNickname(manifest, 'player1');
   const phone = await stage('phone', 'phone-my-otp');
 
   await signInOnPhone(phone, player.nickname, manifest.password);
   await phone.goto('/me');
 
+  await expect(phone.getByText(new RegExp(manifest.tournament.name))).toBeVisible();
+
+  // 조회 전에는 값이 DOM에 없다. 홀은 사람이 붙어 앉는 곳이다.
+  await expect(phone.getByTestId('player-otp')).toHaveCount(0);
+
+  await phone.getByRole('button', { name: '참가 OTP 조회' }).click();
+
   // OTP는 `GET /user/me/participations`의 `playerOtp`다. 대회가 끝나면
   // 서버가 null로 지우지만 무대는 PENDING이라 평문 그대로 온다.
-  await expect(phone.getByText(player.otp)).toBeVisible();
-  await expect(phone.getByText(new RegExp(manifest.tournament.name))).toBeVisible();
+  //
+  // 자리마다 칸을 나눠 그리므로 값이 한 덩어리가 아니다 —
+  // `getByText(otp)`로는 잡히지 않는다. 태블릿 키패드가 요구하는 모양과
+  // 같은 모양으로 보여주는 것이 이 화면의 요점이다.
+  await expect(phone.getByTestId('player-otp')).toHaveText(player.otp);
+});
+
+/**
+ * 대회 찾기는 **두 걸음**이다 — 상점을 고르고 그 상점의 대회를 고른다.
+ *
+ * 여기서 잡는 것은 목이 못 잡는 봉투 차이다. `GET /tournaments/:id`는
+ * `{ tournament, seatStatus }` 봉투인데 `GET /tournaments/stores/:storeId`는
+ * **봉투가 아니라 배열 그대로**다(`getStoreAvailableSessions`). 목을 쓰면
+ * 둘을 같은 모양으로 지어내기 쉽고, 그러면 어느 쪽이 사실인지 화면이
+ * 판정하지 못한다.
+ */
+test('상점을 검색해 그 상점의 대회로 걸어 들어간다', async ({ stage, manifest }) => {
+  const player = playerByNickname(manifest, 'player1');
+  const phone = await stage('phone', 'phone-find-tournament');
+
+  await signInOnPhone(phone, player.nickname, manifest.password);
+  await phone.goto('/tournaments');
+
+  // 검색은 `GET /tournaments/stores?id=<이름>`이고 서버가 하는 일은
+  // 이름 contains다. 이름 일부만 넣어도 걸리는지까지 본다.
+  await phone.getByLabel('상점 이름').fill(manifest.store.name.slice(0, 2));
+  await phone.getByRole('button', { name: '검색' }).click();
+
+  await phone.getByTestId(`pick-store-${manifest.store.id}`).click();
+
+  // 상점 이름이 제목으로 선다. URL에 실어 나르지 않고 다시 읽은 값이다.
+  await expect(phone.getByRole('heading', { name: manifest.store.name })).toBeVisible();
+
+  // 대회 카드는 배열의 행 하나다. 참가비가 그대로 떠야 봉투를 잘못 벗기지
+  // 않았다는 뜻이다.
+  const card = phone.getByTestId(`pick-tournament-${manifest.tournament.id}`);
+  await expect(card).toContainText(manifest.tournament.name);
+  await expect(card).toContainText(manifest.tournament.entryFee.toLocaleString());
+
+  await card.click();
+  await phone.waitForURL(`**/tournaments/${manifest.tournament.id}`);
 });
 
 test('참가자 폰의 대회 상세가 백엔드의 참가비와 블라인드를 그대로 보여준다', async ({

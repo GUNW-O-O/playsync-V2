@@ -1,6 +1,12 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import PlayerLayout from './layout';
+
+// 하단 탭이 `usePathname`으로 지금 탭을 고른다. jsdom에는 라우터가 없다.
+const pathname = vi.hoisted(() => ({ value: '/me' }));
+vi.mock('next/navigation', () => ({
+  usePathname: () => pathname.value,
+}));
 
 describe('플레이어 레이아웃', () => {
   it('본문 아래에 주요 메뉴를 둔다', () => {
@@ -19,5 +25,26 @@ describe('플레이어 레이아웃', () => {
 
     expect(screen.getByRole('link', { name: '대회' })).toHaveAttribute('href', '/tournaments');
     expect(screen.getByRole('link', { name: '내 정보' })).toHaveAttribute('href', '/me');
+  });
+
+  it('지금 보고 있는 탭에 aria-current를 준다', () => {
+    pathname.value = '/me';
+    render(<PlayerLayout>{<p>본문</p>}</PlayerLayout>);
+
+    expect(screen.getByRole('link', { name: '내 정보' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('link', { name: '대회' })).not.toHaveAttribute('aria-current');
+  });
+
+  /**
+   * 대회 **상세**(`/tournaments/<id>`)도 대회 탭이다. 정확히 일치로만
+   * 보면 상세를 여는 순간 두 탭이 다 꺼진다 — 앞 검사(`/me`)만으로는
+   * 그 차이를 못 잡는다. 둘이 어긋나는 입력이라야 각각이 증명된다.
+   */
+  it('대회 상세에서도 대회 탭이 켜져 있다', () => {
+    pathname.value = '/tournaments/abc-123';
+    render(<PlayerLayout>{<p>본문</p>}</PlayerLayout>);
+
+    expect(screen.getByRole('link', { name: '대회' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('link', { name: '내 정보' })).not.toHaveAttribute('aria-current');
   });
 });

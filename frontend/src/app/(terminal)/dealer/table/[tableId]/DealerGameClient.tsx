@@ -212,11 +212,11 @@ export default function DealerGameClient({
                 </button>
               </div>
               <p className="text-xs text-tb-sub">
-                자리에서 뺀다. 칩은 남고 참가 OTP로 다시 앉는다.
+                칩은 남고, 참가 OTP로 다시 앉습니다.
               </p>
             </div>
           ) : (
-            <p className="text-xs text-tb-sub">자리를 눌러 자리를 비운 사람을 내보낸다.</p>
+            <p className="text-xs text-tb-sub">내보낼 자리를 누르세요.</p>
           )}
         </div>
       </div>

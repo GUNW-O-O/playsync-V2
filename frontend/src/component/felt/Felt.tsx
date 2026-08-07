@@ -23,13 +23,31 @@ function seatState(
   return 'idle';
 }
 
+/**
+ * 좌석의 시각 상태.
+ *
+ * 와이어프레임(253–262행)은 찬 자리를 `background: --tb-panel`(#191d20),
+ * 빈 자리를 `border-style: dashed`로만 갈랐다. 펠트가 #123b33이라 **어두운
+ * 채움끼리는 서로 구별되지 않고**, 남는 신호가 1px 점선 하나였다. 팔 길이에서
+ * 안 읽혔다 — 자리가 차고 사람이 빠지는 것이 이 화면이 보여줄 전부인데.
+ *
+ * 그래서 신호를 **테두리 밝기**로 옮긴다. #9aa4a8은 펠트 위에서 멀리서도
+ * 선으로 읽히고, 빈 자리는 거의 안 보이는 윤곽만 남는다.
+ *
+ * 굵기는 상태와 무관하게 2px로 고정한다. 굵기가 바뀌면 상태가 바뀔 때마다
+ * 판이 1px씩 움직이고, 그 흔들림이 영상에 그대로 남는다.
+ */
+const SEAT_HAIRLINE_DIM = 'border-[rgba(238,242,243,0.16)]';
+
 const SEAT_STATE_CLASS: Record<SeatVisualState, string> = {
-  empty: 'border-dashed border-tb-line bg-transparent text-tb-sub',
+  empty: `border-dashed ${SEAT_HAIRLINE_DIM} bg-transparent text-tb-sub`,
+  idle: 'border-tb-muted bg-tb-panel text-tb-ink',
   me: 'border-tb-act bg-[#16302a] text-tb-act',
-  turn: 'border-warn shadow-[0_0_0_2px_rgba(241,194,27,0.28)] text-tb-ink',
-  folded: 'border-tb-line bg-tb-panel text-tb-ink opacity-[0.34]',
+  turn: 'border-warn bg-tb-panel text-tb-ink shadow-[0_0_0_3px_rgba(241,194,27,0.32)]',
+  // 폴드는 게임에서 빠진 것이지 자리가 빈 것이 아니다. 테두리를 죽이고
+  // 채움은 남겨 둔다 — 빈 자리와 달리 여전히 판이 거기 있다.
+  folded: `${SEAT_HAIRLINE_DIM} bg-tb-panel text-tb-muted opacity-45`,
   allin: 'border-warn bg-tb-panel text-tb-ink',
-  idle: 'border-tb-line bg-tb-panel text-tb-ink',
 };
 
 export default function Felt({
@@ -97,14 +115,27 @@ export default function Felt({
               data-me={seatIndex === mySeatIndex}
               disabled={!onSeatClick}
               onClick={() => onSeatClick?.(seatIndex)}
-              className={`absolute w-20 rounded border px-3 py-2 text-left ${SEAT_STATE_CLASS[visualState]}`}
+              className={`absolute w-20 border-2 px-3 py-2 text-left ${SEAT_STATE_CLASS[visualState]}`}
               style={seatPosition(seatIndex, orientation)}
             >
-              <span className="block font-mono text-xs text-tb-sub">{seatIndex + 1}</span>
-              <span className="block truncate text-sm">{player?.nickname ?? '빈 자리'}</span>
-              <span className="block font-mono text-sm">
-                {player ? `${player.stack.toLocaleString()}${player.isAllIn ? ' · 올인' : ''}` : '—'}
-              </span>
+              {/*
+                빈 자리는 **글자를 지운다.** "빈 자리"와 "—"를 적어 두면 빈
+                자리가 찬 자리와 같은 덩어리를 차지해서, 테두리를 아무리
+                고쳐도 멀리서는 아홉 개의 같은 상자로 보인다. 없음은 비어
+                보여야 한다.
+              */}
+              {player ? (
+                <>
+                  <span className="block font-mono text-xs text-tb-sub">{seatIndex + 1}</span>
+                  <span className="block truncate text-sm font-semibold">{player.nickname}</span>
+                  <span className="block font-mono text-sm">
+                    {player.stack.toLocaleString()}
+                    {player.isAllIn ? ' · 올인' : ''}
+                  </span>
+                </>
+              ) : (
+                <span className="block text-center font-mono text-sm">{seatIndex + 1}</span>
+              )}
               {player?.button && (
                 <span
                   data-testid={`seat-${seatIndex}-button`}

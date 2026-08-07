@@ -1,14 +1,14 @@
 @import "tailwindcss";
 @import "./wireframe-tokens.css";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-ink-subtle: var(--ink-subtle);
+  --color-hairline: var(--hairline);
+  --color-blue: var(--blue);
   --color-felt: var(--felt);
   --color-felt-edge: var(--felt-edge);
   --color-felt-rail: var(--felt-rail);
@@ -33,15 +33,19 @@
   --font-cond: var(--cond);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #202020;
-    --foreground: #ededed;
-  }
-}
-
+/*
+ * `--background` / `--foreground`와 `prefers-color-scheme` 블록을 지웠다.
+ * create-next-app이 깔아 둔 값이었고, 화면들이 실제로 쓰는 것은
+ * `--canvas` / `--ink`(Carbon)이다. 둘이 나란히 있는 동안 **몸통 배경만**
+ * OS 다크 설정을 따라가서, 카드 안쪽은 흰데 그 바깥이 #202020이 되는
+ * 화면이 나왔다. 촬영 기계 설정에 따라 색이 바뀌는 상태였다.
+ *
+ * 다크 테마 자체를 여기서 만들지 않는 이유는 `DESIGN.md`의 Known Gaps다 —
+ * Carbon의 Gray-100 테마는 별도 팔레트고, 지금 토큰에 그 값이 없다.
+ * 태블릿과 전광판은 이미 자기 색을 갖고 있다(`--tb-*` / `--sb-*`).
+ */
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--sans);
 }

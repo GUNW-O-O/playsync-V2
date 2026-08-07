@@ -248,8 +248,11 @@ export default function ConsoleClient({
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2.5">
             <div>
               <p className="mb-0.5 text-[11px] tracking-[0.06em] text-[var(--ink-subtle)]">좌석</p>
+              {/* "자리를 고른다"를 뺐다. 오른쪽 패널의 "해제할 자리를
+                  누르세요"가 이미 그 동작을 말한다. 여기 남길 것은 그것이
+                  말하지 않는 사실 — 한 번에 여럿이 된다는 것 — 하나다. */}
               <span className="text-[13px] text-[var(--ink-subtle)]">
-                옮길 사람의 자리를 고른다. 여러 명을 한 번에 뺄 수 있다.
+                여러 명을 한 번에 뺄 수 있습니다.
               </span>
             </div>
             <div className="flex items-center gap-2">
@@ -302,19 +305,32 @@ export default function ConsoleClient({
                       data-testid={`console-seat-${seatIndex}`}
                       disabled={!occupant}
                       onClick={() => toggleSeat(seatIndex)}
+                      /*
+                        찬 자리와 빈 자리가 **둘 다 흰 바탕에 #e0e0e0 테두리**라
+                        사실상 같은 그림이었다. 실선/점선 1px 차이뿐이었다.
+                        사람이 앉은 자리는 Carbon의 강한 실선(#161616)과 회색
+                        채움으로 판이 되게 하고, 빈 자리는 채움도 이름도 없이
+                        번호만 남긴다.
+                      */
                       className={
                         !occupant
                           ? 'absolute w-[74px] -translate-x-1/2 -translate-y-1/2 border border-dashed border-[var(--hairline)] bg-transparent px-1.5 py-1 text-center text-[10.5px] leading-[1.3] text-[var(--ink-subtle)]'
                           : isSelected
-                            ? 'absolute w-[74px] -translate-x-1/2 -translate-y-1/2 border border-[var(--blue)] bg-[var(--canvas)] px-1.5 py-1 text-center text-[10.5px] leading-[1.3] shadow-[0_0_0_2px_rgba(15,98,254,0.22)]'
-                            : 'absolute w-[74px] -translate-x-1/2 -translate-y-1/2 border border-[var(--hairline)] bg-[var(--canvas)] px-1.5 py-1 text-center text-[10.5px] leading-[1.3]'
+                            ? 'absolute w-[74px] -translate-x-1/2 -translate-y-1/2 border-2 border-[var(--blue)] bg-[var(--canvas)] px-1.5 py-1 text-center text-[10.5px] leading-[1.3] shadow-[0_0_0_3px_rgba(15,98,254,0.22)]'
+                            : 'absolute w-[74px] -translate-x-1/2 -translate-y-1/2 border-2 border-[var(--hairline-strong)] bg-[var(--surface)] px-1.5 py-1 text-center text-[10.5px] font-semibold leading-[1.3] text-[var(--ink)]'
                       }
                       style={{ left: pos.left, top: pos.top }}
                     >
-                      <span className="block font-mono text-[9.5px] text-[var(--ink-subtle)]">
-                        {seatIndex + 1}
-                      </span>
-                      <span className="block truncate">{occupant?.nickname ?? '빈 자리'}</span>
+                      {occupant ? (
+                        <>
+                          <span className="block font-mono text-[9.5px] text-[var(--ink-subtle)]">
+                            {seatIndex + 1}
+                          </span>
+                          <span className="block truncate">{occupant.nickname}</span>
+                        </>
+                      ) : (
+                        <span className="block font-mono text-[11px]">{seatIndex + 1}</span>
+                      )}
                     </button>
                   );
                 })}
@@ -327,7 +343,7 @@ export default function ConsoleClient({
                   고른 자리 {selectedSeats.length}
                 </p>
                 {selectedSeats.length === 0 ? (
-                  <p className="text-[13px] text-[var(--ink-subtle)]">자리를 골라 주세요.</p>
+                  <p className="text-[13px] text-[var(--ink-subtle)]">해제할 자리를 누르세요.</p>
                 ) : (
                   <ul className="flex flex-col gap-1 text-sm">
                     {selectedSeats.map((p) => (
@@ -360,8 +376,7 @@ export default function ConsoleClient({
                 고른 자리 해제
               </button>
               <p className="m-0 text-[13px] text-[var(--ink-subtle)]">
-                해제해도 칩은 그대로다 — 자리만 잃는다. 안내받은 테이블로 걸어가서
-                참가 OTP를 다시 넣으면 그 자리가 자기 자리가 된다.
+                칩은 그대로입니다. 새 자리에서 참가 OTP를 다시 넣습니다.
               </p>
               <div className="h-px bg-[var(--hairline)]" />
               <button
@@ -383,8 +398,11 @@ export default function ConsoleClient({
             <div>
               <p className="mb-1 text-[11px] tracking-[0.06em] text-[var(--ink-subtle)]">딜러 OTP</p>
               <div className="font-mono text-[26px] tracking-[0.16em]">{dealerOtp ?? '••••••'}</div>
+              {/* "해시로만 저장한다"를 지웠다. 저장 방식은 이 화면을 쓰는
+                  상점 운영자의 일이 아니고, 그가 알아야 하는 것은 **지금
+                  적어 두지 않으면 재발급해야 한다**는 결과뿐이다. */}
               <div className="mt-1 text-[13px] text-[var(--ink-subtle)]">
-                해시로만 저장한다. 이 화면을 벗어나면 재발급만 가능하다.
+                지금만 볼 수 있습니다. 화면을 벗어나면 재발급해야 합니다.
               </div>
             </div>
             <button
