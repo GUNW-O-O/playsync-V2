@@ -24,7 +24,14 @@ export default async function DealerWaitingPage({
   searchParams: Promise<{ store?: string }>;
 }) {
   const { store } = await searchParams;
-  if (!store) return <main className="p-8 text-tb-ink">?store= 가 필요합니다.</main>;
+  // 이 화면을 보는 사람은 태블릿을 설치하는 직원이다. 무엇이 빠졌는지가
+  // 아니라 **무엇을 고쳐야 하는지**를 적는다.
+  if (!store)
+    return (
+      <main className="p-8 text-tb-ink">
+        주소에 상점이 없습니다. {'?store=<상점 id>'}를 붙여 주세요.
+      </main>
+    );
 
   const tournaments = (await json(`/tournaments/stores/${store}`)) ?? [];
   const current = tournaments[0] ?? null;

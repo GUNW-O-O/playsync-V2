@@ -176,8 +176,8 @@ export default function DealerWaitingClient({
           </div>
 
           <p className="text-xs text-tb-sub">
-            눈앞의 테이블을 고른다. <strong className="text-tb-muted">딜러 OTP</strong>는 대회 운영자에게
-            받는다.
+            눈앞의 테이블을 고르세요. <strong className="text-tb-muted">딜러 OTP</strong>는 운영자에게
+            받습니다.
           </p>
         </div>
 
