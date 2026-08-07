@@ -2,33 +2,25 @@
 
 import { useState, useTransition } from 'react';
 import Link from 'next/link';
-import { handleRegister } from '../auth/action';
+import { handleLogin } from '../auth/action';
 import Field from '../auth/Field';
 
 /**
- * 회원가입. 만드는 것은 참가자 계정(USER)뿐이다.
+ * 로그인 폼.
  *
- * `POST /auth/join`이 받는 것은 `{ nickname, password }`이고 role 인자가
- * 없다 — 상점 계정을 여기서 만들 방법은 없다. 예전 로그인 화면에 있던
- * "가맹 회원가입" 버튼은 그래서 지웠다(같은 `/register`를 가리키고 있었다).
+ * 이 문은 폰과 상점 콘솔이 함께 쓴다. 그래서 폰 셸(`(player)/layout.tsx`)
+ * 밖에 있고, 어느 쪽에서 열어도 읽히도록 가운데 한 칸으로만 세운다.
+ *
+ * `next`는 미들웨어가 붙여 준 원래 가려던 경로다. 서버 액션에 폼 필드로
+ * 넘긴다 — 액션은 요청 URL을 볼 수 없다.
  */
-export default function RegisterPage() {
+export default function LoginForm({ next }: { next?: string }) {
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
 
   function clientAction(formData: FormData) {
-    const password = formData.get('password') as string;
-    const confirmPassword = formData.get('confirmPassword') as string;
-
-    // 서버에 갔다 오기 전에 잡을 수 있는 것 하나. 나머지 거절 이유
-    // (중복 닉네임 등)는 백엔드 문구를 그대로 띄운다.
-    if (password !== confirmPassword) {
-      setError('비밀번호가 일치하지 않습니다.');
-      return;
-    }
-
     startTransition(async () => {
-      const result = await handleRegister(formData);
+      const result = await handleLogin(formData);
       if (result?.error) setError(result.error);
     });
   }
@@ -39,17 +31,23 @@ export default function RegisterPage() {
         <p className="text-[14px] leading-[1.29] tracking-[0.16px] text-[var(--ink-subtle)]">
           Playsync
         </p>
-        <h1 className="text-[28px] font-light leading-[1.2]">회원가입</h1>
+        <h1 className="text-[28px] font-light leading-[1.2]">로그인</h1>
       </div>
 
       <form action={clientAction} className="flex flex-col gap-6">
-        <Field name="nickname" label="닉네임" type="text" autoComplete="username" />
-        <Field name="password" label="비밀번호" type="password" autoComplete="new-password" />
+        {next && <input type="hidden" name="next" value={next} />}
+
         <Field
-          name="confirmPassword"
-          label="비밀번호 확인"
+          name="nickname"
+          label="닉네임"
+          type="text"
+          autoComplete="username"
+        />
+        <Field
+          name="password"
+          label="비밀번호"
           type="password"
-          autoComplete="new-password"
+          autoComplete="current-password"
         />
 
         {error && (
@@ -61,19 +59,25 @@ export default function RegisterPage() {
           </p>
         )}
 
+        {/* Carbon button-primary. */}
         <button
           type="submit"
           disabled={pending}
           className="h-12 w-full bg-[var(--blue)] px-4 text-[14px] tracking-[0.16px] text-white transition-colors hover:bg-[#0050e6] active:bg-[var(--blue-80)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--blue)] disabled:bg-[var(--surface)] disabled:text-[var(--ink-subtle)]"
         >
-          가입하기
+          로그인
         </button>
       </form>
 
+      {/*
+        "가맹 회원가입" 버튼을 지웠다. 옆의 회원가입과 같은 `/register`를
+        가리키고 있었고, `POST /auth/join`은 role 인자를 받지 않는다 —
+        뒤에 아무것도 없는 버튼이었다. 상점 계정은 지금 시드가 만든다.
+      */}
       <p className="text-[14px] leading-[1.29] tracking-[0.16px] text-[var(--ink-muted)]">
-        이미 계정이 있다면{' '}
-        <Link href="/login" className="text-[var(--blue)] hover:underline">
-          로그인
+        계정이 없다면{' '}
+        <Link href="/register" className="text-[var(--blue)] hover:underline">
+          회원가입
         </Link>
       </p>
     </main>

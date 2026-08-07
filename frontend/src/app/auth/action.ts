@@ -2,6 +2,7 @@
 
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
+import { decodeSession, SESSION_COOKIE, type Session } from '@/lib/session';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
 
@@ -46,7 +47,7 @@ export async function handleLogin(formData: FormData) {
   const token = data.accessToken;
 
   // [핵심] 쿠키에 JWT 저장
-  cookie.set('accessToken', token, {
+  cookie.set(SESSION_COOKIE, token, {
     httpOnly: true, // 자바스크립트로 접근 불가 (보안)
     secure: process.env.NODE_ENV === 'production', // HTTPS에서만 전송
     sameSite: 'lax', // CSRF 방어
@@ -54,5 +55,30 @@ export async function handleLogin(formData: FormData) {
     maxAge: 60 * 60 * 24, // 1일 (NestJS JWT 만료시간과 맞추는 것 권장)
   });
 
-  redirect('/'); // 로그인 성공 시 대시보드로 이동
+  redirect(landingPath(formData.get('next'), decodeSession(token)));
+}
+
+/**
+ * 로그인 뒤에 갈 곳.
+ *
+ * 예전에는 무조건 `/`였는데, `app/page.tsx`가 `/`를 다시 `/login`으로
+ * 보낸다. **로그인 버튼을 눌러도 로그인 화면이 그대로 다시 뜨는** 상태였다
+ * (e2e가 URL 대신 쿠키로 완료를 기다리는 것도 이 때문이다).
+ *
+ * 순서는 이렇다.
+ *
+ * 1. 미들웨어가 붙여 준 `next` — 원래 보려던 화면으로 돌려보낸다.
+ * 2. 없으면 역할의 홈. 지금 홈이 있는 역할은 참가자(USER)뿐이다.
+ * 3. 그 외에는 `/`. 상점·플랫폼 관리자의 홈 화면은 아직 없고,
+ *    없는 경로를 여기서 지어내면 로그인이 404로 끝난다.
+ */
+function landingPath(next: FormDataEntryValue | null, session: Session | null): string {
+  // 오픈 리다이렉트를 막는다. `//evil.example`은 프로토콜 상대 URL이라
+  // 슬래시로 시작하는지만 보면 외부로 나간다. `/\`도 일부 브라우저가
+  // 같은 것으로 읽는다.
+  if (typeof next === 'string' && /^\/(?![/\\])/.test(next)) {
+    return next;
+  }
+  if (session?.role === 'USER') return '/me';
+  return '/';
 }
