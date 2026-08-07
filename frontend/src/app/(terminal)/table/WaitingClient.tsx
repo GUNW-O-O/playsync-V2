@@ -265,12 +265,19 @@ export default function WaitingClient({
                   aria-label={`${i + 1}번 자리`}
                   disabled={taken}
                   onClick={() => pickSeat(i)}
+                  /*
+                    여기서는 **고를 수 있는 자리가 튀어야** 한다 — 사람이 하는
+                    일이 빈 의자를 누르는 것이기 때문이다(펠트와 반대다. 거기서는
+                    앉은 사람이 정보다).
+                    이전에는 셋 다 `--tb-line`(#2b3134) 1px이라 찬 자리와 빈 자리가
+                    점선 여부로만 갈렸다.
+                  */
                   className={
                     isPicked
-                      ? 'absolute grid h-7 w-7 -translate-x-1/2 -translate-y-1/2 place-items-center border font-mono text-xs font-bold border-tb-act bg-tb-act text-[#06201a]'
+                      ? 'absolute grid h-8 w-8 -translate-x-1/2 -translate-y-1/2 place-items-center border-2 border-tb-act bg-tb-act font-mono text-sm font-bold text-[#06201a]'
                       : taken
-                        ? 'absolute grid h-7 w-7 -translate-x-1/2 -translate-y-1/2 place-items-center border border-dashed border-tb-line font-mono text-xs text-tb-sub'
-                        : 'absolute grid h-7 w-7 -translate-x-1/2 -translate-y-1/2 place-items-center border border-tb-line bg-tb-panel font-mono text-xs text-tb-ink'
+                        ? 'absolute grid h-8 w-8 -translate-x-1/2 -translate-y-1/2 place-items-center border-2 border-dashed border-[rgba(238,242,243,0.14)] bg-transparent font-mono text-sm text-tb-sub opacity-60'
+                        : 'absolute grid h-8 w-8 -translate-x-1/2 -translate-y-1/2 place-items-center border-2 border-tb-muted bg-tb-panel font-mono text-sm text-tb-ink'
                   }
                   style={{ left: SEAT_POSITIONS[i].left, top: SEAT_POSITIONS[i].top }}
                 >
@@ -280,9 +287,11 @@ export default function WaitingClient({
             })}
           </div>
 
+          {/* "배치는 눈앞의 테이블 그대로다"를 지웠다. 설계 판단이고,
+              앉은 사람은 고개만 들면 그 사실을 이미 본다. */}
           <p className="text-xs text-tb-sub">
-            점선은 이미 사람이 앉은 자리다. <strong className="text-tb-muted">지금 앉은 의자</strong>를
-            누른다 — 배치는 눈앞의 테이블 그대로다.
+            점선은 이미 앉은 자리입니다. <strong className="text-tb-muted">지금 앉은 의자</strong>를
+            누르세요.
           </p>
         </div>
 
@@ -315,7 +324,7 @@ export default function WaitingClient({
           )}
 
           <p className="text-xs text-tb-sub">
-            폰의 <strong className="text-tb-muted">내 참가</strong>에서 확인한다.
+            폰의 <strong className="text-tb-muted">내 참가</strong>에서 확인하세요.
           </p>
         </div>
       </div>
