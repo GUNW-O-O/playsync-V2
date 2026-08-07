@@ -180,10 +180,10 @@ export default function ConsoleClient({
             <p className="mb-1 text-[11px] tracking-[0.06em] text-[var(--ink-subtle)]">대회</p>
             <div className="text-[30px] font-light leading-[1.15]">{tournament.name}</div>
             <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-[rgba(36,161,72,0.12)] px-2.5 py-1 text-[var(--ok)]">
+              <span className="inline-flex items-center gap-1.5 bg-[rgba(36,161,72,0.12)] px-2.5 py-1 text-[var(--ok)]">
                 {STATUS_LABEL[tournament.status] ?? tournament.status}
               </span>
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--surface)] px-2.5 py-1 text-[var(--ink-subtle)]">
+              <span className="inline-flex items-center gap-1.5 bg-[var(--surface)] px-2.5 py-1 text-[var(--ink-subtle)]">
                 {tournament.isRegistrationOpen ? '등록 열림' : '등록 마감'}
               </span>
               <span className="text-[13px] text-[var(--ink-subtle)]">
@@ -197,7 +197,7 @@ export default function ConsoleClient({
                 type="button"
                 disabled={pending}
                 onClick={() => run(() => startTournament(tournamentId))}
-                className="rounded bg-[var(--blue)] px-4 py-3 text-sm text-white disabled:opacity-40"
+                className="bg-[var(--blue)] px-4 py-3 text-sm text-white disabled:opacity-40"
               >
                 대회 시작
               </button>
@@ -206,7 +206,7 @@ export default function ConsoleClient({
               href={displayUrl}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center rounded border border-[var(--hairline)] px-4 py-3 text-sm text-[var(--ink-subtle)]"
+              className="inline-flex items-center border border-[var(--hairline)] px-4 py-3 text-sm text-[var(--ink-subtle)]"
             >
               전광판 열기
             </a>
@@ -264,8 +264,8 @@ export default function ConsoleClient({
                   onClick={() => selectTable(t.id)}
                   className={
                     t.id === activeTable?.id
-                      ? 'rounded border border-[var(--blue)] px-2.5 py-1.5 text-xs text-[var(--blue)]'
-                      : 'rounded border border-[var(--hairline)] px-2.5 py-1.5 text-xs text-[var(--ink-subtle)]'
+                      ? 'border border-[var(--blue)] px-2.5 py-1.5 text-xs text-[var(--blue)]'
+                      : 'border border-[var(--hairline)] px-2.5 py-1.5 text-xs text-[var(--ink-subtle)]'
                   }
                 >
                   {t.tableOrder}번 테이블
@@ -275,7 +275,7 @@ export default function ConsoleClient({
                 type="button"
                 disabled={pending}
                 onClick={() => run(() => openTable(tournamentId))}
-                className="rounded border border-[var(--hairline)] px-2.5 py-1.5 text-xs text-[var(--ink-subtle)] disabled:opacity-40"
+                className="border border-[var(--hairline)] px-2.5 py-1.5 text-xs text-[var(--ink-subtle)] disabled:opacity-40"
               >
                 테이블 추가
               </button>
@@ -283,7 +283,13 @@ export default function ConsoleClient({
           </div>
 
           <div className="flex flex-wrap items-stretch gap-5">
-            <div className="min-w-[300px] grow">
+            {/*
+              폭에 제한이 없으면 3:2 상자가 1440×900 창의 세로를 넘어가서
+              펠트 아래쪽이 잘렸다. 좌석 도식은 자리 배치를 읽는 그림이라
+              크다고 더 읽히지 않는다 — 머리글과 함께 한 화면에 들어오는
+              것이 먼저다.
+            */}
+            <div className="min-w-[300px] max-w-[760px] grow">
               <div
                 className="relative border border-[var(--hairline)] bg-[var(--surface)]"
                 style={{ aspectRatio: '3 / 2' }}
@@ -371,7 +377,7 @@ export default function ConsoleClient({
                     () => setSelected(new Set()),
                   )
                 }
-                className="w-full rounded bg-[var(--blue)] py-3 text-sm text-white disabled:opacity-40"
+                className="w-full bg-[var(--blue)] py-3 text-sm text-white disabled:opacity-40"
               >
                 고른 자리 해제
               </button>
@@ -383,7 +389,7 @@ export default function ConsoleClient({
                 type="button"
                 disabled={pending || !activeTable || occupants.length > 0}
                 onClick={() => activeTable && run(() => closeTable(tournamentId, activeTable.id))}
-                className="w-full rounded border border-[var(--hairline)] py-3 text-sm text-[var(--ink-subtle)] disabled:opacity-40"
+                className="w-full border border-[var(--hairline)] py-3 text-sm text-[var(--ink-subtle)] disabled:opacity-40"
               >
                 테이블 닫기{occupants.length > 0 ? ` · ${occupants.length}명 남음` : ''}
               </button>
@@ -409,7 +415,7 @@ export default function ConsoleClient({
               type="button"
               disabled={pending}
               onClick={handleReissue}
-              className="rounded border border-[var(--hairline)] px-4 py-3 text-sm text-[var(--ink-subtle)] disabled:opacity-40"
+              className="border border-[var(--hairline)] px-4 py-3 text-sm text-[var(--ink-subtle)] disabled:opacity-40"
             >
               재발급
             </button>

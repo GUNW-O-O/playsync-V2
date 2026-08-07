@@ -31,23 +31,36 @@ async function getInitialGameData(tableId: string) {
  * 이 조회가 실패해도 게임 화면 자체를 죽이지 않는다 — 탈락 복귀 주소를
  * 못 구할 뿐이고, 그 정도로 화면 전체가 500이 되는 건 균형이 안 맞는다.
  */
-async function getStoreId(tournamentId: string | undefined): Promise<string | undefined> {
-  if (!tournamentId) return undefined;
+async function getTableContext(
+  tournamentId: string | undefined,
+  tableId: string,
+): Promise<{ storeId?: string; tableOrder?: number }> {
+  if (!tournamentId) return {};
   try {
     const res = await fetch(`${process.env.BACKEND_URL}/tournaments/${tournamentId}`, { cache: 'no-store' });
-    if (!res.ok) return undefined;
-    const body = (await res.json().catch(() => null)) as { tournament?: { storeId?: string } } | null;
-    return body?.tournament?.storeId;
+    if (!res.ok) return {};
+    const body = (await res.json().catch(() => null)) as {
+      tournament?: { storeId?: string; tables?: { id: string; tableOrder: number }[] };
+    } | null;
+    return {
+      storeId: body?.tournament?.storeId,
+      // 같은 조회가 `tables`까지 select한다(`getTournamentInfo`). 번호를
+      // 얻자고 요청을 하나 더 보내지 않는다.
+      tableOrder: body?.tournament?.tables?.find((t) => t.id === tableId)?.tableOrder,
+    };
   } catch (err) {
-    console.error('대회 정보를 불러오지 못해 storeId를 구하지 못했습니다.', err);
-    return undefined;
+    console.error('대회 정보를 불러오지 못해 테이블 정보를 구하지 못했습니다.', err);
+    return {};
   }
 }
 
 export default async function GamePage({ params }: { params: Promise<{ tableId: string }> }) {
   const { tableId } = await params;
   const initialData = await getInitialGameData(tableId);
-  const storeId = await getStoreId(initialData?.tableState?.tournamentId);
+  const { storeId, tableOrder } = await getTableContext(
+    initialData?.tableState?.tournamentId,
+    tableId,
+  );
 
   return (
     <main className="h-screen overflow-hidden bg-tb-bg">
@@ -57,6 +70,7 @@ export default async function GamePage({ params }: { params: Promise<{ tableId: 
           initialData={initialData.tableState}
           seatIndex={initialData.seatIndex}
           storeId={storeId}
+          tableOrder={tableOrder}
         />
       ) : (
         <p>아직 게임이 시작되지 않았습니다.</p>

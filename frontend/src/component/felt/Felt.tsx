@@ -170,7 +170,17 @@ export default function Felt({
  *
  * 반지름(46 / 45)과 시작각(28°)·간격(38°)은 와이어프레임의 실측 좌표
  * (예: 1번 자리 left:71.6% top:10.3%)를 역산해 맞춘 값이다.
+ *
+ * **자리를 소수 넷째 자리에서 끊는다.** 끊지 않으면 하이드레이션이 어긋난다 —
+ * 서버가 `left: 28.404308111849023%`를 HTML에 쓰면 브라우저 CSSOM이 유효숫자
+ * 여섯 자리(`28.4043%`)로 줄여 저장하는데, 클라이언트의 React는 자기가 다시
+ * 계산한 긴 값과 그 줄어든 값을 비교하고 불일치로 판정한다. 좌석 아홉 × 펠트가
+ * 있는 모든 화면에서 매번 났다.
+ *
+ * 넷째 자리면 1280px 기준 0.0013px이라 화면에는 아무 차이가 없다.
  */
+const SEAT_POS_DECIMALS = 4;
+
 function seatPosition(seatIndex: number, orientation: FeltOrientation): React.CSSProperties {
   const baseAngleDeg = 28 + 38 * seatIndex;
   const angleDeg = orientation === 'dealer' ? baseAngleDeg + 180 : baseAngleDeg;
@@ -178,8 +188,8 @@ function seatPosition(seatIndex: number, orientation: FeltOrientation): React.CS
   const RX = 46;
   const RY = 45;
   return {
-    left: `${50 + RX * Math.sin(angleRad)}%`,
-    top: `${50 - RY * Math.cos(angleRad)}%`,
+    left: `${(50 + RX * Math.sin(angleRad)).toFixed(SEAT_POS_DECIMALS)}%`,
+    top: `${(50 - RY * Math.cos(angleRad)).toFixed(SEAT_POS_DECIMALS)}%`,
     transform: 'translate(-50%, -50%)',
   };
 }

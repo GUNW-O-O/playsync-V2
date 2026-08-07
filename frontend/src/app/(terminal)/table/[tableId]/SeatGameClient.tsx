@@ -47,11 +47,14 @@ export default function SeatGameClient({
   initialData,
   seatIndex,
   storeId,
+  tableOrder,
 }: {
   tableId: string;
   initialData?: TableState;
   seatIndex: number;
   storeId?: string;
+  /** 눈앞의 테이블에 붙은 번호. 없으면 머리글에서 테이블을 뺀다. */
+  tableOrder?: number;
 }) {
   const socketRef = useRef<WebSocket | null>(null);
   const [gameState, setGameState] = useState<TableState | null>(initialData || null);
@@ -179,8 +182,18 @@ export default function SeatGameClient({
       )}
 
       <div className="flex shrink-0 items-center justify-between border-b border-tb-line bg-tb-panel px-4 py-2 text-xs text-tb-sub">
+        {/*
+          예전에는 여기에 `tableId`(UUID)가 그대로 떴다. 앉은 사람에게는
+          아무 의미가 없고, 눈앞의 테이블에 붙어 있는 것은 번호다. 번호를
+          못 구했으면 테이블 쪽을 통째로 뺀다 — UUID로 되돌아가지 않는다.
+        */}
         <span>
-          {tableId} · {mySeatIndex !== null ? `${mySeatIndex + 1}번 자리` : ''}
+          {[
+            tableOrder !== undefined ? `${tableOrder}번 테이블` : null,
+            mySeatIndex !== null ? `${mySeatIndex + 1}번 자리` : null,
+          ]
+            .filter(Boolean)
+            .join(' · ')}
         </span>
         <span>
           {gameState
