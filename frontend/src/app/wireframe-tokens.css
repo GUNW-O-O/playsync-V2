@@ -8,9 +8,20 @@
   --canvas:     #ffffff;
   --surface:    #f4f4f4;
   --ink:        #161616;
+  /* 와이어프레임에 없던 값. Carbon의 2차 텍스트다(`DESIGN.md` ink-muted).
+     와이어프레임은 본문과 보조 문구를 ink / ink-subtle 둘로만 갈랐는데,
+     폰에서 그 둘 사이가 필요한 자리가 나왔다 — 카드 부제(참가비·인원)는
+     제목보다 약하고 도움말(#8c8c8c)보다는 읽혀야 한다. */
+  --ink-muted:  #525252;
   --ink-subtle: #8c8c8c;
   --hairline:   #e0e0e0;
+  /* Carbon의 강한 실선(`DESIGN.md` hairline-strong). 좌석 도식에서 **사람이
+     앉은 자리**를 표시하는 데 쓴다 — 흰 바탕에서 #e0e0e0 실선과 #e0e0e0
+     점선은 사실상 같은 그림이라, 찬 자리와 빈 자리가 구별되지 않았다. */
+  --hairline-strong: #161616;
   --blue:       #0f62fe;
+  /* 눌린 상태. Carbon의 blue-80(`DESIGN.md` button-primary-pressed). */
+  --blue-80:    #002d9c;
 
   /* ③-a 전광판 */
   --sb-bg:    #08090a;
@@ -36,7 +47,11 @@
   --warn: #f1c21b;
   --err:  #da1e28;
 
-  --sans: ui-sans-serif, system-ui, "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
-  --mono: ui-monospace, "Cascadia Mono", Consolas, "D2Coding", monospace;
+  /* 와이어프레임은 웹폰트가 없는 한 파일이라 시스템 서체로만 적었다. 실제
+     화면의 서체는 Carbon의 IBM Plex다(`DESIGN.md`). `--font-plex-*`는
+     `app/layout.tsx`의 `next/font`가 심는 변수이고, 뒤는 그것이 아직
+     안 왔을 때의 폴백이라 와이어프레임의 목록을 그대로 둔다. */
+  --sans: var(--font-plex-sans), ui-sans-serif, system-ui, "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+  --mono: var(--font-plex-mono), ui-monospace, "Cascadia Mono", Consolas, "D2Coding", monospace;
   --cond: "Arial Narrow", "Roboto Condensed", "Helvetica Neue Condensed", var(--sans);
 }
