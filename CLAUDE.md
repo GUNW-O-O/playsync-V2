@@ -61,7 +61,7 @@ npm run typecheck      # contract 빌드 후 backend/frontend 타입 체크
 npm run build          # contract → backend → frontend
 npm run dev:backend    # NestJS watch
 npm run dev:frontend   # Next dev
-npm run test           # 단위 테스트 (인프라 없음, 2초)
+npm run test           # 단위 테스트 (인프라 없음, 1분)
 npm run test:int       # 통합 테스트 (컨테이너 기동부터 자동)
 npm run test:e2e       # 화면 회귀 (Playwright, 시드 필요)
 npm run demo           # 데모 촬영 (시드 → 프론트 빌드 → 장면 다섯)
