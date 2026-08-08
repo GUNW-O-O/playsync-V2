@@ -66,6 +66,23 @@ export default function Felt({
   return (
     <div className="relative h-full w-full bg-felt-rail p-[2%]">
       <div className="relative h-full w-full rounded-full border-4 border-felt-edge bg-felt">
+        {/*
+          사람 딜러가 서 있는 자리. 좌석 아홉이 **딜러를 12시로 놓고** 도는
+          배치라(`seatPosition`) 이 표찰이 곧 화면의 방향이다. 자리만 비워
+          두고 그리지 않아서, 화면만 보고는 어느 쪽이 딜러인지 알 수 없었다.
+
+          딜러 화면에서는 좌석이 180° 돌아 자기 자리가 아래로 오므로 표찰도
+          같이 내려간다 — 눈앞의 배치와 겹쳐야 하기 때문이다.
+        */}
+        <div
+          data-testid="felt-dealer-mark"
+          className={`absolute left-1/2 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap border border-tb-line bg-tb-panel px-2.5 py-0.5 text-[10px] tracking-[0.14em] text-tb-muted ${
+            orientation === 'dealer' ? 'top-[97%]' : 'top-[3%]'
+          }`}
+        >
+          딜러
+        </div>
+
         {/* 팟 — 사이드팟이 있으면 그 아래에 함께 보여준다 */}
         <div
           data-testid="pot"
@@ -136,7 +153,13 @@ export default function Felt({
               ) : (
                 <span className="block text-center font-mono text-sm">{seatIndex + 1}</span>
               )}
-              {player?.button && (
+              {/*
+                버튼은 **`state.buttonUser`에서 나온다.** 스냅샷의
+                `player.button`은 백엔드가 채우지 않는 필드라(엔진은
+                `buttonUser` 하나만 옮긴다) 그걸 믿으면 버튼이 어느 자리에도
+                안 붙는다 — 촬영본에 한 번도 안 나왔던 이유다.
+              */}
+              {player && state?.buttonUser === seatIndex && (
                 <span
                   data-testid={`seat-${seatIndex}-button`}
                   className="absolute -right-1.5 -top-1.5 grid h-4 w-4 place-items-center rounded-full bg-[#f4f4f4] font-mono text-[9px] font-bold text-[#161616]"

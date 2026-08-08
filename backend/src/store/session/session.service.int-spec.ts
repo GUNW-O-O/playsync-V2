@@ -951,6 +951,37 @@ describe('SessionService.releaseSeats', () => {
       .toBe('좌석행 0 / 상태 WAITING / 칩 23400 / 스냅샷 빔 / 비트 0');
   });
 
+  it('해제한 테이블에 새 스냅샷을 알린다', async () => {
+    // **뗀 사람의 태블릿은 그 자리에 그대로 켜져 있다.** 좌석 현황
+    // (`SEAT_LIST_UPDATED`)은 대기 화면이 듣는 신호라, 이미 앉아 게임
+    // 화면을 보고 있는 사람에게는 아무것도 오지 않는다 — 낡은 펠트를
+    // 그대로 들고 있다가 다음 사람이 그 자리에 앉는 것을 본다.
+    //
+    // `game.state.updated`는 게이트웨이가 그 테이블 방에 `renderGame`으로
+    // 흘려보내는 이벤트다(`ws.gateway.ts`). 좌석 화면은 자기 자리가
+    // `null`이 된 것을 보고 대기 화면으로 돌아간다(`SeatGameClient`).
+    const emitter = new EventEmitter2();
+    const emitted: { event: string; payload: unknown }[] = [];
+    emitter.emit = ((event: string, payload: unknown) => {
+      emitted.push({ event, payload });
+      return true;
+    }) as typeof emitter.emit;
+    const service = new SessionService(
+      prisma as unknown as PrismaService, redisService, new OtpAttempts(redis), emitter,
+    );
+
+    await seat('u1', 3, 23400);
+    await putSnapshot(GamePhase.WAITING, [{ userId: 'u1', seatIndex: 3, stack: 23400 }]);
+
+    await service.releaseSeats(tournamentId, tableId, [{ seatIndex: 3, userId: 'u1' }], ownerId);
+
+    const state = emitted.find((e) => e.event === 'game.state.updated');
+    const players = (state?.payload as { state?: { players?: unknown[] } } | undefined)?.state
+      ?.players;
+    expect(`알림 ${state ? '있음' : '없음'} / 3번 자리 ${players?.[3] === null ? '빔' : '있음'}`)
+      .toBe('알림 있음 / 3번 자리 빔');
+  });
+
   /**
    * 좌석 두 개를 한 요청으로 뗀다.
    *
@@ -1344,6 +1375,35 @@ describe('SessionService.startSession — 버튼 좌석 영속화', () => {
         sidePots: [], ante: false, tournamentId, smallBlind: 100,
       },
     }]);
+  });
+
+  it('시작하면 그 테이블 화면들에 뽑은 버튼이 실린 스냅샷이 간다', async () => {
+    // 버튼은 대회 시작에 **추첨된다.** 그 결과가 스냅샷에만 저장되고 아무에게도
+    // 안 가면, 딜러와 좌석 태블릿의 펠트는 다음 핸드가 시작될 때까지 버튼이
+    // 어디 있는지 모른다 — 딜러가 "지금부터 시작해도 된다"를 읽을 신호가
+    // 화면에 없다는 뜻이기도 하다.
+    const emitter = new EventEmitter2();
+    const emitted: { event: string; payload: unknown }[] = [];
+    emitter.emit = ((event: string, payload: unknown) => {
+      emitted.push({ event, payload });
+      return true;
+    }) as typeof emitter.emit;
+    const service = new SessionService(
+      prisma as unknown as PrismaService, redisService, new OtpAttempts(redis), emitter,
+    );
+
+    process.env.MIN_PLAYERS_TO_START = '0';
+    try {
+      await service.startSession(tournamentId, ownerId);
+    } finally {
+      delete process.env.MIN_PLAYERS_TO_START;
+    }
+
+    const snapshot = await redisService.getSnapShot(tableId);
+    const update = emitted.find((e) => e.event === 'game.state.updated');
+    const payload = update?.payload as { tableId?: string; state?: { buttonUser?: number } };
+    expect(`알림 ${update ? '있음' : '없음'} / 테이블 ${payload?.tableId} / 버튼 ${payload?.state?.buttonUser}`)
+      .toBe(`알림 있음 / 테이블 ${tableId} / 버튼 ${snapshot!.buttonUser}`);
   });
 
   it('시작 트랜잭션이 뽑은 버튼 좌석을 DB에 남긴다', async () => {

@@ -48,6 +48,11 @@ const SEAT_POSITIONS: { left: string; top: string }[] = [
   { left: '27%', top: '15%' },
 ];
 
+/** 탭 안에서만 사는 저장 키. 대회마다 따로 둔다. */
+function dealerOtpKey(tournamentId: string) {
+  return `playsync:dealer-otp:${tournamentId}`;
+}
+
 const STATUS_LABEL: Record<string, string> = {
   PENDING: '시작 전',
   ONGOING: '진행 중',
@@ -107,10 +112,24 @@ export default function ConsoleClient({
   // 아직 유효한 좌석 조회 실패 배너를 지웠다. `seatError`는 상태로 옮기지
   // 않고 prop을 그대로 렌더한다.
   const [message, setMessage] = useState<string | null>(null);
-  // 재발급 이전에는 평문 OTP를 아는 곳이 없다 — 생성 시점의 평문은 이
-  // 화면과 다른 요청·다른 순간에 이미 지나갔다(session.service.ts의
-  // createSession 주석). 그래서 초기값은 항상 비어 있다.
-  const [dealerOtp, setDealerOtp] = useState<string | null>(null);
+  /*
+    재발급 이전에는 평문 OTP를 아는 곳이 **서버에도** 없다 — 저장은 해시로만
+    하고(`dealerOtpHash`), 생성 시점의 평문은 이 화면과 다른 요청·다른 순간에
+    이미 지나갔다(`session.service.ts`의 `createSession` 주석).
+
+    그래서 한 번 받은 값은 **이 탭 안에서는 들고 있는다.** 이 화면은 좌석을
+    해제할 때마다 `router.refresh()`로 다시 그려지고 사람이 새로 고치기도
+    하는데, 그때마다 `••••••`로 돌아가면 상점은 아직 쓰지도 않은 번호를 또
+    재발급하게 되고, 그 순간 딜러가 받아 적은 번호가 무효가 된다.
+
+    `sessionStorage`인 이유는 탭을 닫으면 사라지기 때문이다 — "화면을 벗어나면
+    재발급해야 한다"는 원래 계약이 그대로 남는다. 서버에 평문을 남기는
+    선택지는 애초에 없다.
+  */
+  const [dealerOtp, setDealerOtp] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return window.sessionStorage.getItem(dealerOtpKey(tournamentId));
+  });
   const [pending, startTransition] = useTransition();
 
   const activeTable = tables.find((t) => t.id === activeTableId) ?? tables[0] ?? null;
@@ -162,6 +181,7 @@ export default function ConsoleClient({
       }
       setMessage(null);
       setDealerOtp(result.dealerOtp);
+      window.sessionStorage.setItem(dealerOtpKey(tournamentId), result.dealerOtp);
     });
   }
 
@@ -288,8 +308,12 @@ export default function ConsoleClient({
               펠트 아래쪽이 잘렸다. 좌석 도식은 자리 배치를 읽는 그림이라
               크다고 더 읽히지 않는다 — 머리글과 함께 한 화면에 들어오는
               것이 먼저다.
+
+              그래서 한 번 더 줄였다(760 → 520). 이 화면에서 실제로 하는 일은
+              **자리를 골라 해제하는 것**이고, 도식이 화면 절반을 먹으면 그
+              조작 패널이 오른쪽 끝으로 밀려 둘을 같이 볼 수 없다.
             */}
-            <div className="min-w-[300px] max-w-[760px] grow">
+            <div className="min-w-[280px] max-w-[520px] grow">
               <div
                 className="relative border border-[var(--hairline)] bg-[var(--surface)]"
                 style={{ aspectRatio: '3 / 2' }}
@@ -403,12 +427,14 @@ export default function ConsoleClient({
           <div className="flex flex-wrap items-center justify-between gap-3.5">
             <div>
               <p className="mb-1 text-[11px] tracking-[0.06em] text-[var(--ink-subtle)]">딜러 OTP</p>
-              <div className="font-mono text-[26px] tracking-[0.16em]">{dealerOtp ?? '••••••'}</div>
+              <div data-testid="dealer-otp" className="font-mono text-[26px] tracking-[0.16em]">
+                {dealerOtp ?? '••••••'}
+              </div>
               {/* "해시로만 저장한다"를 지웠다. 저장 방식은 이 화면을 쓰는
                   상점 운영자의 일이 아니고, 그가 알아야 하는 것은 **지금
                   적어 두지 않으면 재발급해야 한다**는 결과뿐이다. */}
               <div className="mt-1 text-[13px] text-[var(--ink-subtle)]">
-                지금만 볼 수 있습니다. 화면을 벗어나면 재발급해야 합니다.
+                이 탭에서만 남습니다. 탭을 닫으면 재발급해야 합니다.
               </div>
             </div>
             <button

@@ -663,6 +663,29 @@ describe('TableEngine 사이드팟 정산', () => {
     await expect(new TableEngine(state).resolveWinner([['short']])).rejects.toThrow();
   });
 
+  it('거부 문구가 자리와 이름으로 어느 팟인지 알려준다', async () => {
+    // 이 문구는 **딜러 화면에 그대로 뜬다**(`DealerGameClient`의 거절 배너).
+    // userId를 그대로 이어 붙이면 카메라 앞 화면에 uuid가 뜨고, 정작 딜러가
+    // 알아야 하는 것 — 누구의 승부를 안 찍었는가 — 은 읽히지 않는다.
+    const players = [
+      makePlayer('u-1', 0, 0, { totalContributed: 100, isAllIn: true }),
+      makePlayer('u-2', 1, 700, { totalContributed: 300 }),
+      makePlayer('u-3', 2, 700, { totalContributed: 300 }),
+    ];
+    players[1]!.nickname = 'mid';
+    players[2]!.nickname = 'deep';
+    const state = makeState(players, {
+      phase: GamePhase.SHOWDOWN,
+      pot: potOf(players),
+      currentTurnSeatIndex: -1,
+    });
+
+    await expect(new TableEngine(state).resolveWinner([['u-1']])).rejects.toThrow(
+      /2번 · mid.*3번 · deep/,
+    );
+    await expect(new TableEngine(state).resolveWinner([['u-1']])).rejects.not.toThrow(/u-2/);
+  });
+
   it('거부된 정산은 칩도 페이즈도 건드리지 않는다', async () => {
     // 지급 루프를 돌면서 검증하면 앞쪽 팟은 이미 나간 뒤다. 카드가 실물이라
     // 되돌릴 근거가 테이블 위에 없으므로, 한 칩이라도 움직이기 전에 막아야 한다.

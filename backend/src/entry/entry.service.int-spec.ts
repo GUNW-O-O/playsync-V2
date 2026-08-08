@@ -93,6 +93,34 @@ describe('EntryService.enterSeat', () => {
     return await redisService.getSnapShot(tableId);
   }
 
+  it('앉으면 그 테이블의 다른 태블릿에도 새 스냅샷이 간다', async () => {
+    // **이미 앉아 있는 사람의 화면은 아무도 건드리지 않는다.** 좌석 현황
+    // (`SEAT_LIST_UPDATED`)은 아직 안 앉은 사람의 대기 화면이 듣는 신호라,
+    // 게임 화면을 보고 있는 사람에게는 옆자리가 찬 사실이 가지 않는다 —
+    // 다음 핸드가 시작될 때까지 빈 자리로 남아 있다. 테이블을 합치는
+    // 장면(T29)이 그대로 이 경로다.
+    const emitter = new EventEmitter2();
+    const emitted: { event: string; payload: unknown }[] = [];
+    emitter.emit = ((event: string, payload: unknown) => {
+      emitted.push({ event, payload });
+      return true;
+    }) as typeof emitter.emit;
+    const spy = new EntryService(
+      prisma as unknown as PrismaService,
+      redisService,
+      new JwtService({ secret: 'entry-spec-secret' }),
+      emitter,
+    );
+
+    await participate('u9', '00000009');
+    await spy.enterSeat(TOURNAMENT, { otp: '00000009', tableId: TABLE, seatIndex: 5 });
+
+    const update = emitted.find((e) => e.event === 'game.state.updated');
+    const payload = update?.payload as { tableId?: string; state?: TableState } | undefined;
+    expect(`알림 ${update ? '있음' : '없음'} / 테이블 ${payload?.tableId} / 5번 ${payload?.state?.players[5]?.id}`)
+      .toBe(`알림 있음 / 테이블 ${TABLE} / 5번 u9`);
+  });
+
   it('OTP가 맞으면 좌석이 확정되고 토큰이 나온다', async () => {
     await participate('u1', '00000001');
 

@@ -12,7 +12,14 @@ import { apiFetch } from '@/lib/api';
 // 갈라지는 구간이 휴식이다. 그때는 startPreFlop이 거부되므로 미는 것이 이
 // 폴링뿐이다. 휴식 동안 폴링을 늘려 자면 레벨이 제때 오르지 않는다 —
 // 간격을 상태에 따라 바꾸지 않는다.
-const POLL_MS = 3000;
+// **1초다.** 이 화면은 초 단위 카운트다운을 그리고, 10m 밖에서 그것만 보고
+// 있는 사람들이 있다. 3초로 두었더니 대회 시작이 최대 3초 늦게 뜨고 그 사이
+// 흐른 시간이 한 번에 건너뛰어 보였다 — 시계가 초를 세는데 갱신이 3초면
+// 화면이 스스로 어긋나는 셈이다.
+//
+// 부하는 대회당 초당 요청 하나다. 응답은 Redis에서 읽은 대회 메타 한 덩이고
+// (`getTournamentDashboard`), 전광판은 대회마다 한 대다.
+const POLL_MS = 1000;
 
 function formatClock(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));

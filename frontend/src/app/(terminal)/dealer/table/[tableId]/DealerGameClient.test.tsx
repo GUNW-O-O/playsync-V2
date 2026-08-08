@@ -77,12 +77,12 @@ function baseState(overrides: Partial<TableState> = {}): TableState {
 }
 
 /** WS 배선을 세우고 소켓 인스턴스가 만들어질 때까지 기다린다. */
-async function renderWithSocket(initialData: TableState) {
+async function renderWithSocket(initialData: TableState, props: { tableOrder?: number } = {}) {
   FakeSocket.instances.length = 0;
   vi.stubGlobal('WebSocket', FakeSocket as unknown as typeof WebSocket);
   server.use(http.post('*/api/ws-ticket', () => HttpResponse.json({ ticket: 'tkt-1' })));
 
-  render(<DealerGameClient tableId="tbl-1" initialData={initialData} />);
+  render(<DealerGameClient tableId="tbl-1" initialData={initialData} {...props} />);
 
   await waitFor(() => expect(FakeSocket.instances.length).toBe(1));
   return { socket: FakeSocket.instances[0] };
@@ -124,5 +124,68 @@ describe('DealerGameClient', () => {
     expect(socket.sent).toEqual([
       { event: 'DEALER_ACTION', data: { action: 'DEALER_KICK', targetUserId: 'u-3' } },
     ]);
+  });
+
+  /**
+   * 좌석 태블릿에서 이미 한 번 걷어낸 것과 같은 결함이다(B2). 딜러에게도
+   * uuid는 아무 의미가 없고, 눈앞의 테이블에 붙어 있는 것은 번호다.
+   */
+  describe('머리글', () => {
+    it('테이블 번호를 받으면 uuid 대신 번호를 쓴다', async () => {
+      await renderWithSocket(baseState(), { tableOrder: 2 });
+
+      // 펠트에도 딜러 표찰이 있다(`Felt`의 12시). 머리글만 본다.
+      expect(screen.getByTestId('dealer-header')).toHaveTextContent('2번 테이블 · 딜러');
+      expect(screen.queryByText(/tbl-1/)).toBeNull();
+    });
+
+    it('번호를 못 구했으면 테이블 쪽을 통째로 뺀다', async () => {
+      // uuid로 되돌아가지 않는다. 못 구한 번호 자리에 uuid를 넣으면 이
+      // 결함이 그대로 살아 있는 것과 같다.
+      await renderWithSocket(baseState());
+
+      expect(screen.getByTestId('dealer-header')).toHaveTextContent('딜러');
+      expect(screen.getByTestId('dealer-header')).not.toHaveTextContent('테이블');
+      expect(screen.queryByText(/tbl-1/)).toBeNull();
+    });
+  });
+
+  /**
+   * 서버는 거절을 브로드캐스트하지 않고 **누른 사람에게만** ack로 돌려준다
+   * (`ws.gateway.ts`의 `return { event: 'error', data: e.message }`). 그 이벤트를
+   * 읽지 않으면 딜러 화면에서 실패와 성공이 구분되지 않는다 — 승자 결정처럼
+   * 상태가 그대로인 거절은 화면에 아무 변화도 남기지 않기 때문이다.
+   */
+  describe('거절 ack', () => {
+    it('error 이벤트의 사유를 화면에 띄운다', async () => {
+      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.SHOWDOWN }));
+
+      socket.emitServerEvent('error', '지명되지 않은 팟이 있습니다.');
+
+      expect(screen.getByTestId('dealer-action-error')).toHaveTextContent(
+        '지명되지 않은 팟이 있습니다.',
+      );
+    });
+
+    it('확인을 누르면 사유가 닫힌다', async () => {
+      // 거절은 **딜러가 읽고 지워야 하는 것**이다. 배너로 위에 걸어 두면
+      // 카메라 앞에서도, 테이블 앞에서도 지나칠 수 있다 — 실제로 첫
+      // 촬영본에서 무엇이 거절됐는지 알아보기 어려웠다.
+      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.SHOWDOWN }));
+
+      socket.emitServerEvent('error', '지명되지 않은 팟이 있습니다.');
+      await userEvent.click(screen.getByRole('button', { name: '확인' }));
+
+      expect(screen.queryByTestId('dealer-action-error')).toBeNull();
+    });
+
+    it('다음 renderGame이 오면 사유를 걷는다', async () => {
+      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.SHOWDOWN }));
+
+      socket.emitServerEvent('error', '지명되지 않은 팟이 있습니다.');
+      socket.emitServerEvent('renderGame', baseState({ phase: GamePhase.WAITING }));
+
+      expect(screen.queryByTestId('dealer-action-error')).toBeNull();
+    });
   });
 });

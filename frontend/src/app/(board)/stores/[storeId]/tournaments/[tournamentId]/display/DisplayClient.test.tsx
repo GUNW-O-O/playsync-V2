@@ -7,7 +7,7 @@ import DisplayClient from './DisplayClient';
 // DisplayClient.tsx의 POLL_MS와 같은 값. export되어 있지 않아 직접 든다 —
 // 값이 갈라지면 이 테스트가 페이크 타이머를 잘못된 간격으로 밀게 되어
 // 스스로 실패한다.
-const POLL_MS = 3000;
+const POLL_MS = 1000;
 
 // packages/contract/src/dashboard.spec.ts의 VALID와 같은 모양. 백엔드 출처는
 // backend/shared/types/tournamentMeta.ts(Dashboard·BlindField)와

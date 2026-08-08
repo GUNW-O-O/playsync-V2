@@ -261,8 +261,17 @@ export class TableEngine {
     // 검증할 수도 없고 홀덤 규칙으로 오해받는다.
     const unclaimed = claims.filter(c => !c.winners);
     if (unclaimed.length > 0) {
+      // **이 문구는 딜러 화면에 그대로 뜬다.** userId를 그대로 이어 붙이면
+      // 카메라 앞 화면에 uuid가 뜨고, 정작 딜러가 알아야 하는 것 — 누구의
+      // 승부를 안 찍었는가 — 은 읽히지 않는다. 자리 번호를 앞에 두는 이유는
+      // 딜러가 보는 것이 눈앞의 테이블이라서다.
+      const nameOf = (userId: string) => {
+        const seatIndex = this.state.players.findIndex(p => p?.id === userId);
+        const player = seatIndex >= 0 ? this.state.players[seatIndex] : null;
+        return player ? `${seatIndex + 1}번 · ${player.nickname}` : userId;
+      };
       const detail = unclaimed
-        .map(c => `${c.pot.amount}(자격: ${c.pot.relevantPlayerIds.join(', ')})`)
+        .map(c => `${c.pot.amount}(자격: ${c.pot.relevantPlayerIds.map(nameOf).join(', ')})`)
         .join(' / ');
       throw new Error(`승자가 지명되지 않은 팟이 있습니다: ${detail}`);
     }

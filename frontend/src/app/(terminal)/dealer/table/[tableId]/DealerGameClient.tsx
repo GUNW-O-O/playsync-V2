@@ -42,13 +42,17 @@ type KickTarget = { seatIndex: number; id: string; nickname: string };
 export default function DealerGameClient({
   tableId,
   initialData,
+  tableOrder,
 }: {
   tableId: string;
   initialData?: TableState;
+  /** 눈앞의 테이블에 붙은 번호. 없으면 머리글에서 테이블을 뺀다. */
+  tableOrder?: number;
 }) {
   const socketRef = useRef<WebSocket | null>(null);
   const [gameState, setGameState] = useState<TableState | null>(initialData || null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [kickTarget, setKickTarget] = useState<KickTarget | null>(null);
   const [showWinnerOverlay, setShowWinnerOverlay] = useState(false);
 
@@ -81,6 +85,15 @@ export default function DealerGameClient({
           const { event: serverEvent, data } = JSON.parse(event.data);
           if (serverEvent === 'renderGame') {
             setGameState(data);
+            // 새 상태가 왔다는 것은 앞의 명령이 먹었다는 뜻이다. 지난 거절
+            // 사유를 남겨 두면 성공한 화면 위에 붙어 있게 된다.
+            setActionError(null);
+          } else if (serverEvent === 'error') {
+            // 거절은 브로드캐스트가 아니라 **누른 사람에게만** 오는 ack다
+            // (`ws.gateway.ts`). 상태가 그대로인 거절 — 승자 결정에서 팟
+            // 하나를 안 찍은 경우 같은 것 — 은 이 문구가 없으면 화면에
+            // 아무 변화도 남기지 않아 딜러가 먹은 줄 안다.
+            setActionError(typeof data === 'string' && data ? data : '명령이 거절되었습니다.');
           }
         };
 
@@ -161,8 +174,46 @@ export default function DealerGameClient({
         </div>
       )}
 
+      {/*
+        **거절은 딜러가 읽고 지워야 한다.** 위쪽 띠로 걸어 두면 테이블 앞에서도
+        카메라 앞에서도 지나친다 — 승자 결정 거절처럼 상태가 그대로인 실패는
+        화면에 다른 변화가 없어서, 못 보면 먹은 줄 안다. 연결 끊김(위)은
+        딜러가 지울 수 있는 것이 아니라 배너로 남긴다.
+      */}
+      {actionError && (
+        <div
+          data-testid="dealer-action-error"
+          role="alertdialog"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-tb-bg/90 p-6"
+        >
+          <div className="w-full max-w-[520px] border border-err bg-tb-panel p-6">
+            <p className="text-xs tracking-[0.14em] text-err">명령이 거절되었습니다</p>
+            <div className="mb-1.5 mt-2 text-xl font-light leading-snug text-tb-ink">
+              {actionError}
+            </div>
+            <div className="mt-5 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setActionError(null)}
+                className="border border-tb-act bg-tb-act px-5 py-2.5 text-sm font-semibold text-[#06201a]"
+              >
+                확인
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex shrink-0 items-center justify-between border-b border-tb-line bg-tb-panel px-4 py-2 text-xs text-tb-sub">
-        <span>{tableId} · 딜러</span>
+        {/*
+          예전에는 여기에 `tableId`(uuid)가 그대로 떴다. 좌석 태블릿에서
+          걷어낸 것과 같은 결함이고(B2), 딜러에게도 uuid는 아무 의미가 없다 —
+          눈앞의 테이블에 붙어 있는 것은 번호다. 번호를 못 구했으면 테이블
+          쪽을 통째로 뺀다.
+        */}
+        <span data-testid="dealer-header">{[tableOrder !== undefined ? `${tableOrder}번 테이블` : null, '딜러']
+          .filter(Boolean)
+          .join(' · ')}</span>
         <span>
           {gameState
             ? `${gameState.smallBlind.toLocaleString()} / ${(gameState.smallBlind * 2).toLocaleString()}`
@@ -226,7 +277,12 @@ export default function DealerGameClient({
           <button
             type="button"
             disabled={!canResolveWinners}
-            onClick={() => setShowWinnerOverlay(true)}
+            onClick={() => {
+              // 다시 찍으러 들어가는 길이다. 지난 거절 사유를 그대로 두면
+              // 새로 고른 순위 위에 앞의 실패가 걸려 있게 된다.
+              setActionError(null);
+              setShowWinnerOverlay(true);
+            }}
             className="h-14 flex-[2] border border-tb-act bg-tb-act text-sm font-semibold text-[#06201a] disabled:opacity-30"
           >
             승자 결정
@@ -245,6 +301,7 @@ export default function DealerGameClient({
       {showWinnerOverlay && (
         <WinnerOverlay
           players={winnerCandidates}
+          sidePots={gameState?.sidePots ?? []}
           onSubmit={submitWinners}
           onCancel={() => setShowWinnerOverlay(false)}
         />

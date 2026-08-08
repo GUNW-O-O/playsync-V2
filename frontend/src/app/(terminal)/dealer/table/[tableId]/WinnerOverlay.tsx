@@ -23,10 +23,16 @@ export type WinnerCandidate = {
  */
 export default function WinnerOverlay({
   players,
+  sidePots = [],
   onSubmit,
   onCancel,
 }: {
   players: WinnerCandidate[];
+  /**
+   * 팟의 층. 서버가 `calculateSidePots`로 만들고 자격자도 서버가 정한다 —
+   * 화면은 그것을 그대로 보여줄 뿐 다시 계산하지 않는다.
+   */
+  sidePots?: { amount: number; relevantPlayerIds: string[] }[];
   onSubmit: (winnerGroups: string[][]) => void;
   onCancel: () => void;
 }) {
@@ -87,11 +93,36 @@ export default function WinnerOverlay({
       <div className="w-full max-w-[560px] border border-tb-line bg-tb-panel p-6">
         <p className="text-xs tracking-[0.14em] text-tb-act">승자 결정</p>
         <div className="mb-1.5 mt-2 text-xl font-light leading-snug text-tb-ink">
-          이긴 순서대로 자리를 누르세요
+          족보 순서대로 자리를 누르세요
         </div>
         <p className="text-sm text-tb-muted">
           같이 이겼으면 한 줄에 같이 넣습니다. 넣지 않은 사람은 순위가 없습니다.
         </p>
+
+        {/*
+          팟이 갈렸을 때만 그린다. 층이 하나뿐인 판이 대부분이고, 거기까지
+          목록을 붙이면 매번 읽을 것만 늘어난다.
+
+          **여기가 없으면 딜러는 층이 둘이라는 사실을 거절당하고서야 안다.**
+          1등만 찍고 배분을 누르는 것은 흔한 조작 실수이고(T15), 서버는 그
+          지급을 막지만 막는 것과 알려주는 것은 다르다.
+        */}
+        {sidePots.length > 1 && (
+          <div className="mt-4 flex flex-col gap-1.5 border border-tb-line p-3">
+            <p className="text-xs tracking-[0.14em] text-tb-sub">
+              사이드팟이 {sidePots.length}개 있습니다
+            </p>
+            {sidePots.map((pot, i) => (
+              <div key={i} data-testid={`winner-pot-${i}`} className="text-xs text-tb-muted">
+                <span className="text-tb-ink">
+                  사이드팟 {i + 1} · {pot.amount.toLocaleString()}
+                </span>
+                {' · 자격 '}
+                {pot.relevantPlayerIds.map(nameOf).join(', ')}
+              </div>
+            ))}
+          </div>
+        )}
 
         <div className="mt-5 flex flex-col gap-2">
           {groups.map((group, i) => (

@@ -373,7 +373,7 @@ export class SessionService {
   async startSession(id: string, ownerId: string) {
     await this.assertTournamentOwnership(id, ownerId);
 
-    const { startedAt, buttons } = await this.initializeGame(id);
+    const { startedAt, buttons, tableStates } = await this.initializeGame(id);
 
     // 참가자 상태는 여기서 건드리지 않는다. `PLAYING`은 **착석**이 올린다
     // (T28의 `EntryService`). 예전에는 이 자리에서 대회의 참가자 전원을
@@ -381,7 +381,7 @@ export class SessionService {
     // 한 번에 `PLAYING`이 되고 `tournamentFinished`의
     // `findFirst({ where: { status: PLAYING } })`가 한 번도 앉지 않은 사람을
     // 우승자로 뽑을 수 있었다.
-    return await this.prismaService.$transaction(async (tx) => {
+    const started = await this.prismaService.$transaction(async (tx) => {
       // 첫 버튼 추첨 결과를 시작과 같은 트랜잭션에 남긴다. 이것이 없으면
       // 첫 핸드가 끝나기 전에 죽었을 때 복구가 읽을 버튼이 없다 — 핸드 종료
       // 체크포인트가 첫 독자가 되기 전까지 null인 구간이 생긴다.
@@ -406,6 +406,20 @@ export class SessionService {
         omit: { dealerOtpHash: true },
       });
     });
+
+    /*
+      **버튼은 지금 추첨됐다.** 그 결과가 스냅샷에만 남고 아무에게도 안 가면
+      딜러와 좌석 태블릿의 펠트는 첫 핸드가 시작될 때까지 버튼이 어디 있는지
+      모른다 — 딜러에게 "이제 시작해도 된다"를 알려 주는 변화가 화면에
+      아무것도 없다는 뜻이기도 하다.
+
+      좌석 해제·착석과 같은 자리다. 커밋이 끝난 뒤에 알린다.
+    */
+    for (const t of tableStates) {
+      this.eventEmitter.emit('game.state.updated', { tableId: t.tableId, state: t.state });
+    }
+
+    return started;
   }
 
   /** 게임 상태를 Redis에 올린다. 아직 시작이 아니다 — 커밋은 호출자가 한다. */
@@ -467,10 +481,10 @@ export class SessionService {
     // 뽑은 버튼을 호출자에게 넘긴다. 여기서 DB에 쓰지 않는 이유는 이 메서드가
     // "아직 시작이 아니다"라는 계약을 갖기 때문이다 — 커밋은 startSession의
     // 트랜잭션 하나뿐이어야 실패 시 PENDING으로 남아 재시도가 성립한다.
-    const buttons = (tableStates as { tableId: string; state: TableState }[])
-      .map(t => ({ tableId: t.tableId, buttonUser: t.state.buttonUser }));
+    const ready = tableStates as { tableId: string; state: TableState }[];
+    const buttons = ready.map(t => ({ tableId: t.tableId, buttonUser: t.state.buttonUser }));
 
-    return { startedAt, buttons };
+    return { startedAt, buttons, tableStates: ready };
   }
 
   // 세션 완료
@@ -749,6 +763,10 @@ export class SessionService {
     });
     if (!table) throw new NotFoundException('테이블을 찾을 수 없습니다.');
 
+    // 락 안에서 만든 최종 스냅샷을 밖으로 들고 나온다. 브로드캐스트는 락을
+    // 놓은 뒤에 하기 때문이다.
+    let released: TableState | null = null;
+
     await this.redis.withTableLock(tableId, async () => {
       const state = await this.redis.getSnapShot(tableId);
       if (!state) throw new NotFoundException('테이블 상태를 찾을 수 없습니다.');
@@ -849,6 +867,7 @@ export class SessionService {
 
       for (const s of seats) state.players[s.seatIndex] = null;
       await this.redis.saveSnapShot(tableId, state);
+      released = state;
 
       // **비트맵과 유저 컨텍스트도 락 안이다.** 원자 연산이라 그 자체는 락이
       // 필요 없지만, 필요한 것은 원자성이 아니라 **입장과의 순서**다. 락
@@ -882,5 +901,20 @@ export class SessionService {
 
     // 락 밖. 락을 쥔 채로 브로드캐스트하지 않는다.
     await this.emitSeatList(tournamentId);
+
+    /*
+      **뗀 사람의 태블릿은 그 자리에 그대로 켜져 있다.**
+
+      위 `SEAT_LIST_UPDATED`는 대기 화면(아직 안 앉은 사람)이 듣는 신호다.
+      이미 앉아 게임 화면을 보고 있는 사람에게는 아무것도 가지 않아서, 낡은
+      펠트를 그대로 들고 있다가 다음 사람이 그 자리에 앉는 것을 보게 된다.
+      좌석 화면은 자기 자리가 `null`이 된 스냅샷을 받아야 대기 화면으로
+      돌아간다(`SeatGameClient`의 탈락 판정 (b)).
+
+      `game.state.updated`는 게이트웨이가 그 테이블 방에 `renderGame`으로
+      흘려보내는 이벤트다. 상태는 이미 락 안에서 저장한 것과 같은 값이고,
+      여기서는 알리기만 한다.
+    */
+    if (released) this.eventEmitter.emit('game.state.updated', { tableId, state: released });
   }
 }

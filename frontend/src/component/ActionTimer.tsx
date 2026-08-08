@@ -31,23 +31,29 @@ export default function ActionTimer({ deadline }: { deadline: number }) {
   // 시간에 따른 시각적 상태 (위험도 표시)
   const isUrgent = timeLeft <= 5;
 
+  /*
+    높이를 고정한다(`h-9`). 이 컴포넌트가 붙었다 떨어지는 자리가 액션바
+    바로 아래라, 크기가 변하면 버튼 줄이 위아래로 움직인다.
+
+    색은 단말 팔레트(`--tb-*`)를 쓴다. 예전에는 slate/indigo였는데, 그건
+    이 화면 어디에도 없는 색이라 타이머만 다른 앱에서 떼어 온 것처럼 보였다.
+    문구도 `seconds left`가 아니라 한국어다 — 나머지 화면이 전부 한국어다.
+  */
   return (
-    <div className="w-full flex flex-col items-center gap-1">
-      {/* 게이지 바 */}
-      <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden border border-white/5">
+    <div className="flex h-9 w-full flex-col items-center justify-center gap-1">
+      <div className="h-1.5 w-full overflow-hidden border border-tb-line bg-tb-bg">
         <div
-          className={`h-full transition-all duration-150 ease-linear ${isUrgent ? 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.5)]' : 'bg-indigo-500'
-            }`}
+          className={`h-full transition-[width] duration-150 ease-linear ${
+            isUrgent ? 'bg-err' : 'bg-tb-act'
+          }`}
           style={{ width: `${progress}%` }}
         />
       </div>
 
-      {/* 숫자 표시 */}
-      <div className="flex items-center gap-1.5">
-        <span className={`text-xl font-black tabular-nums ${isUrgent ? 'text-red-500 animate-pulse' : 'text-slate-200'}`}>
-          {timeLeft}
-        </span>
-        <span className="text-[10px] text-slate-500 font-bold uppercase tracking-tighter">seconds left</span>
+      <div
+        className={`font-mono text-sm tabular-nums ${isUrgent ? 'text-err' : 'text-tb-muted'}`}
+      >
+        {timeLeft}초 남음
       </div>
     </div>
   );

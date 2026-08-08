@@ -74,10 +74,19 @@ export default async function MyPage() {
     );
   }
 
-  // 가르는 기준은 대회 상태다. `playerOtp`의 null 여부로 가르면 서버가
-  // 그 값을 지우는 조건(`FINISHED`)을 화면이 한 번 더 추측하게 된다.
-  const ongoing = rows.filter((r) => r.tournament.status !== 'FINISHED');
-  const past = rows.filter((r) => r.tournament.status === 'FINISHED');
+  // 가르는 기준은 **이 사람의 참가가 끝났는가**다. 대회 상태만 보면 대회가
+  // 도는 중에 탈락한 사람이 "진행 중"에 남아, 다시 앉을 수 없는데도 참가
+  // OTP를 계속 들고 있게 된다. 탈락은 대회가 끝나기 훨씬 전에 일어나고
+  // (`prize.ts`의 `awardPrize`가 그 자리에서 `finalPlace`를 박는다), 좌석
+  // 태블릿은 그 순간 "순위·상금은 폰에서 확인하세요"라며 대기 화면으로
+  // 돌아간다(`EliminatedOverlay.tsx`) — 그 약속이 지켜지는 자리가 여기다.
+  //
+  // `playerOtp`의 null 여부로 가르지 않는다. 서버가 그 값을 지우는 조건
+  // (`FINISHED`)을 화면이 한 번 더 추측하게 된다.
+  const isOver = (r: Participation) =>
+    r.tournament.status === 'FINISHED' || r.status === 'ELIMINATED' || r.status === 'AWARDED';
+  const ongoing = rows.filter((r) => !isOver(r));
+  const past = rows.filter(isOver);
 
   return (
     <div className="flex flex-col gap-8 p-6 pb-10">

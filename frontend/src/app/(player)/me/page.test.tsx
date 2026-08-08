@@ -61,6 +61,32 @@ const FINISHED = {
   },
 };
 
+/**
+ * 대회는 아직 도는데 이 사람만 나간 경우. 탈락은 대회가 끝나기 훨씬 전에
+ * 일어나고(`prize.ts`의 `awardPrize`가 그 자리에서 `finalPlace`를 박는다),
+ * 좌석 태블릿은 "순위·상금은 폰에서 확인하세요"라고 적고 대기 화면으로
+ * 돌아간다(`EliminatedOverlay.tsx`).
+ */
+const ELIMINATED_MIDWAY = {
+  id: 'p2',
+  tournamentId: 't1',
+  userId: 'u1',
+  status: 'ELIMINATED',
+  buyInCount: 1,
+  finalPlace: 5,
+  prizeAmount: 0,
+  currentStack: 0,
+  playerOtp: '31280401',
+  createdAt: '2026-08-05T09:00:00.000Z',
+  tournament: {
+    id: 't1',
+    name: '데모 토너먼트',
+    status: 'ONGOING',
+    entryFee: 50000,
+    startedAt: '2026-08-05T10:00:00.000Z',
+  },
+};
+
 describe('/me — 내 참가', () => {
   beforeEach(() => {
     cookieStore.get.mockReturnValue({ value: 'jwt-value' });
@@ -113,6 +139,22 @@ describe('/me — 내 참가', () => {
     expect(screen.getByText('목요일 딥스택')).toBeInTheDocument();
     expect(screen.getByText('3위')).toBeInTheDocument();
     expect(screen.getByText('+70,000')).toBeInTheDocument();
+  });
+
+  it('대회가 도는 중에 탈락했으면 OTP가 아니라 순위가 남는다', async () => {
+    // 대회 상태로만 가르면 이 사람은 "진행 중"에 남아, 다시 앉을 수 없는데도
+    // 참가 OTP를 계속 들고 있게 된다. 태블릿이 폰을 가리키는데 폰에는
+    // 순위가 없는 상태이기도 하다.
+    server.use(
+      http.get('http://backend.test/user/me/participations', () =>
+        HttpResponse.json([ELIMINATED_MIDWAY]),
+      ),
+    );
+
+    render(await MyPage());
+
+    expect(screen.getByText('5위')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '참가 OTP 조회' })).not.toBeInTheDocument();
   });
 
   it('참가가 없으면 빈 안내를 그린다', async () => {
