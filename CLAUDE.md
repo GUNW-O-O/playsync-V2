@@ -63,7 +63,9 @@ npm run dev:backend    # NestJS watch
 npm run dev:frontend   # Next dev
 npm run test           # 단위 테스트 (인프라 없음, 2초)
 npm run test:int       # 통합 테스트 (컨테이너 기동부터 자동)
-npm run test:e2e       # 촬영 하네스 (Playwright, 시드 + 개발 서버 필요)
+npm run test:e2e       # 화면 회귀 (Playwright, 시드 필요)
+npm run demo           # 데모 촬영 (시드 → 프론트 빌드 → 장면 다섯)
+npm run assets         # 촬영본을 자르고 합쳐 img/ 로 (ffmpeg-static)
 ```
 
 개발용 인프라는 `cd backend && docker compose up -d`. PostgreSQL + Redis를 띄우고
@@ -78,14 +80,14 @@ npm run test:e2e       # 촬영 하네스 (Playwright, 시드 + 개발 서버 �
 타입 에러 0건, 테스트 전부 통과가 정상이다. CI(`.github/workflows/ci.yml`)가
 타입 체크 · 테스트 · 빌드를 돌린다.
 
-현재 기준선 (T34 완료 시점):
+현재 기준선 (T36 완료 시점):
 
 ```
 contract       62  (4 suites)
-백엔드 단위   177  (16 suites)
-프론트 단위    80  (22 files)
-통합          333  (27 suites)
-e2e            12  (4 files)
+백엔드 단위   178  (16 suites)
+프론트 단위   100  (24 files)
+통합          336  (27 suites)
+e2e            13  (4 files, regression 프로젝트)
 타입 에러       0
 ```
 
@@ -118,7 +120,14 @@ e2e            12  (4 files)
 
 `frontend/e2e/`는 이 셋에 끼지 않는다. **데모 영상을 만드는 자리이자 화면의
 회귀 계층이다** — T33에서는 앞엣것뿐이었고(화면이 없었다), T34에서 뒤엣것이
-붙었다.
+붙었다. 프로젝트가 둘로 갈려 있다: `regression`(`e2e/*.spec.ts`)과
+`demo`(`e2e/demo/*.spec.ts`).
+
+**촬영은 제품 결함을 찾는다.** T36에서 넷이 나왔고 셋은 화면을 안 찍었으면
+안 보였을 것이다(거절이 화면에 안 남는다 · 거절 문구의 uuid · 딜러 머리글의
+uuid · 진행 중 탈락자의 폰에 순위가 없다). 촬영 중 새 조작을 추가할 때는
+**"눌렀다"가 아니라 "상태가 바뀌었다"를 성공으로 삼는다** — 소켓이 안 열린 채
+누른 것은 `console.error` 하나만 남기고 사라진다.
 
 성격이 바뀐 이유는 목이다. 프론트 목은 **백엔드를 병렬로 만들던 시절의
 도구**였고, 백엔드가 다 선 지금은 목이 틀려도 그 사실을 알려주는 것이 없다.
