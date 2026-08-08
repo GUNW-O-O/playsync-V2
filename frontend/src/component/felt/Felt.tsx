@@ -66,6 +66,23 @@ export default function Felt({
   return (
     <div className="relative h-full w-full bg-felt-rail p-[2%]">
       <div className="relative h-full w-full rounded-full border-4 border-felt-edge bg-felt">
+        {/*
+          사람 딜러가 서 있는 자리. 좌석 아홉이 **딜러를 12시로 놓고** 도는
+          배치라(`seatPosition`) 이 표찰이 곧 화면의 방향이다. 자리만 비워
+          두고 그리지 않아서, 화면만 보고는 어느 쪽이 딜러인지 알 수 없었다.
+
+          딜러 화면에서는 좌석이 180° 돌아 자기 자리가 아래로 오므로 표찰도
+          같이 내려간다 — 눈앞의 배치와 겹쳐야 하기 때문이다.
+        */}
+        <div
+          data-testid="felt-dealer-mark"
+          className={`absolute left-1/2 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap border border-tb-line bg-tb-panel px-2.5 py-0.5 text-[10px] tracking-[0.14em] text-tb-muted ${
+            orientation === 'dealer' ? 'top-[97%]' : 'top-[3%]'
+          }`}
+        >
+          딜러
+        </div>
+
         {/* 팟 — 사이드팟이 있으면 그 아래에 함께 보여준다 */}
         <div
           data-testid="pot"
@@ -136,7 +153,13 @@ export default function Felt({
               ) : (
                 <span className="block text-center font-mono text-sm">{seatIndex + 1}</span>
               )}
-              {player?.button && (
+              {/*
+                버튼은 **`state.buttonUser`에서 나온다.** 스냅샷의
+                `player.button`은 백엔드가 채우지 않는 필드라(엔진은
+                `buttonUser` 하나만 옮긴다) 그걸 믿으면 버튼이 어느 자리에도
+                안 붙는다 — 촬영본에 한 번도 안 나왔던 이유다.
+              */}
+              {player && state?.buttonUser === seatIndex && (
                 <span
                   data-testid={`seat-${seatIndex}-button`}
                   className="absolute -right-1.5 -top-1.5 grid h-4 w-4 place-items-center rounded-full bg-[#f4f4f4] font-mono text-[9px] font-bold text-[#161616]"
@@ -170,7 +193,17 @@ export default function Felt({
  *
  * 반지름(46 / 45)과 시작각(28°)·간격(38°)은 와이어프레임의 실측 좌표
  * (예: 1번 자리 left:71.6% top:10.3%)를 역산해 맞춘 값이다.
+ *
+ * **자리를 소수 넷째 자리에서 끊는다.** 끊지 않으면 하이드레이션이 어긋난다 —
+ * 서버가 `left: 28.404308111849023%`를 HTML에 쓰면 브라우저 CSSOM이 유효숫자
+ * 여섯 자리(`28.4043%`)로 줄여 저장하는데, 클라이언트의 React는 자기가 다시
+ * 계산한 긴 값과 그 줄어든 값을 비교하고 불일치로 판정한다. 좌석 아홉 × 펠트가
+ * 있는 모든 화면에서 매번 났다.
+ *
+ * 넷째 자리면 1280px 기준 0.0013px이라 화면에는 아무 차이가 없다.
  */
+const SEAT_POS_DECIMALS = 4;
+
 function seatPosition(seatIndex: number, orientation: FeltOrientation): React.CSSProperties {
   const baseAngleDeg = 28 + 38 * seatIndex;
   const angleDeg = orientation === 'dealer' ? baseAngleDeg + 180 : baseAngleDeg;
@@ -178,8 +211,8 @@ function seatPosition(seatIndex: number, orientation: FeltOrientation): React.CS
   const RX = 46;
   const RY = 45;
   return {
-    left: `${50 + RX * Math.sin(angleRad)}%`,
-    top: `${50 - RY * Math.cos(angleRad)}%`,
+    left: `${(50 + RX * Math.sin(angleRad)).toFixed(SEAT_POS_DECIMALS)}%`,
+    top: `${(50 - RY * Math.cos(angleRad)).toFixed(SEAT_POS_DECIMALS)}%`,
     transform: 'translate(-50%, -50%)',
   };
 }

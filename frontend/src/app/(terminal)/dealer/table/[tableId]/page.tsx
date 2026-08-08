@@ -22,14 +22,48 @@ async function getInitialGameData(tableId: string) {
   return res.json();
 }
 
+/**
+ * 눈앞의 테이블에 붙은 번호를 구한다. 좌석 화면과 같은 조회다
+ * (`(terminal)/table/[tableId]/page.tsx`) — 테이블 상태는 자기 번호를 모르고,
+ * `GET /tournaments/:id`가 `{ tournament, seatStatus }` 봉투 안에 `tables`를
+ * 함께 내려준다.
+ *
+ * 실패해도 화면을 죽이지 않는다. 번호를 못 구할 뿐이고, 그때 머리글은
+ * uuid로 되돌아가는 대신 테이블 쪽을 뺀다.
+ */
+async function getTableOrder(
+  tournamentId: string | undefined,
+  tableId: string,
+): Promise<number | undefined> {
+  if (!tournamentId) return undefined;
+  try {
+    const res = await fetch(`${process.env.BACKEND_URL}/tournaments/${tournamentId}`, {
+      cache: 'no-store',
+    });
+    if (!res.ok) return undefined;
+    const body = (await res.json().catch(() => null)) as {
+      tournament?: { tables?: { id: string; tableOrder: number }[] };
+    } | null;
+    return body?.tournament?.tables?.find((t) => t.id === tableId)?.tableOrder;
+  } catch (err) {
+    console.error('대회 정보를 불러오지 못해 테이블 번호를 구하지 못했습니다.', err);
+    return undefined;
+  }
+}
+
 export default async function DealerGamePage({ params }: { params: Promise<{ tableId: string }> }) {
   const { tableId } = await params;
   const initialData = await getInitialGameData(tableId);
+  const tableOrder = await getTableOrder(initialData?.tableState?.tournamentId, tableId);
 
   return (
     <main className="h-screen overflow-hidden bg-tb-bg">
       {initialData ? (
-        <DealerGameClient tableId={tableId} initialData={initialData.tableState} />
+        <DealerGameClient
+          tableId={tableId}
+          initialData={initialData.tableState}
+          tableOrder={tableOrder}
+        />
       ) : (
         <p>아직 게임이 시작되지 않았습니다.</p>
       )}

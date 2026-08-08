@@ -40,108 +40,127 @@ export default function SeatActionPanel({
     }
   }
 
-  if (!state) {
-    return <Placeholder>{WAITING_LABEL}</Placeholder>;
-  }
-  if (state.phase === 5 || state.phase === 6) {
-    return <Placeholder>핸드 결과 대기 중...</Placeholder>;
-  }
-  if (state.currentTurnSeatIndex === -1 || state.phase === 0 || !myPlayer) {
-    return <Placeholder>{WAITING_LABEL}</Placeholder>;
-  }
-  if (state.currentTurnSeatIndex !== mySeatIndex) {
-    return <Placeholder>상대방 턴 대기 중...</Placeholder>;
-  }
+  /**
+   * 차례가 아닐 때 무엇을 적을지. 예전에는 여기서 컴포넌트를 통째로 일찍
+   * 반환했는데, 그러면 슬라이더와 타이머가 사라지면서 **버튼 줄이 위아래로
+   * 움직였다.** 좌석 태블릿은 팔 길이에서 보는 고정 기기라, 방금까지
+   * `폴드`가 있던 자리를 눌러 `올인`이 나가는 것이 실제 위험이다.
+   *
+   * 그래서 자리는 늘 잡아 두고 **내용만 바뀐다.**
+   */
+  const waitingLabel = !state
+    ? WAITING_LABEL
+    : state.phase === 5 || state.phase === 6
+      ? '핸드 결과 대기 중...'
+      : state.currentTurnSeatIndex === -1 || state.phase === 0 || !myPlayer
+        ? WAITING_LABEL
+        : state.currentTurnSeatIndex !== mySeatIndex
+          ? '상대방 턴 대기 중...'
+          : null;
+  const myTurn = waitingLabel === null && state !== null && myPlayer !== null;
 
-  const needsToCall = state.currentBet - myPlayer.bet;
+  const needsToCall = state && myPlayer ? state.currentBet - myPlayer.bet : 0;
   const canCheck = needsToCall <= 0;
-  const goingToAllIn = needsToCall >= myPlayer.stack;
-  const canRaise = raiseVal >= state.currentBet + bigBlind;
+  const goingToAllIn = myPlayer ? needsToCall >= myPlayer.stack : false;
+  const canRaise = state ? raiseVal >= state.currentBet + bigBlind : false;
 
   return (
     <div className="flex flex-col gap-2.5">
-      {!goingToAllIn && (
-        <div className="flex h-7 items-center gap-3 border border-tb-line bg-tb-panel px-3 font-mono text-[11px] text-tb-muted">
-          <input
-            type="range"
-            min={state.currentBet + bigBlind}
-            // `amount`는 총 베팅액이다(`table-engine.ts`의 `handleRaise`가
-            // `betAmount - player.bet`을 뺀다) — 낼 수 있는 최대 총액은
-            // `stack`이 아니라 `stack + bet`이다(올인 버튼과 같은 값).
-            max={Math.max(myPlayer.stack + myPlayer.bet, state.currentBet + bigBlind)}
-            step={bigBlind || 1}
-            value={raiseVal}
-            onChange={(e) => setRaiseVal(Number(e.target.value))}
-            className="h-1 flex-1 accent-[color:var(--tb-act)]"
-          />
-          <span className="text-tb-ink">{raiseVal.toLocaleString()}</span>
-        </div>
-      )}
+      {/* 슬라이더 자리. 콜만 해도 다 들어가는 상황에는 조절할 것이 없다. */}
+      <div data-testid="action-slider-slot" className="h-7">
+        {myTurn && !goingToAllIn && state && myPlayer && (
+          <div className="flex h-7 items-center gap-3 border border-tb-line bg-tb-panel px-3 font-mono text-[11px] text-tb-muted">
+            <input
+              type="range"
+              min={state.currentBet + bigBlind}
+              // `amount`는 총 베팅액이다(`table-engine.ts`의 `handleRaise`가
+              // `betAmount - player.bet`을 뺀다) — 낼 수 있는 최대 총액은
+              // `stack`이 아니라 `stack + bet`이다(올인 버튼과 같은 값).
+              max={Math.max(myPlayer.stack + myPlayer.bet, state.currentBet + bigBlind)}
+              step={bigBlind || 1}
+              value={raiseVal}
+              onChange={(e) => setRaiseVal(Number(e.target.value))}
+              className="h-1 flex-1 accent-[color:var(--tb-act)]"
+            />
+            <span className="text-tb-ink">{raiseVal.toLocaleString()}</span>
+          </div>
+        )}
+      </div>
 
-      <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={() => onAction({ action: PlayerActionType.FOLD })}
-          className="h-14 flex-1 border border-tb-line text-sm text-tb-muted"
-        >
-          폴드
-        </button>
-
-        {goingToAllIn ? (
-          <button
-            type="button"
-            onClick={() => onAction({ action: PlayerActionType.CALL })}
-            className="h-14 flex-[2] border border-tb-act bg-tb-act text-sm font-semibold text-[#06201a]"
-          >
-            올인 콜
-          </button>
+      <div data-testid="action-buttons-slot" className="flex h-14 gap-2">
+        {!myTurn || !state || !myPlayer ? (
+          <div className="flex h-14 flex-1 items-center justify-center text-sm italic text-tb-sub">
+            {waitingLabel}
+          </div>
         ) : (
           <>
-            {canCheck ? (
-              <button
-                type="button"
-                onClick={() => onAction({ action: PlayerActionType.CHECK })}
-                className="h-14 flex-1 border border-tb-line text-sm text-tb-ink"
-              >
-                체크
-              </button>
-            ) : (
+            <button
+              type="button"
+              onClick={() => onAction({ action: PlayerActionType.FOLD })}
+              className="h-14 flex-1 border border-tb-line text-sm text-tb-muted"
+            >
+              폴드
+            </button>
+
+            {goingToAllIn ? (
               <button
                 type="button"
                 onClick={() => onAction({ action: PlayerActionType.CALL })}
-                className="h-14 flex-1 border border-tb-line text-sm text-tb-ink"
+                className="h-14 flex-[3] border border-tb-act bg-tb-act text-sm font-semibold text-[#06201a]"
               >
-                콜 {Math.min(needsToCall, myPlayer.stack).toLocaleString()}
+                올인 콜
               </button>
+            ) : (
+              <>
+                {canCheck ? (
+                  <button
+                    type="button"
+                    onClick={() => onAction({ action: PlayerActionType.CHECK })}
+                    className="h-14 flex-1 border border-tb-line text-sm text-tb-ink"
+                  >
+                    체크
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => onAction({ action: PlayerActionType.CALL })}
+                    className="h-14 flex-1 border border-tb-line text-sm text-tb-ink"
+                  >
+                    콜 {Math.min(needsToCall, myPlayer.stack).toLocaleString()}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  disabled={!canRaise}
+                  onClick={() => onAction({ action: PlayerActionType.RAISE, amount: raiseVal })}
+                  className="h-14 flex-1 border border-tb-act bg-tb-act text-sm font-semibold text-[#06201a] disabled:opacity-30"
+                >
+                  레이즈 {raiseVal.toLocaleString()}
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onAction({
+                      action: PlayerActionType.RAISE,
+                      amount: myPlayer.stack + myPlayer.bet,
+                    })
+                  }
+                  className="h-14 flex-1 border border-tb-line text-sm text-tb-ink"
+                >
+                  올인
+                </button>
+              </>
             )}
-            <button
-              type="button"
-              disabled={!canRaise}
-              onClick={() => onAction({ action: PlayerActionType.RAISE, amount: raiseVal })}
-              className="h-14 flex-1 border border-tb-act bg-tb-act text-sm font-semibold text-[#06201a] disabled:opacity-30"
-            >
-              레이즈 {raiseVal.toLocaleString()}
-            </button>
-            <button
-              type="button"
-              onClick={() =>
-                onAction({ action: PlayerActionType.RAISE, amount: myPlayer.stack + myPlayer.bet })
-              }
-              className="h-14 flex-1 border border-tb-line text-sm text-tb-ink"
-            >
-              올인
-            </button>
           </>
         )}
       </div>
 
-      {state.actionDeadline && <ActionTimer key={state.actionDeadline} deadline={state.actionDeadline} />}
+      {/* 타이머 자리. 차례가 아니면 비어 있지만 높이는 그대로다. */}
+      <div data-testid="action-timer-slot" className="h-9">
+        {myTurn && state?.actionDeadline && (
+          <ActionTimer key={state.actionDeadline} deadline={state.actionDeadline} />
+        )}
+      </div>
     </div>
-  );
-}
-
-function Placeholder({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="flex h-14 items-center justify-center text-sm italic text-tb-sub">{children}</div>
   );
 }

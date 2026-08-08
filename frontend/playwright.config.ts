@@ -38,6 +38,32 @@ export default defineConfig({
   forbidOnly: true,
   timeout: 120_000,
   reporter: [['list']],
+  /**
+   * 회귀와 촬영을 가른다.
+   *
+   * 파일 이름의 알파벳 순서로 순서를 표현하던 것이 한계에 왔다. 촬영 스펙은
+   * **대회를 시작하므로** `harness.spec.ts`의 "무대는 아직 PENDING" 단언보다
+   * 뒤여야 하는데, `console → dealer → harness → terminal`이 우연히 맞은
+   * 것이라 다섯 번째 파일부터는 이름을 억지로 지어야 한다.
+   *
+   * `dependencies`를 걸지 않는다. 회귀 스펙은 상태를 남기고(사람이 앉는다)
+   * 촬영은 자기 무대가 필요하다 — 이어 붙이면 촬영이 회귀가 남긴 자리 위에서
+   * 돈다. 대신 `npm run demo`가 시드를 먼저 깐다(루트 `package.json`).
+   */
+  projects: [
+    { name: 'regression', testMatch: /e2e[\\/][^\\/]+\.spec\.ts$/ },
+    {
+      name: 'demo',
+      testMatch: /e2e[\\/]demo[\\/].*\.spec\.ts$/,
+      // 사람이 보는 영상이다. 클릭이 즉시 끝나면 무슨 일이 일어났는지
+      // 안 보인다. 회귀에는 걸지 않는다 — 거기서는 느린 것이 손해다.
+      use: { launchOptions: { slowMo: 220 } },
+      // 장면 하나가 태블릿 여럿을 앉히고 핸드를 끝까지 돌린다. `slowMo`가
+      // 붙은 키패드 입력만으로도 회귀용 2분을 넘는다. 촬영은 사람이
+      // 돌리는 일이라 오래 걸리는 것 자체는 문제가 아니다.
+      timeout: 900_000,
+    },
+  ],
   use: {
     baseURL: 'http://localhost:3000',
     // 화면마다 크기가 달라 컨텍스트 단위로 다시 정한다(`fixtures/surfaces.ts`).
@@ -64,13 +90,32 @@ export default defineConfig({
       timeout: 180_000,
       stdout: 'pipe',
     },
-    {
-      command: 'npm run dev:frontend',
-      cwd: '..',
-      port: 3000,
-      reuseExistingServer: true,
-      timeout: 180_000,
-      stdout: 'pipe',
-    },
+    /*
+      촬영은 **프로덕션 빌드**로 돈다(`scripts/demo.mjs`가 `DEMO_PROD=1`을
+      켠다). 개발 서버로 찍으면 화면마다 좌하단에 Next 개발 표시기가 앉고,
+      첫 방문마다 라우트를 컴파일하느라 12초씩 흰 화면이 남는다. 둘 다
+      영상에 그대로 들어간다.
+
+      그때는 `reuseExistingServer`를 끈다. 켜 두면 3000번을 이미 물고 있는
+      개발 서버에 조용히 붙어, 프로덕션으로 찍는다고 해 놓고 개발 화면을
+      찍게 된다. 포트가 물려 있으면 여기서 시끄럽게 실패하는 편이 낫다.
+    */
+    process.env.DEMO_PROD === '1'
+      ? {
+          command: 'npm run start -w frontend',
+          cwd: '..',
+          port: 3000,
+          reuseExistingServer: false,
+          timeout: 180_000,
+          stdout: 'pipe',
+        }
+      : {
+          command: 'npm run dev:frontend',
+          cwd: '..',
+          port: 3000,
+          reuseExistingServer: true,
+          timeout: 180_000,
+          stdout: 'pipe',
+        },
   ],
 });

@@ -1,4 +1,4 @@
-import { playerByNickname, tableByOrder } from './fixtures/manifest';
+import { playerAt, tableByOrder } from './fixtures/manifest';
 import { expect, test } from './fixtures/surfaces';
 
 /**
@@ -36,7 +36,7 @@ test('좌석 대기 화면이 시드된 대회와 테이블을 그대로 보여�
 
 test('참가 OTP를 넣으면 좌석이 확정되고 그 자리가 점선으로 잠긴다', async ({ stage, manifest }) => {
   const table = tableByOrder(manifest, 1);
-  const player = playerByNickname(manifest, 'player1');
+  const player = playerAt(manifest, 0);
   const SEAT_INDEX = 3;
 
   const tablet = await stage('tablet', 'seat-enter');

@@ -8,8 +8,16 @@
 
 ```
 TypeScript · NestJS 11 · Next.js · PostgreSQL · Redis · zod contract · npm workspaces
-contract 60 · 백엔드 단위 177 · 프론트 52 · 통합 328 · 시나리오 11 · 타입 에러 0
+contract 62 · 백엔드 단위 178 · 프론트 100 · 통합 336 · 시나리오 11 · e2e 13 · 타입 에러 0
 ```
+
+<img src="./img/s3-sidepot.webp" alt="올인으로 사이드팟이 갈리고, 딜러가 1등만 찍자 화면이 지급을 거부한다" width="100%">
+
+<sup>올인 셋이 팟을 둘로 가른다. 딜러가 1등만 찍자 **지급이 거부된다** —
+지명되지 않은 팟이 남았기 때문이다. 다시 순서대로 찍으면 층마다 알맞은
+사람에게 가고, 2층에서 진 사람은 그 자리에서 0이 되어 자리를 뜬다. 짝:
+[`allin-sidepot.int-spec.ts`](./backend/src/scenario/allin-sidepot.int-spec.ts) ·
+[`elimination-rebuy.int-spec.ts`](./backend/src/scenario/elimination-rebuy.int-spec.ts)</sup>
 
 > **이 리포지토리가 하는 일**
 > V1 MVP는 "돌아가긴 한다"에서 멈춰 있었다. V2는 그 코드를 옮겨 온 뒤
@@ -27,7 +35,7 @@ V1은 혼자 짜고 혼자 눌러보며 완성한 MVP다. V2는 같은 코드를
 
 | | V1 | V2 |
 |---|---|---|
-| 검증 | 크롬 창 6개 띄워 손으로 눌러보기 | 단위 177 / 통합 328 / 시나리오 11. 실제 Redis·PostgreSQL 컨테이너 |
+| 검증 | 크롬 창 6개 띄워 손으로 눌러보기 | 단위 178 / 통합 336 / 시나리오 11 / e2e 13. 실제 Redis·PostgreSQL 컨테이너 |
 | 테스트 코드 | `nest g` 스캐폴드 18개. 전부 `toBeDefined`고 경로를 못 잡아 import에서 죽고 있었다 | 버그마다 실패하는 테스트를 먼저 쓴다(TDD) |
 | CI | 없음 | 타입 체크 · 테스트 · 빌드 (`.github/workflows/ci.yml`) |
 | 코드 리뷰 | 없음 (1인 개발) | `backend/src` 전수 리뷰 → [`review.md`](./docs/review.md) → 27개 발견 |
@@ -169,6 +177,11 @@ AI는 코드 전체를 읽지만 **왜 그렇게 짰는지**는 모른다. 버�
 **`TableState`에 덱도, 홀카드도, 커뮤니티 카드도 없다.** 셔플·핸드 랭킹·승자
 판정 로직이 없는 것은 누락이 아니다. 그건 테이블 위에서 일어난다.
 
+<img src="./img/dealer-felt.png" alt="딜러 화면. 보드에 무늬가 없고 카드 다섯 장의 자리만 있다" width="100%">
+
+<sup>딜러 화면의 보드에는 **무늬가 없다.** 몇 장이 깔렸는지만 그린다 — 무엇이
+깔렸는지는 테이블 위에 있다.</sup>
+
 **승자는 계산되지 않고 입력된다.** 딜러가 실물 카드를 보고 `resolveWinners`에
 승자를 넘긴다. 그래서 이 경로에는 "검증할 정답"이 존재하지 않고, 딜러 입력을
 신뢰할 수밖에 없다. 대신 **장부는 시스템이 끝까지 책임진다** — 칩 총량, 사이드팟
@@ -182,6 +195,12 @@ AI는 코드 전체를 읽지만 **왜 그렇게 짰는지**는 모른다. 버�
 그것은 **UI의 제약이지 서버의 제약이 아니다.** 망이 행사장 WiFi라 같은 망의
 아무 단말이나 WS 엔드포인트를 직접 열 수 있다. 그래서 권한은 화면이 아니라
 게이트웨이에서 본다.
+
+<img src="./img/s1-join.webp" alt="폰에서 참가비를 내고 참가 OTP를 받으면 상점 콘솔에 참가가 잡힌다" width="100%">
+
+<sup>폰에서 참가비를 내고 **참가 OTP**를 받는다. 자리로 걸어가 태블릿에 그
+번호를 넣으면 좌석이 확정된다 — 결제가 아니라 **입장에서** 확정된다.
+짝: [`terminal.spec.ts`](./frontend/e2e/terminal.spec.ts)</sup>
 
 ### 되돌릴 수 없는 일은 마지막에
 
@@ -226,6 +245,13 @@ WAITING
 - **`HAND_END`가 문지기다.** 리바인 응답은 최대 15초짜리 사람 입력이라 락 밖에서
   기다린다. 그동안 다음 핸드가 시작되지 않는 것은 `startPreFlop`이 `WAITING`만
   받기 때문이다.
+
+<img src="./img/s2-hand.webp" alt="좌석 태블릿 둘 · 딜러 · 전광판이 한 판을 동시에 그린다" width="100%">
+
+<sup>좌석 둘 · 딜러 · 전광판. 콘솔에서 **대회 시작**을 누르면 전광판이 켜지고,
+딜러가 핸드를 열면 네 면이 같이 움직인다. **차례는 언제나 하나뿐이다** — 한쪽
+태블릿에 액션 버튼이 살아 있으면 다른 쪽은 죽어 있다. 여러 판을 거쳐도 칩
+총량은 그대로다. 짝: [`full-flow.int-spec.ts`](./backend/src/scenario/full-flow.int-spec.ts)</sup>
 - **블라인드는 핸드 시작 시점에 확정된다.** 딜링 도중 레벨이 오르면 이미 깔린
   블라인드와 어긋난다.
 
@@ -246,6 +272,12 @@ WAITING
 버튼이 생존 전원을 한 그룹으로 채워 보내면 된다. **돈이 나가는 경로는 하나여야
 한다.** (chat-log #37)
 
+<img src="./img/dealer-winner.png" alt="승자 결정 화면. 팟이 두 층이고 층마다 자격자가 다르다" width="100%">
+
+<sup>승자 결정 화면. **팟이 몇 층이고 누가 어느 층의 자격자인지는 시스템이
+책임진다** — 딜러는 그것을 보고 순서를 찍는다. 1층은 셋 다, 2층은 낼 돈이
+있었던 둘만이다.</sup>
+
 ### 블라인드 레벨은 시각에서 파생된다
 
 저장된 레벨이 아니라 **`startedAt`과 현재 시각이 진실이다.** 조회할 때마다 다시
@@ -255,6 +287,11 @@ WAITING
 두면 재기동해도 레벨이 되돌아가지 않고, 밀리면 여러 칸을 한 번에 건너뛴다. 리바인
 마감도 "그 레벨을 밟았는가"가 아니라 **"지났는가"**로 판정한다. 건너뛴 대회가
 영영 열려 있으면 안 된다.
+
+<img src="./img/scoreboard.png" alt="전광판. 블라인드 레벨과 남은 시간, 남은 인원과 프라이즈풀" width="100%">
+
+<sup>전광판은 10m 밖에서 읽힌다. 여기 뜨는 레벨과 남은 시간은 저장된 값이
+아니라 `startedAt`에서 매번 다시 계산한 값이다.</sup>
 
 ### 서버가 죽어도 대회는 계속된다 — 시간과 상태를 갈라서 되살린다
 
@@ -298,6 +335,37 @@ Redis의 `BlindField.startedAt`은 블라인드 시계의 기준점이라 **민�
 **액션을 폴드로 치환**인 이유는 §3의 신뢰 경계 때문이다. 끊어도 같은 망에서 다시
 붙을 수 있다.
 
+<table>
+<tr>
+<td width="55%"><img src="./img/seat-rebuy.png" alt="칩이 0이 된 사람의 태블릿에 리바인을 묻는 오버레이가 떴다"></td>
+<td width="45%"><img src="./img/phone-eliminated.png" alt="탈락한 사람의 폰. 지난 참가에 등수가 남았다"></td>
+</tr>
+</table>
+
+<sup>칩이 0이 되면 **리바인을 묻는다**(15초). 거절하면 탈락이고, 태블릿은
+등수를 그리지 않고 **다음 사람의 자리**로 돌아간다 — 등수·상금은 사람에게 붙는
+정보라 폰이 들고 있다. 폰에서도 그때부터는 참가 OTP가 아니라 등수다. 짝:
+[`elimination-rebuy.int-spec.ts`](./backend/src/scenario/elimination-rebuy.int-spec.ts)</sup>
+
+### 테이블을 합치는 것은 사람이 걸어가는 일이다
+
+온라인이면 서버가 좌석을 재배치하고 끝이다. 여기서는 **사람이 칩을 들고
+일어나 다른 테이블로 걸어간다.** 그래서 이 흐름은 자동화의 대상이 아니라
+세 걸음으로 나뉜다 — 상점이 좌석을 해제하고, 사람이 걸어가 **참가 OTP를
+다시 넣고**, 상점이 빈 테이블을 닫는다.
+
+<img src="./img/s5-table-merge.webp" alt="상점이 2번 테이블 좌석을 해제하면 사람이 1번 테이블로 옮겨 앉고, 옆자리 태블릿에 그가 나타난다" width="100%">
+
+<sup>왼쪽 위가 옮겨 가는 사람의 태블릿, 오른쪽 위가 **가만히 앉아 있는
+사람**의 태블릿이다. 아무도 그 화면을 건드리지 않는데 옆자리가 찬다.
+아래는 좌석을 푸는 콘솔과, 다시 넣을 참가 OTP를 든 폰 — **처음 앉을 때 쓴
+것과 같은 번호**다. 짝:
+[`table-move.int-spec.ts`](./backend/src/scenario/table-move.int-spec.ts)</sup>
+
+**언제 누구를 어디로 보낼지는 규칙이 아니라 현장 판단이다.** 그래서 자동
+밸런싱을 만들지 않았다(§8) — 시스템이 책임지는 것은 **칩이 좌석보다 오래
+사는 것**뿐이다. 좌석 행(`TablePlayer`)이 사라져도 칩은 참가 행에 남는다(§5).
+
 ### 상금은 상점이 정하고 관리자가 닫는다
 
 프라이즈풀은 `totalBuyinAmount`(참가비 + 리바인 누적)이고, 분배율은 대회 생성 시
@@ -325,8 +393,65 @@ npm workspaces 모노레포.
 | 워크스페이스 | 역할 |
 |---|---|
 | `backend` | NestJS 11. 게임 로직, WebSocket, DB/Redis |
-| `frontend` | Next.js **(재구성 예정 — 현재 명세 작성 단계)** |
+| `frontend` | Next.js. 면 넷 — 폰 · 좌석 태블릿 · 딜러 태블릿 · 상점 콘솔 · 전광판 |
 | `packages/contract` | 백엔드/프론트가 공유하는 zod 스키마. **경계를 넘는 것만** 정의 |
+
+<table>
+<tr>
+<td width="50%"><img src="./img/seat-game.png" alt="좌석 태블릿의 게임 화면. 딜러가 위에 있다"></td>
+<td width="50%"><img src="./img/dealer-felt.png" alt="딜러 태블릿의 같은 테이블. 딜러가 아래에 있다"></td>
+</tr>
+</table>
+
+<sup>**같은 테이블을 반대편에서 본 것이다.** 좌석 화면은 딜러가 위에, 딜러
+화면은 자기 자리가 아래에 온다 — 화면의 배치가 눈앞의 배치와 겹쳐야 하기
+때문이다.</sup>
+
+### 면과 서버
+
+```mermaid
+flowchart LR
+  subgraph faces["면 — 크기가 곧 읽는 거리"]
+    seat["좌석 태블릿<br/>1280×720"]
+    dealerT["딜러 태블릿<br/>1280×720"]
+    phone["폰<br/>390×844"]
+    console["상점 콘솔<br/>1440×900"]
+    board["전광판<br/>1280×720"]
+  end
+
+  subgraph front["frontend · Next.js"]
+    next["서버 컴포넌트 · 서버 액션<br/>쿠키를 읽고 백엔드에 묻는다"]
+  end
+
+  subgraph back["backend · NestJS"]
+    ws["ws — 게이트웨이<br/>권한은 여기서 본다"]
+    play["playsync · dealer<br/>진행 · 타임아웃 · 리바인 · 상금"]
+    rest["payment · entry · store<br/>결제 · 착석 · 대회 운영"]
+    engine["game-engine<br/>프레임워크 없는 순수 상태머신"]
+  end
+
+  subgraph state["상태"]
+    redis[("Redis<br/>스냅샷 · 대회 메타<br/>좌석 비트맵 · 락")]
+    db[("PostgreSQL<br/>대회 · 참가<br/>포인트 · 거래 내역")]
+  end
+
+  faces --> next
+  seat -. WebSocket .-> ws
+  dealerT -. WebSocket .-> ws
+  next --> rest
+  ws --> play
+  play --> engine
+  play -- "액션마다" --> redis
+  play -- "경계에서만" --> db
+  rest --> redis
+  rest --> db
+```
+
+<sup>실선이 HTTP, 점선이 WebSocket이다. 좌석·딜러 태블릿만 소켓을 든다 —
+나머지 셋은 조회와 조작뿐이라 Next를 거친다. **액션마다 Redis, 경계에서만
+PostgreSQL** — 핸드당 수십 번 일어나는 상태 변경이 DB를 때리지 않는다
+(아래 「상태를 어디에 두는가」). 게임 로직은 `game-engine` 하나에 모여 있고
+프레임워크 의존성이 없다.</sup>
 
 ### 백엔드 모듈
 
@@ -341,6 +466,53 @@ npm workspaces 모노레포.
 | `redis` | 상태 스냅샷, 대회 메타, 좌석 비트맵, 유저 컨텍스트, 테이블 락 |
 | `auth` / `user` | JWT 인증, 회원·포인트 |
 | `scenario` | 여러 이음매를 한 줄로 잇는 시나리오 테스트 (§6) |
+
+### 스키마 — 칩은 좌석보다 오래 산다
+
+```mermaid
+erDiagram
+  User ||--o{ Store : "소유"
+  User ||--o{ PointTransaction : "포인트 이동"
+  User ||--o{ TournamentParticipation : "참가"
+  User ||--o{ TablePlayer : "착석"
+
+  Store ||--o{ BlindStructure : "블라인드 구조"
+  Store ||--o{ Tournament : "대회를 연다"
+  BlindStructure ||--o{ Tournament : "적용"
+
+  Tournament ||--|| DealerSession : "딜러 세션 하나"
+  Tournament ||--o{ Table : "테이블"
+  Tournament ||--o{ TournamentParticipation : "참가자"
+  DealerSession ||--o{ Table : "담당"
+  Table ||--o{ TablePlayer : "좌석"
+
+  TournamentParticipation {
+    enum   status "WAITING PLAYING ELIMINATED AWARDED"
+    int    currentStack "칩 — 좌석이 아니라 여기 산다"
+    string playerOtp "평문. 마이페이지가 다시 보여준다"
+    int    finalPlace
+    int    prizeAmount
+    int    buyInCount
+  }
+  TablePlayer {
+    int seatPosition "0~8"
+  }
+  Table {
+    int tableOrder "물리 테이블 번호"
+    int buttonUser "지난 핸드의 버튼 좌석"
+  }
+  Tournament {
+    enum   status "PENDING ONGOING SYNCING FINISHED"
+    string dealerOtpHash "해시로만"
+    int    rebuyUntil
+    int    pausedMs "장애로 멈춘 누적 시간"
+  }
+```
+
+<sup>**`TablePlayer`는 좌석 배치표이고 `TournamentParticipation`이 장부다.**
+칩(`currentStack`)이 참가 쪽에 있는 이유가 그것이다 — 상점이 좌석을 해제하면
+`TablePlayer` 행이 사라지는데(T29), 칩이 거기 있었을 때는 같이 사라졌다.
+`TableState`(Redis)에는 덱도 홀카드도 없다. §3을 보라.</sup>
 
 ### 상태를 어디에 두는가
 
@@ -395,8 +567,9 @@ npm workspaces 모노레포.
 개발용과 분리된 진짜 Redis·PostgreSQL 컨테이너를 띄운다.
 
 ```
-contract       60  (3 suites)      백엔드 단위   177  (16 suites)
-프론트 단위    52  (14 files)      통합         328  (27 suites)
+contract       62  (4 suites)      백엔드 단위   178  (16 suites)
+프론트 단위   100  (24 files)      통합         335  (27 suites)
+e2e            13  (4 files)       + 데모 촬영 1 (`npm run demo`)
 ```
 
 1단계를 닫은 시점이 contract 44 / 단위 122 / 통합 199였다. 늘어난 것은 전부
@@ -447,8 +620,15 @@ npm run dev:backend    # NestJS watch (http://localhost:3001)
 npm run dev:frontend   # Next dev     (http://localhost:3000)
 npm run test           # 단위 테스트. 인프라 없이 2초
 npm run test:int       # 통합 테스트. 컨테이너 기동부터 자동
-npm run test:e2e       # 촬영 하네스(Playwright). 개발 서버는 떠 있으면 재사용
+npm run test:e2e       # 화면 회귀(Playwright). 개발 서버는 떠 있으면 재사용
+npm run demo           # 데모 촬영. 시드 → 프론트 빌드 → 장면 다섯을 한 실행으로
+npm run assets         # 촬영본을 자르고 합쳐 img/ 로 (ffmpeg-static)
 ```
+
+위 그림 전부가 `npm run demo`의 산출물이다. 촬영은 **프로덕션 빌드**로 돈다 —
+개발 서버는 화면마다 개발 표시기를 앉히고 라우트를 처음 열 때마다 흰 화면을
+남긴다. 장면 경계는 스펙이 `timeline.json`에 시각으로 남기고, 자르는 것은
+`npm run assets`가 한다.
 
 `compose up`의 `seed` 서비스가 마이그레이션과 시드를 한 번 돌리고 끝난다.
 호스트에서 바로 돌리는 빠른 길도 있다 — `npm run seed -w backend`. 어느 쪽이든
@@ -491,12 +671,16 @@ REDIS_PASSWORD=<password>
 없다는 사실 자체가 정보다. "곧 붙일 것"과 "일부러 안 한 것"을 구분해 둔다.
 전체 목록과 순서는 [`docs/backlog.md`](./docs/backlog.md)(B1~B10)에 있다.
 
-### 남은 것 — 화면뿐이다
+### 화면은 섰다 — 남은 것은 운영이다
 
-백엔드 쪽 완주 항목은 서버 장애 복구(T31)로 끝났다. 남은 것은 프론트
-기능 명세(B5)와 재구성(B7)이고, 화면 목록은
-[`2026-07-27-frontend-screens-design.md`](./docs/superpowers/specs/2026-07-27-frontend-screens-design.md)에
-나와 있다 — 면 5개, 화면 38개.
+백엔드 완주 항목은 서버 장애 복구(T31)로 끝났고, 카메라 앞에 서는 화면
+여덟은 T34~T36으로 섰다(위 그림 전부가 그 화면이다). 화면 목록과 그중
+**만들지 않기로 한 것**은
+[`2026-07-27-frontend-screens-design.md`](./docs/superpowers/specs/2026-07-27-frontend-screens-design.md)와
+[`2026-08-08-readme-demo-design.md`](./docs/superpowers/specs/2026-08-08-readme-demo-design.md)에
+있다 — **README에 들어가지 않을 화면은 그리지 않는다**가 후자의 첫 규칙이다.
+
+남은 것은 화면이 아니라 운영 쪽이다(`docs/backlog.md`).
 
 ### 안 하기로 한 것
 

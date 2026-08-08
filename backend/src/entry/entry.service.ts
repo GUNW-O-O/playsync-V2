@@ -233,6 +233,10 @@ export class EntryService {
       }
     }
 
+    // 락 안에서 만든 최종 스냅샷을 밖으로 들고 나온다. 브로드캐스트는 락을
+    // 놓은 뒤에 한다.
+    let seated: TableState | null = null;
+
     await this.redis.withTableLock(dto.tableId, async () => {
       // 권위는 DB 행이다. **추론하지 않고 여기서 확인한다.**
       //
@@ -312,6 +316,7 @@ export class EntryService {
           totalContributed: 0,
         };
         await this.redis.saveSnapShot(dto.tableId, state);
+        seated = state;
       }
     });
 
@@ -321,6 +326,19 @@ export class EntryService {
     await this.redis.updateSeatBitmap(tournamentId, dto.tableId, dto.seatIndex, true);
     const tableStatus = await this.redis.getTournamentTables(tournamentId);
     this.eventEmitter.emit('SEAT_LIST_UPDATED', { tournamentId, state: tableStatus });
+
+    /*
+      **이미 앉아 있는 사람의 화면도 바뀌어야 한다.**
+
+      위 `SEAT_LIST_UPDATED`는 아직 안 앉은 사람의 대기 화면이 듣는 신호다.
+      게임 화면을 보고 있는 사람에게는 옆자리가 찬 사실이 가지 않아, 다음
+      핸드가 시작될 때까지 빈 자리로 남아 있다 — 테이블을 합쳐 사람이 걸어와
+      앉는 장면(T29)이 그대로 이 경로다.
+
+      `game.state.updated`는 게이트웨이가 그 테이블 방에 `renderGame`으로
+      흘려보내는 이벤트다. 상태는 락 안에서 저장한 것과 같은 값이다.
+    */
+    if (seated) this.eventEmitter.emit('game.state.updated', { tableId: dto.tableId, state: seated });
   }
 
   /**

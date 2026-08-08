@@ -3,21 +3,26 @@ import { render, screen } from '@testing-library/react';
 import ConsoleLayout from './layout';
 
 describe('콘솔 레이아웃', () => {
-  it('본문 위에 콘솔 메뉴를 둔다', () => {
+  it('본문을 감싸고 면 표찰을 둔다', () => {
     render(<ConsoleLayout>{<p>본문</p>}</ConsoleLayout>);
-
-    const nav = screen.getByRole('navigation', { name: '콘솔 메뉴' });
-    const main = screen.getByRole('main');
 
     expect(screen.getByText('본문')).toBeInTheDocument();
-    // 데스크톱 사이드바라 본문보다 앞선다. 플레이어 레이아웃과 뒤바뀌면 깨진다.
-    expect(nav.compareDocumentPosition(main) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole('main')).toBeInTheDocument();
+    expect(screen.getByText('상점 콘솔')).toBeInTheDocument();
   });
 
-  it('상점과 플랫폼 관리로 연결한다', () => {
+  /**
+   * 예전에는 `/stores`와 `/admin` 링크가 있었고 **둘 다 404였다.** 라우트를
+   * 만들 계획이 없으므로 링크를 지웠다 — 없는 곳으로 가는 링크는 눌러 본
+   * 사람이 고장으로 읽는다.
+   *
+   * 이 검사가 지키는 것은 "링크가 없다"가 아니라 **"라우트 없는 링크가 다시
+   * 생기지 않는다"**이다. 링크를 추가하려면 라우트를 먼저 만들고 이 검사를
+   * 그때 고친다.
+   */
+  it('라우트 없는 링크를 두지 않는다', () => {
     render(<ConsoleLayout>{<p>본문</p>}</ConsoleLayout>);
 
-    expect(screen.getByRole('link', { name: '상점' })).toHaveAttribute('href', '/stores');
-    expect(screen.getByRole('link', { name: '플랫폼 관리' })).toHaveAttribute('href', '/admin');
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
   });
 });

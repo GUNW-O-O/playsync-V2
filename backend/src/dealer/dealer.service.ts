@@ -185,7 +185,12 @@ export class DealerService {
     return this.redis.withTableLock(tableId, async () => {
       const blind = await this.redis.checkAndSyncBlindLevel(tournamentId);
       const state = await this.redis.getSnapShot(tableId);
-      if (!blind) throw new Error('블라인드 정보가 없습니다.');
+      // 이 값이 없다는 것은 **대회 메타가 Redis에 없다**는 뜻이고, 그건
+      // 아직 `startSession`이 돌지 않았다는 뜻이다(T31의 복구 경로에서도
+      // 메타부터 세운다). 딜러가 화면에서 읽는 문구이므로 원인이 아니라
+      // 그가 할 수 있는 일로 적는다 — "블라인드 정보가 없습니다"는 딜러가
+      // 어찌할 도리가 없는 말이다.
+      if (!blind) throw new Error('대회가 아직 시작되지 않았습니다.');
       if (blind.isBreak) {
         throw new Error('휴식 상태입니다.');
       }
