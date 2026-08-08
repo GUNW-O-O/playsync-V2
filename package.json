@@ -17,6 +17,8 @@
     "test": "npm run test -w @playsync/contract && npm run test -w backend && npm run test -w frontend",
     "test:int": "npm run test:int -w backend",
     "test:e2e": "npm run test:e2e -w frontend",
+    "demo": "node scripts/demo.mjs",
+    "assets": "node scripts/make-demo-assets.mjs",
     "seed": "npm run seed -w backend"
   }
 }

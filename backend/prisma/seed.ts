@@ -34,15 +34,38 @@ import { generatePlayerOtp } from '../src/payment/player-otp';
  */
 
 const STORE_NAME = '플레이싱크 강남점';
+
+/**
+ * 데모와 무관한 다른 상점들. **검색이 검색으로 보이려면 걸러낼 것이 있어야
+ * 한다** — 상점이 하나뿐이면 검색어를 넣기 전과 후의 목록이 같아서, 화면만
+ * 보고는 이 시스템이 상점 하나짜리인지 여럿을 나눠 담는지 알 수 없다.
+ *
+ * 대회는 만들지 않는다. 상점이 여럿이라는 사실만 필요하고, 빈 상점을 골랐을
+ * 때 "이 상점에는 열린 대회가 없습니다"가 뜨는 것도 그 자체로 경계의 증거다.
+ */
+const OTHER_STORES = ['리버벳 홀덤 판교', '카드하우스 홍대', '올인클럽 부산서면'];
 const TOURNAMENT_NAME = '데모 토너먼트';
 
 const ENTRY_FEE = 50_000;
 const START_STACK = 5_000;
 const INITIAL_POINTS = 500_000;
 
-/** 결제까지 마친 참가자. `demo`는 폰 흐름을 찍기 위해 결제하지 않는다. */
-const PAID_PLAYERS = ['player1', 'player2', 'player3', 'player4', 'player5', 'player6', 'player7'];
-const UNPAID_PLAYER = 'demo';
+/**
+ * 결제까지 마친 참가자. 첫 사람(`숏스택`)은 폰 흐름을 찍기 위해 결제하지 않는다.
+ *
+ * **이름이 곧 그 사람이 데모에서 맡은 역할이다.**
+ *
+ * `player1`~`player7`은 펠트의 좌석 카드에서도, 콘솔의 좌석 도식에서도,
+ * 딜러의 승자 결정 목록에서도 구분되지 않았다 — 촬영본을 보면 누가 올인했고
+ * 누가 탈락했는지 따라갈 수가 없다. 사람 이름으로 바꿔 보니 구분은 되는데,
+ * 이번에는 **누가 왜 거기 있는지**를 영상 밖에서 설명해야 했다.
+ *
+ * 역할로 부르면 그 설명이 화면 안에 들어온다. `숏스택`이 올인하고 `미드스택`이
+ * 사이드팟 2층에서 지고 `딥스택`이 그 층을 먹는 것을, 캡션 없이 좌석 카드만
+ * 보고 따라갈 수 있다.
+ */
+const PAID_PLAYERS = ['미드스택', '딥스택', '합석A', '합석B', '합석C', '대기1', '대기2'];
+const UNPAID_PLAYER = '숏스택';
 
 /**
  * 데모용으로 압축한 블라인드 구조.
@@ -136,6 +159,12 @@ async function main() {
     const store = await prisma.store.create({
       data: { name: STORE_NAME, ownerId: owner.id },
     });
+
+    // 검색이 걸러낼 다른 상점들. 주인은 같아도 된다 — 화면이 보는 것은
+    // 이름과 소속 대회뿐이다.
+    for (const name of OTHER_STORES) {
+      await prisma.store.create({ data: { name, ownerId: owner.id } });
+    }
 
     const blind = await prisma.blindStructure.create({
       data: { name: '데모 (짧은 구조)', structure: BLIND_STRUCTURE, storeId: store.id },

@@ -1,6 +1,6 @@
 import { Page } from '@playwright/test';
 import { login } from './fixtures/backstage';
-import { playerByNickname } from './fixtures/manifest';
+import { playerAt } from './fixtures/manifest';
 import { expect, test } from './fixtures/surfaces';
 
 /**
@@ -91,7 +91,7 @@ test('시작 전 전광판은 대기 중을 그린다', async ({ stage, manifest
 });
 
 test('참가자 폰이 시드된 참가 OTP를 조회 뒤에 보여준다', async ({ stage, manifest }) => {
-  const player = playerByNickname(manifest, 'player1');
+  const player = playerAt(manifest, 0);
   const phone = await stage('phone', 'phone-my-otp');
 
   await signInOnPhone(phone, player.nickname, manifest.password);
@@ -123,7 +123,7 @@ test('참가자 폰이 시드된 참가 OTP를 조회 뒤에 보여준다', asyn
  * 판정하지 못한다.
  */
 test('상점을 검색해 그 상점의 대회로 걸어 들어간다', async ({ stage, manifest }) => {
-  const player = playerByNickname(manifest, 'player1');
+  const player = playerAt(manifest, 0);
   const phone = await stage('phone', 'phone-find-tournament');
 
   await signInOnPhone(phone, player.nickname, manifest.password);
@@ -153,7 +153,7 @@ test('참가자 폰의 대회 상세가 백엔드의 참가비와 블라인드�
   stage,
   manifest,
 }) => {
-  const player = playerByNickname(manifest, 'player1');
+  const player = playerAt(manifest, 0);
   const phone = await stage('phone', 'phone-tournament');
 
   await signInOnPhone(phone, player.nickname, manifest.password);

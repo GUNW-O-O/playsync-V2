@@ -61,6 +61,24 @@ export function tableByOrder(manifest: DemoManifest, tableOrder: number) {
   return table;
 }
 
+/**
+ * 순서로 참가자를 고른다. 시드의 `PAID_PLAYERS` 순서 그대로다.
+ *
+ * 데모는 사람 넷을 이름이 아니라 **역할**로 쓴다(숏스택 · 탈락 · 승자 ·
+ * 옮겨 오는 사람). 이름을 리터럴로 박으면 시드에서 이름을 고칠 때마다
+ * 스펙을 같이 고쳐야 한다 — 실제로 `player1`을 사람 이름으로 바꾸면서
+ * 그렇게 됐다.
+ */
+export function playerAt(manifest: DemoManifest, index: number) {
+  const player = manifest.players[index];
+  if (!player) {
+    throw new Error(
+      `${index}번째 참가자가 시드에 없다. ${manifest.players.length}명뿐이다.`,
+    );
+  }
+  return player;
+}
+
 /** 닉네임으로 참가자를 고른다. 참가 OTP가 태블릿 입장에 그대로 들어간다. */
 export function playerByNickname(manifest: DemoManifest, nickname: string) {
   const player = manifest.players.find((p) => p.nickname === nickname);
