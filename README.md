@@ -411,33 +411,47 @@ npm workspaces 모노레포.
 
 ```mermaid
 flowchart LR
-  tablets["좌석 태블릿 · 딜러 태블릿"]
-  others["폰 · 상점 콘솔 · 전광판"]
-  next["frontend · Next.js<br/>서버 컴포넌트 · 서버 액션"]
-  ws["ws — 게이트웨이<br/>권한은 여기서 본다"]
-  play["playsync · dealer<br/>진행과 딜러 명령"]
-  engine["game-engine<br/>프레임워크 없는 순수 상태머신"]
-  rest["payment · entry · store<br/>결제 · 착석 · 대회 운영"]
-  redis[("Redis — 스냅샷 · 대회 메타<br/>좌석 비트맵 · 락")]
-  db[("PostgreSQL — 대회 · 참가<br/>포인트 · 거래 내역")]
+  subgraph faces["면 — 크기가 곧 읽는 거리"]
+    seat["좌석 태블릿<br/>1280×720"]
+    dealerT["딜러 태블릿<br/>1280×720"]
+    phone["폰<br/>390×844"]
+    console["상점 콘솔<br/>1440×900"]
+    board["전광판<br/>1280×720"]
+  end
 
-  others --> next
-  tablets --> next
-  tablets -. WebSocket .-> ws
+  subgraph front["frontend · Next.js"]
+    next["서버 컴포넌트 · 서버 액션<br/>쿠키를 읽고 백엔드에 묻는다"]
+  end
+
+  subgraph back["backend · NestJS"]
+    ws["ws — 게이트웨이<br/>권한은 여기서 본다"]
+    play["playsync · dealer<br/>진행 · 타임아웃 · 리바인 · 상금"]
+    rest["payment · entry · store<br/>결제 · 착석 · 대회 운영"]
+    engine["game-engine<br/>프레임워크 없는 순수 상태머신"]
+  end
+
+  subgraph state["상태"]
+    redis[("Redis<br/>스냅샷 · 대회 메타<br/>좌석 비트맵 · 락")]
+    db[("PostgreSQL<br/>대회 · 참가<br/>포인트 · 거래 내역")]
+  end
+
+  faces --> next
+  seat -. WebSocket .-> ws
+  dealerT -. WebSocket .-> ws
   next --> rest
   ws --> play
   play --> engine
-  play --> redis
-  play --> db
+  play -- "액션마다" --> redis
+  play -- "경계에서만" --> db
   rest --> redis
   rest --> db
 ```
 
-<sup>실선이 HTTP, 점선이 WebSocket이다. 화면은 다섯이고 크기가 곧 읽는
-거리다(§2) — 전광판은 10m 밖, 태블릿은 팔 길이, 폰은 손 안. **액션마다
-Redis, 경계에서만 PostgreSQL** — 핸드당 수십 번 일어나는 상태 변경이 DB를
-때리지 않는다(아래 「상태를 어디에 두는가」). 게임 로직은 `game-engine`
-하나에 모여 있고 프레임워크 의존성이 없다.</sup>
+<sup>실선이 HTTP, 점선이 WebSocket이다. 좌석·딜러 태블릿만 소켓을 든다 —
+나머지 셋은 조회와 조작뿐이라 Next를 거친다. **액션마다 Redis, 경계에서만
+PostgreSQL** — 핸드당 수십 번 일어나는 상태 변경이 DB를 때리지 않는다
+(아래 「상태를 어디에 두는가」). 게임 로직은 `game-engine` 하나에 모여 있고
+프레임워크 의존성이 없다.</sup>
 
 ### 백엔드 모듈
 
