@@ -347,6 +347,25 @@ Redis의 `BlindField.startedAt`은 블라인드 시계의 기준점이라 **민�
 정보라 폰이 들고 있다. 폰에서도 그때부터는 참가 OTP가 아니라 등수다. 짝:
 [`elimination-rebuy.int-spec.ts`](./backend/src/scenario/elimination-rebuy.int-spec.ts)</sup>
 
+### 테이블을 합치는 것은 사람이 걸어가는 일이다
+
+온라인이면 서버가 좌석을 재배치하고 끝이다. 여기서는 **사람이 칩을 들고
+일어나 다른 테이블로 걸어간다.** 그래서 이 흐름은 자동화의 대상이 아니라
+세 걸음으로 나뉜다 — 상점이 좌석을 해제하고, 사람이 걸어가 **참가 OTP를
+다시 넣고**, 상점이 빈 테이블을 닫는다.
+
+<img src="./img/s5-table-merge.webp" alt="상점이 2번 테이블 좌석을 해제하면 사람이 1번 테이블로 옮겨 앉고, 옆자리 태블릿에 그가 나타난다" width="100%">
+
+<sup>왼쪽 위가 옮겨 가는 사람의 태블릿, 오른쪽 위가 **가만히 앉아 있는
+사람**의 태블릿이다. 아무도 그 화면을 건드리지 않는데 옆자리가 찬다.
+아래는 좌석을 푸는 콘솔과, 다시 넣을 참가 OTP를 든 폰 — **처음 앉을 때 쓴
+것과 같은 번호**다. 짝:
+[`table-move.int-spec.ts`](./backend/src/scenario/table-move.int-spec.ts)</sup>
+
+**언제 누구를 어디로 보낼지는 규칙이 아니라 현장 판단이다.** 그래서 자동
+밸런싱을 만들지 않았다(§8) — 시스템이 책임지는 것은 **칩이 좌석보다 오래
+사는 것**뿐이다. 좌석 행(`TablePlayer`)이 사라져도 칩은 참가 행에 남는다(§5).
+
 ### 상금은 상점이 정하고 관리자가 닫는다
 
 프라이즈풀은 `totalBuyinAmount`(참가비 + 리바인 누적)이고, 분배율은 대회 생성 시
@@ -392,55 +411,33 @@ npm workspaces 모노레포.
 
 ```mermaid
 flowchart LR
-  phone["폰<br/>390×844"]
-  seat["좌석 태블릿<br/>1280×720"]
-  dealerT["딜러 태블릿<br/>1280×720"]
-  console["상점 콘솔<br/>1440×900"]
-  board["전광판<br/>1280×720"]
+  tablets["좌석 태블릿 · 딜러 태블릿"]
+  others["폰 · 상점 콘솔 · 전광판"]
+  next["frontend · Next.js<br/>서버 컴포넌트 · 서버 액션"]
+  ws["ws — 게이트웨이<br/>권한은 여기서 본다"]
+  play["playsync · dealer<br/>진행과 딜러 명령"]
+  engine["game-engine<br/>프레임워크 없는 순수 상태머신"]
+  rest["payment · entry · store<br/>결제 · 착석 · 대회 운영"]
+  redis[("Redis — 스냅샷 · 대회 메타<br/>좌석 비트맵 · 락")]
+  db[("PostgreSQL — 대회 · 참가<br/>포인트 · 거래 내역")]
 
-  subgraph front["frontend · Next.js"]
-    ssr["서버 컴포넌트<br/>쿠키 → 백엔드 조회"]
-    client["클라이언트<br/>WS · 서버 액션"]
-  end
-
-  subgraph back["backend · NestJS"]
-    ws["ws<br/>게이트웨이 · 권한 경계"]
-    playsync["playsync<br/>액션 · 타임아웃 · 리바인 · 상금"]
-    dealer["dealer<br/>OTP 인증 · 딜러 명령"]
-    engine["game-engine<br/>순수 상태머신"]
-    payment["payment / entry<br/>결제 · 좌석 선점"]
-    store["store<br/>대회 · 테이블 · 좌석 해제"]
-  end
-
-  redis[("Redis<br/>스냅샷 · 대회 메타<br/>좌석 비트맵 · 락")]
-  db[("PostgreSQL<br/>대회 · 참가 · 포인트<br/>거래 내역")]
-
-  phone --> ssr
-  seat --> ssr
-  dealerT --> ssr
-  console --> ssr
-  board --> ssr
-  seat -. WebSocket .-> ws
-  dealerT -. WebSocket .-> ws
-  client -. WebSocket .-> ws
-  ssr --> payment
-  ssr --> store
-  ws --> playsync
-  ws --> dealer
-  playsync --> engine
-  dealer --> engine
-  playsync --> redis
-  playsync --> db
-  dealer --> redis
-  payment --> redis
-  payment --> db
-  store --> redis
-  store --> db
+  others --> next
+  tablets --> next
+  tablets -. WebSocket .-> ws
+  next --> rest
+  ws --> play
+  play --> engine
+  play --> redis
+  play --> db
+  rest --> redis
+  rest --> db
 ```
 
-<sup>화살표가 실선이면 HTTP, 점선이면 WebSocket이다. **액션마다 Redis, 경계에서만
-PostgreSQL** — 핸드당 수십 번 일어나는 상태 변경이 DB를 때리지 않는다(§5 아래
-「상태를 어디에 두는가」).</sup>
+<sup>실선이 HTTP, 점선이 WebSocket이다. 화면은 다섯이고 크기가 곧 읽는
+거리다(§2) — 전광판은 10m 밖, 태블릿은 팔 길이, 폰은 손 안. **액션마다
+Redis, 경계에서만 PostgreSQL** — 핸드당 수십 번 일어나는 상태 변경이 DB를
+때리지 않는다(아래 「상태를 어디에 두는가」). 게임 로직은 `game-engine`
+하나에 모여 있고 프레임워크 의존성이 없다.</sup>
 
 ### 백엔드 모듈
 
@@ -594,12 +591,6 @@ e2e            13  (4 files)       + 데모 촬영 1 (`npm run demo`)
 | `blind-and-prize` | 블라인드 상승 → 등록 마감 → 상금 지급 |
 | `board-high` | 동점 분배 |
 | `full-flow` | **회원가입부터 대회 마무리까지.** 스텁 없이 WS 경유 |
-
-<img src="./img/s5-table-merge.webp" alt="상점이 2번 테이블 좌석을 해제하면 사람이 1번 테이블로 옮겨 앉고, 빈 테이블이 닫힌다" width="100%">
-
-<sup>인원이 줄어 테이블을 합친다. 상점이 좌석을 해제하고 → 사람이 걸어가
-**참가 OTP를 다시 넣고** → 원래 칩 그대로 앉는다. **칩이 좌석보다 오래
-산다.** 짝: [`table-move.int-spec.ts`](./backend/src/scenario/table-move.int-spec.ts)</sup>
 
 ---
 
