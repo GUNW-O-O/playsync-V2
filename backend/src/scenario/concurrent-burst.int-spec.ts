@@ -168,4 +168,31 @@ describe('시나리오: 동시 요청 폭탄', () => {
     const actor = after.players[h.seatOf(after, turn)]!;
     expect(`행동자 베팅 ${actor.bet}`).toBe(`행동자 베팅 ${before.currentBet}`);
   });
+
+  it('딜러가 핸드 시작을 동시에 두 번 눌러도 블라인드는 한 번만 나간다', async () => {
+    const players = ['p1', 'p2', 'p3'];
+    h = await setupTournament(players, {});
+    const total = players.length * SCENARIO.startStack;
+
+    const results = await Promise.allSettled([
+      h.dealer.startPreFlop(h.tournamentId, h.tableId),
+      h.dealer.startPreFlop(h.tournamentId, h.tableId),
+    ]);
+
+    const ok = results.filter(r => r.status === 'fulfilled');
+    const failed = results.filter(
+      (r): r is PromiseRejectedResult => r.status === 'rejected',
+    );
+
+    expect(`성공 ${ok.length}`).toBe('성공 1');
+    expect(`실패 ${failed.length}`).toBe('실패 1');
+    expect(`거절 ${(failed[0].reason as Error).message}`)
+      .toBe('거절 대기 상태가 아닙니다.');
+
+    // 하네스 기본 블라인드는 sb=100, ante=false다. 엔진이 bb를 sb*2로 놓으므로
+    // (`table-engine.ts:433,436`) 한 번 시작하면 팟은 정확히 300이다.
+    // 두 번 나가면 600 — 칩 총량은 그대로라 이 단언만이 그것을 잡는다.
+    const state = await checkInvariants(h, '중복 시작 후', total);
+    expect(`팟 ${state.pot}`).toBe('팟 300');
+  });
 });
