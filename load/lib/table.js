@@ -135,18 +135,58 @@ function thinkMs() {
 }
 
 /**
- * 좌석 아홉을 만들어 앉힌다.
+ * 신규 가입의 비율. **나머지는 이미 계정이 있는 손님이다.**
  *
- * 닉네임에 VU와 반복 회차를 넣는다 — 램프에서 VU가 여럿이면 같은 닉네임이
- * 충돌하고, `POST /auth/join`이 400으로 거절한다.
+ * 처음에는 좌석마다 가입 + 로그인을 둘 다 태웠다. 그러면 bcrypt가 사람당 두
+ * 번(`hash` + `compare`) 돌아 실제의 두 배가 되고, 정원이 낮게 나온다.
+ *
+ * 실제 홀덤펍에서 대회 직전에 몰리는 것은 **로그인**이다. 손님 대부분은 계정이
+ * 이미 있고 — 그 가입은 몇 주 전에 흩어져 일어났다 — 그날 새로 만드는 사람은
+ * 첫 방문자 소수뿐이다. 그래서 계정은 시드가 풀로 만들어 두고, 봇은 이 비율
+ * 만큼만 실행 중에 가입한다.
  */
-export function seatPlayers({ tournamentId, tableId, password, seatCount, prefix }) {
+const NEW_USER_RATIO = Number(__ENV.LOAD_NEW_USER_RATIO || 0.1);
+
+/** 실행 중 가입한 수와 로그인 수. 비율이 의도대로 나왔는지 결과에서 본다. */
+export const signups = new Counter('signups');
+export const logins = new Counter('logins');
+
+/**
+ * 좌석을 채운다.
+ *
+ * @param poolBase 이 테이블이 쓸 풀 계정의 시작 인덱스. 램프에서 테이블끼리
+ *   겹치면 `@@unique([tournamentId, userId])`가 두 번째를 409로 막는다.
+ * @param prefix 신규 가입용 접두사. 닉네임은 3~10자다(`CreateUserDto`).
+ */
+export function seatPlayers({
+  tournamentId,
+  tableId,
+  password,
+  seatCount,
+  prefix,
+  poolBase,
+  accountPrefix,
+  accountPool,
+}) {
   const players = [];
   for (let seat = 0; seat < seatCount; seat++) {
-    // 좌석은 0~8이라 한 글자다. 닉네임 상한(10자)을 지키려고 `s`를 빼고 붙인다.
-    const nickname = `${prefix}${seat.toString(36)}`;
-    signup(nickname, password);
+    const index = (poolBase || 0) + seat;
+    // 풀이 모자라면 신규로 넘긴다 — 램프가 풀보다 커지면 조용히 겹치는 대신
+    // 새로 만든다. 그 사실은 `signups` 카운터에 남는다.
+    const fresh = Math.random() < NEW_USER_RATIO || index >= (accountPool || 0);
+
+    let nickname;
+    if (fresh) {
+      // 좌석은 0~8이라 한 글자다. 닉네임 상한을 지키려고 붙여 쓴다.
+      nickname = `${prefix}${seat.toString(36)}`;
+      signup(nickname, password);
+      signups.add(1);
+    } else {
+      nickname = `${accountPrefix}${String(index).padStart(4, '0')}`;
+    }
+
     const token = login(nickname, password);
+    logins.add(1);
     joinTournament(token, tournamentId);
     const otp = myPlayerOtp(token, tournamentId);
     const seatToken = enterSeat(tournamentId, otp, tableId, seat);

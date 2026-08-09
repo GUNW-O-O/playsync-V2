@@ -11,16 +11,13 @@ import { resetAll, setEmptySnapshot, setSeatBitmap } from './seed-helpers';
 /**
  * 부하테스트용 시드.
  *
- * **참가자를 만들지 않는다.** 데모 시드와 갈리는 지점이 여기다.
+ * **무대와 계정만 세운다.** 상점, 상점 관리자, 블라인드 구조, 대회 하나,
+ * 테이블, 그리고 계정 풀. 참가·착석·게임은 전부 k6가 실행 중에 한다 — 그
+ * 만드는 일 자체가 부하다.
  *
- * 처음에는 수천 명을 미리 만들어 두려고 했는데, 그러면 두 가지가 어긋난다.
- * 하나는 시드가 bcrypt를 수천 번 돌려 몇 분이 걸리는 것이고, 더 나쁜 것은
- * **그 비용이 측정 밖에서 사라지는 것**이다. 회원가입과 로그인의 bcrypt는
- * 일부러 느리게 만든 함수라 1코어에서 무겁고, 실제 운영에서도 대회 직전에
- * 몰린다. 미리 발급한 토큰으로 건너뛰면 진짜 부하의 한 축을 빼먹는다.
- *
- * 그래서 시드는 **무대만 세운다** — 상점, 상점 관리자, 블라인드 구조, 대회
- * 하나, 테이블. 사람은 k6가 실행 중에 만들고, 그 만드는 일 자체가 부하다.
+ * 계정을 미리 만드는 이유는 아래 `ACCOUNT_POOL` 주석에 있다. 요점은 bcrypt
+ * 두 종류가 **실제로 일어나는 시점이 다르다**는 것이다 — 가입의 `hash`는 몇
+ * 주 전에 흩어져 일어나고, 로그인의 `compare`만 대회 직전에 몰린다.
  *
  * **참가비가 0이다.** 회원가입이 포인트를 주지 않고(`schema.prisma`의
  * `points @default(0)`) 충전 경로도 없다 — 실제 PG 결제가 아직 판단하지 않은
@@ -78,6 +75,31 @@ const START_STACK = 100_000;
  * (`POST /store/sessions/:id/tables`)로 실행 중에 연다 — 그것도 부하다.
  */
 const INITIAL_TABLES = Number(process.env.LOAD_TABLES ?? 1);
+
+/**
+ * 미리 만들어 두는 계정 풀. **여기가 앞선 판단을 한 번 뒤집은 자리다.**
+ *
+ * 처음에는 계정을 하나도 만들지 않고 k6가 실행 중에 전부 가입시켰다. bcrypt가
+ * 측정 밖으로 사라지면 안 된다는 이유였는데, **반쪽만 맞았다.**
+ *
+ * | | 실제로 언제 | 측정 안에 있어야 하나 |
+ * |---|---|---|
+ * | `hash` (가입) | 몇 주 전, 흩어져서 | 아니다 — 소수 비율만 |
+ * | `compare` (로그인) | 대회 직전, 몰려서 | **그렇다** — 이것이 문 앞의 부하 |
+ *
+ * 실제 홀덤펍에서 대회 직전에 몰리는 것은 로그인이다. 손님 대부분은 계정이
+ * 이미 있고, 회원가입은 첫 방문자 소수뿐이다. 사람마다 가입과 로그인을 둘 다
+ * 태우면 bcrypt가 실제의 두 배로 잡혀 정원이 낮게 나온다.
+ *
+ * 그래서 계정은 시드가 미리 만들고(해시를 한 번 계산해 복사하므로 비용이
+ * 거의 없다) 램프는 **로그인만** 탄다. 신규 가입은 봇이 10%쯤만 실행 중에
+ * 한다(`LOAD_NEW_USER_RATIO`).
+ *
+ * 닉네임은 `p0000` 형식이다 — 3~10자 제한(`CreateUserDto`) 안에 들어가고
+ * 봇이 인덱스만으로 만들 수 있어야 한다.
+ */
+const ACCOUNT_POOL = Number(process.env.LOAD_ACCOUNT_POOL ?? 600);
+const ACCOUNT_PREFIX = 'p';
 
 /**
  * k6가 읽는 매니페스트.
@@ -147,6 +169,18 @@ async function main() {
       data: { tournamentId: tournament.id },
     });
 
+    // 풀 계정. `createMany`로 한 번에 넣는다 — 해시가 전부 같은 값이라
+    // bcrypt는 위에서 이미 한 번만 돌았다.
+    if (ACCOUNT_POOL > 0) {
+      await prisma.user.createMany({
+        data: Array.from({ length: ACCOUNT_POOL }, (_, i) => ({
+          nickname: `${ACCOUNT_PREFIX}${String(i).padStart(4, '0')}`,
+          password,
+          role: Role.USER,
+        })),
+      });
+    }
+
     const tables: { id: string; tableOrder: number }[] = [];
     for (let order = 1; order <= INITIAL_TABLES; order++) {
       const table = await prisma.table.create({
@@ -168,6 +202,8 @@ async function main() {
       password: LOAD_PASSWORD,
       dealerOtp: DEALER_OTP,
       startStack: START_STACK,
+      accountPrefix: ACCOUNT_PREFIX,
+      accountPool: ACCOUNT_POOL,
       tables,
     };
     mkdirSync(resolve(MANIFEST_PATH, '..'), { recursive: true });
@@ -176,6 +212,7 @@ async function main() {
     console.log('부하 시드 완료');
     console.log(`  대회      ${tournament.id}`);
     console.log(`  테이블    ${tables.length}개`);
+    console.log(`  계정 풀   ${ACCOUNT_POOL}개 (${ACCOUNT_PREFIX}0000 ~)`);
     console.log(`  딜러 OTP  ${DEALER_OTP}`);
     console.log(`  매니페스트 ${MANIFEST_PATH}`);
   } finally {

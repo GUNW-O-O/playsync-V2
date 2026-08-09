@@ -77,6 +77,7 @@ export function oneLine(label, summary) {
     `소켓오류 ${summary.socketErrors}`,
     `자리비움 ${summary.absentActions}`,
     `지각 ${summary.lateActions}`,
+    `가입 ${summary.signups}/로그인 ${summary.logins}`,
     summary.server
       ? `lag 중앙 ${summary.server.lagMs.med}ms 최대 ${summary.server.lagMs.max}ms` +
         ` · CPU ${summary.server.cpuPercent}% · rss ${summary.server.rssMb}MB` +
@@ -98,6 +99,8 @@ export function buildSummary(data, name) {
     socketErrors: counter(data, 'socket_errors'),
     absentActions: counter(data, 'absent_actions'),
     lateActions: counter(data, 'late_actions'),
+    signups: counter(data, 'signups'),
+    logins: counter(data, 'logins'),
     myAction: trend(data, 'my_action_ms'),
     othersAction: trend(data, 'others_action_ms'),
     http: trend(data, 'http_req_duration'),

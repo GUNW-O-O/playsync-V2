@@ -59,6 +59,11 @@ export default function (data) {
     seatCount: SEAT_COUNT,
     // 접두사 4 + VU(base36) + 좌석(1) = 최대 10자 안쪽.
     prefix: `${data.runId}${__VU.toString(36)}`,
+    // 스모크는 테이블 하나라 풀 앞에서부터 쓴다. 램프는 테이블마다 겹치지
+    // 않게 밀어 준다.
+    poolBase: (__VU - 1) * SEAT_COUNT,
+    accountPrefix: manifest.accountPrefix,
+    accountPool: manifest.accountPool,
   });
 
   // 대회를 시작해야 Redis에 블라인드 메타가 서고, 그래야 `startPreFlop`이
