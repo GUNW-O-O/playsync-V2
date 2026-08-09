@@ -7,6 +7,7 @@ import { resolve } from 'path';
 import { Pool } from 'pg';
 import { generateDealerOtp, hashDealerOtp } from '../src/dealer/dealer-otp';
 import { generatePlayerOtp } from '../src/payment/player-otp';
+import { resetAll, setEmptySnapshot, setSeatBitmap } from './seed-helpers';
 
 /**
  * 데모용 시드.
@@ -109,8 +110,6 @@ const PRIZE_PAYOUTS = [
  */
 const TABLE_COUNT = 2;
 
-const SEAT_COUNT = 9;
-
 const DEMO_PASSWORD = 'password123';
 
 /**
@@ -141,7 +140,7 @@ async function main() {
   });
 
   try {
-    await reset(prisma, redis);
+    await resetAll(prisma, redis);
 
     const password = await bcrypt.hash(DEMO_PASSWORD, 10);
 
@@ -203,6 +202,10 @@ async function main() {
       // 막는다), 비트맵 없이 시작하면 사람이 앉아도 좌석 목록이 계속 비어
       // 있다. 정상 경로에서는 `createSession`·`createTable`이 같은 일을 한다.
       await setSeatBitmap(redis, tournament.id, table.id);
+      // **T38의 불변식을 시드도 지킨다** — 테이블이 있으면 스냅샷이 있다.
+      // 제품 경로에서는 `createTable`이 세우지만 여기는 그 경로를 타지 않는다.
+      // 없으면 아무도 앉기 전에 딜러 화면이 500을 받는다.
+      await setEmptySnapshot(redis, tournament.id, table.id);
     }
 
     const players: { nickname: string; otp: string }[] = [];
@@ -292,31 +295,6 @@ async function main() {
  * Redis도 같이 지운다. DB만 지우면 지난 대회의 스냅샷과 좌석 비트맵이 남고,
  * 부팅 복구(`RecoveryService`)가 없는 대회의 상태를 들고 돌게 된다.
  */
-async function reset(prisma: PrismaClient, redis: Redis) {
-  const rows = await prisma.$queryRaw<{ tablename: string }[]>`
-    SELECT tablename FROM pg_tables
-    WHERE schemaname = 'public' AND tablename != '_prisma_migrations'
-  `;
-  if (rows.length > 0) {
-    const list = rows.map((r) => `"public"."${r.tablename}"`).join(', ');
-    await prisma.$executeRawUnsafe(`TRUNCATE TABLE ${list} RESTART IDENTITY CASCADE`);
-  }
-  await redis.flushdb();
-}
-
-/**
- * `RedisService.setSeatBitmap`과 같은 키·같은 형식이다.
- *
- * 그쪽을 부르지 않는 이유는 `RedisService`가 Nest 프로바이더라 모듈 그래프를
- * 통째로 끌고 오기 때문이다. 시드 하나 때문에 앱을 부팅시키지 않는다.
- * 형식이 바뀌면 여기도 바꿔야 한다 — 그래서 두 줄로 붙여 둔다.
- */
-async function setSeatBitmap(redis: Redis, tournamentId: string, tableId: string) {
-  const key = `tournament:${tournamentId}:seat`;
-  await redis.hset(key, `table:${tableId}`, '0'.repeat(SEAT_COUNT));
-  await redis.expire(key, 86400);
-}
-
 function writeManifest(manifest: unknown) {
   writeFileSync(MANIFEST_PATH, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
 }

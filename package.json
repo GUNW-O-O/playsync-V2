@@ -23,6 +23,7 @@
     "load:down": "docker compose -f backend/docker-compose.test.yml --profile load --profile k6 down -v",
     "demo": "node scripts/demo.mjs",
     "assets": "node scripts/make-demo-assets.mjs",
-    "seed": "npm run seed -w backend"
+    "seed": "npm run seed -w backend",
+    "seed:load": "npm run seed:load -w backend"
   }
 }
