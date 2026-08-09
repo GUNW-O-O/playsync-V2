@@ -41,6 +41,10 @@ export const othersActionMs = new Trend('others_action_ms', true);
 export const handsPlayed = new Counter('hands_played');
 /** 소켓이 서버에게 거절당한 횟수. 0이 아니면 그 실행의 지연 수치는 못 믿는다. */
 export const socketErrors = new Counter('socket_errors');
+/** 아예 누르지 않아 서버 타임아웃에 맡긴 횟수. 그 경로가 돌았다는 증거다. */
+export const absentActions = new Counter('absent_actions');
+/** 마감 직후에 눌러 마감 시각 판정을 밟은 횟수. */
+export const lateActions = new Counter('late_actions');
 
 /**
  * WS는 Origin 헤더가 필수다(`ws.gateway.ts`의 `assertAllowedOrigin`).
@@ -77,20 +81,56 @@ const THINK_SLOW_RATIO = Number(__ENV.LOAD_THINK_SLOW_RATIO || 0.15);
  * 핸드 사이에 딜러가 쉬는 시간. **이걸 빼먹으면 테이블당 부하가 실제보다
  * 크게 나온다.**
  *
- * 카드는 물리다. 딜러가 셔플하고, 딜링하고, 팟을 밀어 주고, 그 다음에야
- * 다음 핸드를 시작한다. 그동안 시스템은 아무것도 받지 않는다 — 이 리포의
- * 전제(카드는 물리, 칩은 디지털)가 부하 모양에도 그대로 나타나는 자리다.
+ * 카드는 물리다. 그동안 시스템은 아무것도 받지 않는다 — 이 리포의 전제
+ * (카드는 물리, 칩은 디지털)가 부하 모양에도 그대로 나타나는 자리다.
+ *
+ * **팟을 미는 시간은 여기 없다.** 칩이 디지털이라 정산과 지급을 서버가
+ * `resolveWinners`에서 끝낸다. 딜러에게 남는 물리 작업은 카드뿐이다.
+ *
+ *   카드 회수      3~5초
+ *   셔플·컷        10~15초 — 딜러가 손으로 섞는다
+ *   딜링 9인 2장   8~12초
+ *
+ * 합쳐 21~32초라 기본값을 25초로 둔다.
  */
 const DEAL_MS = Number(__ENV.LOAD_DEAL_MS || 25000);
 
-/** 이 액션에 얼마나 생각할지. 0이면 즉시(스모크). */
+/**
+ * 아예 누르지 않는 액션의 비율. **타임아웃 경로를 실제로 돌리려는 것이다.**
+ *
+ * 봇이 언제나 30초 안에 누르면 `TIME_OUT` 잡이 한 번도 돌지 않는다. 그런데
+ * 그 경로는 BullMQ 큐 → 락 → 스냅샷 쓰기 → 브로드캐스트를 전부 쓰는 진짜
+ * 부하이고, 실제 대회에는 자리를 비운 사람이 늘 있다. 안 돌리면 부하의 한
+ * 갈래가 통째로 빠진다.
+ */
+const ABSENT_RATIO = Number(__ENV.LOAD_ABSENT_RATIO || 0.03);
+
+/**
+ * 마감 직후에 도착하는 액션의 비율.
+ *
+ * 30초를 아주 살짝 넘겨 누르는 사람이다. 타임아웃 잡이 이미 폴드시킨 뒤에
+ * 도착하므로 **제품의 마감 시각 판정**(`playsync.service.ts:86` — "판정 기준은
+ * 요청 도착 순서가 아니라 마감 시각이다")이 그때 처음 돈다. 봇이 이 경로를
+ * 밟지 않으면 그 코드는 부하 중에 한 번도 실행되지 않는다.
+ */
+const LATE_RATIO = Number(__ENV.LOAD_LATE_RATIO || 0.02);
+const LATE_MS = Number(__ENV.LOAD_LATE_MS || 30300);
+
+/**
+ * 이 액션을 언제(혹은 아예 안) 보낼지.
+ *
+ * @returns `null`이면 보내지 않는다 — 서버 타임아웃에 맡긴다.
+ */
 function thinkMs() {
   if (THINK_FAST_MS <= 0 && THINK_SLOW_MS <= 0) return 0;
+  if (Math.random() < ABSENT_RATIO) return null;
+  if (Math.random() < LATE_RATIO) return LATE_MS;
+
   const slow = Math.random() < THINK_SLOW_RATIO;
   const base = slow ? THINK_SLOW_MS : THINK_FAST_MS;
   // 같은 값이 겹치면 인위적인 동시 도착이 생긴다. 절반~1.5배로 흩는다.
   const jittered = base * (0.5 + Math.random());
-  // 30초를 넘기면 서버 타임아웃이 대신 폴드시켜 이 액션이 사라진다.
+  // 여기서는 30초를 넘기지 않는다. 넘기는 경우는 위 두 분기가 따로 만든다.
   return Math.min(Math.round(jittered), 29000);
 }
 
@@ -226,9 +266,18 @@ export function runHands({ tournamentId, tableId, dealerOtp, players, durationMs
       windows.push({ at: Date.now(), actorSocketIdx: entry.idx, seen: new Set() });
       entry.ws.send(JSON.stringify(payload));
     };
-    const wait = entry.role === 'dealer' && payload.data.action === 'START_PRE_FLOP'
-      ? DEAL_MS
-      : thinkMs();
+    const isDeal = entry.role === 'dealer' && payload.data.action === 'START_PRE_FLOP';
+    const wait = isDeal ? DEAL_MS : thinkMs();
+
+    // `null`은 "자리에 없다" — 아예 보내지 않고 서버 타임아웃에 맡긴다.
+    // 예약 플래그는 풀어 둬야 다음 핸드에서 이 좌석이 다시 움직인다.
+    if (wait === null) {
+      absentActions.add(1);
+      entry.scheduled = false;
+      return;
+    }
+    if (wait >= LATE_MS) lateActions.add(1);
+
     if (wait > 0) setTimeout(fire, wait);
     else fire();
   }

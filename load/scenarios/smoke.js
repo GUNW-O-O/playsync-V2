@@ -1,4 +1,6 @@
-import { login, startTournament, metrics } from '../lib/api.js';
+import { login, startTournament } from '../lib/api.js';
+import { sample } from '../lib/monitor.js';
+import { buildSummary } from '../lib/summary.js';
 import { runHands, seatPlayers } from '../lib/table.js';
 
 /**
@@ -43,7 +45,7 @@ export function setup() {
   // **네 글자로 자른다.** 닉네임은 3~10자다(`CreateUserDto`). 뒤에 VU와 좌석이
   // 붙으므로 접두사가 길면 램프에서 VU 번호가 커질 때 상한을 넘는다.
   const runId = Math.random().toString(36).slice(2, 6);
-  return { ownerToken, runId, before: metrics() };
+  return { ownerToken, runId };
 }
 
 export default function (data) {
@@ -73,9 +75,11 @@ export default function (data) {
 }
 
 export function teardown() {
-  const after = metrics();
-  console.log(
-    `[메트릭] 창 ${after.windowMs}ms · lag p95 ${after.eventLoopLagMs.p95}ms ` +
-      `(바닥 ${after.resolutionMs}ms) · CPU ${after.cpu.percent}% · rss ${after.memoryMb.rss}MB`,
-  );
+  // 서버 지표를 k6 지표로 기록한다. `handleSummary`는 모듈 변수를 못 보므로
+  // (k6가 그 사이 상태를 이어 주지 않는다) 여기를 통해야 요약에 남는다.
+  sample('end');
+}
+
+export function handleSummary(data) {
+  return buildSummary(data, 'smoke');
 }
