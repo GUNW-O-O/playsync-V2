@@ -66,6 +66,9 @@ npm run test:int       # 통합 테스트 (컨테이너 기동부터 자동)
 npm run test:e2e       # 화면 회귀 (Playwright, 시드 필요)
 npm run demo           # 데모 촬영 (시드 → 프론트 빌드 → 장면 다섯)
 npm run assets         # 촬영본을 자르고 합쳐 img/ 로 (ffmpeg-static)
+npm run load:up        # 부하용 백엔드를 1코어 컨테이너로 (빌드 포함)
+npm run load:metrics   # 이벤트 루프 지연 · CPU · 메모리 한 번 읽기
+npm run load:down      # 부하 컨테이너와 저장소 정리
 ```
 
 개발용 인프라는 `cd backend && docker compose up -d`. PostgreSQL + Redis를 띄우고
@@ -75,16 +78,39 @@ npm run assets         # 촬영본을 자르고 합쳐 img/ 로 (ffmpeg-static)
 **시드는 지우고 다시 만든다.** 데모가 매번 같은 화면에서 시작해야 해서고, 그래서
 개발 DB의 기존 데이터가 사라진다. 통합 테스트는 별도 컨테이너(5433/6380)라 무관하다.
 
+### 부하테스트 인프라
+
+**통합 테스트와 같은 컨테이너를 쓴다**(`backend/docker-compose.test.yml`). 그 파일이
+이미 격리 + tmpfs + 영속성 해제라 부하가 원하는 성질을 그대로 갖고 있고, 부하용
+백엔드가 컨테이너로 뜨면 `127.0.0.1:5433`으로는 DB에 닿을 수 없어 같은 네트워크에
+있어야 한다 — 서비스 이름(`db-test:5432`)으로 붙는다.
+
+부하용 서비스는 `profiles`가 붙어 있어 프로파일을 켜야 뜬다. 그래서
+`npm run test:int`의 동작은 이 추가 전과 같다.
+
+**둘을 동시에 돌리지 않는다.** 저장소를 나눠 쓰므로 서로 데이터를 지운다. 구조로
+막을 수 없어 규칙으로 둔다.
+
+백엔드 이미지는 `backend/Dockerfile`이다. alpine을 쓰지 않는다 — `bcrypt`가
+네이티브라 musl에서 컴파일이 필요한데, 로컬 계측 대상이라 이미지 크기가 아무것도
+바꾸지 않는다. `prisma generate`가 `nest build`보다 **앞**이어야 한다(개발용
+compose의 `seed` 서비스와 같은 함정 — 없으면 `@prisma/client`가 타입을 하나도
+내보내지 않아 TS2305로 죽는다).
+
+`GET /internal/metrics`는 `LOAD_METRICS=1`일 때만 등록된다. 이벤트 루프 지연은
+프로세스 밖에서 잴 수 없어서 넣은 유일한 제품 코드다. **응답의 `resolutionMs`가
+지연의 바닥값이다** — 유휴 서버도 p50이 약 10ms로 나오므로 그만큼 빼고 읽는다.
+
 ### 베이스라인
 
 타입 에러 0건, 테스트 전부 통과가 정상이다. CI(`.github/workflows/ci.yml`)가
 타입 체크 · 테스트 · 빌드를 돌린다.
 
-현재 기준선 (T38 완료 시점):
+현재 기준선 (T39 완료 시점):
 
 ```
 contract       62  (4 suites)
-백엔드 단위   179  (16 suites)
+백엔드 단위   182  (17 suites)
 프론트 단위   100  (24 files)
 통합          342  (28 suites)
 e2e            13  (4 files, regression 프로젝트)

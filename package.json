@@ -17,6 +17,10 @@
     "test": "npm run test -w @playsync/contract && npm run test -w backend && npm run test -w frontend",
     "test:int": "npm run test:int -w backend",
     "test:e2e": "npm run test:e2e -w frontend",
+    "load:up": "docker compose -f backend/docker-compose.test.yml --profile load up -d --build",
+    "load:metrics": "curl -s http://127.0.0.1:3001/internal/metrics",
+    "load:logs": "docker compose -f backend/docker-compose.test.yml logs -f backend-load",
+    "load:down": "docker compose -f backend/docker-compose.test.yml --profile load --profile k6 down -v",
     "demo": "node scripts/demo.mjs",
     "assets": "node scripts/make-demo-assets.mjs",
     "seed": "npm run seed -w backend"
