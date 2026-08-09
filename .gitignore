@@ -8,8 +8,8 @@ node_modules/
 # 매번 새로 만들어지는 값이고 OTP가 평문으로 들어 있다.
 .demo-seed.json
 
-# 부하 시드의 같은 것. k6가 대회 id와 딜러 OTP를 여기서 읽는다.
-.load-seed.json
+# 부하 시드의 같은 것. k6 컨테이너가 `load/`만 마운트하므로 그 안에 둔다.
+load/.load-seed.json
 
 # Playwright 산출물. 영상은 다시 찍으면 되고, 리포에 남길 것은
 # 편집이 끝난 파일뿐이다.

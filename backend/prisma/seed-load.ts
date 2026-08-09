@@ -1,7 +1,7 @@
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient, Role, TournamentStatus } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
-import { writeFileSync } from 'fs';
+import { mkdirSync, writeFileSync } from 'fs';
 import Redis from 'ioredis';
 import { resolve } from 'path';
 import { Pool } from 'pg';
@@ -82,11 +82,14 @@ const INITIAL_TABLES = Number(process.env.LOAD_TABLES ?? 1);
 /**
  * k6가 읽는 매니페스트.
  *
+ * 데모 시드는 리포 루트에 떨어뜨리는데 이건 `load/` 안이다. **k6 컨테이너가
+ * `../load`만 마운트하기 때문**이다 — 루트에 두면 컨테이너 안에서 보이지
+ * 않는다. 마운트를 늘리는 대신 파일을 옮겼다.
+ *
  * 경로를 `__dirname` 기준으로 잡는 이유는 컨테이너의 작업 디렉터리가
- * `/app/backend`라서다. 데모 시드의 `.demo-seed.json`과 같은 자리이고 같은
- * 이유다.
+ * `/app/backend`라서다.
  */
-const MANIFEST_PATH = resolve(__dirname, '../../.load-seed.json');
+const MANIFEST_PATH = resolve(__dirname, '../../load/.load-seed.json');
 
 async function main() {
   const connectionString = process.env.DATABASE_URL;
@@ -167,6 +170,7 @@ async function main() {
       startStack: START_STACK,
       tables,
     };
+    mkdirSync(resolve(MANIFEST_PATH, '..'), { recursive: true });
     writeFileSync(MANIFEST_PATH, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
 
     console.log('부하 시드 완료');

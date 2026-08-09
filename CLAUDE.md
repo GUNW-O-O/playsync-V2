@@ -68,6 +68,8 @@ npm run demo           # 데모 촬영 (시드 → 프론트 빌드 → 장면 �
 npm run assets         # 촬영본을 자르고 합쳐 img/ 로 (ffmpeg-static)
 npm run load:up        # 부하용 백엔드를 1코어 컨테이너로 (빌드 포함)
 npm run load:metrics   # 이벤트 루프 지연 · CPU · 메모리 한 번 읽기
+npm run seed:load      # 부하 무대 (전부 지우고 다시 — 통합 테스트 DB를 쓴다)
+npm run load:smoke     # 봇 스모크 (테이블 하나, 생각 시간 0)
 npm run load:down      # 부하 컨테이너와 저장소 정리
 ```
 
@@ -101,12 +103,18 @@ compose의 `seed` 서비스와 같은 함정 — 없으면 `@prisma/client`가 �
 프로세스 밖에서 잴 수 없어서 넣은 유일한 제품 코드다. **응답의 `resolutionMs`가
 지연의 바닥값이다** — 유휴 서버도 p50이 약 10ms로 나오므로 그만큼 빼고 읽는다.
 
+봇은 `load/`에 있다. 규칙과 실측이 잡은 함정은 [`load/README.md`](./load/README.md).
+요점 둘: **VU 하나가 테이블 하나**(k6는 VU 간 공유가 없어서, 남의 액션 지연을
+재려면 보낸 시각과 받은 시각이 같은 VU 안에 있어야 한다), 그리고 **생각 시간이
+부하의 모양을 정한다**(고정값은 몰림을 지워 순간 부하를 작게 만든다 — 분포로
+뽑고 핸드 사이 딜링 시간도 센다).
+
 ### 베이스라인
 
 타입 에러 0건, 테스트 전부 통과가 정상이다. CI(`.github/workflows/ci.yml`)가
 타입 체크 · 테스트 · 빌드를 돌린다.
 
-현재 기준선 (T39 완료 시점):
+현재 기준선 (T40 완료 시점):
 
 ```
 contract       62  (4 suites)

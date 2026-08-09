@@ -19,6 +19,7 @@
     "test:e2e": "npm run test:e2e -w frontend",
     "load:up": "docker compose -f backend/docker-compose.test.yml --profile load up -d --build",
     "load:metrics": "curl -s http://127.0.0.1:3001/internal/metrics",
+    "load:smoke": "docker compose -f backend/docker-compose.test.yml --profile load --profile k6 run --rm k6 run -e LOAD_THINK_FAST_MS=0 -e LOAD_THINK_SLOW_MS=0 -e LOAD_DEAL_MS=0 /load/scenarios/smoke.js",
     "load:logs": "docker compose -f backend/docker-compose.test.yml logs -f backend-load",
     "load:down": "docker compose -f backend/docker-compose.test.yml --profile load --profile k6 down -v",
     "demo": "node scripts/demo.mjs",
