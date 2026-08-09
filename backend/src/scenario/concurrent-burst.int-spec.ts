@@ -111,4 +111,38 @@ describe('시나리오: 동시 요청 폭탄', () => {
       .filter(c => c === '1').length;
     expect(`켜진 비트 ${bits}`).toBe('켜진 비트 3');
   });
+
+  it('여섯이 동시에 액션을 밀어 넣어도 차례인 사람만 반영된다', async () => {
+    const players = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6'];
+    h = await setupTournament(players, {});
+    const total = players.length * SCENARIO.startStack;
+
+    await h.dealer.startPreFlop(h.tournamentId, h.tableId);
+    const before = await checkInvariants(h, '프리플랍 시작', total);
+
+    const turn = h.turnId(before)!;
+    const turnSeat = h.seatOf(before, turn);
+    // 차례인 사람이 콜하면 팟은 딱 이만큼 는다.
+    const delta = before.currentBet - before.players[turnSeat]!.bet;
+    // 차례가 아닌 사람들의 베팅액은 그대로여야 한다.
+    const otherBets = players
+      .filter(id => id !== turn)
+      .map(id => `${id}:${before.players[h.seatOf(before, id)]!.bet}`)
+      .join(',');
+
+    // 전원이 동시에 CALL을 민다. 락이 없으면 여럿이 같은 스냅샷을 읽고
+    // 각자 쓴 것이 서로를 덮는다.
+    await Promise.allSettled(
+      players.map(id => h.playsync.handleAction(id, h.tableId, { action: 'CALL' })),
+    );
+
+    const after = await checkInvariants(h, '동시 액션 후', total);
+    expect(`팟 ${after.pot}`).toBe(`팟 ${before.pot + delta}`);
+
+    const afterOtherBets = players
+      .filter(id => id !== turn)
+      .map(id => `${id}:${after.players[h.seatOf(after, id)]!.bet}`)
+      .join(',');
+    expect(`차례 아닌 베팅 ${afterOtherBets}`).toBe(`차례 아닌 베팅 ${otherBets}`);
+  });
 });
