@@ -112,30 +112,37 @@ describe('시나리오: 동시 요청 폭탄', () => {
     expect(`켜진 비트 ${bits}`).toBe('켜진 비트 3');
   });
 
-  it('여섯이 동시에 액션을 밀어 넣어도 팟과 기여가 어긋나지 않는다', async () => {
-    const players = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6'];
+  it('핸드 도중의 착석과 플레이어 액션이 동시에 와도 둘 다 남는다', async () => {
+    const players = ['p1', 'p2', 'p3'];
     h = await setupTournament(players, {});
-    const total = players.length * SCENARIO.startStack;
+    const seated = players.length * SCENARIO.startStack;
+    await payAll(h, ['b1']);
+    const [otp] = await otpsOf(h, ['b1']);
 
     await h.dealer.startPreFlop(h.tournamentId, h.tableId);
-    await checkInvariants(h, '프리플랍 시작', total);
+    const before = await checkInvariants(h, '프리플랍 시작', seated);
+    const turn = h.turnId(before)!;
 
-    // 전원이 동시에 CALL을 민다. 락이 없으면 여럿이 같은 스냅샷을 읽고
-    // 각자 쓴 것이 서로를 덮는다.
-    await Promise.allSettled(
-      players.map(id => h.playsync.handleAction(id, h.tableId, { action: 'CALL' })),
-    );
+    // 둘 다 같은 스냅샷을 정당하게 바꾼다. 스냅샷은 Redis 키 하나를
+    // 통째로 read-modify-SET하므로, 락이 없으면 늦게 쓴 쪽이 앞의 것을
+    // 통째로 덮는다 — 남은 상태는 그 자체로는 일관돼 보이지만 둘 중
+    // 하나의 효과가 사라진다.
+    const results = await Promise.allSettled([
+      h.entry.enterSeat(h.tournamentId, { otp, tableId: h.tableId, seatIndex: 5 }),
+      h.playsync.handleAction(turn, h.tableId, { action: 'CALL' }),
+    ]);
+    const ok = results.filter(r => r.status === 'fulfilled');
+    expect(`성공 ${ok.length}`).toBe('성공 2');
 
-    const after = await checkInvariants(h, '동시 액션 후', total);
+    // 착석이 남았는가 — 칩 총량이 새 참가자만큼 늘고, 비트맵과 스냅샷이
+    // 일치하고(`checkInvariants` 6번), 그 사람이 5번 자리에 있다.
+    const after = await checkInvariants(h, '착석+액션 동시', seated + SCENARIO.startStack);
+    expect(`b1 좌석 ${h.seatOf(after, 'b1')}`).toBe('b1 좌석 5');
 
-    // 팟은 이 핸드에 들어온 칩의 합과 정확히 같아야 한다. `executeBet`이
-    // stack·bet·totalContributed·pot를 한 몸으로 갱신하기 때문이다
-    // (`table-engine.ts:367-373`). 락이 없으면 여럿이 같은 스냅샷을 읽고
-    // 각자 써서 마지막 쓰기가 앞의 것을 덮고, 스택은 줄었는데 팟은 안 는
-    // (또는 그 반대) 상태가 남는다 — 그 어긋남을 이 단언이 잡는다.
-    const contributed = after.players.reduce(
-      (sum, p) => sum + (p?.totalContributed ?? 0), 0,
-    );
-    expect(`기여합 ${contributed}`).toBe(`기여합 ${after.pot}`);
+    // 액션이 남았는가 — 콜한 사람의 베팅액이 현재 베팅과 같아졌다.
+    // 프리플랍 첫 행동자는 아직 빅블라인드를 맞추지 않은 상태라, 이 값이
+    // 그대로면 그 사람의 CALL이 통째로 사라진 것이다.
+    const actor = after.players[h.seatOf(after, turn)]!;
+    expect(`행동자 베팅 ${actor.bet}`).toBe(`행동자 베팅 ${before.currentBet}`);
   });
 });
