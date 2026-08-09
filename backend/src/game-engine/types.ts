@@ -90,3 +90,36 @@ export interface SidePot {
   amount: number;
   relevantPlayerIds: string[];
 }
+
+/** 좌석 수. 한 테이블 아홉 자리로 고정이다. */
+const SEAT_COUNT = 9;
+
+/**
+ * 아무도 앉지 않은 테이블의 상태.
+ *
+ * **`tableId`가 필드에 없는 것이 맞다.** 스냅샷은 `table:state:{tableId}`
+ * 키에 저장되므로 테이블 신원은 키가 들고 있다. 여기 담기는 것은 그 테이블이
+ * 어느 대회에 속하는지와 게임의 초기값이다.
+ *
+ * `smallBlind`는 자리 채움이다 — `startPreFlop`이 블라인드 구조에서 덮어쓴다
+ * (`table-engine.ts:433`).
+ *
+ * 이 함수가 생기기 전에는 같은 객체를 `EntryService`가 private으로 들고
+ * 있었고, 그래서 **스냅샷을 만드는 지점이 착석 하나뿐**이었다. 상점이 연
+ * 빈 테이블에는 상태가 없어, 딜러 화면이 부르는 `joinTable`이 500을 냈다.
+ * 이제 테이블을 여는 쪽도 같은 껍데기를 세운다.
+ */
+export function createEmptyTableState(tournamentId: string): TableState {
+  return {
+    phase: GamePhase.WAITING,
+    players: Array(SEAT_COUNT).fill(null),
+    pot: 0,
+    currentBet: 0,
+    buttonUser: 0,
+    currentTurnSeatIndex: -1,
+    sidePots: [],
+    ante: false,
+    tournamentId,
+    smallBlind: 100,
+  };
+}

@@ -623,6 +623,31 @@ describe('SessionService.createTable — tableOrder 경합', () => {
 
     await expect(sessionService.createTable(tournamentId, ownerId)).rejects.toThrow(ConflictException);
   });
+
+  /**
+   * 테이블을 열면 빈 스냅샷도 함께 선다.
+   *
+   * 예전에는 스냅샷을 만드는 지점이 착석 하나뿐이었다. 그래서 아무도 앉지
+   * 않은 테이블에는 상태가 없었고, 딜러 화면이 뜰 때 부르는
+   * `GET /playsync/:tableId`(`PlaysyncService.joinTable`)가 그 없음을 맨
+   * `Error`로 던져 **500**이 됐다 — 정상 상태에 서버 오류를 내고 있었다.
+   *
+   * 스냅샷의 수명을 테이블의 수명에 맞춘다. `deleteTable`은 이미 대칭으로
+   * `deleteTableState`를 부른다(`session.service.ts:296`).
+   */
+  it('테이블을 열면 빈 스냅샷이 함께 선다', async () => {
+    const table = await sessionService.createTable(tournamentId, ownerId);
+
+    const raw = await redis.get(`table:state:${table.id}`);
+    expect(`스냅샷 ${raw === null ? '없음' : '있음'}`).toBe('스냅샷 있음');
+
+    const state = JSON.parse(raw!);
+    expect(`phase ${state.phase}`).toBe(`phase ${GamePhase.WAITING}`);
+    expect(`좌석 수 ${state.players.length}`).toBe('좌석 수 9');
+    expect(`착석자 ${state.players.filter((p: unknown) => p !== null).length}`)
+      .toBe('착석자 0');
+    expect(`대회 ${state.tournamentId}`).toBe(`대회 ${tournamentId}`);
+  });
 });
 
 /**

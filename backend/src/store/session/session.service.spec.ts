@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { GameType, TournamentStatus } from '@prisma/client';
 import { CreateTournamentDto } from 'shared/dto/tournament.dto';
+import { GamePhase } from 'src/game-engine/types';
 import { SessionService } from './session.service';
 
 /**
@@ -581,6 +582,7 @@ describe('SessionService.createTable — 소유권과 상태', () => {
     };
     const redis = {
       setSeatBitmap: jest.fn().mockResolvedValue(undefined),
+      saveSnapShot: jest.fn().mockResolvedValue(undefined),
       // emitSeatList가 브로드캐스트할 좌석 목록을 읽어온다. 이 스위트가 보는
       // 것은 이벤트가 나가는지 여부라, 내용물은 비워 둔다.
       getTournamentTables: jest.fn().mockResolvedValue([]),
@@ -589,7 +591,7 @@ describe('SessionService.createTable — 소유권과 상태', () => {
     const service = new SessionService(
       prisma as any, redis as any, {} as any, emitter as any,
     );
-    return { service, tableCreate, emitter };
+    return { service, tableCreate, emitter, redis };
   };
 
   it('남의 대회면 403이고 테이블을 만들지 않는다', async () => {
@@ -628,5 +630,35 @@ describe('SessionService.createTable — 소유권과 상태', () => {
       'SEAT_LIST_UPDATED',
       expect.objectContaining({ tournamentId: 'tournament-1' }),
     );
+  });
+
+  /**
+   * 저장 여부만 보면 목이 실제와 갈라진다 — 무엇을 저장했는지까지 본다.
+   *
+   * 그리고 **순서가 요건이다.** 브로드캐스트를 보고 들어오는 화면이 상태를
+   * 찾지 못하면 안 되므로, 스냅샷 쓰기가 `SEAT_LIST_UPDATED`보다 앞서야 한다.
+   */
+  it('빈 스냅샷을 먼저 세우고 그 다음에 좌석 목록을 알린다', async () => {
+    const { service, emitter, redis } = setup();
+
+    await service.createTable('tournament-1', 'owner-1');
+
+    expect(redis.saveSnapShot).toHaveBeenCalledWith(
+      'table-2',
+      expect.objectContaining({
+        tournamentId: 'tournament-1',
+        phase: GamePhase.WAITING,
+        pot: 0,
+        currentTurnSeatIndex: -1,
+      }),
+    );
+    const [, state] = redis.saveSnapShot.mock.calls[0];
+    expect(`좌석 ${state.players.length}`).toBe('좌석 9');
+    expect(`착석자 ${state.players.filter((p: unknown) => p !== null).length}`)
+      .toBe('착석자 0');
+
+    const savedAt = redis.saveSnapShot.mock.invocationCallOrder[0];
+    const emittedAt = emitter.emit.mock.invocationCallOrder[0];
+    expect(`스냅샷이 먼저 ${savedAt < emittedAt}`).toBe('스냅샷이 먼저 true');
   });
 });

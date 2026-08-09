@@ -10,7 +10,7 @@ import { JwtService } from '@nestjs/jwt';
 import { PlayerStatus, TournamentStatus } from '@prisma/client';
 import { EnterTournamentDto } from 'shared/dto/entry.dto';
 import { SEAT_ROLE } from 'src/auth/seat-role';
-import { GamePhase, TableState } from 'src/game-engine/types';
+import { GamePhase, TableState, createEmptyTableState } from 'src/game-engine/types';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 
@@ -159,7 +159,7 @@ export class EntryService {
     //
     // 락 밖에서 읽으므로 아주 좁은 창이 남는다: 새 테이블에 두 사람이 거의
     // 동시에 들어와 둘 다 `_count === 0`을 읽은 **뒤** 그 사이에 Redis가
-    // 유실되면, 늦게 락을 잡은 쪽이 `emptyTableState`로 앞선 사람을 지운다.
+    // 유실되면, 늦게 락을 잡은 쪽이 `createEmptyTableState`로 앞선 사람을 지운다.
     // 창은 최대 락 대기(5초)이고 그 안에 Redis가 죽어야 한다 — 가드를 넣기
     // 전보다 좁아졌고, 락 안에 조회를 더하는 비용이 이 확률에 비해 크므로
     // 감수한다(최종 리뷰).
@@ -264,7 +264,7 @@ export class EntryService {
       if (this.shouldBlockEmptySnapshot(table, snapshot)) {
         throw new ConflictException('테이블 상태를 복구하는 중입니다. 잠시 후 다시 시도해 주세요.');
       }
-      const state = snapshot ?? this.emptyTableState(tournamentId);
+      const state = snapshot ?? createEmptyTableState(tournamentId);
       const occupant = state.players[dto.seatIndex];
 
       // 위에서 DB 주인이 우리임을 확인했으므로, 점유자가 다른 사람이면 그
@@ -342,12 +342,12 @@ export class EntryService {
   }
 
   /**
-   * `emptyTableState` fallback 대신 던져야 하는가.
+   * `createEmptyTableState` fallback 대신 던져야 하는가.
    *
    * 조건은 "이 테이블에 이미 좌석 행이 있는데 스냅샷이 없다"다. 좌석 행이
    * 있다는 것은 지킬 상태가 있다는 뜻이고, 스냅샷이 없다는 것은 Redis를
    * 잃었고 아직 재구성(`RecoveryService`)되지 않았다는 뜻이다. 여기서
-   * `emptyTableState`로 새 상태를 만들면 이 테이블의 나머지 전원이
+   * `createEmptyTableState`로 새 상태를 만들면 이 테이블의 나머지 전원이
    * 스냅샷에서 사라지고 buttonUser는 0, smallBlind는 100으로 굳는다 — DB에는
    * 다 남아 있는데 스냅샷만 한 명이 되고, 나중에 도는 재구성이 이미 오염된
    * 위에서 돈다.
@@ -364,7 +364,7 @@ export class EntryService {
    * 남는다: PENDING 대회에서 u1·u2가 착석해 스냅샷이 살아 있다가 Redis가
    * 죽거나(FLUSHDB) 24시간 TTL로 스냅샷만 사라지면, u3의 착석이
    * `_count.tablePlayers > 0`인데도 status가 PENDING이라 가드를 피해
-   * `emptyTableState`로 u3 혼자만 있는 스냅샷을 만든다. 그 위에서 대회가
+   * `createEmptyTableState`로 u3 혼자만 있는 스냅샷을 만든다. 그 위에서 대회가
    * 시작되면(`initializeGame`은 "스냅샷 없으면 거부"만 보고, 이 테이블은
    * 스냅샷이 **있으므로** 통과한다) u1·u2는 영원히 빠진 채 대회가 돈다 —
    * `RecoveryService`는 ONGOING만 훑으므로 스스로 못 고친다.
@@ -387,24 +387,4 @@ export class EntryService {
     );
   }
 
-  /**
-   * 스냅샷이 아직 없는 테이블의 초기 상태.
-   *
-   * 스냅샷을 만드는 유일한 지점이다(예전에는 결제가 했다). `smallBlind`는
-   * `startPreFlop`이 블라인드 구조에서 덮어쓰므로 여기 값은 자리 채움이다.
-   */
-  private emptyTableState(tournamentId: string): TableState {
-    return {
-      phase: GamePhase.WAITING,
-      players: Array(9).fill(null),
-      pot: 0,
-      currentBet: 0,
-      buttonUser: 0,
-      currentTurnSeatIndex: -1,
-      sidePots: [],
-      ante: false,
-      tournamentId,
-      smallBlind: 100,
-    };
-  }
 }

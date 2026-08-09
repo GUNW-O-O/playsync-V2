@@ -1,4 +1,4 @@
-import { Harness, setupTournament } from './harness';
+import { Harness, SCENARIO, setupTournament } from './harness';
 
 /**
  * 테이블은 착석으로 늘어나지 않는다.
@@ -30,5 +30,26 @@ describe('시나리오 — 테이블 자동 생성 제거', () => {
     });
 
     expect(`테이블 수 ${count}`).toBe('테이블 수 1');
+  });
+
+  /**
+   * 상점이 연 테이블은 아무도 앉기 전에 딜러가 먼저 붙는다. 물리 순서가
+   * 그렇다 — 딜러가 자리를 잡고 칩을 세팅한 다음 손님이 앉는다.
+   *
+   * 그런데 딜러 화면이 뜰 때 부르는 `GET /playsync/:tableId`가
+   * `PlaysyncService.joinTable`이고, 그것이 스냅샷 없음을 맨 `Error`로
+   * 던졌다(`playsync.service.ts:41`). Nest 기본 필터가 500으로 내린다 —
+   * 정상 상태에 서버 오류다. WS 쪽은 죽지 않았다(`ws.gateway.ts:132`가
+   * `data: null`을 조용히 보낸다). 그래서 화면은 빈 펠트로 서고 로그에만
+   * 500이 남아, 눈에 잘 띄지 않는 채로 있었다.
+   */
+  it('상점이 연 빈 테이블을 딜러가 조회해도 죽지 않는다', async () => {
+    const empty = await h.session.createTable(h.tournamentId, SCENARIO.owner);
+
+    const { tableState, seatIndex } = await h.playsync.joinTable(empty.id);
+
+    expect(`착석자 ${tableState.players.filter(p => p !== null).length}`)
+      .toBe('착석자 0');
+    expect(`좌석 ${seatIndex}`).toBe('좌석 -1');
   });
 });
