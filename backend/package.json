@@ -20,6 +20,7 @@
     "test:int": "jest --config ./test/jest-int.json",
     "test:int:down": "docker compose -f docker-compose.test.yml down -v",
     "seed": "prisma db seed",
+    "seed:load": "ts-node --project prisma/tsconfig.seed.json prisma/seed-load.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

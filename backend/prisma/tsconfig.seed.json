@@ -1,0 +1,8 @@
+{
+  "//": "시드를 ts-node로 돌릴 때만 쓴다. 리포의 tsconfig는 `nodenext`인데 ts-node가 그 설정으로 .ts를 ESM으로 해석해 require 기반 로딩과 어긋난다. prisma.config.ts의 `seed`가 같은 이유로 --compiler-options를 붙이는데, 그 방식은 Windows cmd가 이스케이프한 따옴표를 벗겨 JSON 파싱이 깨진다. 파일로 넘기면 셸을 타지 않는다.",
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node"
+  }
+}
