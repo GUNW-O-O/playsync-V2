@@ -24,8 +24,16 @@ import { runHands, seatPlayers } from '../lib/table.js';
 const manifest = JSON.parse(open('/load/.load-seed.json'));
 
 const SEAT_COUNT = 9;
-const START_TABLES = Number(__ENV.LOAD_START_TABLES || 4);
-const STEP_TABLES = Number(__ENV.LOAD_STEP_TABLES || 2);
+const START_TABLES = Number(__ENV.LOAD_START_TABLES || 6);
+/**
+ * 한 단계에 몇 개씩 붙이나.
+ *
+ * 2였는데 6으로 올렸다. 근거 둘. **실행이 JWT 수명(1시간)보다 길면 안 된다** —
+ * 2씩 66까지 가면 112분이라 토큰이 중간에 죽는다. 그리고 한 번에 여섯을
+ * 세우는 것이 **더 험한 몰림**이라, 재려는 것(피크 내성)에 오히려 가깝다.
+ * 6이면 11단계 38분이다.
+ */
+const STEP_TABLES = Number(__ENV.LOAD_STEP_TABLES || 6);
 const MAX_TABLES = Number(__ENV.LOAD_MAX_TABLES || 66);
 /** 한 단계를 늘리는 데 주는 시간. 증설 자체가 몰림이라 짧을수록 험한 부하다. */
 const GROW_S = Number(__ENV.LOAD_GROW_S || 30);
@@ -96,7 +104,11 @@ export const options = {
 };
 
 export function setup() {
-  const ownerToken = login(manifest.ownerNickname, manifest.password);
+  // **여기서 받은 토큰을 VU에 물려주지 않는다.** JWT가 1시간짜리인데
+  // (`auth.module.ts:25`) 램프는 그보다 오래 돈다 — 실측에서 64분째부터
+  // 새 테이블이 전부 401로 죽었고, 그 뒤 구간이 통째로 무의미해졌다.
+  // 각 VU가 자기가 붙는 시점에 새로 받는다(`table()`).
+  //
   // **대회는 여기서 시작시키지 않는다.** `startSession`이 최소 인원을 세고
   // (`MIN_PLAYERS_TO_START`, 컨테이너에서 2) 아무도 앉기 전에는 0명이라
   // 409다. 실제 순서도 착석이 먼저다 — 그래서 대회마다 첫 VU가 자기 좌석을
@@ -106,7 +118,7 @@ export function setup() {
   // 재실행하면 `POST /auth/join`이 400으로 거절한다. 네 글자로 자른다 —
   // 닉네임은 3~10자이고 뒤에 VU와 좌석이 붙는다.
   const runId = Math.random().toString(36).slice(2, 6);
-  return { ownerToken, runId, startedAt: Date.now(), endAt: Date.now() + TOTAL_S * 1000 };
+  return { runId, startedAt: Date.now(), endAt: Date.now() + TOTAL_S * 1000 };
 }
 
 export function table(data) {
@@ -123,12 +135,17 @@ export function table(data) {
   const localIdx = index - storeIdx * (TABLES_PER_STORE > 0 ? TABLES_PER_STORE : 0);
 
   const setupStart = Date.now();
+  // 상점 토큰을 이 자리에서 받는다. JWT가 1시간이라 `setup()`의 것을 물려
+  // 쓰면 한 시간 뒤에 붙는 테이블이 전부 401이다. 로그인 한 번이 더 도는
+  // 것은 부하로도 정직하다 — 실제로도 상점 콘솔이 다시 인증한다.
+  const ownerToken = login(manifest.ownerNickname, manifest.password);
+
   // 그 대회의 첫 VU는 시드가 열어 둔 테이블을 쓰고, 나머지는 직접 연다.
   // 여는 것도 부하다 — 상점 콘솔의 버튼과 같은 경로다.
   const table =
     localIdx === 0
       ? tournament.tables[0]
-      : createTableWithRetry(data.ownerToken, tournament.id, () => tableCreateConflicts.add(1));
+      : createTableWithRetry(ownerToken, tournament.id, () => tableCreateConflicts.add(1));
 
   // 회원가입 → 로그인 → 결제 → OTP → 착석. 전부 제품 경로다.
   const players = seatPlayers({
@@ -152,7 +169,7 @@ export function table(data) {
   //
   // 뒤늦게 붙는 테이블은 시작할 필요가 없다. 블라인드 메타는 대회 단위라
   // 이미 서 있고, `createTable`이 스냅샷을 세운다(T38).
-  if (localIdx === 0) startTournament(data.ownerToken, tournament.id);
+  if (localIdx === 0) startTournament(ownerToken, tournament.id);
 
   // 이 VU의 단계 라벨. 모듈 상태를 모니터와 나눠 쓰지 않으려고 여기서 만든다.
   let lastVus = -1;
