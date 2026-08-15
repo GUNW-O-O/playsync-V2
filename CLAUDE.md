@@ -123,11 +123,11 @@ k6에 VU 간 공유가 없다는 사실이 무대 구성도 정한다. **대회�
 타입 에러 0건, 테스트 전부 통과가 정상이다. CI(`.github/workflows/ci.yml`)가
 타입 체크 · 테스트 · 빌드를 돌린다.
 
-현재 기준선 (T41 완료 시점):
+현재 기준선 (T43 완료 시점):
 
 ```
 contract       62  (4 suites)
-백엔드 단위   183  (17 suites)
+백엔드 단위   191  (18 suites)
 프론트 단위   100  (24 files)
 통합          343  (28 suites)
 e2e            13  (4 files, regression 프로젝트)

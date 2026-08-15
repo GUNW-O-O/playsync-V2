@@ -10,6 +10,7 @@ import { JwtService } from '@nestjs/jwt';
 import { PlayerStatus, TournamentStatus } from '@prisma/client';
 import { EnterTournamentDto } from 'shared/dto/entry.dto';
 import { SEAT_ROLE } from 'src/auth/seat-role';
+import { tokenTtl } from 'src/auth/token-ttl';
 import { GamePhase, TableState, createEmptyTableState } from 'src/game-engine/types';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
@@ -97,13 +98,20 @@ export class EntryService {
     });
 
     return {
-      accessToken: this.jwt.sign({
-        sub: participation.userId,
-        tournamentId,
-        tableId: dto.tableId,
-        seatIndex: dto.seatIndex,
-        role: SEAT_ROLE,
-      }),
+      // **좌석 태블릿은 대회 내내 켜져 있다.** 전역 기본값(1시간)으로 두면
+      // 한 시간 뒤부터 `POST /ws/ticket`이 401이라 태블릿이 스스로 재접속하지
+      // 못한다 — 네 시간짜리 대회면 전원이 겪고, T31의 복구 시나리오와 정면으로
+      // 겹친다. 수명만 늘리고 폐기 수단을 붙이지 않는 근거는 `token-ttl.ts`에.
+      accessToken: this.jwt.sign(
+        {
+          sub: participation.userId,
+          tournamentId,
+          tableId: dto.tableId,
+          seatIndex: dto.seatIndex,
+          role: SEAT_ROLE,
+        },
+        { expiresIn: tokenTtl(SEAT_ROLE) },
+      ),
     };
   }
 

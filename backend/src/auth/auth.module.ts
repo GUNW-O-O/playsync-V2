@@ -22,6 +22,14 @@ if (!JWT_SECRET) {
     JwtModule.register({
       global: true,
       secret: JWT_SECRET,
+      // **이 기본값은 안전망이지 정책이 아니다.** 수명은 서명 지점마다
+      // `tokenTtl(role)`로 준다(`token-ttl.ts`) — 좌석·딜러·상점 콘솔은 행사
+      // 내내 켜져 있어야 하고, 전역 1시간이 그것을 못 버텼다(T43).
+      //
+      // 그런데도 이 줄을 지우지 않는 이유: 지우면 `expiresIn`을 빠뜨린 서명이
+      // **만료 없는 토큰**을 낸다. 빠뜨렸을 때 나오는 결과가 "너무 짧다"인
+      // 편이 "영원하다"보다 낫다 — 앞은 사람이 곧 알아채고, 뒤는 아무도
+      // 모른다.
       signOptions: { expiresIn: '1h' },
     }),
     UserModule,
