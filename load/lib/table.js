@@ -45,6 +45,13 @@ export const socketErrors = new Counter('socket_errors');
 export const absentActions = new Counter('absent_actions');
 /** 마감 직후에 눌러 마감 시각 판정을 밟은 횟수. */
 export const lateActions = new Counter('late_actions');
+/**
+ * 응답이 끝내 안 와서 버린 지연 측정 창.
+ *
+ * **0이 아니면 그만큼의 액션이 화면에 반영되지 않았다는 뜻이다.** 지표가
+ * 조용히 부풀지 않게 버리되, 버렸다는 사실 자체는 남긴다.
+ */
+export const staleWindows = new Counter('stale_windows');
 
 /**
  * WS는 Origin 헤더가 필수다(`ws.gateway.ts`의 `assertAllowedOrigin`).
@@ -285,12 +292,7 @@ export function runHands({
 }) {
   const dealerToken = dealerLogin(tournamentId, tableId, dealerOtp);
 
-  // 티켓은 1회용이라 소켓마다 하나씩 받는다(T24 — Redis GETDEL로 소비된다).
-  const seats = players.map((p) => ({
-    ...p,
-    ticket: wsTicket(p.seatToken),
-  }));
-  const dealerTicket = wsTicket(dealerToken);
+  const seats = players;
 
   const sockets = [];
   /**
@@ -302,9 +304,21 @@ export function runHands({
    * 안 받아 창이 열려 있다 — 그래서 막혔고, 아무도 다시 두지 못했다.
    *
    * 큐로 두면 막을 이유가 없다. 소켓마다 **자기가 아직 못 본 가장 오래된
-   * 창**에 기록하면 되고, 열 개가 다 본 창은 앞에서 걷어낸다.
+   * 창**에 기록하면 되고, 살아 있는 소켓이 다 본 창은 앞에서 걷어낸다.
+   *
+   * **살아 있는 소켓으로 세는 것과 나이 상한이 둘 다 필요하다.** 소켓 하나가
+   * 죽으면(티켓 만료의 1008, 서버 재시작) 그 창은 영영 안 채워져 큐 앞에
+   * 눌러앉고, 그러면 뒤에 오는 메시지가 점점 더 오래된 창에 붙어 **지연이
+   * 실제와 무관하게 계속 부푼다.** 실제로 램프 B 첫 실행이 그렇게 죽었다 —
+   * 서버 lag 0.4ms · CPU 1.8%인데 한 VU의 롤링 창이 p95 1989ms를 보고
+   * 실행을 중단시켰다.
    */
   const windows = []; // [{ at, actorSocketIdx, seen:Set }]
+  /**
+   * 응답이 이만큼 안 오면 그 창은 표본이 아니다. 액션의 왕복은 밀리초 단위라
+   * 10초는 "브로드캐스트가 아예 안 왔다"만 걸러낸다.
+   */
+  const WINDOW_MAX_AGE_MS = Number(__ENV.LOAD_WINDOW_MAX_AGE_MS || 10000);
   let latestState = null;
   let closing = false;
   /**
@@ -320,15 +334,32 @@ export function runHands({
     return `${WS_BASE}/playsync?ticket=${ticket}&tableId=${tableId}`;
   }
 
-  function open(ticket, role, seat) {
-    const ws = new WebSocket(url(ticket), null, { headers: { Origin: ORIGIN } });
+  /**
+   * 소켓 하나를 연다.
+   *
+   * **티켓은 여기서 받는다.** 열 개를 미리 받아 두고 순차로 붙었더니, 부하가
+   * 커지면서 마지막 소켓이 붙을 때 첫 티켓이 이미 만료돼 있었다 — 티켓 TTL이
+   * 30초다(T24). 서버는 1008로 끊고, 그 테이블은 소켓 아홉으로 계속 도는데
+   * 지표만 조용히 망가진다(아래 `liveSockets` 주석).
+   */
+  function open(token, role, seat) {
+    const ws = new WebSocket(url(wsTicket(token)), null, { headers: { Origin: ORIGIN } });
     const idx = sockets.length;
     // `scheduled`가 없으면 같은 소켓이 액션을 중복 예약한다. 자기 차례인
     // 동안에는 브로드캐스트가 올 때마다 `step`이 다시 불리기 때문이다.
     // 중복 액션은 서버가 "차례 아님"으로 무시하지만(`table-engine.ts:31`)
     // 브로드캐스트는 그대로 나가고, 그러면 창과 수신이 하나씩 어긋나
     // **생각 시간이 지연으로 잡힌다** — 실측에서 정확히 THINK_MS만큼 나왔다.
-    const entry = { ws, role, seat, idx, userId: null, scheduled: false, retired: false };
+    const entry = {
+      ws,
+      role,
+      seat,
+      idx,
+      userId: null,
+      scheduled: false,
+      retired: false,
+      closed: false,
+    };
     sockets.push(entry);
 
     ws.onmessage = (msg) => {
@@ -365,6 +396,14 @@ export function runHands({
         }
       }
 
+      // 응답이 영영 안 온 창을 먼저 걷어낸다. 남겨 두면 뒤에 오는 메시지가
+      // 그 창에 붙어 지연이 실제와 무관하게 부푼다.
+      const now = Date.now();
+      while (windows.length > 0 && now - windows[0].at > WINDOW_MAX_AGE_MS) {
+        staleWindows.add(1);
+        windows.shift();
+      }
+
       // 지연 기록 — 보낸 시각과 받은 시각이 같은 VU 안에 있다.
       const win = windows.find((w) => !w.seen.has(idx));
       if (win) {
@@ -378,7 +417,10 @@ export function runHands({
           // 중단 판정은 호출자가 한다. 이 모듈은 창을 모른다.
           if (onMyAction) onMyAction(elapsed);
         } else othersActionMs.add(elapsed, tags);
-        while (windows.length > 0 && windows[0].seen.size >= sockets.length) {
+        // **살아 있는 소켓으로 센다.** 죽은 소켓을 기다리면 큐가 영영 안 비고
+        // 지연이 계속 부푼다.
+        const live = sockets.filter((s) => !s.closed && !s.retired).length;
+        while (windows.length > 0 && windows[0].seen.size >= live) {
           windows.shift();
         }
       }
@@ -393,6 +435,7 @@ export function runHands({
     // 정상 종료(1000)와 우리가 닫은 것은 세지 않는다. 그 외의 코드는 서버가
     // 거절한 것이고(1008 = 인증 실패), 그 실행의 지연 수치는 못 믿는다.
     ws.onclose = (e) => {
+      entry.closed = true;
       // 재접속 폭발로 **우리가** 끊은 소켓이다. 서버가 거절한 것이 아니므로
       // 세지 않는다 — 세면 `socket_errors`가 폭발 때마다 열씩 오른다.
       if (closing || entry.retired) return;
@@ -487,8 +530,8 @@ export function runHands({
     send(entry, { event: 'PLAYER_ACTION', data: pickAction(state, me, bigBlind) });
   }
 
-  seats.forEach((s) => open(s.ticket, 'seat', s.seat));
-  const dealer = open(dealerTicket, 'dealer', -1);
+  seats.forEach((s) => open(s.seatToken, 'seat', s.seat));
+  const dealer = open(dealerToken, 'dealer', -1);
 
   // 첫 핸드는 스스로 시작한다. 접속 직후 받는 renderGame이 WAITING이면
   // `step`이 시작시키지만, 소켓이 붙기 전에 상태가 바뀌면 아무도 안 민다.
@@ -524,8 +567,8 @@ export function runHands({
           windows.length = 0;
           reconnects.add(1);
           burstState = { at: Date.now(), seen: new Set() };
-          seats.forEach((s) => open(wsTicket(s.seatToken), 'seat', s.seat));
-          open(wsTicket(dealerToken), 'dealer', -1);
+          seats.forEach((s) => open(s.seatToken, 'seat', s.seat));
+          open(dealerToken, 'dealer', -1);
         }, reconnectAtMs);
 
   return new Promise((resolve) => {
