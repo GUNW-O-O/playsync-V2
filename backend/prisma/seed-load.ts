@@ -71,6 +71,22 @@ const REBUY_UNTIL = 600;
 const START_STACK = 100_000;
 
 /**
+ * 세울 상점(= 대회) 수. **램프 A의 x축이다.**
+ *
+ * 램프가 실행 중에 대회를 만들 수 없어서 여기서 세운다 — k6는 VU 사이에
+ * 상태를 공유하지 않으므로(`SharedArray`는 읽기 전용, `setup()`은 실행 전에
+ * 한 번) 7번째 VU가 앞선 VU가 만든 대회의 id를 알 방법이 없다.
+ *
+ * 측정 밖에 두는 것이 옳기도 하다. 대회 생성은 실제로 대회 몇 시간~며칠 전에
+ * 상점이 한 번 하는 일이고, 대회 직전에 몰리는 것은 로그인과 착석이다 —
+ * T40이 bcrypt의 `hash`와 `compare`를 시점으로 가른 것과 같은 자리다.
+ *
+ * 기본 12인 이유는 계정 풀 600이 66테이블을 덮고, 램프 A(상점당 6테이블)로
+ * 환산하면 11상점이기 때문이다.
+ */
+const STORE_COUNT = Number(process.env.LOAD_STORES ?? 12);
+
+/**
  * 시드가 미리 여는 테이블 수. 나머지는 램프가 상점 콘솔 경로
  * (`POST /store/sessions/:id/tables`)로 실행 중에 연다 — 그것도 부하다.
  */
@@ -139,38 +155,8 @@ async function main() {
       data: { nickname: OWNER_NICKNAME, password, role: Role.STORE_ADMIN },
     });
 
-    const store = await prisma.store.create({
-      data: { name: STORE_NAME, ownerId: owner.id },
-    });
-
-    const blind = await prisma.blindStructure.create({
-      data: { name: '부하 (한 레벨)', structure: BLIND_STRUCTURE, storeId: store.id },
-    });
-
-    const tournament = await prisma.tournament.create({
-      data: {
-        name: TOURNAMENT_NAME,
-        status: TournamentStatus.PENDING,
-        storeId: store.id,
-        blindId: blind.id,
-        // 위 주석 참고 — 포인트 충전 경로가 없어서 0이어야 결제가 통과한다.
-        entryFee: 0,
-        startStack: START_STACK,
-        rebuyUntil: REBUY_UNTIL,
-        itmCount: 1,
-        prizePayouts: [{ place: 1, percent: 100 }],
-        isRegistrationOpen: true,
-        dealerOtpHash: await hashDealerOtp(DEALER_OTP),
-      },
-    });
-
-    // `Table.dealerId`가 필수라 대회마다 딜러 세션이 하나 있어야 한다.
-    const dealerSession = await prisma.dealerSession.create({
-      data: { tournamentId: tournament.id },
-    });
-
     // 풀 계정. `createMany`로 한 번에 넣는다 — 해시가 전부 같은 값이라
-    // bcrypt는 위에서 이미 한 번만 돌았다.
+    // bcrypt는 위에서 이미 한 번만 돌았다. 대회를 가리지 않는 공용 풀이다.
     if (ACCOUNT_POOL > 0) {
       await prisma.user.createMany({
         data: Array.from({ length: ACCOUNT_POOL }, (_, i) => ({
@@ -181,39 +167,90 @@ async function main() {
       });
     }
 
-    const tables: { id: string; tableOrder: number }[] = [];
-    for (let order = 1; order <= INITIAL_TABLES; order++) {
-      const table = await prisma.table.create({
-        data: { tableOrder: order, tournamentId: tournament.id, dealerId: dealerSession.id },
-      });
-      tables.push({ id: table.id, tableOrder: table.tableOrder });
+    // 상점 하나 = 대회 하나. 브로드캐스트가 대회 경계를 넘지 않으므로
+    // (`ws.gateway.ts`의 Map이 tournamentId 키다) 부하의 단위도 대회다.
+    // 상점을 따로 만드는 것은 "홀덤펍 몇 곳"이라는 질문의 모양을 지키기
+    // 위해서고, 소유자는 하나라 램프가 토큰을 하나만 들면 된다.
+    const tournaments: {
+      id: string;
+      storeId: string;
+      tables: { id: string; tableOrder: number }[];
+    }[] = [];
 
-      // 제품 경로에서는 `createTable`이 둘 다 한다. 시드는 그 경로를 타지
-      // 않으므로 여기서 세운다 — 비트맵이 없으면 좌석 목록이 비어 있고,
-      // 스냅샷이 없으면 딜러 화면이 500을 받는다(T38).
-      await setSeatBitmap(redis, tournament.id, table.id);
-      await setEmptySnapshot(redis, tournament.id, table.id);
+    for (let s = 0; s < STORE_COUNT; s++) {
+      const store = await prisma.store.create({
+        data: { name: `${STORE_NAME} ${s + 1}`, ownerId: owner.id },
+      });
+
+      // `BlindStructure.name`이 **전역** 유니크다(상점 범위가 아니다). 상점을
+      // 여럿 세우면서 드러났다 — 같은 이름을 쓰면 두 번째 상점에서 P2002다.
+      const blind = await prisma.blindStructure.create({
+        data: {
+          name: `부하 (한 레벨) ${s + 1}`,
+          structure: BLIND_STRUCTURE,
+          storeId: store.id,
+        },
+      });
+
+      const tournament = await prisma.tournament.create({
+        data: {
+          name: `${TOURNAMENT_NAME} ${s + 1}`,
+          status: TournamentStatus.PENDING,
+          storeId: store.id,
+          blindId: blind.id,
+          // 위 주석 참고 — 포인트 충전 경로가 없어서 0이어야 결제가 통과한다.
+          entryFee: 0,
+          startStack: START_STACK,
+          rebuyUntil: REBUY_UNTIL,
+          itmCount: 1,
+          prizePayouts: [{ place: 1, percent: 100 }],
+          isRegistrationOpen: true,
+          dealerOtpHash: await hashDealerOtp(DEALER_OTP),
+        },
+      });
+
+      // `Table.dealerId`가 필수라 대회마다 딜러 세션이 하나 있어야 한다.
+      const dealerSession = await prisma.dealerSession.create({
+        data: { tournamentId: tournament.id },
+      });
+
+      const tables: { id: string; tableOrder: number }[] = [];
+      for (let order = 1; order <= INITIAL_TABLES; order++) {
+        const table = await prisma.table.create({
+          data: { tableOrder: order, tournamentId: tournament.id, dealerId: dealerSession.id },
+        });
+        tables.push({ id: table.id, tableOrder: table.tableOrder });
+
+        // 제품 경로에서는 `createTable`이 둘 다 한다. 시드는 그 경로를 타지
+        // 않으므로 여기서 세운다 — 비트맵이 없으면 좌석 목록이 비어 있고,
+        // 스냅샷이 없으면 딜러 화면이 500을 받는다(T38).
+        await setSeatBitmap(redis, tournament.id, table.id);
+        await setEmptySnapshot(redis, tournament.id, table.id);
+      }
+
+      tournaments.push({ id: tournament.id, storeId: store.id, tables });
     }
 
     const manifest = {
-      tournamentId: tournament.id,
-      storeId: store.id,
       ownerNickname: OWNER_NICKNAME,
       password: LOAD_PASSWORD,
       dealerOtp: DEALER_OTP,
       startStack: START_STACK,
+      // 봇의 레이즈 단위. 블라인드 구조의 sb를 두 배 한 값이고, 레벨이
+      // 하나뿐이라 실행 내내 고정이다.
+      bigBlind: BLIND_STRUCTURE[0].sb * 2,
       accountPrefix: ACCOUNT_PREFIX,
       accountPool: ACCOUNT_POOL,
-      tables,
+      tournaments,
     };
     mkdirSync(resolve(MANIFEST_PATH, '..'), { recursive: true });
     writeFileSync(MANIFEST_PATH, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
 
     console.log('부하 시드 완료');
-    console.log(`  대회      ${tournament.id}`);
-    console.log(`  테이블    ${tables.length}개`);
-    console.log(`  계정 풀   ${ACCOUNT_POOL}개 (${ACCOUNT_PREFIX}0000 ~)`);
-    console.log(`  딜러 OTP  ${DEALER_OTP}`);
+    console.log(`  상점·대회  ${tournaments.length}개`);
+    console.log(`  테이블     대회마다 ${INITIAL_TABLES}개 (나머지는 램프가 연다)`);
+    console.log(`  계정 풀    ${ACCOUNT_POOL}개 (${ACCOUNT_PREFIX}0000 ~)`);
+    console.log(`  딜러 OTP   ${DEALER_OTP}`);
     console.log(`  매니페스트 ${MANIFEST_PATH}`);
   } finally {
     await redis.quit();
