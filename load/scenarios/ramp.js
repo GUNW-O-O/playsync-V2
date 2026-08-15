@@ -40,6 +40,12 @@ const MY_ACTION_ABORT_MS = Number(__ENV.LOAD_MY_ACTION_ABORT_MS || 1000);
 const ABORT_STREAK = Number(__ENV.LOAD_BREACH_STREAK || 2);
 
 /**
+ * 재접속 폭발을 일으킬 테이블 수. 그 단계의 고원 중간에 전원이 끊었다 붙는다.
+ * 0이면 하지 않는다.
+ */
+const RECONNECT_AT_TABLES = Number(__ENV.LOAD_RECONNECT_AT_TABLES || 0);
+
+/**
  * 테이블이 아닌 VU 수. 모니터 하나다. 단계 라벨에서 빼야 라벨의 숫자가
  * 곧 테이블 수가 된다.
  */
@@ -157,6 +163,21 @@ export function table(data) {
     return l;
   }
 
+  // 그 단계의 고원 중간. `setup`이 잡은 시작 시각 기준이라 전 VU가 같은
+  // 순간에 끊는다 — 그게 "배너를 본 사람들이 동시에 새로고침"의 모양이다.
+  let reconnectAtMs = null;
+  if (RECONNECT_AT_TABLES > 0) {
+    const stepsBefore = Math.max(
+      0,
+      Math.ceil((RECONNECT_AT_TABLES - START_TABLES) / STEP_TABLES),
+    );
+    const absolute =
+      data.startedAt + (stepsBefore + 1) * (GROW_S + STEADY_S) * 1000 - (STEADY_S / 2) * 1000;
+    const delta = absolute - Date.now();
+    // 이미 지난 시각이면 이 VU는 그 단계 뒤에 붙은 것이다 — 하지 않는다.
+    if (delta > 0) reconnectAtMs = delta;
+  }
+
   // 남은 시간만큼만 돈다. 늦게 붙은 VU도 같은 시각에 끝난다.
   return runHands({
     tournamentId: tournament.id,
@@ -167,6 +188,7 @@ export function table(data) {
     bigBlind: manifest.bigBlind,
     stepLabel: label,
     onMyAction: makeAbortWatcher(),
+    reconnectAtMs,
   });
 }
 

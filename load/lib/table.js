@@ -168,6 +168,10 @@ const FOLD_RATIO = Number(__ENV.LOAD_FOLD_RATIO || 0.15);
 
 /** 리바인을 수락한 횟수. 리바인 경로가 실제로 돌았다는 증거다. */
 export const rebuysAccepted = new Counter('rebuys_accepted');
+/** 소켓을 통째로 끊었다 다시 붙인 횟수. 재접속 폭발이 실제로 일어났다는 증거다. */
+export const reconnects = new Counter('reconnects');
+/** 전원이 다시 붙어 첫 renderGame을 받기까지. 티켓 발급 왕복이 포함된다. */
+export const reconnectMs = new Trend('reconnect_ms', true);
 /** 레이즈와 폴드 횟수. 믹스가 의도대로 나왔는지 결과에서 본다. */
 export const raises = new Counter('raises');
 export const folds = new Counter('folds');
@@ -277,6 +281,7 @@ export function runHands({
   bigBlind,
   stepLabel,
   onMyAction,
+  reconnectAtMs,
 }) {
   const dealerToken = dealerLogin(tournamentId, tableId, dealerOtp);
 
@@ -302,6 +307,12 @@ export function runHands({
   const windows = []; // [{ at, actorSocketIdx, seen:Set }]
   let latestState = null;
   let closing = false;
+  /**
+   * 재접속 폭발이 진행 중이면 `{ at, seen:Set }`. 다시 붙은 소켓이 전부 첫
+   * `renderGame`을 받은 순간이 복구 완료다 — 소켓을 여는 데 걸린 시간이
+   * 아니라 **화면이 다시 살아나기까지**가 사람이 겪는 시간이다.
+   */
+  let burstState = null;
 
   // 게이트웨이 경로는 `/playsync`다(`@WebSocketGateway({ path: '/playsync' })`).
   // 루트로 붙으면 핸드셰이크 이전에 거절돼 서버 로그에도 남지 않는다.
@@ -317,10 +328,13 @@ export function runHands({
     // 중복 액션은 서버가 "차례 아님"으로 무시하지만(`table-engine.ts:31`)
     // 브로드캐스트는 그대로 나가고, 그러면 창과 수신이 하나씩 어긋나
     // **생각 시간이 지연으로 잡힌다** — 실측에서 정확히 THINK_MS만큼 나왔다.
-    const entry = { ws, role, seat, idx, userId: null, scheduled: false };
+    const entry = { ws, role, seat, idx, userId: null, scheduled: false, retired: false };
     sockets.push(entry);
 
     ws.onmessage = (msg) => {
+      // 재접속으로 버린 소켓의 뒤늦은 메시지. 새 소켓과 `idx`가 겹치므로
+      // (`sockets`를 비우고 다시 채운다) 들여보내면 창과 복구 판정이 어긋난다.
+      if (entry.retired) return;
       let parsed;
       try {
         parsed = JSON.parse(msg.data);
@@ -341,6 +355,15 @@ export function runHands({
       }
       if (parsed.event !== 'renderGame' || !parsed.data) return;
       latestState = parsed.data;
+
+      // 재접속 복구 시간 — 다시 붙은 소켓 전부가 첫 화면을 받은 순간.
+      if (burstState && !burstState.seen.has(idx)) {
+        burstState.seen.add(idx);
+        if (burstState.seen.size >= sockets.length) {
+          reconnectMs.add(Date.now() - burstState.at);
+          burstState = null;
+        }
+      }
 
       // 지연 기록 — 보낸 시각과 받은 시각이 같은 VU 안에 있다.
       const win = windows.find((w) => !w.seen.has(idx));
@@ -370,7 +393,9 @@ export function runHands({
     // 정상 종료(1000)와 우리가 닫은 것은 세지 않는다. 그 외의 코드는 서버가
     // 거절한 것이고(1008 = 인증 실패), 그 실행의 지연 수치는 못 믿는다.
     ws.onclose = (e) => {
-      if (closing) return;
+      // 재접속 폭발로 **우리가** 끊은 소켓이다. 서버가 거절한 것이 아니므로
+      // 세지 않는다 — 세면 `socket_errors`가 폭발 때마다 열씩 오른다.
+      if (closing || entry.retired) return;
       const code = e && e.code;
       if (code && code !== 1000) {
         socketErrors.add(1);
@@ -393,6 +418,11 @@ export function runHands({
     const fire = () => {
       entry.scheduled = false;
       if (closing) return;
+      // **재접속 폭발이 이 소켓을 끊은 뒤일 수 있다.** 생각 시간은 최대
+      // 30초라 그 사이에 폭발이 끼면, 예약된 이 콜백이 닫힌 소켓에
+      // `send`를 불러 InvalidStateError로 VU가 죽는다. 다시 붙은 소켓이
+      // 새 브로드캐스트를 받아 자기 차례를 다시 판단한다.
+      if (entry.retired) return;
       windows.push({ at: Date.now(), actorSocketIdx: entry.idx, seen: new Set() });
       entry.ws.send(JSON.stringify(payload));
     };
@@ -468,10 +498,41 @@ export function runHands({
     }
   }, 1000);
 
+  // 재접속 폭발. **티켓은 1회용이라 소켓마다 새로 받아야 한다**(T24 —
+  // Redis GETDEL로 소비된다). 그래서 이 사건은 WS만이 아니라 REST
+  // (`POST /ws/ticket`)를 전원이 동시에 치는 부하이기도 하다.
+  //
+  // 지터를 걸지 않는다. 실제 모양이 "배너를 본 사람들이 동시에
+  // 새로고침"이고, `SeatGameClient.tsx:118`에 자동 재접속이 없어
+  // 백오프가 낄 자리 자체가 없다.
+  const burst =
+    reconnectAtMs === null || reconnectAtMs === undefined
+      ? null
+      : setTimeout(() => {
+          if (closing) return;
+          const old = sockets.splice(0, sockets.length);
+          old.forEach((s) => {
+            // 우리가 끊는 것이라 `onclose`가 오류로 세지 않게 표시한다.
+            s.retired = true;
+            try {
+              s.ws.close();
+            } catch (e) {
+              // 이미 닫힌 소켓. 다시 붙는 중이라 무시한다.
+            }
+          });
+          // 창을 비운다 — 끊긴 소켓이 못 받은 창은 영영 안 채워진다.
+          windows.length = 0;
+          reconnects.add(1);
+          burstState = { at: Date.now(), seen: new Set() };
+          seats.forEach((s) => open(wsTicket(s.seatToken), 'seat', s.seat));
+          open(wsTicket(dealerToken), 'dealer', -1);
+        }, reconnectAtMs);
+
   return new Promise((resolve) => {
     setTimeout(() => {
       closing = true;
       clearTimeout(kick);
+      if (burst) clearTimeout(burst);
       sockets.forEach((s) => {
         try {
           s.ws.close();
