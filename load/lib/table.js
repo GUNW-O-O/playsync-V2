@@ -276,6 +276,7 @@ export function runHands({
   durationMs,
   bigBlind,
   stepLabel,
+  onMyAction,
 }) {
   const dealerToken = dealerLogin(tournamentId, tableId, dealerOtp);
 
@@ -349,8 +350,11 @@ export function runHands({
         // 단계 태그가 붙어야 원시 시계열에서 "테이블 12개 구간"을 갈라
         // 볼 수 있다. 램프가 아니면(스모크) 라벨이 없다.
         const tags = stepLabel ? { step: stepLabel() } : undefined;
-        if (idx === win.actorSocketIdx) myActionMs.add(elapsed, tags);
-        else othersActionMs.add(elapsed, tags);
+        if (idx === win.actorSocketIdx) {
+          myActionMs.add(elapsed, tags);
+          // 중단 판정은 호출자가 한다. 이 모듈은 창을 모른다.
+          if (onMyAction) onMyAction(elapsed);
+        } else othersActionMs.add(elapsed, tags);
         while (windows.length > 0 && windows[0].seen.size >= sockets.length) {
           windows.shift();
         }

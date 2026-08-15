@@ -1,5 +1,5 @@
 import http from 'k6/http';
-import { fail } from 'k6';
+import { fail, sleep } from 'k6';
 
 /**
  * 부하 봇이 타는 REST 경로.
@@ -141,6 +141,34 @@ export function createTable(ownerToken, tournamentId) {
     tags: { step: 'create-table' },
   });
   return must(res, '테이블 추가');
+}
+
+/**
+ * 테이블을 열되 409를 재시도한다.
+ *
+ * `insertTable`이 트랜잭션 **안에서** `tableOrder` 최댓값을 뽑고 최종 방어가
+ * `@@unique([tournamentId, tableOrder])`다(`session.service.ts:195-197`).
+ * 램프에서는 여러 VU가 같은 순간에 같은 대회의 테이블을 열므로 진 쪽이
+ * 409를 받는다. 상점 콘솔에서는 사람이 다시 누르면 되지만 봇은 스스로
+ * 다시 눌러야 한다.
+ *
+ * **재시도 횟수 자체가 산출물이다.** 버튼 하나로는 보이지 않는 값이다.
+ */
+export function createTableWithRetry(ownerToken, tournamentId, onRetry) {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const res = http.post(`${BASE}/store/sessions/${tournamentId}/tables`, null, {
+      headers: bearer(ownerToken),
+      tags: { step: 'create-table' },
+    });
+    if (res.status >= 200 && res.status < 300) return JSON.parse(res.body);
+    if (res.status !== 409) {
+      fail(`테이블 추가 실패 (${res.status}): ${String(res.body).slice(0, 200)}`);
+    }
+    if (onRetry) onRetry();
+    // 같은 간격으로 다시 부딪히지 않게 흩는다.
+    sleep((50 + Math.random() * 150) / 1000);
+  }
+  fail('테이블 추가가 10번 연속 409로 거절됐다');
 }
 
 /** 서버 내부 지표. 램프의 단계마다 한 번씩 읽는다(창이 그때 닫히고 다시 열린다). */
