@@ -4,6 +4,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Role, TournamentStatus } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { DealerDto } from 'shared/dto/dealer.dto';
+import { tokenTtl } from 'src/auth/token-ttl';
 import { verifyDealerOtp } from 'src/dealer/dealer-otp';
 import { OtpAttempts } from 'src/dealer/otp-attempts';
 import { TableEngine } from 'src/game-engine/table-engine';
@@ -107,7 +108,12 @@ export class DealerService {
         tokenVersion: tournament.dealerSession!.tokenVersion,
       }
       return {
-        accessToken: this.jwtService.sign(accessToken)
+        // 딜러 태블릿도 근무 내내 켜져 있다. 갱신 경로(`POST /dealer/refresh`)가
+        // 따로 있지만 그것은 **폐기**를 위한 것이고(`tokenVersion` 대조),
+        // 수명이 짧아야 할 이유는 아니다. 근거는 `token-ttl.ts`에.
+        accessToken: this.jwtService.sign(accessToken, {
+          expiresIn: tokenTtl(Role.DEALER),
+        }),
       }
     });
 
@@ -171,13 +177,16 @@ export class DealerService {
     const session = await this.assertDealerSessionValid(payload);
 
     return {
-      accessToken: this.jwtService.sign({
-        sub: session.id,
-        tournamentId: session.tournamentId,
-        tableId: payload.tableId,
-        role: Role.DEALER,
-        tokenVersion: session.tokenVersion,
-      }),
+      accessToken: this.jwtService.sign(
+        {
+          sub: session.id,
+          tournamentId: session.tournamentId,
+          tableId: payload.tableId,
+          role: Role.DEALER,
+          tokenVersion: session.tokenVersion,
+        },
+        { expiresIn: tokenTtl(Role.DEALER) },
+      ),
     };
   }
 

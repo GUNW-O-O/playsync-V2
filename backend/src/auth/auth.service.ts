@@ -5,6 +5,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { Role } from '@prisma/client';
 import { UserService } from 'src/user/user.service';
 import { JwtService } from '@nestjs/jwt';
+import { tokenTtl } from './token-ttl';
 
 
 @Injectable()
@@ -55,11 +56,16 @@ export class AuthService {
     if (!passwordMatch) throw new UnauthorizedException('비밀번호나 닉네임이 틀렸습니다.')
 
     return {
-      accessToken: this.jwtService.sign({
-        sub: user.id,
-        nickname: user.nickname,
-        role: user.role,
-      }),
+      // 수명이 역할마다 다르다. 상점 콘솔은 행사 내내 켜져 있고, 손님 폰은
+      // 재로그인이 자연스럽다. 근거는 `token-ttl.ts`에.
+      accessToken: this.jwtService.sign(
+        {
+          sub: user.id,
+          nickname: user.nickname,
+          role: user.role,
+        },
+        { expiresIn: tokenTtl(user.role) },
+      ),
     };
   }
 
