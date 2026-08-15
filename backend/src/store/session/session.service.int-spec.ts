@@ -114,6 +114,31 @@ describe('SessionService.createSession — OTP 해시 통합', () => {
   });
 
   /**
+   * 대회를 만들면 1번 테이블의 빈 스냅샷도 함께 선다.
+   *
+   * T38이 "테이블이 있으면 스냅샷이 있다"를 세웠고, 그래야 "스냅샷이 없다"의
+   * 뜻이 유실 하나로 좁아진다. `createTable`은 그것을 지키는데 이 경로는
+   * 좌석 비트맵만 세우고 있었다 — 불변식이 경로 하나에서만 참이었다.
+   *
+   * 드러나는 순서는 딜러가 먼저 붙을 때다. 손님이 먼저 앉으면 `enterSeat`이
+   * `createEmptyTableState`로 덮어 주므로 보이지 않는다.
+   */
+  it('대회를 만들면 1번 테이블의 빈 스냅샷도 함께 선다', async () => {
+    const created = await sessionService.createSession(makeCreateDto());
+    const tableId = created.tables[0].id;
+
+    const raw = await redis.get(`table:state:${tableId}`);
+    expect(`스냅샷 ${raw === null ? '없음' : '있음'}`).toBe('스냅샷 있음');
+
+    const state = JSON.parse(raw!);
+    expect(`phase ${state.phase}`).toBe(`phase ${GamePhase.WAITING}`);
+    expect(`좌석 수 ${state.players.length}`).toBe('좌석 수 9');
+    expect(`착석자 ${state.players.filter((p: unknown) => p !== null).length}`)
+      .toBe('착석자 0');
+    expect(`대회 ${state.tournamentId}`).toBe(`대회 ${created.id}`);
+  });
+
+  /**
    * 조회(getGameSession 등)만 막으면 충분하지 않다. `PATCH /store/sessions/:id`와
    * `PATCH /store/sessions/:id/start`는 각각 updateSession·startSession의
    * 반환값을 컨트롤러가 그대로 응답으로 내보낸다(session.controller.ts:28,33).

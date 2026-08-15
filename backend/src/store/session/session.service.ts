@@ -179,6 +179,15 @@ export class SessionService {
     });
     if (!sessionInfo) throw new InternalServerErrorException('세션을 만들지 못했습니다.');
     await this.redis.setSeatBitmap(sessionInfo.id, sessionInfo.tables[0].id);
+    // **스냅샷의 수명을 테이블의 수명에 맞춘다.** T38이 `createTable`에서
+    // 세운 불변식("테이블이 있으면 스냅샷이 있다")은 대회 생성 경로에도
+    // 걸려야 한다. 아니면 "스냅샷이 없다"가 유실과 정상 둘 다를 뜻하게 되고,
+    // 딜러가 손님보다 먼저 붙는 실제 순서에서 `GET /playsync/:tableId`가
+    // 500을 낸다.
+    await this.redis.saveSnapShot(
+      sessionInfo.tables[0].id,
+      createEmptyTableState(sessionInfo.id),
+    );
 
     // 평문은 여기 한 번만 실린다. 저장은 해시로만 했으므로 이후로는 어디에도
     // 남지 않는다 — 상점 콘솔이 이 응답을 보여주는 것이 유일한 열람 경로다.
