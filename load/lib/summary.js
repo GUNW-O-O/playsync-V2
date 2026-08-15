@@ -78,6 +78,8 @@ export function oneLine(label, summary) {
     `자리비움 ${summary.absentActions}`,
     `지각 ${summary.lateActions}`,
     `가입 ${summary.signups}/로그인 ${summary.logins}`,
+    `레이즈 ${summary.raises}/폴드 ${summary.folds}/리바인 ${summary.rebuysAccepted}`,
+    `테이블409 ${summary.tableCreateConflicts}`,
     summary.server
       ? `lag 중앙 ${summary.server.lagMs.med}ms 최대 ${summary.server.lagMs.max}ms` +
         ` · CPU ${summary.server.cpuPercent}% · rss ${summary.server.rssMb}MB` +
@@ -101,6 +103,13 @@ export function buildSummary(data, name) {
     lateActions: counter(data, 'late_actions'),
     signups: counter(data, 'signups'),
     logins: counter(data, 'logins'),
+    raises: counter(data, 'raises'),
+    folds: counter(data, 'folds'),
+    rebuysAccepted: counter(data, 'rebuys_accepted'),
+    tableCreateConflicts: counter(data, 'table_create_conflicts'),
+    tableSetupMs: trend(data, 'table_setup_ms'),
+    reconnects: counter(data, 'reconnects'),
+    reconnectMs: trend(data, 'reconnect_ms'),
     myAction: trend(data, 'my_action_ms'),
     othersAction: trend(data, 'others_action_ms'),
     http: trend(data, 'http_req_duration'),

@@ -79,6 +79,7 @@ export default function (data) {
     dealerOtp: manifest.dealerOtp,
     players,
     durationMs: DURATION_MS,
+    bigBlind: manifest.bigBlind,
   });
 }
 

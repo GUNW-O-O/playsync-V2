@@ -152,6 +152,69 @@ export const signups = new Counter('signups');
 export const logins = new Counter('logins');
 
 /**
+ * 합법 액션 중에서 어떻게 고르나. **부하의 모양을 정하는 두 번째 값이다.**
+ *
+ * 원래는 콜만 했다. 근거는 "레이즈를 섞으면 스택이 빨리 갈려 램프 중간에
+ * 테이블이 빈다"였는데, 무한 리바인이 인원을 유지하면서 그 근거가 사라졌다.
+ *
+ * | | 왜 이 액션이 필요한가 |
+ * |---|---|
+ * | 체크·콜 | 기본. 핸드가 끝까지 가야 플랍·턴·리버·쇼다운이 전부 돈다 |
+ * | 레이즈 | `resetChecked()`가 돌아 라운드가 한 바퀴 더 간다(`table-engine.ts:333`). 액션 수가 늘고 fan-out이 그만큼 곱해진다 |
+ * | 폴드 | 없으면 사이드팟이 안 생기고 팟이 늘 전원 분배다 |
+ */
+const RAISE_RATIO = Number(__ENV.LOAD_RAISE_RATIO || 0.2);
+const FOLD_RATIO = Number(__ENV.LOAD_FOLD_RATIO || 0.15);
+
+/** 리바인을 수락한 횟수. 리바인 경로가 실제로 돌았다는 증거다. */
+export const rebuysAccepted = new Counter('rebuys_accepted');
+/** 레이즈와 폴드 횟수. 믹스가 의도대로 나왔는지 결과에서 본다. */
+export const raises = new Counter('raises');
+export const folds = new Counter('folds');
+
+/**
+ * 이 상태에서 이 좌석이 낼 액션 하나.
+ *
+ * **합법인 것 중에서만 고른다.** 불법 액션은 엔진이 던지지만
+ * (`table-engine.ts:55`의 "콜이 필요합니다"), 그 거절이 부하에 섞이면 재는
+ * 것이 게임이 아니라 에러 경로가 된다.
+ *
+ * @param bigBlind 레이즈 단위. 시드 매니페스트의 값이다.
+ */
+function pickAction(state, me, bigBlind) {
+  // 브로드캐스트 페이로드에 `currentBet`이 없으면(스키마가 바뀌면) 모든
+  // 판정이 NaN이 되어 조용히 콜만 하게 된다. 없는 것을 0으로 접지 않고
+  // 먼저 확인하는 이유는, 조용히 옛 동작으로 돌아가는 것이 가장 나쁜
+  // 실패 모드이기 때문이다.
+  if (typeof state.currentBet !== 'number') {
+    throw new Error('renderGame에 currentBet이 없다 — 액션 믹스를 판정할 수 없다');
+  }
+  const toCall = state.currentBet - me.bet;
+  const canCheck = toCall <= 0;
+  // 레이즈는 `currentBet`보다 큰 목표 총액을 낼 수 있어야 성립한다.
+  // 스택이 그에 못 미치면 레이즈를 빼고 콜(= 올인)로 접는다.
+  const canRaise = me.stack + me.bet > state.currentBet;
+
+  const r = Math.random();
+  if (canRaise && r < RAISE_RATIO) {
+    // **`amount`는 목표 총 베팅액이다.** 엔진이 보는 것은
+    // `betAmount > currentBet` 하나뿐이고 최소 레이즈 규칙이 없다
+    // (`table-engine.ts:321`). 스택을 넘으면 `executeBet`이 잘라 올인이
+    // 되고, 그 자리가 사이드팟을 만든다 — 일부러 막지 않는다.
+    const step = 1 + Math.floor(Math.random() * 3); // 1~3 BB
+    const amount = state.currentBet + step * bigBlind;
+    raises.add(1);
+    return { action: 'RAISE', amount };
+  }
+  // 낼 것이 없는데 폴드하는 사람은 없다. 체크가 가능하면 체크다.
+  if (!canCheck && r < RAISE_RATIO + FOLD_RATIO) {
+    folds.add(1);
+    return { action: 'FOLD' };
+  }
+  return canCheck ? { action: 'CHECK' } : { action: 'CALL' };
+}
+
+/**
  * 좌석을 채운다.
  *
  * @param poolBase 이 테이블이 쓸 풀 계정의 시작 인덱스. 램프에서 테이블끼리
@@ -205,7 +268,15 @@ export function seatPlayers({
  *
  * @returns 실행이 끝나면 resolve되는 Promise
  */
-export function runHands({ tournamentId, tableId, dealerOtp, players, durationMs }) {
+export function runHands({
+  tournamentId,
+  tableId,
+  dealerOtp,
+  players,
+  durationMs,
+  bigBlind,
+  stepLabel,
+}) {
   const dealerToken = dealerLogin(tournamentId, tableId, dealerOtp);
 
   // 티켓은 1회용이라 소켓마다 하나씩 받는다(T24 — Redis GETDEL로 소비된다).
@@ -255,6 +326,18 @@ export function runHands({ tournamentId, tableId, dealerOtp, players, durationMs
       } catch (e) {
         return;
       }
+      // 리바인 팝업(`ws.gateway.ts:316`)은 좌석 하나에게만 간다. 즉시
+      // 수락해 좌석이 비지 않게 한다 — 램프의 규모 축이 인원 감소로
+      // 흔들리면 안 된다.
+      //
+      // `processRebuy`는 이 응답을 락 **밖에서** 최대 15초 기다리고
+      // (`REBUY_TIMEOUT_MS`), 그동안 `HAND_END`가 다음 핸드를 막는다.
+      // 즉시 답해도 왕복이 끼므로 핸드 주기가 늘어난다 — 실제 대회도 그렇다.
+      if (parsed.event === 'REBUY_PROMPT') {
+        rebuysAccepted.add(1);
+        entry.ws.send(JSON.stringify({ event: 'REBUY_RESPONSE', data: { accept: true } }));
+        return;
+      }
       if (parsed.event !== 'renderGame' || !parsed.data) return;
       latestState = parsed.data;
 
@@ -263,8 +346,11 @@ export function runHands({ tournamentId, tableId, dealerOtp, players, durationMs
       if (win) {
         win.seen.add(idx);
         const elapsed = Date.now() - win.at;
-        if (idx === win.actorSocketIdx) myActionMs.add(elapsed);
-        else othersActionMs.add(elapsed);
+        // 단계 태그가 붙어야 원시 시계열에서 "테이블 12개 구간"을 갈라
+        // 볼 수 있다. 램프가 아니면(스모크) 라벨이 없다.
+        const tags = stepLabel ? { step: stepLabel() } : undefined;
+        if (idx === win.actorSocketIdx) myActionMs.add(elapsed, tags);
+        else othersActionMs.add(elapsed, tags);
         while (windows.length > 0 && windows[0].seen.size >= sockets.length) {
           windows.shift();
         }
@@ -335,15 +421,20 @@ export function runHands({ tournamentId, tableId, dealerOtp, players, durationMs
         return;
       }
       if (state.phase === GamePhase.SHOWDOWN) {
-        // 폴드하지 않은 전원을 한 그룹으로 넣는다 — 화면의 "보드 하이"와 같다.
-        // 승자는 계산되는 값이 아니라 딜러가 입력하는 값이므로, 봇이 카드를
-        // 볼 수 없어도 이 경로는 정당하다.
+        // **승자를 무작위 한 명으로 고른다.** 승자는 계산되는 값이 아니라
+        // 딜러가 입력하는 값이므로(카드는 물리다) 봇이 카드를 못 봐도 이
+        // 경로는 정당하다.
+        //
+        // 예전에는 폴드 안 한 전원을 한 그룹으로 넣었다(보드 하이). 그러면
+        // 팟이 낸 만큼 되돌아와 **아무도 터지지 않고**, 리바인 분기
+        // (`dealer.service.ts:309`)가 한 번도 실행되지 않는다.
         const alive = state.players.filter((p) => p && !p.hasFolded).map((p) => p.id);
         if (alive.length > 0) {
+          const winner = alive[Math.floor(Math.random() * alive.length)];
           handsPlayed.add(1);
           send(entry, {
             event: 'DEALER_ACTION',
-            data: { action: 'RESOLVE_WINNERS', winnerGroups: [alive] },
+            data: { action: 'RESOLVE_WINNERS', winnerGroups: [[winner]] },
           });
         }
       }
@@ -357,9 +448,9 @@ export function runHands({ tournamentId, tableId, dealerOtp, players, durationMs
     if (state.currentTurnSeatIndex !== entry.seat) return;
     if (me.hasFolded || me.isAllIn) return;
 
-    // 콜만 한다. 레이즈를 섞으면 스택이 빨리 갈려 램프 중간에 테이블이
-    // 비고, 그러면 규모 축이 흔들린다. 팟이 커지는 것 자체는 부하가 아니다.
-    send(entry, { event: 'PLAYER_ACTION', data: { action: 'CALL' } });
+    // 합법 액션 중에서 고른다. 콜만 하면 팟이 늘 전원에게 되돌아와
+    // 탈락이 없고, 그러면 리바인·사이드팟 경로가 통째로 안 돈다.
+    send(entry, { event: 'PLAYER_ACTION', data: pickAction(state, me, bigBlind) });
   }
 
   seats.forEach((s) => open(s.ticket, 'seat', s.seat));
