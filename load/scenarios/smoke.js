@@ -49,11 +49,14 @@ export function setup() {
 }
 
 export default function (data) {
-  const table = manifest.tables[0];
+  // 스모크는 첫 대회의 첫 테이블만 쓴다. 시드가 대회를 여럿 세우는 것은
+  // 램프 A를 위해서고(`LOAD_STORES`), 스모크의 관심사가 아니다.
+  const tournament = manifest.tournaments[0];
+  const table = tournament.tables[0];
 
   // 회원가입 → 로그인 → 결제 → OTP → 착석. 전부 제품 경로다.
   const players = seatPlayers({
-    tournamentId: manifest.tournamentId,
+    tournamentId: tournament.id,
     tableId: table.id,
     password: manifest.password,
     seatCount: SEAT_COUNT,
@@ -68,14 +71,15 @@ export default function (data) {
 
   // 대회를 시작해야 Redis에 블라인드 메타가 서고, 그래야 `startPreFlop`이
   // 통과한다(`dealer.service.ts:193`).
-  startTournament(data.ownerToken, manifest.tournamentId);
+  startTournament(data.ownerToken, tournament.id);
 
   return runHands({
-    tournamentId: manifest.tournamentId,
+    tournamentId: tournament.id,
     tableId: table.id,
     dealerOtp: manifest.dealerOtp,
     players,
     durationMs: DURATION_MS,
+    bigBlind: manifest.bigBlind,
   });
 }
 

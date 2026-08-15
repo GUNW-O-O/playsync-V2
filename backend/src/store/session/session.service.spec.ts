@@ -55,7 +55,10 @@ describe('SessionService.createSession', () => {
       blindStructure: { create: blindCreate },
       $transaction: jest.fn((fn: (t: typeof tx) => unknown) => fn(tx)),
     };
-    const redis = { setSeatBitmap: jest.fn().mockResolvedValue(undefined) };
+    const redis = {
+      setSeatBitmap: jest.fn().mockResolvedValue(undefined),
+      saveSnapShot: jest.fn().mockResolvedValue(undefined),
+    };
 
     const service = new SessionService(
       prisma as any, redis as any, {} as any, { emit: jest.fn() } as any,
@@ -85,6 +88,26 @@ describe('SessionService.createSession', () => {
 
     expect(blindCreate).toHaveBeenCalledTimes(1);
     expect(tournamentCreate.mock.calls[0][0].data.blindId).toBe('blind-new');
+  });
+
+  /**
+   * 목을 채우기만 하면 이 호출이 사라져도 스펙이 초록이다. **무엇을 저장했는지
+   * 까지 단언한다** — T38에서 목과 실제가 갈라진 자리라 같은 실수를 반복하지
+   * 않는다.
+   */
+  it('1번 테이블의 빈 스냅샷을 좌석 비트맵과 함께 세운다', async () => {
+    const { service, redis } = setup();
+
+    await service.createSession({ ...baseDto(), blindId: 'blind-existing' });
+
+    expect(redis.setSeatBitmap).toHaveBeenCalledWith('tournament-1', 'table-1');
+    expect(redis.saveSnapShot).toHaveBeenCalledTimes(1);
+    const [tableId, state] = redis.saveSnapShot.mock.calls[0];
+    expect(tableId).toBe('table-1');
+    expect(state.tournamentId).toBe('tournament-1');
+    expect(state.phase).toBe(GamePhase.WAITING);
+    expect(state.players).toHaveLength(9);
+    expect(state.players.filter((p: unknown) => p !== null)).toHaveLength(0);
   });
 
   it('블라인드 정보가 아예 없으면 생성을 거부한다', async () => {
