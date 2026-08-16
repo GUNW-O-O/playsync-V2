@@ -1,6 +1,7 @@
 import { BlindField, Dashboard } from 'shared/types/tournamentMeta';
 import { getCurrentBlindLevel, parseBlindStructure } from 'shared/util/util';
 import { startablePayouts } from 'src/playsync/prize';
+import { isRegistrationOpenAtLevel } from './registration';
 
 /**
  * 대회 메타(전광판 + 블라인드 시계)를 DB 행에서 짠다.
@@ -55,7 +56,7 @@ export function buildTournamentMeta(
   const curLv = blindStructure[blindInfo.currentIndex]?.lv ?? 0;
 
   const dashboard: Dashboard = {
-    isRegistrationOpen: game.isRegistrationOpen && curLv < game.rebuyUntil,
+    isRegistrationOpen: isRegistrationOpenAtLevel(game.isRegistrationOpen, curLv, game.rebuyUntil),
     totalPlayer: game.totalPlayers,
     activePlayer: game.activePlayers,
     // DB가 누적한 값을 그대로 쓴다. `entryFee * totalPlayers`로 다시 계산하면

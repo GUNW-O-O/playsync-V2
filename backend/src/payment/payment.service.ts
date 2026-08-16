@@ -1,7 +1,8 @@
-import { ConflictException, Injectable } from '@nestjs/common';
-import { PlayerStatus, TournamentStatus } from '@prisma/client';
+import { ConflictException, Injectable, Logger } from '@nestjs/common';
+import { PlayerStatus, Tournament, TournamentStatus } from '@prisma/client';
 import { PayMentDto } from 'shared/dto/payment.dto';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { isRegistrationOpenNow } from 'src/store/session/registration';
 import { RedisService } from 'src/redis/redis.service';
 import { SessionService } from 'src/store/session/session.service';
 import { UserService } from 'src/user/user.service';
@@ -9,6 +10,8 @@ import * as playerOtp from './player-otp';
 
 @Injectable()
 export class PaymentService {
+  private readonly logger = new Logger(PaymentService.name);
+
   constructor(private user: UserService,
     private session: SessionService,
     private prismaService: PrismaService,
@@ -92,6 +95,77 @@ export class PaymentService {
     return { tournament, seatStatus };
   }
 
+  /**
+   * 등록이 지금 열려 있는지 보고, 닫혔으면 거절한다.
+   *
+   * **컬럼(`Tournament.isRegistrationOpen`)만 보면 안 된다.** 그것은 상점이
+   * 손으로 정한 스위치일 뿐이고, 블라인드가 `rebuyUntil`에 닿아 자동으로 닫힌
+   * 마감은 담고 있지 않다. T47 전에는 이 문지기가 그 컬럼만 봐서, 전광판에는
+   * "등록 마감"인데 그 시각에 결제하면 참가가 됐다.
+   *
+   * 무엇을 보는지는 대회가 시작했는지로 갈린다.
+   *
+   * - **시작 전**(`startedAt`이 없다): 레벨이라는 개념이 없다. 상점 스위치만 본다.
+   *   Redis 대회 메타도 `startSession` 전에는 존재하지 않으므로 여기서 캐시를
+   *   찾으면 사전 등록이 통째로 막힌다.
+   * - **진행 중**: Redis 메타를 본다. 그 값은 핸드가 시작될 때마다
+   *   `checkAndSyncBlindLevel`이 갱신하므로 이미 신선하고, DB에서 레벨을 다시
+   *   계산할 이유가 없다 — 캐시를 둔 목적이 그것이다.
+   * - **진행 중인데 메타가 없다**(Redis 유실): 거절하지 않는다. 레벨 재료
+   *   (`startedAt`·`pausedMs`·블라인드 구조)가 전부 DB에 있어 **정확한 답을
+   *   계산할 수 있다**. 이 드문 경로에서만 DB를 한 번 더 읽는다.
+   *
+   * 닫혀 있으면 거절하면서 **DB 컬럼도 닫는다**(아래). 판정 규칙 자체는
+   * `registration.ts` 한 곳뿐이고, 전광판·리바인·여기가 모두 그것을 지난다.
+   */
+  private async assertRegistrationOpen(session: Tournament) {
+    const open = await this.isRegistrationOpen(session);
+    if (open) return;
+
+    await this.closeRegistrationInDb(session.id);
+    throw new ConflictException('등록이 마감된 대회입니다.');
+  }
+
+  private async isRegistrationOpen(session: Tournament): Promise<boolean> {
+    if (!session.startedAt) return session.isRegistrationOpen;
+
+    const dashboard = await this.redisService.getTournamentDashboard(session.id);
+    if (dashboard) return dashboard.isRegistrationOpen;
+
+    const withBlind = await this.prismaService.tournament.findUniqueOrThrow({
+      where: { id: session.id },
+      include: { blindStructure: { select: { structure: true } } },
+    });
+    return isRegistrationOpenNow(withBlind);
+  }
+
+  /**
+   * 마감을 DB에도 남긴다. **한 번 닫히면 다시 열리지 않는다**(단조).
+   *
+   * 그래야 Redis를 잃은 뒤의 fallback이 이미 닫힌 상태에서 출발하고, 복구가
+   * 정지 시간을 과잉 보정해 레벨이 한 칸 내려가는 경우에도(T31이 테스트로
+   * 잡아 둔 자리) 등록이 되살아나지 않는다.
+   *
+   * **조건부 갱신이라 실제 쓰기는 최초 한 번뿐이다.** 이미 닫혔으면 0행이라,
+   * 마감 뒤 결제 시도가 몰려도 UPDATE가 반복되지 않는다.
+   *
+   * 실패해도 삼킨다. 거절은 이미 확정됐고, 이 쓰기는 다음 요청이 다시
+   * 시도한다 — 여기서 던지면 "마감된 대회에 참가 실패"가 500으로 나가
+   * 원인을 가린다.
+   */
+  private async closeRegistrationInDb(tournamentId: string) {
+    try {
+      await this.prismaService.tournament.updateMany({
+        where: { id: tournamentId, isRegistrationOpen: true },
+        data: { isRegistrationOpen: false },
+      });
+    } catch (e) {
+      this.logger.warn(
+        `등록 마감을 DB에 남기지 못했습니다 (tournament=${tournamentId}): ${(e as Error).message}`,
+      );
+    }
+  }
+
   // 참가비 결제. **좌석은 여기서 정하지 않는다**(T28) — 오프라인에서 돈은
   // 미리 내고 의자는 현장에서 정해진다. 좌석 확정은 EntryService가 참가
   // OTP를 받는 순간에 한다.
@@ -104,9 +178,10 @@ export class PaymentService {
       where: { id: dto.tournamentId },
     });
     if (!session) throw new ConflictException('잘못된 세션 ID 입니다.');
-    if (session.status === TournamentStatus.FINISHED || !session.isRegistrationOpen) {
+    if (session.status === TournamentStatus.FINISHED) {
       throw new ConflictException('이미 종료된 세션입니다.');
     }
+    await this.assertRegistrationOpen(session);
     if (user.points < session.entryFee) {
       throw new ConflictException('포인트가 부족합니다.');
     }
