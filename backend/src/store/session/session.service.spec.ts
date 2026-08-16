@@ -221,17 +221,24 @@ describe('SessionService HTTP 에러 타입', () => {
   it('종료된 세션을 수정하려 하면 409다', async () => {
     // 요청 자체는 올바른 형식이고, 대상의 현재 상태가 거부 이유다. 400이 아니라
     // 409여야 프론트가 "지금은 안 된다"로 안내할 수 있다.
+    //
+    // `store.ownerId`까지 세우는 이유는 T50이 소유권 확인을 이 메서드의 첫
+    // 문장으로 넣었기 때문이다. 소유자가 아니면 403이 먼저 나가 이 409에
+    // 닿지 못한다 — **본인 소유인데도 닫혀서 거부되는 것**이 여기서 볼 것이다.
     const service = setup({
       tournament: {
         findUnique: jest.fn().mockResolvedValue({
           id: 't1',
           status: TournamentStatus.FINISHED,
+          store: { ownerId: 'owner-1' },
         }),
         update: jest.fn(),
       },
     });
 
-    await expect(service.updateSession('t1', {} as any)).rejects.toThrow(ConflictException);
+    await expect(
+      service.updateSession('t1', {} as any, 'owner-1'),
+    ).rejects.toThrow(ConflictException);
   });
 });
 
