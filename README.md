@@ -8,7 +8,7 @@
 
 ```
 TypeScript · NestJS 11 · Next.js · PostgreSQL · Redis · zod contract · npm workspaces
-contract 62 · 백엔드 단위 191 · 프론트 100 · 통합 345(시나리오 11 스위트 포함) · e2e 13 · 타입 에러 0
+contract 62 · 백엔드 단위 191 · 프론트 100 · 통합 352(시나리오 11 스위트 포함) · e2e 13 · 타입 에러 0
 ```
 
 <img src="./img/s3-sidepot.webp" alt="올인으로 사이드팟이 갈리고, 딜러가 1등만 찍자 화면이 지급을 거부한다" width="100%">
@@ -271,7 +271,7 @@ V1은 혼자 짜고 혼자 눌러보며 완성한 MVP다. V2는 같은 코드를
 
 | | V1 | V2 |
 |---|---|---|
-| 검증 | 크롬 창 6개 띄워 손으로 눌러보기 | 단위 191 / 통합 345(시나리오 11 스위트 포함) / e2e 13. 실제 Redis·PostgreSQL 컨테이너 |
+| 검증 | 크롬 창 6개 띄워 손으로 눌러보기 | 단위 191 / 통합 352(시나리오 11 스위트 포함) / e2e 13. 실제 Redis·PostgreSQL 컨테이너 |
 | 테스트 코드 | `nest g` 스캐폴드 18개. 전부 `toBeDefined`고 경로를 못 잡아 import에서 죽고 있었다 | 버그마다 실패하는 테스트를 먼저 쓴다(TDD) |
 | CI | 없음 | 타입 체크 · 테스트 · 빌드 (`.github/workflows/ci.yml`) |
 | 코드 리뷰 | 없음 (1인 개발) | `backend/src` 전수 리뷰 → [`review.md`](./docs/review.md) → 27개 발견 |
@@ -411,7 +411,7 @@ AI는 코드를 읽지만 **왜 그렇게 짰는지**는 모른다. 스킬도 �
 
 ```
 contract       62  (4 suites)      백엔드 단위   191  (18 suites)
-프론트 단위   100  (24 files)      통합         345  (28 suites · 시나리오 11 포함)
+프론트 단위   100  (24 files)      통합         352  (28 suites · 시나리오 11 포함)
 e2e            13  (4 files)       + 데모 촬영 1 (`npm run demo`)
 ```
 

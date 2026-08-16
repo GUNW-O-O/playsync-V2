@@ -4,11 +4,13 @@ import Redis from 'ioredis';
 import { WsGateway } from './ws.gateway';
 import { WsTicketService } from './ws-ticket.service';
 import { RedisService } from 'src/redis/redis.service';
+import { PrismaService } from 'src/prisma/prisma.service';
 import { DealerService } from 'src/dealer/dealer.service';
 import { PlaysyncService } from 'src/playsync/playsync.service';
 import { GamePhase, TablePlayer, TableState } from 'src/game-engine/types';
-import { Role } from '@prisma/client';
+import { PrismaClient, Role, TournamentStatus } from '@prisma/client';
 import { createTestRedis, flushTestRedis } from '../../test/helpers/redis';
+import { closeTestPrisma, createTestPrisma, truncateAll } from '../../test/helpers/prisma';
 
 /**
  * 게이트웨이의 인바운드 경계.
@@ -20,6 +22,7 @@ import { createTestRedis, flushTestRedis } from '../../test/helpers/redis';
  */
 describe('WsGateway 인바운드 경계', () => {
   let redis: Redis;
+  let prisma: PrismaClient;
   let gateway: WsGateway;
   let tickets: WsTicketService;
   let playsync: { handleAction: jest.Mock };
@@ -110,6 +113,7 @@ describe('WsGateway 인바운드 경계', () => {
 
   beforeAll(() => {
     redis = createTestRedis();
+    prisma = createTestPrisma();
     tickets = new WsTicketService(redis);
     playsync = { handleAction: jest.fn().mockResolvedValue(makeState()) };
     dealer = {
@@ -124,11 +128,15 @@ describe('WsGateway 인바운드 경계', () => {
       new RedisService(redis),
       tickets,
       new EventEmitter2(),
+      // 대회 단위 접속의 자격은 서버가 들고 있는 관계(참가 행 · 상점 소유)로
+      // 정한다. 목을 넣으면 검사 대상인 그 질의 자체가 사라지므로 진짜 DB다.
+      prisma as unknown as PrismaService,
     );
   });
 
   afterAll(async () => {
     await redis.quit();
+    await closeTestPrisma(prisma);
   });
 
   beforeEach(async () => {
@@ -173,6 +181,164 @@ describe('WsGateway 인바운드 경계', () => {
 
     it('존재하지 않는 테이블에는 붙을 수 없다', async () => {
       const client = await connect(await playerTicket('alice'), 'no-such-table');
+      expect(client.close).toHaveBeenCalledWith(1008, expect.any(String));
+    });
+  });
+
+  /**
+   * T45. 대회 단위 접속(`tournamentId`만 주고 `tableId`는 안 주는 접속)은
+   * 좌석 현황 브로드캐스트(`renderSeatList`)를 구독한다. 테이블 경로는
+   * `assertTableAccess`가 막는데 이 경로만 아무 대조도 없었다 — 인증만 되면
+   * 아무 대회의 좌석 현황이나 실시간으로 받아볼 수 있었다.
+   *
+   * **티켓에 대회가 없는 것은 결함이 아니다.** `POST /ws/ticket`은 딜러
+   * 티켓에만 `tournamentId`를 싣는다(`ws-ticket.controller.ts:41`) — 플레이어와
+   * 상점은 한 사람이 여러 대회에 걸칠 수 있어 발급 시점에 대회를 정할 수 없다.
+   * 그래서 딜러는 토큰 대조, 나머지는 서버가 들고 있는 관계(참가 행 · 상점
+   * 소유)로 가른다.
+   */
+  describe('접속 — 대회 단위', () => {
+    let seq = 0;
+
+    /** 대회 하나와 그 상점 주인을 만든다. 참가자는 옵션이다. */
+    async function seedTournament(opts: { participantId?: string } = {}) {
+      seq += 1;
+      const n = seq;
+      const owner = await prisma.user.create({
+        data: { nickname: `owner-${n}`, password: 'x', role: Role.STORE_ADMIN },
+      });
+      const store = await prisma.store.create({
+        data: { name: `store-${n}`, ownerId: owner.id },
+      });
+      const blind = await prisma.blindStructure.create({
+        data: {
+          name: `blind-${n}`,
+          storeId: store.id,
+          structure: [{ lv: 1, sb: 100, ante: false, duration: 10 }],
+        },
+      });
+      const tournament = await prisma.tournament.create({
+        data: {
+          name: `대회-${n}`,
+          storeId: store.id,
+          blindId: blind.id,
+          dealerOtpHash: 'unused-hash',
+          startStack: 10000,
+          avgStack: 10000,
+          entryFee: 1000,
+          rebuyUntil: 5,
+          itmCount: 1,
+          prizePayouts: [{ place: 1, percent: 100 }],
+          status: TournamentStatus.ONGOING,
+          startedAt: new Date(),
+        },
+      });
+      if (opts.participantId) {
+        await prisma.user.create({
+          data: { id: opts.participantId, nickname: opts.participantId, password: 'x' },
+        });
+        await prisma.tournamentParticipation.create({
+          data: {
+            userId: opts.participantId,
+            tournamentId: tournament.id,
+            playerOtp: `otp-${n}`,
+          },
+        });
+      }
+      return { tournamentId: tournament.id, ownerId: owner.id };
+    }
+
+    /** 대회 단위 접속. `tableId`를 주지 않는 것이 이 경로의 정의다. */
+    async function connectTournament(ticket: string, tournamentId: string) {
+      const client = makeClient();
+      await gateway.handleConnection(
+        client,
+        makeRequest(`tournamentId=${tournamentId}&ticket=${ticket}`, 'http://localhost:3000'),
+      );
+      return client;
+    }
+
+    beforeEach(async () => {
+      await truncateAll(prisma);
+    });
+
+    it('참가 중인 대회에는 붙는다', async () => {
+      const { tournamentId } = await seedTournament({ participantId: 'alice' });
+
+      const client = await connectTournament(await playerTicket('alice'), tournamentId);
+
+      expect(client.close).not.toHaveBeenCalled();
+    });
+
+    it('참가하지 않은 대회에는 붙을 수 없다', async () => {
+      // 인증만 되면 아무 대회의 좌석 현황이나 실시간으로 받을 수 있었다.
+      // 좌석 배치는 그 대회에 누가 몇 명 남았는지를 그대로 드러낸다.
+      const { tournamentId } = await seedTournament({ participantId: 'bob' });
+
+      const client = await connectTournament(await playerTicket('alice'), tournamentId);
+
+      expect(client.close).toHaveBeenCalledWith(1008, expect.any(String));
+    });
+
+    it('없는 대회에는 붙을 수 없다', async () => {
+      const client = await connectTournament(await playerTicket('alice'), 'no-such-tournament');
+
+      expect(client.close).toHaveBeenCalledWith(1008, expect.any(String));
+    });
+
+    it('대회를 여는 상점 주인은 참가 행이 없어도 붙는다', async () => {
+      // 상점 콘솔과 전광판이 좌석 현황을 보는 화면이다. 주인은 참가자가
+      // 아니므로 참가 행만 보면 자기 대회에서 잠긴다.
+      const { tournamentId, ownerId } = await seedTournament();
+
+      const client = await connectTournament(await tickets.issue({ sub: ownerId, role: Role.STORE_ADMIN }), tournamentId);
+
+      expect(client.close).not.toHaveBeenCalled();
+    });
+
+    it('다른 상점의 주인은 붙을 수 없다', async () => {
+      const { ownerId } = await seedTournament();
+      const other = await seedTournament();
+
+      const client = await connectTournament(await tickets.issue({ sub: ownerId, role: Role.STORE_ADMIN }), other.tournamentId);
+
+      expect(client.close).toHaveBeenCalledWith(1008, expect.any(String));
+    });
+
+    /**
+     * 딜러 티켓은 `tournamentId`를 들고 있다 — 로그인 시 서명된 값이라
+     * 클라이언트가 고를 수 없다. 그쪽이 있으면 그것이 권위고, DB는 보지 않는다.
+     * **참가 행 검사와 어긋나는 입력이다**: 딜러는 참가자가 아니라서, 대조
+     * 없이 DB 검사만 하는 고침이면 여기가 빨개진다.
+     */
+    it('딜러 티켓은 토큰의 대회에 붙는다', async () => {
+      const { tournamentId } = await seedTournament();
+      const ticket = await tickets.issue({
+        sub: 'dealer-session-1',
+        role: Role.DEALER,
+        tournamentId,
+        tableId: TABLE,
+      });
+
+      const client = await connectTournament(ticket, tournamentId);
+
+      expect(client.close).not.toHaveBeenCalled();
+    });
+
+    it('딜러 티켓으로 다른 대회에는 붙을 수 없다', async () => {
+      // A 대회 티켓으로 붙으면서 쿼리에 B 대회를 주면 B의 좌석 현황을
+      // 구독하게 됐다. 테이블 경로는 바로 아래에서 막는데 여기만 뚫려 있었다.
+      const { tournamentId: mine } = await seedTournament();
+      const { tournamentId: other } = await seedTournament();
+      const ticket = await tickets.issue({
+        sub: 'dealer-session-1',
+        role: Role.DEALER,
+        tournamentId: mine,
+        tableId: TABLE,
+      });
+
+      const client = await connectTournament(ticket, other);
+
       expect(client.close).toHaveBeenCalledWith(1008, expect.any(String));
     });
   });
