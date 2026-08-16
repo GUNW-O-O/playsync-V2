@@ -6,6 +6,7 @@ import { DealerAction, DealerActionSchema, PlayerActionSchema, RebuyResponseSche
 import { DealerService } from 'src/dealer/dealer.service';
 import { TableState } from 'src/game-engine/types';
 import { PlaysyncService } from 'src/playsync/playsync.service';
+import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { WsIdentity, WsTicketService } from './ws-ticket.service';
 
@@ -36,6 +37,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly redis: RedisService,
     private readonly tickets: WsTicketService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly prisma: PrismaService,
   ) { }
 
   private addToMap(map: Map<string, Set<WebSocket>>, id: string, client: WebSocket) {
@@ -88,6 +90,52 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (!isSeated) throw new Error('이 테이블의 좌석이 없습니다.');
   }
 
+  /**
+   * 이 접속이 이 대회의 좌석 현황(`renderSeatList`)을 구독할 자격이 있는지
+   * 확인한다. `assertTableAccess`와 같은 규칙이다 — **클라이언트가 보낸 값을
+   * 근거로 삼지 않는다.**
+   *
+   * 이 검사가 없던 동안, 인증만 되면 아무 대회의 좌석 현황이나 실시간으로
+   * 받아볼 수 있었다. 좌석 배치는 어느 테이블에 몇 명이 남았는지를 그대로
+   * 드러낸다. 테이블 경로는 바로 아래에서 막고 있었으므로, 대회 경로만
+   * 뚫려 있던 비대칭 자체가 빠뜨렸다는 증거다.
+   *
+   * **티켓에 `tournamentId`가 없는 것은 결함이 아니다.** `POST /ws/ticket`은
+   * 딜러 티켓에만 그 값을 싣는다(`ws-ticket.controller.ts:41`) — 딜러는 대회
+   * 하나에 묶인 세션이지만, 플레이어와 상점 계정은 한 사람이 여러 대회에
+   * 걸칠 수 있어 발급 시점에 대회를 정할 수 없다. 그래서 거절하지 않고
+   * **다른 근거로** 가른다.
+   */
+  private async assertTournamentAccess(payload: WsIdentity, tournamentId: string) {
+    // 티켓이 대회를 들고 있으면(딜러) 그것이 권위다. `loginDealer`가 서명해
+    // 넣은 값이라 클라이언트가 고를 수 없다.
+    if (payload.tournamentId) {
+      if (payload.tournamentId !== tournamentId) {
+        throw new Error('토큰에 없는 대회입니다.');
+      }
+      return;
+    }
+
+    // 나머지는 서버가 들고 있는 관계로 정한다. 참가 행이 있거나, 그 대회를
+    // 여는 상점의 주인이면 좌석 현황을 볼 자격이 있다 — 상점 콘솔과 전광판이
+    // 그 화면이라 주인을 빼면 자기 대회에서 잠긴다.
+    //
+    // 참가 상태(`PlayerStatus`)는 보지 않는다. 탈락자에게도 좌석 현황은 이미
+    // 본 정보고, 리바인을 기다리는 화면이 이 신호를 듣는다 — 상태로 자르면
+    // 탈락과 동시에 그 화면이 죽는다.
+    const allowed = await this.prisma.tournament.findFirst({
+      where: {
+        id: tournamentId,
+        OR: [
+          { tornamentParticipations: { some: { userId: payload.sub } } },
+          { store: { ownerId: payload.sub } },
+        ],
+      },
+      select: { id: true },
+    });
+    if (!allowed) throw new Error('이 대회를 볼 자격이 없습니다.');
+  }
+
   // 1. 연결 시 토큰 검증 및 테이블 입장
   async handleConnection(client: WebSocket, request: any) {
     try {
@@ -115,6 +163,8 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       // 1. 대회 단위 접속 (테이블 지정 없음) — 좌석 현황(`SEAT_LIST_UPDATED`)
       //    브로드캐스트를 받는 용도다.
       if (tournamentId && !tableId) {
+        await this.assertTournamentAccess(payload, tournamentId);
+
         (client as any).tournamentId = tournamentId;
         this.addToMap(this.tournamentSessions, tournamentId, client);
         return; // 테이블 세션에는 넣지 않는다

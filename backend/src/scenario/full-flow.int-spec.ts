@@ -191,7 +191,7 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
       queue, prismaService, redisService, playsync, jwt, otpAttempts,
     );
     tickets = new WsTicketService(redis);
-    gateway = new WsGateway(dealer, playsync, redisService, tickets, emitter);
+    gateway = new WsGateway(dealer, playsync, redisService, tickets, emitter, prismaService);
 
     // 세 명으로 진행한다. 운영 기본값은 6이고 그 규칙은 T16이 따로 검증한다.
     process.env.MIN_PLAYERS_TO_START = '3';
