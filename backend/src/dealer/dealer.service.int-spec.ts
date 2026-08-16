@@ -72,6 +72,13 @@ describe('DealerService 동시성', () => {
    * 저장되고 `getFullTournamentInfo`가 개별 필드를 읽는다. 다른 형태로 심으면
    * 전부 기본값(`isRegistrationOpen: false`)으로 읽혀서, 테스트가 아무 말 없이
    * 다른 시나리오를 검증하게 된다.
+   *
+   * **`rebuyUntil`이 0이면 안 된다**(T47). 마감 판정은 `현재 레벨 < rebuyUntil`
+   * 이고 구조의 첫 레벨이 `lv: 1`이라, 0이면 대회 시작 순간부터 이미 닫힌
+   * 상태다 — 리바인이 열린 시나리오를 세울 수가 없다. 예전에는 해시에 박아 둔
+   * `isRegistrationOpen: true`가 그대로 읽혀서 이 모순이 드러나지 않았다.
+   * 지금은 대시보드가 **동기화된 레벨에서 마감을 파생**하므로 값이 서로
+   * 어긋나면 파생 쪽이 이긴다.
    */
   async function seedMeta(isRegistrationOpen = false) {
     const blind: BlindField = {
@@ -87,7 +94,8 @@ describe('DealerService 동시성', () => {
       totalPlayer: 3,
       activePlayer: 3,
       totalBuyinAmount: 3000,
-      rebuyUntil: 0,
+      // 현재 레벨(lv 1)보다 커야 등록이 열린 상태가 된다.
+      rebuyUntil: 5,
       avgStack: 10000,
       tournamentName: 'T',
       entryFee: 1000,

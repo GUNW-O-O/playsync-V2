@@ -5,6 +5,7 @@ import { calculatePrizes, PrizePayout } from "src/playsync/prize";
 import { UserInfo } from "shared/types/userInfo";
 import { getCurrentBlindLevel } from "shared/util/util";
 import { TableState } from "src/game-engine/types";
+import { isRegistrationOpenAtLevel } from "src/store/session/registration";
 
 @Injectable()
 export class RedisService {
@@ -295,11 +296,28 @@ export class RedisService {
       ? calculatePrizes(pool, payouts)
       : new Map<number, number>();
 
+    // **해시 필드를 그대로 믿지 않는다.** 위 `hgetall`은 `checkAndSyncBlindLevel`
+    // **앞**에서 찍은 사진이라, 레벨이 막 넘어간 그 호출에서는 동기화가 방금
+    // 내린 마감을 담고 있지 않다. 결제와 리바인이 이 값을 보므로 그 한 박자에
+    // 정확히 한 명이 더 통과한다. 동기화된 레벨로 판정을 다시 세운다 — 규칙
+    // 자체는 `registration.ts` 하나뿐이다.
+    //
+    // 첫 인자로 해시 값을 그대로 넣는 것이 맞다. 그 값은 이미 "상점이 연
+    // 상태 && 그때까지의 레벨"이 합쳐진 것이고, 마감은 단조라 한 번 '0'이면
+    // 다시 열리지 않는다.
+    const curLv =
+      blindField.blindStructure[blindField.currentBlindLv]?.lv ?? 0;
+    const rebuyUntil = parseInt(raw.rebuyUntil || '0');
+
     return {
       dashboard: {
         prizePool: pool,
         prizes: payouts.map(p => ({ ...p, amount: amounts.get(p.place) ?? 0 })),
-        isRegistrationOpen: raw.isRegistrationOpen === '1',
+        isRegistrationOpen: isRegistrationOpenAtLevel(
+          raw.isRegistrationOpen === '1',
+          curLv,
+          rebuyUntil,
+        ),
         totalPlayer: parseInt(raw.totalPlayer || '0'),
         activePlayer: parseInt(raw.activePlayer || '0'),
         totalBuyinAmount: parseInt(raw.totalBuyinAmount || '0'),
