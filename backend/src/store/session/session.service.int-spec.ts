@@ -20,6 +20,7 @@ import Redis from 'ioredis';
 import { Client } from 'pg';
 import { closeTestPrisma, createTestPrisma, truncateAll } from '../../../test/helpers/prisma';
 import { createTestRedis, flushTestRedis } from '../../../test/helpers/redis';
+import { UserService } from 'src/user/user.service';
 import { SessionService } from './session.service';
 
 /**
@@ -1650,5 +1651,313 @@ describe('SessionService.getSeatOccupants', () => {
     await expect(
       sessionService.getSeatOccupants(tournamentId, intruder.id),
     ).rejects.toThrow(ForbiddenException);
+  });
+});
+
+/**
+ * 대회 취소와 전액 환불.
+ *
+ * **시작 전에만 취소한다.** 리바인은 `HAND_END`에서만 나가므로 시작 전 대회의
+ * `buyInCount`는 언제나 1이고, 그래서 한 사람에게 돌려줄 금액은 `entryFee`
+ * 하나다. `entryFee * buyInCount`로 쓰지 않는 이유는 그 곱이 항상 1이라
+ * **어떤 테스트도 그 분기를 증명하지 못하기** 때문이다 — 리바인 환불을
+ * 처리하는 것처럼 보이는데 한 번도 안 타는 코드가 된다.
+ *
+ * 대신 가드를 둔다. 시작 전이면 `참가자 수 * entryFee == totalBuyinAmount`가
+ * 성립해야 하고, 어긋나면 조용히 덜 돌려주는 대신 멈춘다.
+ */
+describe('SessionService.cancelSession', () => {
+  let prisma: PrismaClient;
+  let redis: Redis;
+  let sessionService: SessionService;
+  let tournamentId: string;
+  let ownerId: string;
+
+  const ENTRY_FEE = 10000;
+  const START_POINTS = 50000;
+
+  beforeAll(() => {
+    prisma = createTestPrisma();
+    redis = createTestRedis();
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+    await closeTestPrisma(prisma);
+  });
+
+  /** 참가비를 실제로 낸 사람을 만든다 — 포인트 차감과 거래 내역까지 대칭으로. */
+  async function seedPaidPlayer(nickname: string) {
+    const user = await prisma.user.create({
+      data: { nickname, password: 'x', points: START_POINTS - ENTRY_FEE },
+    });
+    await prisma.tournamentParticipation.create({
+      data: {
+        userId: user.id,
+        tournamentId,
+        status: PlayerStatus.WAITING,
+        currentStack: 30000,
+        playerOtp: `otp-${nickname}`,
+      },
+    });
+    await prisma.pointTransaction.create({
+      data: {
+        userId: user.id,
+        amount: -ENTRY_FEE,
+        type: 'BUY_IN',
+        tournamentId,
+        description: '테스트 대회 바이인',
+      },
+    });
+    await prisma.tournament.update({
+      where: { id: tournamentId },
+      data: {
+        totalPlayers: { increment: 1 },
+        activePlayers: { increment: 1 },
+        totalBuyinAmount: { increment: ENTRY_FEE },
+      },
+    });
+    return user.id;
+  }
+
+  beforeEach(async () => {
+    await truncateAll(prisma);
+    await flushTestRedis(redis);
+
+    sessionService = new SessionService(
+      prisma as unknown as PrismaService,
+      new RedisService(redis),
+      new OtpAttempts(redis),
+      new EventEmitter2(),
+    );
+
+    ({ ownerId, tournamentId } = await seedTournamentWithTable(prisma));
+  });
+
+  it('취소하면 참가비가 포인트로 돌아오고 REFUND 내역이 남는다', async () => {
+    const playerId = await seedPaidPlayer('player1');
+
+    await sessionService.cancelSession(tournamentId, ownerId);
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: playerId } });
+    const refund = await prisma.pointTransaction.findFirst({
+      where: { userId: playerId, tournamentId, type: 'REFUND' },
+    });
+
+    expect(`포인트 ${user.points} / 환불내역 ${refund === null ? '없음' : refund.amount}`)
+      .toBe(`포인트 ${START_POINTS} / 환불내역 ${ENTRY_FEE}`);
+  });
+
+  it('참가자 여럿이면 각자 자기 참가비를 돌려받는다', async () => {
+    const a = await seedPaidPlayer('player-a');
+    const b = await seedPaidPlayer('player-b');
+
+    await sessionService.cancelSession(tournamentId, ownerId);
+
+    const points = await prisma.user.findMany({
+      where: { id: { in: [a, b] } },
+      select: { points: true },
+    });
+
+    expect(`돌려받은 사람 ${points.filter((p) => p.points === START_POINTS).length}명`)
+      .toBe('돌려받은 사람 2명');
+  });
+
+  /**
+   * 멱등이 요건이다. 취소를 두 번 눌러도 두 번 주지 않아야 한다 — 돈은
+   * 두 번 나가면 되돌릴 근거가 없다. 판정은 코드가 아니라 조건부
+   * `updateMany`의 `where`에 태워 DB에 맡긴다(`awardPrize`와 같은 자리).
+   */
+  it('두 번 취소해도 환불은 한 번뿐이다', async () => {
+    const playerId = await seedPaidPlayer('player1');
+
+    await sessionService.cancelSession(tournamentId, ownerId);
+    await sessionService.cancelSession(tournamentId, ownerId).catch(() => undefined);
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: playerId } });
+    const refunds = await prisma.pointTransaction.count({
+      where: { userId: playerId, tournamentId, type: 'REFUND' },
+    });
+
+    expect(`포인트 ${user.points} / 환불내역 ${refunds}건`)
+      .toBe(`포인트 ${START_POINTS} / 환불내역 1건`);
+  });
+
+  it('취소한 대회는 CANCELLED로 닫히고 걷은 금액이 0이 된다', async () => {
+    await seedPaidPlayer('player1');
+
+    await sessionService.cancelSession(tournamentId, ownerId);
+
+    const t = await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } });
+
+    expect(`상태 ${t.status} / 걷은 금액 ${t.totalBuyinAmount} / 닫힌 시각 ${t.finishedAt === null ? '없음' : '있음'}`)
+      .toBe('상태 CANCELLED / 걷은 금액 0 / 닫힌 시각 있음');
+  });
+
+  /**
+   * 시작한 대회는 취소하지 않는다. 블라인드가 오르고 칩이 움직인 뒤라
+   * "전액 환불"의 뜻이 성립하지 않는다 — 이미 탈락한 사람에게도 전액을
+   * 주는 것이 되고, 그건 정산이지 취소가 아니다.
+   *
+   * 판정은 `status`가 아니라 `startedAt`으로 한다. 그것이 "시작했다"의
+   * 정본이다(`domain.md`의 두 `startedAt` 구분).
+   */
+  it('시작한 대회는 취소할 수 없고 포인트도 그대로다', async () => {
+    const playerId = await seedPaidPlayer('player1');
+    await prisma.tournament.update({
+      where: { id: tournamentId },
+      data: { status: TournamentStatus.ONGOING, startedAt: new Date() },
+    });
+
+    await expect(
+      sessionService.cancelSession(tournamentId, ownerId),
+    ).rejects.toThrow(ConflictException);
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: playerId } });
+
+    expect(`포인트 ${user.points}`).toBe(`포인트 ${START_POINTS - ENTRY_FEE}`);
+  });
+
+  it('남의 대회는 취소할 수 없다', async () => {
+    const playerId = await seedPaidPlayer('player1');
+    const intruder = await prisma.user.create({
+      data: { nickname: 'intruder', password: 'x', role: Role.STORE_ADMIN },
+    });
+
+    await expect(
+      sessionService.cancelSession(tournamentId, intruder.id),
+    ).rejects.toThrow(ForbiddenException);
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: playerId } });
+
+    expect(`포인트 ${user.points}`).toBe(`포인트 ${START_POINTS - ENTRY_FEE}`);
+  });
+
+  /**
+   * 장부가 어긋난 대회는 멈춘다. 시작 전이면 `참가자 수 * entryFee`가
+   * `totalBuyinAmount`와 같아야 하고, 다르면 얼마를 돌려줘야 하는지 서버가
+   * 모른다는 뜻이다. 조용히 덜 주는 것보다 거절하는 것이 낫다.
+   */
+  it('걷은 금액과 참가자 수가 어긋나면 거절하고 아무것도 주지 않는다', async () => {
+    const playerId = await seedPaidPlayer('player1');
+    await prisma.tournament.update({
+      where: { id: tournamentId },
+      data: { totalBuyinAmount: ENTRY_FEE * 3 },
+    });
+
+    await expect(
+      sessionService.cancelSession(tournamentId, ownerId),
+    ).rejects.toThrow(ConflictException);
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: playerId } });
+    const t = await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } });
+
+    expect(`포인트 ${user.points} / 상태 ${t.status}`)
+      .toBe(`포인트 ${START_POINTS - ENTRY_FEE} / 상태 PENDING`);
+  });
+
+  it('참가자가 없는 대회도 취소된다', async () => {
+    await sessionService.cancelSession(tournamentId, ownerId);
+
+    const t = await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } });
+
+    expect(`상태 ${t.status}`).toBe('상태 CANCELLED');
+  });
+
+  it('없는 대회를 취소하면 404다', async () => {
+    await expect(
+      sessionService.cancelSession('00000000-0000-0000-0000-000000000000', ownerId),
+    ).rejects.toThrow(NotFoundException);
+  });
+});
+
+/**
+ * **상태가 하나 늘면 `!== FINISHED` 검사가 전부 새어 나간다.**
+ *
+ * `user.service.ts`의 `getMyParticipations` 주석이 이 함정을 이미 적어 뒀다 —
+ * "상태를 나열해서 살아있는 것만 고르면, 나중에 상태가 하나 늘 때 조용히
+ * 빠진다". `SYNCING`이 실제로 그랬다.
+ *
+ * T49가 `CANCELLED`를 더하면서 같은 일이 여덟 곳에 한꺼번에 생겼다. 그래서
+ * 판정을 `isClosedTournament` 하나로 모았고, 이 스위트는 **취소된 대회가
+ * 종료된 대회와 똑같이 막히는지**를 경로별로 확인한다. 검사가 여덟이므로
+ * 하나가 지워졌을 때 그것만 빨개져야 한다.
+ */
+describe('취소된 대회는 종료된 대회와 같이 막힌다', () => {
+  let prisma: PrismaClient;
+  let redis: Redis;
+  let sessionService: SessionService;
+  let tournamentId: string;
+  let ownerId: string;
+
+  beforeAll(() => {
+    prisma = createTestPrisma();
+    redis = createTestRedis();
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+    await closeTestPrisma(prisma);
+  });
+
+  beforeEach(async () => {
+    await truncateAll(prisma);
+    await flushTestRedis(redis);
+
+    sessionService = new SessionService(
+      prisma as unknown as PrismaService,
+      new RedisService(redis),
+      new OtpAttempts(redis),
+      new EventEmitter2(),
+    );
+
+    ({ ownerId, tournamentId } = await seedTournamentWithTable(prisma));
+    await sessionService.cancelSession(tournamentId, ownerId);
+  });
+
+  /**
+   * **메시지까지 단언한다.** 취소는 딜러 세션도 함께 지우므로, 타입만 보면
+   * `createTable`의 "딜러 세션이 없는 대회" 분기가 같은 `ConflictException`을
+   * 던져 초록이 된다 — 닫힘 검사에 닿지도 못한 채로. 실제로 한 번 그렇게
+   * 통과했다(CLAUDE.md "다른 계층이 이미 막고 있어서 검증 대상에 닿지도
+   * 못했다").
+   */
+  it('테이블을 더 열 수 없다', async () => {
+    await expect(
+      sessionService.createTable(tournamentId, ownerId),
+    ).rejects.toThrow('이미 닫힌 대회입니다.');
+  });
+
+  it('수정할 수 없다', async () => {
+    await expect(
+      sessionService.updateSession(tournamentId, { name: '이름 변경' } as never),
+    ).rejects.toThrow(ConflictException);
+  });
+
+  it('다시 닫을 수 없다', async () => {
+    await expect(
+      sessionService.completeSession(tournamentId),
+    ).rejects.toThrow(ConflictException);
+  });
+
+  /**
+   * 참가 OTP는 좌석 권한이다. 취소된 대회의 것을 마이페이지가 계속 보여주면
+   * 유출 표면만 넓어진다 — 종료된 대회와 똑같이 지워야 한다.
+   */
+  it('마이페이지가 참가 OTP를 지운다', async () => {
+    const player = await prisma.user.create({
+      data: { nickname: 'otp-player', password: 'x' },
+    });
+    await prisma.tournamentParticipation.create({
+      data: {
+        userId: player.id, tournamentId,
+        status: PlayerStatus.WAITING, currentStack: 0, playerOtp: 'otp-1234',
+      },
+    });
+
+    const rows = await new UserService(prisma as unknown as PrismaService)
+      .getMyParticipations(player.id);
+
+    expect(`OTP ${rows[0].playerOtp === null ? '없음' : '있음'}`).toBe('OTP 없음');
   });
 });

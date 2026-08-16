@@ -14,6 +14,7 @@ import { tokenTtl } from 'src/auth/token-ttl';
 import { GamePhase, TableState, createEmptyTableState } from 'src/game-engine/types';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
+import { isClosedTournament } from 'src/store/session/tournament-status';
 
 /** 좌석을 확정할 때 필요한 것만 추린 값. 조회 결과를 그대로 끌고 다니지 않는다. */
 type Claimant = {
@@ -60,8 +61,8 @@ export class EntryService {
     if (!participation) {
       throw new UnauthorizedException('인증 정보가 올바르지 않습니다.');
     }
-    if (participation.tournament.status === TournamentStatus.FINISHED) {
-      throw new ForbiddenException('종료된 대회입니다.');
+    if (isClosedTournament(participation.tournament.status)) {
+      throw new ForbiddenException('닫힌 대회입니다.');
     }
     if (
       participation.status === PlayerStatus.ELIMINATED ||
@@ -392,7 +393,7 @@ export class EntryService {
   ): boolean {
     return (
       !snapshot &&
-      table.tournament.status !== TournamentStatus.FINISHED &&
+      !isClosedTournament(table.tournament.status) &&
       table._count.tablePlayers > 0
     );
   }

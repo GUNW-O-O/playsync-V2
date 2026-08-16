@@ -35,6 +35,14 @@ enum TournamentStatus {
   ONGOING // 게임 진행 중
   SYNCING // 테이블 이동/밸런싱 대기 상태
   FINISHED // 최종 종료 (영구 데이터 보존 상태)
+
+  /// 취소 — 시작 전에 닫고 참가비를 전액 환불했다.
+  ///
+  /// `FINISHED`와 섞지 않는다. `FINISHED`는 "걷은 참가비 == 나간 상금"이
+  /// 맞아떨어져야 달리는 값이고(`completeSession`의 게이트), 취소는 그
+  /// 게이트를 지나지 않는다. 같은 값을 쓰면 정산까지 끝난 대회와 무른 대회를
+  /// 나중에 영영 가를 수 없다.
+  CANCELLED
 }
 
 enum PlayerStatus {

@@ -57,6 +57,7 @@ const STATUS_LABEL: Record<string, string> = {
   PENDING: '시작 전',
   ONGOING: '진행 중',
   FINISHED: '종료',
+  CANCELLED: '취소',
 };
 
 /**

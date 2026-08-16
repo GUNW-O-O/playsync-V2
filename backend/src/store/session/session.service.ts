@@ -17,6 +17,7 @@ import { parsePayouts, PrizePayout } from 'src/playsync/prize';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { buildTournamentMeta } from './tournament-meta';
+import { isClosedTournament } from './tournament-status';
 
 /**
  * 대회를 시작할 수 있는 최소 인원.
@@ -214,10 +215,10 @@ export class SessionService {
       include: { dealerSession: true },
     });
     if (!tournament) throw new NotFoundException('세션을 찾을 수 없습니다.');
-    // completeSession이 대회를 닫으며 테이블과 딜러 세션을 함께 지운다.
-    // 여기서 만들면 죽은 대회에 테이블이 되살아난다.
-    if (tournament.status === TournamentStatus.FINISHED) {
-      throw new ConflictException('이미 종료된 대회입니다.');
+    // completeSession·cancelSession이 대회를 닫으며 테이블과 딜러 세션을 함께
+    // 지운다. 여기서 만들면 죽은 대회에 테이블이 되살아난다.
+    if (isClosedTournament(tournament.status)) {
+      throw new ConflictException('이미 닫힌 대회입니다.');
     }
     if (!tournament.dealerSession) {
       throw new ConflictException('딜러 세션이 없는 대회에는 테이블을 추가할 수 없습니다.');
@@ -554,8 +555,8 @@ export class SessionService {
       where: { id },
     });
     if (!tournament) throw new NotFoundException('세션을 찾을 수 없습니다.');
-    if (tournament.status === TournamentStatus.FINISHED) {
-      throw new ConflictException('이미 종료된 세션입니다.');
+    if (isClosedTournament(tournament.status)) {
+      throw new ConflictException('이미 닫힌 세션입니다.');
     }
 
     const participations = await this.prismaService.tournamentParticipation.findMany({
@@ -602,6 +603,123 @@ export class SessionService {
       });
     });
     await this.redis.deleteTournament(id, tableIds);
+  }
+
+  /**
+   * 대회를 취소하고 참가비를 **전액 환불**한다.
+   *
+   * `completeSession`이 닫지 못하는 구멍이 여기 있었다. 그쪽은 "걷은 참가비 ==
+   * 나간 상금"이라야 닫히는데, 참가자만 모이고 시작하지 않은 대회는 상금이
+   * 0이라 그 게이트에 영영 걸린다. 환불 경로도 없어서
+   * (`TransactionType.REFUND`가 스키마에만 있었다) 돈을 돌려줄 방법 자체가
+   * 없었다.
+   *
+   * **시작 전에만 취소한다.** 판정은 `status`가 아니라 `startedAt`으로 한다 —
+   * 그것이 "시작했다"의 정본이다. 시작한 뒤에는 블라인드가 오르고 칩이 움직여
+   * "전액 환불"의 뜻이 성립하지 않는다(이미 탈락한 사람에게도 전액을 주는
+   * 것이 되고, 그건 정산이지 취소가 아니다).
+   *
+   * **한 사람에게 돌려줄 금액은 `entryFee` 하나다.** 리바인은 `HAND_END`에서만
+   * 나가므로 시작 전 대회의 `buyInCount`는 언제나 1이다. `entryFee *
+   * buyInCount`로 쓰지 않는 이유는 그 곱이 항상 1이라 **어떤 테스트도 그 곱을
+   * 증명하지 못하기** 때문이다 — 리바인 환불을 처리하는 것처럼 보이는데 한
+   * 번도 안 타는 코드가 된다.
+   *
+   * 대신 **장부를 대조한다.** 시작 전이면 `참가자 수 * entryFee ==
+   * totalBuyinAmount`가 성립해야 한다. 어긋나면 얼마를 돌려줘야 하는지 서버가
+   * 모른다는 뜻이므로, 조용히 덜 주는 대신 거절한다. `completeSession`의 정산
+   * 게이트와 같은 자리다.
+   *
+   * **멱등이다.** 상태 전이를 조건부 `updateMany`에 태워 DB가 판정하게 하고,
+   * 바뀐 행이 0이면 환불을 건너뛴다. 돈은 두 번 나가면 되돌릴 근거가 없다 —
+   * `awardPrize`가 쓰는 방식 그대로다.
+   *
+   * 수수료·위약금은 다루지 않는다. 결제 도메인이라 여기서 정할 값이 아니다.
+   */
+  async cancelSession(tournamentId: string, ownerId: string) {
+    await this.assertTournamentOwnership(tournamentId, ownerId);
+
+    const tournament = await this.prismaService.tournament.findUnique({
+      where: { id: tournamentId },
+    });
+    if (!tournament) throw new NotFoundException('세션을 찾을 수 없습니다.');
+    if (isClosedTournament(tournament.status)) {
+      throw new ConflictException('이미 닫힌 세션입니다.');
+    }
+    if (tournament.startedAt !== null) {
+      throw new ConflictException('이미 시작한 대회는 취소할 수 없습니다.');
+    }
+
+    const tables = await this.prismaService.table.findMany({
+      where: { tournamentId },
+      select: { id: true },
+    });
+
+    await this.prismaService.$transaction(async (tx) => {
+      const participations = await tx.tournamentParticipation.findMany({
+        where: { tournamentId },
+        select: { userId: true },
+      });
+
+      // 장부 대조. 트랜잭션 **안에서** 다시 읽는 이유는, 밖에서 읽은
+      // `tournament`가 이미 낡았을 수 있어서다 — 검사와 환불 사이에 참가가
+      // 하나 더 들어오면 그 사람 돈은 돌려주지 않은 채로 대회가 닫힌다.
+      const current = await tx.tournament.findUniqueOrThrow({
+        where: { id: tournamentId },
+        select: { entryFee: true, totalBuyinAmount: true },
+      });
+      const owed = participations.length * current.entryFee;
+      if (owed !== current.totalBuyinAmount) {
+        throw new ConflictException(
+          `장부가 맞지 않아 취소할 수 없습니다. 걷은 금액 ${current.totalBuyinAmount}, 돌려줄 금액 ${owed}.`,
+        );
+      }
+
+      // **상태 전이가 문지기다.** 이 한 문장이 통과한 호출만 돈을 움직인다.
+      // `where`에 조건을 전부 실어 판정을 DB에 맡긴다 — 두 번째 호출은
+      // `status`가 이미 `CANCELLED`라 0행을 바꾸고, 아래 환불을 건너뛴다.
+      const closed = await tx.tournament.updateMany({
+        where: {
+          id: tournamentId,
+          startedAt: null,
+          status: { notIn: [TournamentStatus.FINISHED, TournamentStatus.CANCELLED] },
+        },
+        data: {
+          status: TournamentStatus.CANCELLED,
+          finishedAt: new Date(),
+          // 걷은 돈을 전부 돌려줬으므로 0이다. 남겨 두면 이 대회의 회계가
+          // "걷었는데 아무도 안 받았다"로 남는다.
+          totalBuyinAmount: 0,
+          activePlayers: 0,
+        },
+      });
+      if (closed.count === 0) return;
+
+      for (const { userId } of participations) {
+        await tx.user.update({
+          where: { id: userId },
+          data: { points: { increment: current.entryFee } },
+        });
+        await tx.pointTransaction.create({
+          data: {
+            userId,
+            amount: current.entryFee,
+            type: 'REFUND',
+            tournamentId,
+            description: `${tournament.name} 취소 환불`,
+          },
+        });
+      }
+
+      // 참가 행은 지우지 않는다. 장부라서다 — 누가 참가했다가 취소로
+      // 돌려받았는지가 남아야 `PointTransaction`의 REFUND와 짝이 맞는다.
+      // 대회가 `CANCELLED`인 것으로 "이 참가는 무효"가 이미 표현된다.
+
+      await tx.table.deleteMany({ where: { tournamentId } });
+      await tx.dealerSession.delete({ where: { tournamentId } });
+    });
+
+    await this.redis.deleteTournament(tournamentId, tables.map((t) => t.id));
   }
 
   /**
@@ -733,8 +851,8 @@ export class SessionService {
   // 세션 수정
   async updateSession(id: string, dto: UpdateTournamentDto) {
     const session = await this.getGameSession(id);
-    if (session?.status === TournamentStatus.FINISHED) {
-      throw new ConflictException('종료된 세션은 수정할 수 없습니다.');
+    if (session && isClosedTournament(session.status)) {
+      throw new ConflictException('닫힌 세션은 수정할 수 없습니다.');
     }
     const updateData: any = {
       name: dto.name,
