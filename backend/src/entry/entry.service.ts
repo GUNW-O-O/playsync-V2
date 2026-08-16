@@ -56,7 +56,7 @@ export class EntryService {
     });
 
     // 대회가 없을 때와 OTP가 틀렸을 때를 가르지 않는다. 가르면 존재하는 대회
-    // id를 훑을 수 있다 — 딜러 로그인과 같은 이유(`dealer.service.ts:53`).
+    // id를 훑을 수 있다 — 딜러 로그인과 같은 이유(`DealerService.loginDealer`).
     if (!participation) {
       throw new UnauthorizedException('인증 정보가 올바르지 않습니다.');
     }
@@ -219,7 +219,7 @@ export class EntryService {
         // 어떤 제약이 걸렸는지로 메시지를 가른다. 드라이버 어댑터
         // (@prisma/adapter-pg) 구성에서는 P2002 메타에 `target`이 없다.
         // 대신 postgres가 준 제약 조건 정보를 필드 이름에 큰따옴표가 붙은
-        // 채로 담아 온다(`payment.service.ts:143-163`와 같은 모양).
+        // 채로 담아 온다(`payment.service.ts`의 `joinSession`과 같은 모양).
         const err = e as {
           code?: string;
           meta?: {
@@ -316,7 +316,7 @@ export class EntryService {
           bet: 0,
           // 핸드 도중 착석은 허용이다(늦은 참가). 폴드로 넣으면 팟·차례·
           // 사이드팟 어디에도 끼어들지 않고, 핸드가 끝날 때 resetStatus()가
-          // 풀어 준다(`table-engine.ts:281`).
+          // 풀어 준다(`TableEngine.resetStatus`).
           hasFolded: state.phase !== GamePhase.WAITING,
           isAllIn: false,
           hasChecked: false,

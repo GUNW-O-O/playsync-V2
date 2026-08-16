@@ -70,8 +70,8 @@
 | 딜러의 테이블 | 토큰에 서명된 `tableId` | 쿼리의 `tableId`와 대조 |
 
 마지막 둘은 잘 돼 있는 부분이라 적어 둔다. 플레이어가 "나는 이 테이블 소속"
-이라고 주장해도 서버는 스냅샷을 본다(`ws.gateway.ts:84`). 딜러도 쿼리로 넘긴
-테이블을 그대로 믿지 않고 토큰과 대조한다(`ws.gateway.ts:78`).
+이라고 주장해도 서버는 스냅샷을 본다(`ws.gateway.ts`의 `assertTableAccess`).
+딜러도 쿼리로 넘긴 테이블을 그대로 믿지 않고 토큰과 대조한다(같은 함수).
 
 다만 대조의 **기준값이 어디서 왔는가**가 문제다. T23이 절반을 닫았다 — 서명하는
 `tableId`가 그 대회 소속인지는 이제 로그인과 갱신 양쪽에서 확인한다. 남은 절반은
@@ -92,20 +92,21 @@
 
 ## 관찰된 사실
 
-정책이 아니라 지금 코드가 그렇다는 것. 위치는 이 문서를 쓸 당시(`a3d72db`)의
-줄 번호다. 마지막 열은 그 뒤에 무엇이 처리했는지.
+정책이 아니라 지금 코드가 그렇다는 것. 이 목록은 `a3d72db` 시점의 감사이고,
+위치는 그때 문제가 있던 **함수 이름**으로 적는다(줄 번호는 밀린다).
+마지막 열은 그 뒤에 무엇이 처리했는지.
 
 | # | 사실 | 위치 | 닿는 자산 | 처리 |
 |---|---|---|---|---|
-| 1 | WS 토큰이 쿼리스트링에 실린다. 서버·프록시 로그와 브라우저 히스토리에 남는다 | `ws.gateway.ts:96` | 1·2·3 | **닫힘 (T24)** |
-| 2 | Origin 검사가 헤더 없으면 통과한다. 브라우저를 거치지 않는 접속은 검사 자체를 건너뛴다 | `ws.gateway.ts:60` | 2·4 | **닫힘 (T24)** |
-| 3 | 딜러 OTP가 평문 저장·평문 대조다. `Int` 컬럼이라 앞자리 0이 없어 후보 공간이 명목 자릿수보다 작다 | `schema.prisma:126`, `dealer.service.ts:48` | 2 | **닫힘 (T23)** |
+| 1 | WS 토큰이 쿼리스트링에 실린다. 서버·프록시 로그와 브라우저 히스토리에 남는다 | `ws.gateway.ts`의 `handleConnection` | 1·2·3 | **닫힘 (T24)** |
+| 2 | Origin 검사가 헤더 없으면 통과한다. 브라우저를 거치지 않는 접속은 검사 자체를 건너뛴다 | `ws.gateway.ts`의 `assertAllowedOrigin` | 2·4 | **닫힘 (T24)** |
+| 3 | 딜러 OTP가 평문 저장·평문 대조다. `Int` 컬럼이라 앞자리 0이 없어 후보 공간이 명목 자릿수보다 작다 | `schema.prisma`의 `Tournament.dealerOtpHash`, `DealerService.loginDealer` | 2 | **닫힘 (T23)** |
 | 4 | 레이트 리밋이 백엔드 전체에 없다. OTP뿐 아니라 로그인도 무제한이다 | Throttler 미설치 | 1·2·3 | **딜러 OTP만 닫힘 (T23)** |
-| 5 | 딜러가 고른 `tableId`를 검증 없이 토큰에 서명한다. 4절의 대조는 공격자가 고른 값을 기준으로 삼는다 | `dealer.service.ts:80` | 2 | **소속 검사만 (T23)** · 나머지는 계획 B |
-| 6 | 테이블 선점이 없다. 같은 OTP로 동일 테이블의 딜러 토큰이 여러 개 발급된다 | `dealer.service.ts:39` | 2·4 | **닫지 않는다** (backlog B1) |
-| 7 | 딜러 `sub`가 대회 단위라 단말을 구분하지 못한다 | `dealer.service.ts:78` | 감사 | **닫지 않는다** (backlog B1·B10) |
-| 8 | OTP 제거가 손으로 하는 구조분해 세 곳이다. 새 엔드포인트가 하나 빠뜨리면 그대로 샌다 | `payment.service.ts:45`, `payment.controller.ts:21`, `dealer.controller.ts:16` | 2 | **평문만 닫힘 (T23)** · 해시는 아직 규율 |
-| 9 | JWT 만료 1시간, 폐기 경로가 없다. 유출된 토큰을 무효화할 방법이 없다 | `auth.module.ts:25` | 1·2·3 | **딜러 토큰만 닫힘 (T23)** |
+| 5 | 딜러가 고른 `tableId`를 검증 없이 토큰에 서명한다. 4절의 대조는 공격자가 고른 값을 기준으로 삼는다 | `DealerService.loginDealer` | 2 | **소속 검사만 (T23)** · 나머지는 계획 B |
+| 6 | 테이블 선점이 없다. 같은 OTP로 동일 테이블의 딜러 토큰이 여러 개 발급된다 | `DealerService.loginDealer` | 2·4 | **닫지 않는다** (backlog B1) |
+| 7 | 딜러 `sub`가 대회 단위라 단말을 구분하지 못한다 | `DealerService.loginDealer` | 감사 | **닫지 않는다** (backlog B1·B10) |
+| 8 | OTP 제거가 손으로 하는 구조분해 세 곳이다. 새 엔드포인트가 하나 빠뜨리면 그대로 샌다 | `payment.service.ts`의 `getStoreAvailableSessions`, `payment.controller.ts`의 `findAvailableSessions`, `dealer.controller.ts`의 `getTournamentWithTables` | 2 | **평문만 닫힘 (T23)** · 해시는 아직 규율 |
+| 9 | JWT 만료 1시간, 폐기 경로가 없다. 유출된 토큰을 무효화할 방법이 없다 | `auth.module.ts`의 `JwtModule.register` | 1·2·3 | **딜러 토큰만 닫힘 (T23)** |
 | 10 | 프론트가 httpOnly 쿠키를 읽어 클라이언트 prop으로 넘기고, 그것이 WS 쿼리스트링에 실린다. httpOnly를 건 이유를 정면으로 무효화한다 | T22 이월 항목 | 1·2·3 | **닫힘 (T24)** |
 
 **3·4·5가 겹치는 자리가 가장 나쁘다.** 자릿수가 짧고, 시도 제한이 없고,
@@ -157,8 +158,10 @@
 > 평문이 나가는 자리는 대회 생성 응답과 재발급 응답 둘뿐이고, 각각 한 번씩이다.
 >
 > 남은 절반: 해시는 여전히 **쿼리마다 `omit`으로 손수 지운다.** 구조분해 세 곳이던
-> 것이 omit **일곱 곳**이 됐다(`session.service.ts:67, 87, 100, 187, 255, 527`,
-> `payment.service.ts:37`). `omit` 없이 쿼리를 새로 쓰면 6자리 비밀의 bcrypt 해시가
+> 것이 omit **일곱 곳**이 됐다(`session.service.ts`의 `getGameSession` ·
+> `getGameSessionWithTables` · `getStoreAllSessions` · `createSession` ·
+> `startSession` · `updateSession`, `payment.service.ts`의
+> `getStoreAvailableSessions`). `omit` 없이 쿼리를 새로 쓰면 6자리 비밀의 bcrypt 해시가
 > 그대로 나가고, 후보가 10^6뿐이라 GPU로 몇 분이다. **T23 자신이 그 실패 모드를
 > 증명했다** — `startSession`·`updateSession` 두 곳이 리뷰에서 잡혔고, 테스트는
 > 초록이었다. 구조로 옮기는 후속(Prisma 클라이언트 수준 `omit`)은 `backlog.md`의

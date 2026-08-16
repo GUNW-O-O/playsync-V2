@@ -233,10 +233,10 @@ export class SessionService {
     // 예전에는 스냅샷을 만드는 지점이 착석 하나뿐이었다. 그래서 물리 순서가
     // 그대로 결함이 됐다 — 딜러가 먼저 붙고 손님이 나중에 앉는데, 그 사이에
     // 딜러 화면이 부르는 `GET /playsync/:tableId`가 스냅샷 없음을 맨 `Error`로
-    // 던져 500이 났다(`playsync.service.ts:41`). 정상 상태에 서버 오류다.
+    // 던져 500이 났다(`PlaysyncService.joinTable`). 정상 상태에 서버 오류다.
     //
     // 여기서 세우면 **"스냅샷이 없다"의 뜻이 하나로 좁아진다 — 유실이다.**
-    // `deleteTable`이 이미 대칭으로 `deleteTableState`를 부른다(아래 :296).
+    // `deleteTable`이 이미 대칭으로 `deleteTableState`를 부른다.
     //
     // 락을 잡지 않는다. `newTable.id`는 방금 INSERT된 것이라 이 시점에 그
     // 테이블을 아는 경로가 아직 없다. 브로드캐스트보다 먼저 쓰는 것도
