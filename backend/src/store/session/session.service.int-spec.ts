@@ -688,6 +688,7 @@ describe('SessionService.createTable — tableOrder 경합', () => {
 describe('SessionService.deleteTable', () => {
   let prisma: PrismaClient;
   let redis: Redis;
+  let redisService: RedisService;
   let sessionService: SessionService;
   let tournamentId: string;
   let ownerId: string;
@@ -708,7 +709,7 @@ describe('SessionService.deleteTable', () => {
     await flushTestRedis(redis);
 
     const prismaService = prisma as unknown as PrismaService;
-    const redisService = new RedisService(redis);
+    redisService = new RedisService(redis);
     sessionService = new SessionService(
       prismaService, redisService, new OtpAttempts(redis), new EventEmitter2(),
     );
@@ -718,6 +719,10 @@ describe('SessionService.deleteTable', () => {
     // 마지막 하나는 지울 수 없으므로, 삭제를 검증하는 스위트는 2번을 함께
     // 세워두고 그 2번을 지운다.
     ({ id: tableId } = await sessionService.createTable(tournamentId, ownerId));
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   it('빈 테이블은 DB 행과 Redis 필드가 함께 사라진다', async () => {
@@ -834,6 +839,53 @@ describe('SessionService.deleteTable', () => {
       .toBe('스냅샷 없음');
   });
 
+  /**
+   * T48. **Redis를 먼저 치우고 그것이 확인된 뒤에 DB를 지운다.**
+   *
+   * 예전에는 트랜잭션이 커밋된 **뒤에** Redis를 정리했다. 그 호출이 실패하면
+   * DB에 없는 테이블이 좌석 목록에 24시간 남고, 그 자리를 고른 손님은
+   * `tablePlayer.create`의 외래키 실패로 이유 없는 500을 본다. 아무도 안
+   * 치운다 — DB에 행이 없으니 복구도 그 테이블을 모른다.
+   *
+   * 뒤집으면 실패 모양이 낫다. Redis 정리가 실패하면 트랜잭션이 통째로
+   * 롤백돼 **아무것도 안 지워진다**. 상점은 다시 누르면 된다.
+   */
+  it('Redis 정리가 실패하면 DB 행도 남는다', async () => {
+    jest.spyOn(redisService, 'removeSeatBitmap')
+      .mockRejectedValue(new Error('redis down'));
+
+    await expect(
+      sessionService.deleteTable(tournamentId, tableId, ownerId),
+    ).rejects.toThrow('redis down');
+
+    const row = await prisma.table.findUnique({ where: { id: tableId } });
+
+    expect(`DB ${row === null ? '없음' : '있음'}`).toBe('DB 있음');
+  });
+
+  /**
+   * 위와 짝. 비트맵은 지워졌는데 스냅샷 지우기가 실패해도, DB 행이 사라져
+   * 회수 불가능한 상태로 굳으면 안 된다. Redis만 반쯤 지워진 것은
+   * 재기동 시 복구가 되살린다(T44가 빈 스냅샷을, T46이 비트맵을 세운다).
+   */
+  it('스냅샷 삭제가 실패해도 DB 행은 남는다', async () => {
+    jest.spyOn(redisService, 'deleteTableState')
+      .mockRejectedValue(new Error('redis down'));
+
+    await expect(
+      sessionService.deleteTable(tournamentId, tableId, ownerId),
+    ).rejects.toThrow('redis down');
+
+    const row = await prisma.table.findUnique({ where: { id: tableId } });
+
+    expect(`DB ${row === null ? '없음' : '있음'}`).toBe('DB 있음');
+  });
+
+  /**
+   * 순서를 그냥 앞으로 옮기면 **검사보다 먼저** Redis를 지우게 된다. 그러면
+   * 409로 거절되는 살아남은 테이블의 비트맵과 스냅샷을 날린 것이 된다.
+   * 그래서 Redis 정리는 트랜잭션 안, 검사 셋을 **통과한 직후**에 있어야 한다.
+   */
   it('좌석에 사람이 있으면 409고 아무것도 지워지지 않는다', async () => {
     const player = await prisma.user.create({
       data: { nickname: 'player', password: 'x' },
@@ -851,9 +903,32 @@ describe('SessionService.deleteTable', () => {
 
     const row = await prisma.table.findUnique({ where: { id: tableId } });
     const seat = await redis.hget(`tournament:${tournamentId}:seat`, `table:${tableId}`);
+    const snapshot = await redis.exists(`table:state:${tableId}`);
 
-    expect(`DB ${row === null ? '없음' : '있음'} / Redis ${seat === null ? '없음' : '있음'}`)
-      .toBe('DB 있음 / Redis 있음');
+    expect(`DB ${row === null ? '없음' : '있음'} / Redis ${seat === null ? '없음' : '있음'} / 스냅샷 ${snapshot === 1 ? '있음' : '없음'}`)
+      .toBe('DB 있음 / Redis 있음 / 스냅샷 있음');
+  });
+
+  /**
+   * 마지막 테이블 거절도 마찬가지다. `remaining <= 1`은 검사 셋 중 **마지막**
+   * 이라, Redis 정리를 트랜잭션 맨 앞에 두면 이 경로만 조용히 새어 나간다.
+   */
+  it('마지막 테이블 거절도 비트맵과 스냅샷을 남긴다', async () => {
+    await sessionService.deleteTable(tournamentId, tableId, ownerId);
+    const last = await prisma.table.findFirstOrThrow({ where: { tournamentId } });
+    // 시드가 만든 1번은 `createTable`을 거치지 않아 스냅샷이 없다. 검사하려는
+    // 것이 "거절이 스냅샷을 지우지 않는다"이므로 지울 것을 먼저 세운다.
+    await redis.set(`table:state:${last.id}`, '{"phase":"WAITING"}');
+
+    await expect(
+      sessionService.deleteTable(tournamentId, last.id, ownerId),
+    ).rejects.toThrow(ConflictException);
+
+    const seat = await redis.hget(`tournament:${tournamentId}:seat`, `table:${last.id}`);
+    const snapshot = await redis.exists(`table:state:${last.id}`);
+
+    expect(`Redis ${seat === null ? '없음' : '있음'} / 스냅샷 ${snapshot === 1 ? '있음' : '없음'}`)
+      .toBe('Redis 있음 / 스냅샷 있음');
   });
 
   /**

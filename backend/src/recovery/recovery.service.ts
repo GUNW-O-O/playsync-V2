@@ -193,13 +193,13 @@ export class RecoveryService implements OnApplicationBootstrap {
         // 그래서 "스냅샷이 없다"의 뜻이 유실 하나로 좁혀져 있다. 복구가 이
         // 테이블만 비워 두면 재기동이 그 뜻을 다시 넓힌다 — 아무도 안 앉은
         // 테이블에 딜러가 붙는 순간 `PlaysyncService.joinTable`이 맨 `Error`를
-        // 던져 500이 난다(`playsync.service.ts:39`). T38이 고친 결함이
+        // 던져 500이 난다(`PlaysyncService.joinTable`). T38이 고친 결함이
         // 재기동으로 되살아나는 것이다.
         //
         // 위 비트맵과 같은 모양으로 **없을 때만** 세운다. 정상적으로 살아 있는
         // 빈 테이블의 스냅샷에는 직전 핸드가 남긴 버튼과 블라인드가 들어 있어,
         // 덮어쓰면 다음 핸드가 버튼 0 · sb 100에서 시작한다. "스냅샷이 있으면
-        // 손대지 않는다"는 아래 좌석 있는 경로(:189)와도 같은 규칙이다.
+        // 손대지 않는다"는 아래 좌석 있는 경로의 `rebuildSeatBitmap`과도 같은 규칙이다.
         if (!(await this.redis.getSnapShot(table.id))) {
           await this.redis.saveSnapshotUnlocked(
             table.id,
@@ -221,7 +221,7 @@ export class RecoveryService implements OnApplicationBootstrap {
         // 스냅샷과 독립적으로 가능하다. 그러면 `getTournamentTables`가
         // hgetall이라 이 테이블이 좌석 목록에서 통째로 사라지고, `entry`의
         // 가드도 스냅샷 기준이라 막지 못하며, `UPDATE_SEAT_BIT`는 필드가 없으면
-        // 아무것도 하지 않으므로(설계상 옳다 — `redis.service.ts:78`) **착석으로도
+        // 아무것도 하지 않으므로(설계상 옳다 — `RedisService`의 `UPDATE_SEAT_BIT`) **착석으로도
         // 낫지 않는다.**
         //
         // **스냅샷에서 파생시킨다.** DB 좌석 행에는 참가가 끝난 잔재가 남을 수
@@ -365,10 +365,10 @@ export class RecoveryService implements OnApplicationBootstrap {
     // 비어 있는 것으로 보고 다른 사람에게 판다.
     await this.redis.rebuildSeatBitmap(tournamentId, table.id, seated);
 
-    // 유저 컨텍스트는 지금 읽는 곳이 한 군데뿐이고(playsync.service.ts:120의
+    // 유저 컨텍스트는 지금 읽는 곳이 한 군데뿐이고(`PlaysyncService.handleAction`의
     // isKicked), 재구성이 PLAYING만 앉히므로 킥된 사람은 스냅샷에 없다 — 즉
     // 안 세워도 지금은 틀리지 않는다. 그래도 세운다: 착석과 컨텍스트가 짝이라는
-    // 불변식(entry.service.ts:267)을 재구성만 예외로 두면, 이 키를 읽는 코드가
+    // 불변식(`EntryService.claimSeat`)을 재구성만 예외로 두면, 이 키를 읽는 코드가
     // 하나 붙는 순간 조용히 깨진다. 값은 `entry.service.ts`가 착석 때 쓰는
     // 것과 같은 'ACTIVE'다 — 'PLAYING'을 쓰면 어휘가 갈려서, 나중에
     // `=== 'ACTIVE'`를 보는 코드가 하나 붙는 순간 재구성된 행만 조용히

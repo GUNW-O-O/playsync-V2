@@ -82,7 +82,7 @@ T27(참가 OTP, 완료) → T28(입장 시 좌석 확정, 완료) → T29(좌석
 |---|---|---|
 | T26 | 딜러 배정 선점 + 단말 신원 + 즉시 끊기 | **하지 않는다.** 근거는 B1 절에 |
 | B2 | 재구성 + 정지시간 보정 + 운영자 조작 화면 | `buttonUser` 영속화 + 누적 진행시간 필드 + 재구성 함수 하나 |
-| B3 | 레이크 + 상점 정산 구조 | 대회 단위 `rakePercent` 한 필드. 상점 잔고 모델은 만들지 않고 몫은 `Transaction` 내역으로만 |
+| B3 | 레이크 + 상점 정산 구조 | 대회 단위 `rakePercent` 한 필드. 상점 잔고 모델은 만들지 않고 몫은 `PointTransaction` 내역으로만 |
 | B5 | 화면 넷 | 셋 (게임 · 딜러 콘솔 · 상점 콘솔) |
 | B8 | 이동 + 자동 밸런싱 + 통합 | 상점이 좌석을 해제하고 사람이 OTP로 다시 앉는 것까지(T27~T29) |
 
@@ -239,16 +239,18 @@ T23은 딜러 OTP의 시도 제한과 딜러 토큰의 폐기만 다뤘다. 나�
   계정 단위는 OTP 입력 전에 신원이 없어 걸 수 없다). 둘 중 하나가 아니라 **둘 다**
   라는 것이 여기서의 결론이다.
 - **`omit`을 Prisma 클라이언트 수준으로 옮긴다.** 지금 `dealerOtpHash`를 지우는
-  `omit`이 일곱 곳이고(`session.service.ts:67, 87, 100, 187, 255, 527`,
-  `payment.service.ts:37`), 새 쿼리가 하나 빠뜨리면 6자리 비밀의 bcrypt 해시가
+  `omit`이 일곱 곳이고(`session.service.ts`의 `getGameSession` ·
+  `getGameSessionWithTables` · `getStoreAllSessions` · `createSession` ·
+  `startSession` · `updateSession`, `payment.service.ts`의
+  `getStoreAvailableSessions`), 새 쿼리가 하나 빠뜨리면 6자리 비밀의 bcrypt 해시가
   조용히 나간다 — 후보 10^6이라 GPU로 몇 분이다. T23이 이 실패 모드를 실제로 겪었다
   (`startSession`·`updateSession`). `@prisma/client ^7.4.1`이 클라이언트 수준 `omit`을
   지원하므로, `PrismaService`의 `super()`에 `omit: { tournament: { dealerOtpHash: true } }`를
-  주고 **실제로 읽는 단 한 곳**(`dealer.service.ts:48`)에만 `omit: { dealerOtpHash: false }`를
+  주고 **실제로 읽는 단 한 곳**(`dealer.service.ts`의 `loginDealer`)에만 `omit: { dealerOtpHash: false }`를
   준다. 그러면 빠뜨림이 조용한 누출이 아니라 **컴파일 에러**가 된다. T23에서 하지
   않은 이유는 `PrismaService`를 건드리면 통합 스위트 전체가 재검증 대상이 되기
   때문이다.
-- **`PATCH /store/sessions/:id`에 상점 소유권 검사가 없다.** `session.service.ts:429-430`의
+- **`PATCH /store/sessions/:id`에 상점 소유권 검사가 없다.** `session.service.ts`의 `updateSession`이
   주석이 "별도 항목"이라고 가리키는 그 항목이다. 재발급·내보내기는 T23이 서비스
   메서드 첫 문장으로 소유권 검사를 옮겼지만, 수정 경로는 그대로다.
 - **게이트가 bcrypt 앞이라 정상 로그인도 슬롯을 쓴다.** 스레드풀을 지키려면 앞이어야
@@ -261,7 +263,7 @@ T23은 딜러 OTP의 시도 제한과 딜러 토큰의 폐기만 다뤘다. 나�
 
 **프론트가 막고 있는 것** (B5 명세 → B7 구현의 명시 항목).
 
-- **평문 OTP에 닿는 경로가 없다.** `createSession`(`session.service.ts:199`)과
+- **평문 OTP에 닿는 경로가 없다.** `createSession`(`session.service.ts`)과
   `reissueDealerOtp`(`:450-466`)가 평문을 각각 한 번씩 돌려주는데, 그 응답을 보여줄
   상점 콘솔 화면이 없다. 상점 콘솔 자체가 아직 없으니 그 자체는 정상이지만,
   결과적으로 **T23의 재발급·내보내기 두 엔드포인트와 잠금의 탈출구가 실무상 도달
@@ -300,18 +302,21 @@ T25(테이블 생성을 상점 수동으로)를 리뷰한 결과 남은 것들�
 
 - **상점 콘솔 화면이 없어 `POST/DELETE .../tables`에 호출자가 없다.** T23의
   재발급·내보내기와 같은 상태다(B5 명세 → B7 구현).
-- **좌석 선택 화면의 "빈 자리 없음" 판정이 없다.** 백엔드는 `getSeatStatus`가
+- **좌석 선택 화면의 "빈 자리 없음" 판정이 없다.** 백엔드는 `EntryService.getSeatMap`이
   비트맵을 주는 것으로 끝났고, 화면이 그것을 읽어야 한다.
 - **더블클릭으로 빈 테이블이 둘 생기는 것은 막지 않는다.** 순차 실행이면
   `tableOrder`의 최댓값을 각각 다시 읽어 유니크 제약을 우회한다 — 콘솔이 버튼을
   비활성화하면 되는 문제고, 삭제가 있으므로 되돌릴 수 있다.
 - **`assertTournamentOwnership`과 `createTable`이 각각 `tournament.findUnique`를
-  부른다**(`session.service.ts:215, 217`). 한 번의 compound select로 합칠 수 있는
+  부른다**(`session.service.ts`의 `createTable`). 한 번의 compound select로 합칠 수 있는
   두 왕복이다. 다만 재발급·내보내기 등 기존 관행도 같은 모양이라 이 티켓만의
   일탈은 아니다.
 - **`SEAT_LIST_UPDATED` 단위 테스트가 `tournamentId`만 `objectContaining`으로
   본다.** 상태 페이로드 내용까지는 단언하지 않는다.
-- **`deleteTable`은 DB 삭제를 커밋한 뒤 Redis를 만진다.** `removeSeatBitmap`이나
+- ~~**`deleteTable`은 DB 삭제를 커밋한 뒤 Redis를 만진다.**~~ **T48에서 닫았다.**
+  Redis 정리를 트랜잭션 안, 거절 검사 셋을 통과한 직후로 옮겼다. 근거와 실패
+  방향 표는 `tickets-next.md` T48, 순서 규칙은 `domain.md` 「되돌릴 수 없는
+  일은 마지막에」. 아래는 그때의 기술이다. `removeSeatBitmap`이나
   `deleteTableState`가 실패하면 DB에 없는 테이블의 좌석 비트맵이 TTL(24시간)까지
   남고 `SEAT_LIST_UPDATED`도 나가지 않는다. **여기서 말하는 것은 Redis 호출이
   실제로 실패했을 때뿐이다** — 예전에 이 자리에 적혀 있던 항목은 T25 리뷰가
@@ -401,7 +406,7 @@ Redis AOF는 켜져 있지만 **되살리는 로직이 없다.** 세 갈래다.
 건드리게 된다.
 
 **좌석 비트맵만 잃은 부분 유실은 스스로 낫지 않는다.** **닫혔다 — T46**
-(`recovery.service.ts:233`. 되세울 때의 권위는 스냅샷이다). 아래는 T31 시점의
+(`recovery.service.ts`의 `recoverTournament`. 되세울 때의 권위는 스냅샷이다). 아래는 T31 시점의
 서술이다. `RecoveryService`의 재구성 판정 기준은 스냅샷 유무뿐이었다. 좌석 비트맵은
 `tournament:{id}:seat` 키 하나에 대회의 모든 테이블이 들어 있어서, 그
 키만(개별 필드 만료, maxmemory 축출, 부분 AOF 손상) 잃는 유실이 스냅샷과
@@ -417,7 +422,7 @@ Redis AOF는 켜져 있지만 **되살리는 로직이 없다.** 세 갈래다.
 T44.** 빈 테이블 분기가 좌석 비트맵 필드만 되살리고 `continue`해서, Redis를
 통째로 잃으면 빈 테이블은 스냅샷 없는 상태로 남고 딜러 화면의 500이
 되살아났다. 같은 분기에서 **스냅샷이 없을 때만** `createEmptyTableState`를
-세운다(`recovery.service.ts:203`). 근거와 RED 재현은 `tickets-next.md`의
+세운다(`recovery.service.ts`의 `recoverTournament`). 근거와 RED 재현은 `tickets-next.md`의
 T44 절.
 
 ## B3 — 레이크와 상점 정산
@@ -658,7 +663,7 @@ Map을 둘 다 들고 있다. T25가 상점이 테이블을 여닫는 엔드포�
   처리의 기록이지 누가 어느 의자에 앉아 있는지가 아니다.
 - **`GamePhase.WAITING`일 때만 좌석이 움직인다.** 이 가드 하나가 팟·차례·폴드
   상태·사이드팟을 전부 비껴간다. 휴식 시간(`isBreak`)을 따로 볼 필요도 없다 —
-  휴식 중에는 `startPreFlop`이 이미 거부하므로(`dealer.service.ts:189`) 테이블이
+  휴식 중에는 `startPreFlop`이 이미 거부하므로(`DealerService.startPreFlop`) 테이블이
   자연히 `WAITING`에 머물고, 극후반에 휴식이 아니어도 핸드 사이라면 같은 조건으로
   열린다. **T28은 이 가드를 쓰지 않는다** — 신규 착석은 핸드 도중이어도 허용이다
   (늦은 참가는 폴드 상태로 들어간다). 이미 앉은 사람을 다른 자리로 옮기는 T29가
@@ -680,7 +685,7 @@ Map을 둘 다 들고 있다. T25가 상점이 테이블을 여닫는 엔드포�
 ### 여기 남는 것
 
 - **자동 밸런싱과 테이블 통합 규칙.** 위에 적은 이유로 하지 않는다.
-- **비트맵 유실 복구가 `tables[0]`만 되살린다**(`payment.service.ts:61-62`).
+- **비트맵 유실 복구가 `tables[0]`만 되살린다**(`payment.service.ts`의 `getTournamentInfo`).
   테이블이 셋이면 나머지 둘은 비트맵 없이 남는다. 여기서 유일하게 실재하는
   단일 테이블 가정이고, B2에서 스냅샷 재구성과 함께 본다.
 - ~~시나리오 하네스가 테이블 하나만 돈다~~ **완료(T29).**
@@ -821,7 +826,7 @@ T39가 새 compose 파일을 만들지 않고 `docker-compose.test.yml`에 프�
 결함이 됐다 — 테이블은 딜러가 먼저 붙고 손님이 나중에 앉는데, 그 사이에
 딜러 화면이 부르는 `GET /playsync/:tableId`(`PlaysyncService.joinTable`)가
 스냅샷 없음을 맨 `Error`로 던져 **500**이 났다. 정상 상태에 서버 오류다.
-WS 쪽은 죽지 않는다(`ws.gateway.ts:132`가 `data: null`을 조용히 보낸다) —
+WS 쪽은 죽지 않는다(`handleConnection`이 `data: null`을 조용히 보낸다) —
 화면은 빈 펠트로 서고 로그의 500 하나만 남아, 눈에 잘 띄지 않은 채로 있었다.
 
 `createTable`이 좌석 비트맵과 함께 빈 스냅샷도 세운다. `deleteTable`은 이미
@@ -845,7 +850,7 @@ WS 쪽은 죽지 않는다(`ws.gateway.ts:132`가 `data: null`을 조용히 보�
 **상태**: 완료. 근거는 `tickets-next.md`의 T43에.
 
 `JwtModule.register`의 `signOptions: { expiresIn: '1h' }`가 **전역**이다
-(`auth.module.ts:25`). 네 종류 토큰의 자연스러운 수명이 다른데 상수가 하나다.
+(`auth.module.ts`의 `JwtModule.register`). 네 종류 토큰의 자연스러운 수명이 다른데 상수가 하나다.
 
 | 토큰 | 실제로 필요한 수명 | 지금 |
 |---|---|---|
@@ -872,14 +877,14 @@ WS 쪽은 죽지 않는다(`ws.gateway.ts:132`가 `data: null`을 조용히 보�
 있다.**
 
 플레이어 경로는 토큰의 `tableId`를 아예 보지 않는다. WS 접속은
-`assertTableAccess`(`ws.gateway.ts:84`), 액션은 `handleAction`
-(`playsync.service.ts:65`)이 각각 **"지금 이 테이블 스냅샷에 이 userId가 앉아
+`assertTableAccess`(`ws.gateway.ts`), 액션은 `handleAction`
+(`playsync.service.ts`)이 각각 **"지금 이 테이블 스냅샷에 이 userId가 앉아
 있는가"**만 본다. 그래서 좌석 해제(T29) · 탈락 · 테이블 이동 즉시 옛 토큰의
 권한이 0이 된다. T28이 좌석 락을 유니크 제약으로 바꾼 것과 같은 자리다 —
 방어 코드가 아니라 구조다.
 
 **딜러만 `tokenVersion`을 갖는 이유도 여기서 갈린다.** 딜러 토큰은 `tableId`가
-권위다(`ws.gateway.ts:78`이 쿼리 값과 대조한다). 권위가 토큰에 있으니 폐기도
+권위다(`assertTableAccess`가 쿼리 값과 대조한다). 권위가 토큰에 있으니 폐기도
 토큰 레벨에 있어야 한다. **비대칭은 실수가 아니라 설계였다.**
 
 남는 위협은 탈취뿐이고 1시간이어도 같은 종류다 — 수명은 창의 크기만 바꾼다.
@@ -891,7 +896,7 @@ WS 쪽은 죽지 않는다(`ws.gateway.ts:132`가 `data: null`을 조용히 보�
 그래서 **수명만 역할별로 준다**(`auth/token-ttl.ts`). 좌석·딜러·상점 콘솔
 12시간, 그 밖은 1시간. 갱신 엔드포인트도 좌석 `tokenVersion`도 만들지 않았다.
 
-**곁가지로 남은 것 하나.** 대회 단위 WS 접속(`ws.gateway.ts:117`)은 좌석 검사가
+**곁가지로 남은 것 하나.** 대회 단위 WS 접속(`assertTournamentAccess`)은 좌석 검사가
 없고 **쿼리의 `tournamentId`를 토큰의 것과 대조하지도 않는다.** 유효한 토큰이면
 아무 대회의 좌석 현황(`SEAT_LIST_UPDATED`)을 구독할 수 있다. 수명과 무관한
 별건이고 새는 값이 좌석 점유뿐이라 이 티켓에 넣지 않았다. **T45에서 닫았다** —
@@ -917,7 +922,7 @@ withTableLock(tableId, async () => {
 ```
 
 정합성이 **구조가 아니라 관행 위에** 서 있다. T37이 그 대가를 실측으로
-확인했다 — `enterSeat`의 락 안 재읽기(`entry.service.ts:263`)를 지워도 지금
+확인했다 — `enterSeat`의 락 안 재읽기(`entry.service.ts`의 `claimSeat`)를 지워도 지금
 어떤 테스트도 빨개지지 않는다(`tickets-next.md`의 T37 절, 라운드 3). 원인은
 경로마다 Redis에 닿기까지의 지연이 달라, 두 쓰기가 같은 창에서 겹치는 순간이
 블랙박스 동시 호출로는 재현되지 않기 때문이다.
@@ -926,13 +931,13 @@ withTableLock(tableId, async () => {
 
 - **열한 곳이 정말 전부 락 안에서 읽는가.** 하나라도 락 밖에서 읽은 값을
   쓰면 그 자리가 조용한 유실 지점이다.
-- **락 없이 쓰는 곳.** `recovery.service.ts:306`이 그렇다. 지금은 안전하다 —
+- **락 없이 쓰는 곳.** `recovery.service.ts`의 `rebuildTable`이 그렇다. 지금은 안전하다 —
   `recoverAll()`의 호출자가 `OnApplicationBootstrap` 하나뿐이고 그것은
   `app.listen()` 이전이라 경합 상대가 없다. 그런데 **그 근거가 코드 어디에도
   적혀 있지 않다.** 다른 호출자가 생기는 날 조용히 깨진다.
-- **트랜잭션 경계 관행이 둘이다.** `enterSeat`(`entry.service.ts:130-136`)은
+- **트랜잭션 경계 관행이 둘이다.** `enterSeat`(`entry.service.ts`)은
   DB를 락 **밖**에서 커밋한다 — 트랜잭션이 락 TTL(5초)을 넘기면 락이 말없이
-  만료되기 때문이다. `releaseSeats`(`session.service.ts:855`)는 락 **안**에서
+  만료되기 때문이다. `releaseSeats`(`store/session/session.service.ts`)는 락 **안**에서
   돌린다. 둘 다 주석에 근거가 있는데 서로 반대다. 어느 쪽이 규칙인지 정해야
   한다.
 
@@ -946,7 +951,7 @@ withTableLock(tableId, async () => {
 (`createEmptyTableState`) — T38 이후로는 유실 상황에서만 일어나지만 경로는
 남는다. 그래서 `fn`이 `TableState | null`을 받고 저장할 상태를 **돌려주는**
 모양이어야 한다. (2) 일부 자리는 **쓰지 않고 나가야 한다** — `handleAction`의
-낡은 `TIME_OUT`이 `return state`로 조용히 빠진다(`playsync.service.ts:83`).
+낡은 `TIME_OUT`이 `return state`로 조용히 빠진다(`PlaysyncService.handleAction`).
 옵트아웃이 필요하다.
 
 **범위를 자를 것.** 열한 곳을 한 번에 옮기면 통합 342건이 통째로 재검증

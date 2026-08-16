@@ -32,13 +32,13 @@ const LONG = '12h';
  *
  * 권한이 토큰이 아니라 **스냅샷**에 있어서다. 플레이어 경로는 토큰의
  * `tableId`를 아예 보지 않는다 — WS 접속은 `assertTableAccess`가
- * (`ws.gateway.ts:84`), 액션은 `handleAction`이(`playsync.service.ts:65`)
+ * (`ws.gateway.ts`의 `assertTableAccess`), 액션은 `handleAction`이
  * 각각 "지금 이 테이블 스냅샷에 이 userId가 앉아 있는가"만 본다. 그래서
  * 좌석 해제(T29) · 탈락 · 테이블 이동 즉시 옛 토큰의 권한이 0이 된다.
  * 폐기가 이미 구조로 돼 있다.
  *
  * **딜러만 `tokenVersion`을 갖는 이유도 여기서 갈린다.** 딜러 토큰은
- * `tableId`가 권위다(`ws.gateway.ts:78`이 쿼리 값과 대조한다). 권위가 토큰에
+ * `tableId`가 권위다(`assertTableAccess`가 쿼리 값과 대조한다). 권위가 토큰에
  * 있으니 폐기도 토큰 레벨에 있어야 한다. 비대칭은 실수가 아니라 설계다.
  *
  * 남는 위협은 탈취뿐이고 그것은 1시간이어도 같은 종류다 — 수명은 창의 크기만

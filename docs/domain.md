@@ -4,8 +4,16 @@
 지켜지는 좌표만 있다. 왜 이런 시스템인지, 화면이 어떻게 생겼는지, 무슨 판단을
 거쳤는지는 [`README.md`](../README.md) §1이 그림과 함께 설명한다.
 
-둘이 어긋나면 **코드가 정본이고, 그다음이 이 문서다.** 좌표는 손으로 적은
-것이라 리팩터링에 밀린다. 줄 번호가 안 맞으면 함수 이름으로 찾는다.
+둘이 어긋나면 **코드가 정본이고, 그다음이 이 문서다.**
+
+**좌표는 줄 번호가 아니라 이름으로 적는다.** 줄 번호는 문서가 위치의 사본을
+드는 것이라, 코드를 고칠 때마다 두 곳을 맞춰야 하는데 **어긋난 것을 잡아 주는
+장치가 없다** — 타입 체커도 CI도 안 본다. 이름은 다르다. 이름이 바뀌면 `grep`이
+0건을 내므로 리팩터링 자체가 문서를 밀어낸다.
+
+그래서 함수 · 메서드 이름으로 가리키고, 이름이 없는 자리는 식별자
+(`UPDATE_SEAT_BIT` 같은 상수)로 잡는다. 함수 안의 특정 대목을 가리켜야 하면
+줄이 아니라 **그 대목이 하는 일**로 적는다 — "`deleteTable`의 Redis 정리".
 
 ---
 
@@ -26,7 +34,7 @@
 
 | 없는 것 | 이유 |
 |---|---|
-| 덱 · 홀카드 · 커뮤니티 카드 | `TableState`(`backend/src/game-engine/types.ts:56`)에 필드가 없다. 테이블 위에 있다 |
+| 덱 · 홀카드 · 커뮤니티 카드 | `TableState`(`game-engine/types.ts`)에 필드가 없다. 테이블 위에 있다 |
 | 셔플 · 핸드 랭킹 · 승자 판정 | 사람이 실물 카드를 보고 판정한다 |
 | 보드 하이(무승부) 전용 엔드포인트 | 딜러 콘솔이 생존 전원을 한 그룹으로 `resolveWinners`에 보내면 된다. **돈이 나가는 경로는 하나여야 한다** |
 | 자동 테이블 밸런싱 | 언제 누구를 어디로 보낼지는 규칙이 아니라 현장 판단이다. 사람이 칩을 들고 걸어간다 |
@@ -34,9 +42,8 @@
 
 ## 딜러가 트리거다 — 그래서 동시성이 기본값이다
 
-`startPreFlop`(`dealer.service.ts:193`) · `handleDealerAction`(`dealer.service.ts:234`) ·
-`resolveWinners`(`dealer.service.ts:295`)가 **사람의 클릭**에서 출발한다. 전부
-`ws.gateway.ts:284-290`이 받는다.
+`DealerService`의 `startPreFlop` · `handleDealerAction` · `resolveWinners`가
+**사람의 클릭**에서 출발한다. 전부 `ws.gateway.ts`의 `runDealerAction`이 받는다.
 
 즉 **딜러 경로와 플레이어 경로가 동시에 같은 상태를 건드린다.** 동시성은 예외
 시나리오가 아니라 기본 시나리오다. 스냅샷을 고치는 코드를 새로 쓸 때 "여긴
@@ -58,12 +65,12 @@ WAITING
 끝나야** 다음이다. `WAITING`과 `HAND_END`가 그 대기 구간이다.
 
 - **`SHOWDOWN`에는 차례가 없다** — `currentTurnSeatIndex === -1`
-  (`game-engine/table-engine.ts:75`, `:456`). 딜러가 실물 카드를 보고 승자를
-  입력하는 동안 남의 태블릿에서 카운트다운이 돌면 안 된다.
+  (`TableEngine`의 `act`와 `startPreFlop`, 둘 다 쇼다운으로 넘기는 자리).
+  딜러가 실물 카드를 보고 승자를 입력하는 동안 남의 태블릿에서 카운트다운이 돌면 안 된다.
 - **`HAND_END`가 문지기다.** 리바인 응답은 최대 15초짜리 **사람 입력**이라 락
   밖에서 기다린다. 그동안 다음 핸드가 시작되지 않는 것은 `startPreFlop`이
-  `WAITING`만 받기 때문이다(근거 주석: `dealer.service.ts:286`,
-  `playsync.service.ts:227`).
+  `WAITING`만 받기 때문이다(근거 주석: `DealerService.resolveWinners`와
+  `PlaysyncService.checkpointTableToDb`).
 - **블라인드는 핸드 시작 시점에 확정된다.** 딜링 도중 레벨이 오르면 이미 깔린
   블라인드와 어긋난다.
 
@@ -90,35 +97,48 @@ WAITING
 | 경계 | 먼저 | 나중에 |
 |---|---|---|
 | 핸드 종료 | Redis 정산 | DB 커밋(체크포인트) |
-| 대회 시작 | Redis 준비 | DB `ONGOING` 커밋 (`session.service.ts:400-429`) |
+| 대회 시작 | Redis 준비 | DB `ONGOING` 커밋 (`session.service.ts`의 `startSession`) |
 | 대회 종료 | 상금 정산 확인 | 테이블 · Redis 삭제 |
 | 팟 분배 | 전체 검증 | 칩 이동 |
+| 테이블 삭제 | Redis 정리(비트맵 · 스냅샷) | DB `table.delete` 커밋 |
 
 되돌릴 수 있는 일을 먼저 하고, **커밋 한 번이 "그 일이 일어난 단일 순간"**이 되게
 한다. 실패하면 이전 상태로 남아 **다시 누르는 것이 곧 재시도**가 된다.
 
-새 경계를 만들 때 이 순서를 뒤집지 마라. `session.service.ts:385`에 예전에
-뒤집혀 있던 근거가 주석으로 남아 있다.
+새 경계를 만들 때 이 순서를 뒤집지 마라. `startSession`의 주석에 예전에
+뒤집혀 있던 근거가 남아 있다.
+
+**테이블 삭제에서 무엇이 되돌릴 수 있는 쪽인지 헷갈리기 쉽다.** Redis를 나중에
+지우면, 그 호출이 실패했을 때 **DB에 없는 테이블이 좌석 목록에 24시간 남는다** —
+그 자리를 고른 손님은 외래키 실패로 이유 없는 500을 보고, DB에 행이 없어
+복구도 그 테이블을 모른다. 아무도 못 치운다. 반대로 Redis만 지워지고 DB 삭제가
+실패하면 목록에서 잠시 사라질 뿐이고 **재기동하면 복구가 되살린다**(빈 스냅샷과
+비트맵을 세운다). Redis 쪽이 되돌릴 수 있는 쪽이다.
+
+Redis 정리는 **트랜잭션 안, 거절 검사 셋(404 · 점유 409 · 마지막 테이블 409)을
+통과한 직후**에 둔다(`store/session/session.service.ts`의 `deleteTable`).
+트랜잭션 밖이면 위의 유실이 나고, 트랜잭션 맨 앞이면 **거절되는 — 즉 살아남는 — 테이블의**
+비트맵과 스냅샷을 날린다.
 
 ## 파생값 — 저장하지 마라
 
 **블라인드 레벨은 `startedAt`과 현재 시각에서 매번 다시 계산한다**
-(`redis.service.ts:409`). 저장된 레벨은 진실이 아니다.
+(`redis.service.ts`의 `checkAndSyncBlindLevel`). 저장된 레벨은 진실이 아니다.
 
 행사장에서 몇 시간 도는 대회라 서버 재기동과 폴링 지연이 실제로 일어난다.
 파생으로 두면 재기동해도 레벨이 되돌아가지 않고, 밀리면 **여러 칸을 한 번에
-건너뛴다**(`redis.service.ts:426`). 리바인 마감도 "그 레벨을 밟았는가"가 아니라
-**"지났는가"**로 판정한다 — 건너뛴 대회가 영영 열려 있으면 안 된다.
+건너뛴다**(같은 `checkAndSyncBlindLevel`). 리바인 마감도 "그 레벨을
+밟았는가"가 아니라 **"지났는가"**로 판정한다 — 건너뛴 대회가 영영 열려 있으면 안 된다.
 
 ### `startedAt`이 둘이고 뜻이 다르다
 
 | | 뜻 | 장애 복구 때 |
 |---|---|---|
 | DB `Tournament.startedAt` | 대회가 실제로 시작한 시각 | **절대 밀지 않는다** |
-| Redis `BlindField.startedAt` | 블라인드 시계의 기준점 | **민다** (`recovery.service.ts:127`) |
+| Redis `BlindField.startedAt` | 블라인드 시계의 기준점 | **민다** (`recovery.service.ts`의 `recoverTournament`) |
 
 t=0에 둘이 같은 것은 우연이지 불변식이 아니다. 근거 주석은
-`store/session/tournament-meta.ts:9-12`.
+`store/session/tournament-meta.ts`의 `buildTournamentMeta`.
 
 ## 서버가 죽어도 대회는 계속된다
 
@@ -146,7 +166,7 @@ t=0에 둘이 같은 것은 우연이지 불변식이 아니다. 근거 주석�
 
 예외가 좌석 입장이었다. 스냅샷이 없으면 빈 상태를 만들어 진행하던 경로가
 복구와 겹치면 이미 앉은 사람을 지운다. `shouldBlockEmptySnapshot`
-(`entry.service.ts:387`)이 **"복구 중입니다"로 거절**한다 — 조용히 지우는 것보다
+(`entry.service.ts`)이 **"복구 중입니다"로 거절**한다 — 조용히 지우는 것보다
 낫다.
 
 ## 탈락과 킥은 다르다
@@ -162,11 +182,12 @@ t=0에 둘이 같은 것은 우연이지 불변식이 아니다. 근거 주석�
 없기** 때문이다. 테이블에 남은 사람들이 가져간다.
 
 조작을 막는 방법이 **연결 차단이 아니라 액션을 폴드로 치환**
-(`playsync.service.ts:94-98`)인 이유는 신뢰 경계 때문이다 — 끊어도 같은 망에서
-다시 붙을 수 있다.
+(`handleAction`의 `isKicked` 분기)인 이유는 신뢰 경계 때문이다 — 끊어도 같은
+망에서 다시 붙을 수 있다.
 
-관련: 탈락 처리는 `playsync.service.ts:287` (`eliminatePlayer`). 복구는
-`PLAYING`만 앉히므로 **킥된 사람은 복구된 스냅샷에 없다**(`recovery.service.ts:313`).
+관련: 탈락 처리는 `playsync.service.ts`의 `eliminatePlayer`. 복구는
+`PLAYING`만 앉히므로 **킥된 사람은 복구된 스냅샷에 없다**
+(`recovery.service.ts`의 `rebuildTable`).
 
 ## 테이블 이동은 사람이 걸어가는 일이다
 
@@ -193,7 +214,7 @@ t=0에 둘이 같은 것은 우연이지 불변식이 아니다. 근거 주석�
 프라이즈풀은 `totalBuyinAmount`(참가비 + 리바인 누적)이고 분배율은 대회 생성 시
 상점이 입력한다.
 
-지급은 **`awardPrize`(`playsync/prize.ts:119`) 한 곳에서만** 일어난다. 참가자
+지급은 **`awardPrize`(`playsync/prize.ts`) 한 곳에서만** 일어난다. 참가자
 행 · 포인트 · 거래 내역이 한 트랜잭션에서 함께 움직인다. 새 지급 경로를 만들지
 말고 여기를 통해라.
 
@@ -215,11 +236,11 @@ t=0에 둘이 같은 것은 우연이지 불변식이 아니다. 근거 주석�
 **권한은 화면이 아니라 게이트웨이에서 본다.** 자세히는
 [`threat-model.md`](./threat-model.md).
 
-좌석 토큰의 권한 정본은 **토큰이 아니라 스냅샷이다** — `ws.gateway.ts:84`가
-`state.players`에 그 `sub`가 있는지 보고, `playsync.service.ts:66`이 없으면
-던진다. 그래서 좌석 토큰에는 폐기 장치가 없다(자리를 뜨면 스냅샷에서 사라지는
-것이 곧 폐기). 딜러 토큰만 `tokenVersion`을 갖는 것은 비대칭이 아니라 **딜러
-토큰의 정본이 토큰 안(`tableId`)에 있기 때문**이다(`ws.gateway.ts:78`).
+좌석 토큰의 권한 정본은 **토큰이 아니라 스냅샷이다** — `ws.gateway.ts`의
+`assertTableAccess`가 `state.players`에 그 `sub`가 있는지 보고,
+`PlaysyncService.handleAction`이 없으면 던진다. 그래서 좌석 토큰에는 폐기
+장치가 없다(자리를 뜨면 스냅샷에서 사라지는 것이 곧 폐기). 딜러 토큰만 `tokenVersion`을 갖는 것은 비대칭이 아니라 **딜러
+토큰의 정본이 토큰 안(`tableId`)에 있기 때문**이다(같은 `assertTableAccess`).
 
 ## 등록 마감
 
@@ -248,7 +269,7 @@ t=0에 둘이 같은 것은 우연이지 불변식이 아니다. 근거 주석�
 
 **스냅샷은 JSON 통째로 덮어쓴다.** 읽기 → 수정 → 쓰기가 겹치면 나중에 쓴 쪽이
 앞선 쓰기를 통째로 지운다. 그래서 셋이 반드시 같은 락 안에 있어야 하고,
-**그 셋을 소유하는 것이 `RedisService.mutateSnapshot`이다**(`redis.service.ts:498`).
+**그 셋을 소유하는 것이 `RedisService.mutateSnapshot`이다.**
 
 ```ts
 await this.redis.mutateSnapshot(tableId, async (state) => {
@@ -264,7 +285,7 @@ await this.redis.mutateSnapshot(tableId, async (state) => {
 | 길 | 언제 |
 |---|---|
 | `mutateSnapshot` | 그 외 전부. 락·읽기·쓰기를 이쪽이 소유한다 |
-| `saveSnapshotUnlocked(tableId, state, reason)` (`:533`) | 락이 필요 없다고 **선언된** 예외. `reason`이 열거형이라 새 예외는 유니온을 고쳐야 하고 그 diff가 리뷰에 보인다 |
+| `saveSnapshotUnlocked(tableId, state, reason)` | 락이 필요 없다고 **선언된** 예외. `reason`이 열거형이라 새 예외는 유니온을 고쳐야 하고 그 diff가 리뷰에 보인다 |
 
 `fn`의 규약 셋. **스냅샷이 없으면 `null`을 받는다**(착석이 유실 뒤 새로 세우는
 경로). **`null`을 돌려주면 쓰지 않는다**(낡은 `TIME_OUT`처럼 건드리지 않고 나가는
@@ -291,15 +312,16 @@ await this.redis.mutateSnapshot(tableId, async (state) => {
 
 | `reason` | 자리 | 근거 |
 |---|---|---|
-| `boot-recovery` | `recovery.service.ts` 재구성 `:358`, 빈 테이블 `:204` | `app.listen()` 이전이라 경합 상대가 없다 |
-| `table-created` | `session.service.ts:187`, `:244` | 테이블이 방금 생겨 아직 아무도 모른다 |
+| `boot-recovery` | `recovery.service.ts` — 재구성은 `rebuildTable`, 빈 테이블은 `recoverTournament` | `app.listen()` 이전이라 경합 상대가 없다 |
+| `table-created` | `session.service.ts`의 `createSession` · `createTable` | 테이블이 방금 생겨 아직 아무도 모른다 |
 
 좌석 비트맵은 애초에 이 규약 밖이다 — 읽고 고쳐 쓰는 것이 아니라 Redis 원자
-연산이다(`redis.service.ts:73`). 복구의 비트맵 되세우기(`:189`·`:236`)도 같다.
+연산이다(`redis.service.ts`의 `UPDATE_SEAT_BIT` · `UPDATE_SEAT_BITS_MANY`).
+복구의 비트맵 되세우기(`recoverTournament`·`rebuildTable`의 `rebuildSeatBitmap`)도 같다.
 
 ### 트랜잭션과 락 — 규칙은 "기다림이 무한정인 일 금지"다
 
-"락 안에서 트랜잭션 금지"가 아니다. `session.service.ts:752-754`가 그 근거를
+"락 안에서 트랜잭션 금지"가 아니다. `releaseSeats`의 주석이 그 근거를
 적어 뒀다 — `resolveWinners`가 3단계(탈락 확정)는 락 **안**에서 돌리고,
 2단계(사람이 리바인 수락을 기다림)와 4단계(백오프 재시도)만 락 밖으로 뺀다.
 
@@ -307,8 +329,8 @@ await this.redis.mutateSnapshot(tableId, async (state) => {
 
 | | 어디서 커밋 | 왜 |
 |---|---|---|
-| `enterSeat` | 락 **밖** (`entry.service.ts:203`, 락은 `:248`) | 착석 러시라 겹칠 일이 잦다 |
-| `releaseSeats` | 락 **안** (`session.service.ts:794`) | 상점 운영자 한 명 · 행 최대 9개 |
+| `enterSeat` | 락 **밖** (`entry.service.ts`의 `claimSeat`) | 착석 러시라 겹칠 일이 잦다 |
+| `releaseSeats` | 락 **안** (`store/session/session.service.ts`) | 상점 운영자 한 명 · 행 최대 9개 |
 
 **`releaseSeats`는 알면서 감수한 것이다.** `SELECT ... FOR UPDATE` 대기가 진행
 중인 입장 트랜잭션의 커밋을 기다리므로 시간이 우리 손 밖이고, 5초를 넘기면 레디스
@@ -316,7 +338,7 @@ await this.redis.mutateSnapshot(tableId, async (state) => {
 옮긴 뒤에도 같다 — 헬퍼는 락을 잡아 줄 뿐 TTL을 늘려 주지 않는다). 그래도 고치지 않는
 근거는 (1) 복구가 셀프서비스이고(참가 OTP를 다시 넣으면 `alreadySeated` 경로가
 점유자를 고쳐 쓴다) (2) 해제는 착석 러시가 아니라 쉬는 시간에 일어난다는 것이다.
-근거 주석 전문은 `session.service.ts:763-768`. **막은 것이 아니라 감수한 것**이라고
+근거 주석 전문은 `releaseSeats`의 docblock. **막은 것이 아니라 감수한 것**이라고
 적혀 있으니, 여기를 건드릴 때 "이미 안전하다"고 읽지 마라.
 
 레디스 락이 좌석의 **DB 쓰기까지 직렬화하지는 않는다** — 입장이 락을 건드리지
@@ -324,10 +346,10 @@ await this.redis.mutateSnapshot(tableId, async (state) => {
 `Table` 행을 잡아 INSERT의 `FOR KEY SHARE`와 충돌시켜 직렬화한다.
 
 **빈 스냅샷의 뜻이 하나다 — 유실.** T38 이후 테이블 생성이 빈 스냅샷을 함께
-세우므로(`session.service.ts:187`, `:244`), 스냅샷이 없다는 것은 "아직 아무도
+세우므로(`createSession`·`createTable`), 스냅샷이 없다는 것은 "아직 아무도
 안 앉았다"가 아니라 "잃어버렸다"는 뜻이다.
 
-**복구도 같은 자리를 세운다**(T44, `recovery.service.ts:203`). 생성만 닫으면
+**복구도 같은 자리를 세운다**(T44, `recoverTournament`). 생성만 닫으면
 재기동이 그 뜻을 다시 넓힌다 — 좌석 0인 테이블은 재구성할 게임 상태가 없어
 건너뛰었고, 그래서 Redis를 잃고 재기동한 뒤 아무도 안 앉은 테이블에 딜러가
 붙으면 `joinTable`이 500을 냈다. 세 지점(생성 둘 · 복구 하나) 모두 **스냅샷이
@@ -338,5 +360,5 @@ await this.redis.mutateSnapshot(tableId, async (state) => {
 키만 잃는 유실이 따로 가능하다 — 그러면 `getTournamentTables`(hgetall)에서
 테이블이 사라지는데 `UPDATE_SEAT_BIT`가 없는 필드에 아무것도 쓰지 않으므로
 착석으로도 낫지 않는다. 그래서 복구는 **스냅샷이 살아 있어도 비트맵을 따로
-본다**(`recovery.service.ts:233`). 되세울 때의 권위는 **스냅샷**이다 — DB 좌석
+본다**(`recoverTournament`). 되세울 때의 권위는 **스냅샷**이다 — DB 좌석
 행에는 참가가 끝난 잔재가 남고, 불변식이 "좌석 비트맵 == 스냅샷"이다.

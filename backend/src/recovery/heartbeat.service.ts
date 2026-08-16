@@ -16,7 +16,7 @@ const DEFAULT_INTERVAL_MS = 30_000;
  *
  * BullMQ 반복 잡을 쓰지 않는 이유: 잡이 Redis에 살고 at-least-once라 중복
  * 배달이 하트비트에는 노이즈다. `@nestjs/schedule`을 넣지 않는 이유: 의존성
- * 하나를 위해 얻는 것이 `setInterval` 대비 없다. `prisma.service.ts:53`이 이미
+ * 하나를 위해 얻는 것이 `setInterval` 대비 없다. `PrismaService.onModuleInit`이 이미
  * 같은 라이프사이클 패턴을 쓴다.
  */
 @Injectable()

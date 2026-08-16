@@ -101,7 +101,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
    * 뚫려 있던 비대칭 자체가 빠뜨렸다는 증거다.
    *
    * **티켓에 `tournamentId`가 없는 것은 결함이 아니다.** `POST /ws/ticket`은
-   * 딜러 티켓에만 그 값을 싣는다(`ws-ticket.controller.ts:41`) — 딜러는 대회
+   * 딜러 티켓에만 그 값을 싣는다(`WsTicketController.issue`) — 딜러는 대회
    * 하나에 묶인 세션이지만, 플레이어와 상점 계정은 한 사람이 여러 대회에
    * 걸칠 수 있어 발급 시점에 대회를 정할 수 없다. 그래서 거절하지 않고
    * **다른 근거로** 가른다.
