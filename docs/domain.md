@@ -244,7 +244,7 @@ await this.redis.withTableLock(tableId, async () => {
 
 | 자리 | 락 없이 쓴다 | 근거 |
 |---|---|---|
-| `recovery.service.ts:306` | `saveSnapShot` | `app.listen()` 이전이라 경합 상대가 없다 |
+| `recovery.service.ts` — 재구성 `:358`, 빈 테이블 `:204`, 비트맵 되세우기 `:189`·`:236` | `saveSnapShot` · `rebuildSeatBitmap` | `app.listen()` 이전이라 경합 상대가 없다. 자리는 T44·T46에서 늘었고 근거는 하나로 같다 |
 | `session.service.ts:187`, `:244` | 빈 스냅샷 생성 | 테이블이 방금 생겨 아직 아무도 모른다 |
 | 좌석 비트맵 | Redis 원자 연산 | 읽고 고쳐 쓰는 것이 아니라 비트 하나다 (`redis.service.ts:73`) |
 
@@ -282,3 +282,11 @@ await this.redis.withTableLock(tableId, async () => {
 건너뛰었고, 그래서 Redis를 잃고 재기동한 뒤 아무도 안 앉은 테이블에 딜러가
 붙으면 `joinTable`이 500을 냈다. 세 지점(생성 둘 · 복구 하나) 모두 **스냅샷이
 없을 때만** 세운다.
+
+**반대로 좌석 비트맵의 유무는 스냅샷과 독립이다**(T46). 비트맵은
+`tournament:{id}:seat` 키 하나에 대회의 모든 테이블이 필드로 들어 있어, 그
+키만 잃는 유실이 따로 가능하다 — 그러면 `getTournamentTables`(hgetall)에서
+테이블이 사라지는데 `UPDATE_SEAT_BIT`가 없는 필드에 아무것도 쓰지 않으므로
+착석으로도 낫지 않는다. 그래서 복구는 **스냅샷이 살아 있어도 비트맵을 따로
+본다**(`recovery.service.ts:233`). 되세울 때의 권위는 **스냅샷**이다 — DB 좌석
+행에는 참가가 끝난 잔재가 남고, 불변식이 "좌석 비트맵 == 스냅샷"이다.

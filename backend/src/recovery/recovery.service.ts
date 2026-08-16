@@ -207,7 +207,39 @@ export class RecoveryService implements OnApplicationBootstrap {
       }
 
       const existing = await this.redis.getSnapShot(table.id);
-      if (existing) continue; // 살아 있다. 스냅샷에는 시간이 없으므로 손댈 것이 없다.
+      if (existing) {
+        // 살아 있다. 스냅샷에는 시간이 없으므로 스냅샷 자체는 손댈 것이 없다.
+        //
+        // **그래도 좌석 비트맵은 따로 본다.** 유실 판정을 스냅샷 유무 하나로
+        // 하면 이 부분 유실이 사각지대로 남는다 — 비트맵은
+        // `tournament:{id}:seat` 키 하나에 대회의 모든 테이블이 필드로 들어
+        // 있어서, 그 키만 잃는 일(필드 만료, maxmemory 축출, 부분 AOF 손상)이
+        // 스냅샷과 독립적으로 가능하다. 그러면 `getTournamentTables`가
+        // hgetall이라 이 테이블이 좌석 목록에서 통째로 사라지고, `entry`의
+        // 가드도 스냅샷 기준이라 막지 못하며, `UPDATE_SEAT_BIT`는 필드가 없으면
+        // 아무것도 하지 않으므로(설계상 옳다 — `redis.service.ts:78`) **착석으로도
+        // 낫지 않는다.**
+        //
+        // **스냅샷에서 파생시킨다.** DB 좌석 행에는 참가가 끝난 잔재가 남을 수
+        // 있고(T29 이후 ELIMINATED·AWARDED의 좌석 행은 남는다), 시나리오
+        // 하네스가 단계마다 검사하는 불변식도 "좌석 비트맵 == 스냅샷"이다.
+        // 스냅샷이 살아 있는 이 분기에서는 그쪽이 권위다.
+        //
+        // 위 빈 테이블 분기와 같이 **없을 때만** 세운다. 있는 값을 스냅샷에
+        // 맞춰 고치는 것은 정합성 조정이지 유실 복구가 아니다 — 이 서비스는
+        // 무슨 장애였는지 추측하지 않고 지금 무엇이 없는지만 본다.
+        const bitmap = await this.redis.getTableSeatStatus(tournamentId, table.id);
+        if (bitmap.length === 0) {
+          const seated = existing.players
+            .map((p, seat) => (p ? seat : -1))
+            .filter((seat) => seat >= 0);
+          await this.redis.rebuildSeatBitmap(tournamentId, table.id, seated);
+          this.logger.warn(
+            `좌석 비트맵만 잃은 테이블을 스냅샷으로 되세웠다 (table=${table.id}, 좌석 ${seated.length}개)`,
+          );
+        }
+        continue;
+      }
 
       // 테이블 단위로 격리한다. 한 테이블의 재구성이 실패해도(예: 앉힐
       // PLAYING이 아무도 없다) 같은 대회의 다른 테이블까지 통째로 접히면

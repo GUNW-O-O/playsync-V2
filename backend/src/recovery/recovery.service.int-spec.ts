@@ -662,5 +662,125 @@ describe('RecoveryService', () => {
       const bitmap = await redis.hget(`tournament:${tournamentId}:seat`, `table:${tableId}`);
       expect(bitmap).toBe('111000000');
     });
+
+    /**
+     * T46. **재구성 판정 기준이 스냅샷 유무뿐이었다.** 좌석 비트맵은
+     * `tournament:{id}:seat` 키 하나에 대회의 모든 테이블이 필드로 들어 있어서,
+     * 그 키만 잃는 유실(필드 만료, maxmemory 축출, 부분 AOF 손상)이 스냅샷과
+     * 독립적으로 가능하다.
+     *
+     * 그 경우 `getTournamentTables`가 hgetall이라 테이블이 좌석 목록에서 통째로
+     * 사라지고, `entry`의 가드도 스냅샷 기준이라 막지 못하며, `UPDATE_SEAT_BIT`는
+     * 필드가 없으면 아무것도 하지 않으므로(설계상 옳다) **착석으로도 낫지
+     * 않는다.** 지배적인 케이스(Redis 통째 유실)는 스냅샷도 같이 없어져 기존
+     * 판정에 덮이지만, 이 부분 유실만 사각지대였다.
+     */
+    it('스냅샷은 살아 있고 비트맵만 잃으면 비트맵을 다시 세운다', async () => {
+      const { tournamentId, tableIds } = await seedOngoingTournament();
+      const [tableId] = tableIds;
+      await prisma.table.update({ where: { id: tableId }, data: { buttonUser: 1 } });
+      const userA = await seatPlayer({ tournamentId, tableId, seatPosition: 1, stack: 5000 });
+      const userB = await seatPlayer({ tournamentId, tableId, seatPosition: 6, stack: 5000 });
+
+      // 스냅샷은 멀쩡하다 — 진행 중인 핸드다. 비트맵 필드만 없다.
+      const live: TableState = {
+        phase: GamePhase.FLOP,
+        players: Array(9).fill(null),
+        buttonUser: 1,
+        currentTurnSeatIndex: 1,
+        pot: 300,
+        sidePots: [],
+        currentBet: 100,
+        smallBlind: 100,
+        ante: false,
+        tournamentId,
+      };
+      live.players[1] = { id: userA, tableId, nickname: 'a', seatIndex: 1, stack: 4900,
+        bet: 100, hasFolded: false, hasChecked: false, isAllIn: false, totalContributed: 100 };
+      live.players[6] = { id: userB, tableId, nickname: 'b', seatIndex: 6, stack: 5000,
+        bet: 0, hasFolded: false, hasChecked: false, isAllIn: false, totalContributed: 0 };
+      await redisService.saveSnapShot(tableId, live);
+
+      await recovery.recoverAll();
+
+      const bitmap = await redis.hget(`tournament:${tournamentId}:seat`, `table:${tableId}`);
+      expect(bitmap).toBe('010000100');
+    });
+
+    /**
+     * 위 테스트와 **어긋나는 입력**이다. 위만으로는 비트맵을 무엇에서
+     * 파생시키는지가 갈리지 않는다 — 스냅샷과 DB 좌석 행이 같은 좌석을
+     * 가리키기 때문이다.
+     *
+     * 살아 있는 스냅샷이 권위다. DB 좌석 행에는 참가가 끝난 잔재가 남을 수
+     * 있고(T29 이후 ELIMINATED·AWARDED의 좌석 행은 남는다), 시나리오 하네스가
+     * 단계마다 검사하는 불변식도 "좌석 비트맵 == 스냅샷"이다. DB에서 파생시키면
+     * 복구가 그 불변식을 스스로 깬 상태로 서비스를 연다.
+     */
+    it('되세운 비트맵은 DB 좌석 행이 아니라 스냅샷을 따른다', async () => {
+      const { tournamentId, tableIds } = await seedOngoingTournament();
+      const [tableId] = tableIds;
+      await prisma.table.update({ where: { id: tableId }, data: { buttonUser: 2 } });
+      const seated = await seatPlayer({ tournamentId, tableId, seatPosition: 2, stack: 5000 });
+      // 좌석 5: 참가가 끝났는데 좌석 행이 남아 있다. 스냅샷에는 없다.
+      await seatPlayer({
+        tournamentId, tableId, seatPosition: 5, stack: 0,
+        status: PlayerStatus.ELIMINATED,
+      });
+
+      const live: TableState = {
+        phase: GamePhase.WAITING,
+        players: Array(9).fill(null),
+        buttonUser: 2,
+        currentTurnSeatIndex: -1,
+        pot: 0,
+        sidePots: [],
+        currentBet: 0,
+        smallBlind: 100,
+        ante: false,
+        tournamentId,
+      };
+      live.players[2] = { id: seated, tableId, nickname: 'a', seatIndex: 2, stack: 5000,
+        bet: 0, hasFolded: false, hasChecked: false, isAllIn: false, totalContributed: 0 };
+      await redisService.saveSnapShot(tableId, live);
+
+      await recovery.recoverAll();
+
+      const bitmap = await redis.hget(`tournament:${tournamentId}:seat`, `table:${tableId}`);
+      // DB 좌석 행에서 파생시키면 좌석 5도 켜져 '001001000'이 된다.
+      expect(bitmap).toBe('001000000');
+    });
+
+    it('스냅샷이 살아 있고 비트맵도 있으면 비트맵에 손대지 않는다', async () => {
+      const { tournamentId, tableIds } = await seedOngoingTournament();
+      const [tableId] = tableIds;
+      await prisma.table.update({ where: { id: tableId }, data: { buttonUser: 0 } });
+      const userId = await seatPlayer({ tournamentId, tableId, seatPosition: 0, stack: 5000 });
+
+      const live: TableState = {
+        phase: GamePhase.WAITING,
+        players: Array(9).fill(null),
+        buttonUser: 0,
+        currentTurnSeatIndex: -1,
+        pot: 0,
+        sidePots: [],
+        currentBet: 0,
+        smallBlind: 100,
+        ante: false,
+        tournamentId,
+      };
+      live.players[0] = { id: userId, tableId, nickname: 'a', seatIndex: 0, stack: 5000,
+        bet: 0, hasFolded: false, hasChecked: false, isAllIn: false, totalContributed: 0 };
+      await redisService.saveSnapShot(tableId, live);
+      // 스냅샷과 어긋나는 패턴을 일부러 심는다. 복구는 **없는 것만** 세운다 —
+      // 있는 값을 스냅샷에 맞춰 고치는 것은 정합성 조정이지 유실 복구가 아니고,
+      // 이 서비스의 판단 기준("지금 무엇이 없는지만 본다")과 다른 일이다.
+      await redis.hset(`tournament:${tournamentId}:seat`, `table:${tableId}`, '111000000');
+
+      await recovery.recoverAll();
+
+      const bitmap = await redis.hget(`tournament:${tournamentId}:seat`, `table:${tableId}`);
+      expect(bitmap).toBe('111000000');
+    });
   });
 });
