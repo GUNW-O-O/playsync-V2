@@ -596,6 +596,60 @@ describe('RecoveryService', () => {
       expect(emptyEntry!.seatStatus.every((s) => s === false)).toBe(true);
     });
 
+    /**
+     * T44. 생성 경로(`createSession` / `createTable`)는 T38 이후 빈 테이블에도
+     * 빈 스냅샷을 세운다. 복구 경로만 안 세워서, Redis를 잃고 재기동하면
+     * 아무도 안 앉은 테이블에 스냅샷이 없다 — 그 테이블에 딜러가 붙으면
+     * `PlaysyncService.joinTable`이 맨 `Error`를 던져 500이 난다. T38이 좁힌
+     * "스냅샷이 없다 = 유실"이 재기동으로 다시 넓어지는 것이다.
+     */
+    it('좌석 0인 테이블에도 빈 스냅샷을 세운다 — 딜러가 붙어도 500이 아니다', async () => {
+      const { tournamentId, tableIds } = await seedOngoingTournament();
+      const [emptyTable] = tableIds;
+      // 좌석 행도 스냅샷도 없다 — Redis를 통째로 잃은 뒤의 빈 테이블.
+
+      await recovery.recoverAll();
+
+      const state = await redisService.getSnapShot(emptyTable);
+      expect(state).not.toBeNull();
+      expect(state!.tournamentId).toBe(tournamentId);
+      expect(state!.players.every((p) => p === null)).toBe(true);
+      expect(state!.phase).toBe(GamePhase.WAITING);
+    });
+
+    /**
+     * 위 테스트와 **어긋나는 입력**이다. 조건 없이 세우는 고침은 위를
+     * 통과시키면서 여기를 깨뜨린다 — 정상적으로 살아 있는 빈 테이블의
+     * 스냅샷(직전 핸드가 남긴 버튼·블라인드)을 초기값으로 되돌려, 다음 핸드가
+     * 버튼 0에서 시작하고 블라인드가 100으로 내려간다. 스냅샷 있는 테이블에
+     * 손대지 않는 것은 이 서비스 전체의 규칙이고(`:189`), 빈 테이블만 예외일
+     * 이유가 없다.
+     */
+    it('좌석 0인 테이블에 스냅샷이 이미 있으면 덮어쓰지 않는다', async () => {
+      const { tournamentId, tableIds } = await seedOngoingTournament();
+      const [tableId] = tableIds;
+      // 재구성이 만들어 낼 수 없는 값으로 채운다 — `createEmptyTableState`는
+      // buttonUser 0 · smallBlind 100이다.
+      const live: TableState = {
+        phase: GamePhase.WAITING,
+        players: Array(9).fill(null),
+        buttonUser: 7,
+        currentTurnSeatIndex: -1,
+        pot: 0,
+        sidePots: [],
+        currentBet: 0,
+        smallBlind: 400,
+        ante: true,
+        tournamentId,
+      };
+      await redisService.saveSnapShot(tableId, live);
+
+      await recovery.recoverAll();
+
+      const after = await redisService.getSnapShot(tableId);
+      expect(`버튼 ${after!.buttonUser} sb ${after!.smallBlind}`).toBe('버튼 7 sb 400');
+    });
+
     it('좌석 0인 테이블에 비트맵이 이미 있으면 덮어쓰지 않는다', async () => {
       const { tournamentId, tableIds } = await seedOngoingTournament();
       const [tableId] = tableIds;
