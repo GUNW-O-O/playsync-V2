@@ -238,7 +238,14 @@ T23은 딜러 OTP의 시도 제한과 딜러 토큰의 폐기만 다뤘다. 나�
   잠금 단위를 대회로 고른 근거 자체는 유효하다(IP 단위는 주소를 바꿔 빠져나가고,
   계정 단위는 OTP 입력 전에 신원이 없어 걸 수 없다). 둘 중 하나가 아니라 **둘 다**
   라는 것이 여기서의 결론이다.
-- **`omit`을 Prisma 클라이언트 수준으로 옮긴다.** 지금 `dealerOtpHash`를 지우는
+- ~~**`omit`을 Prisma 클라이언트 수준으로 옮긴다.**~~ **T51에서 닫았다.**
+  `PrismaService`가 `dealerOtpHash`를 기본 감춤으로 두고, 읽는 단 한 곳
+  (`DealerService.loginDealer`)만 `omit: { dealerOtpHash: false }`로 켠다. 손
+  `omit` 일곱 곳은 사라졌다. `createTestPrisma()`도 같은 설정으로 맞췄다 —
+  예전에는 통합 테스트가 제품이 쓰는 클라이언트 설정을 한 번도 밟지 않았다.
+  근거는 `tickets-next.md` T51. 아래는 그때의 기술이다.
+
+  지금 `dealerOtpHash`를 지우는
   `omit`이 일곱 곳이고(`session.service.ts`의 `getGameSession` ·
   `getGameSessionWithTables` · `getStoreAllSessions` · `createSession` ·
   `startSession` · `updateSession`, `payment.service.ts`의

@@ -47,9 +47,14 @@ export class DealerService {
     // 한도를 지나쳐 스레드풀까지 함께 태운다.
     await this.otpAttempts.reserveAttempt(dto.tournamentId);
 
+    // **해시를 읽는 유일한 곳이다.** `PrismaService`가 `dealerOtpHash`를 기본
+    // 감춤으로 두므로 여기서만 켠다 — 이 한 줄이 곧 "열람 경로는 여기뿐"이라는
+    // 선언이고, 다른 쿼리가 해시를 실으려면 같은 줄을 명시해야 해서 리뷰에
+    // 걸린다.
     const tournament = await this.prisma.tournament.findUnique({
       where: { id: dto.tournamentId },
       include: { dealerSession: true },
+      omit: { dealerOtpHash: false },
     });
 
     // 대회가 없을 때와 OTP가 틀렸을 때의 응답을 가르지 않는다. 가르면

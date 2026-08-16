@@ -10,14 +10,17 @@ import { Pool } from 'pg';
 // 타입 인자를 생략하면 ClientOptions가 기본값(Prisma.PrismaClientOptions,
 // omit이 아직 모델별로 좁혀지지 않은 범용 타입)으로 고정돼 omit이 런타임에만
 // 적용되고 타입은 그대로 남는다 — 실제로 겪은 문제였다. 여기서 명시한다.
-type PrismaClientOptionsWithPlayerOtpOmit = {
+type PrismaClientOptionsWithSecretOmit = {
   adapter: PrismaPg;
-  omit: { tournamentParticipation: { playerOtp: true } };
+  omit: {
+    tournamentParticipation: { playerOtp: true };
+    tournament: { dealerOtpHash: true };
+  };
 };
 
 @Injectable()
 export class PrismaService
-  extends PrismaClient<PrismaClientOptionsWithPlayerOtpOmit>
+  extends PrismaClient<PrismaClientOptionsWithSecretOmit>
   implements OnModuleInit, OnModuleDestroy
 {
   private readonly pool: Pool;
@@ -33,19 +36,32 @@ export class PrismaService
     // const adapter = new PrismaPg({ url: process.env.DATABASE_URL });
     super({
       adapter,
+      // **비밀은 호출부 규율이 아니라 여기서 감춘다.**
+      //
       // 참가 OTP는 평문이고 참가자 전원의 값이 한 테이블에 있다. 상점 콘솔의
-      // 참가자 목록 한 번이면 대회 전체가 샌다.
+      // 참가자 목록 한 번이면 대회 전체가 샌다. 딜러 OTP 해시는 6자리 비밀의
+      // bcrypt라 후보가 10^6뿐이고, 해시만 있으면 GPU로 몇 분이다.
       //
       // 호출부마다 `omit`을 쓰는 규율로는 막지 못한다 — T23이 딜러 OTP 해시에
-      // 대해 정확히 그 방식이었고 두 곳을 빠뜨려 실제로 누출됐다. 기본을
-      // 감춤으로 두면 빠뜨림이 조용한 누출이 아니라 **컴파일 에러**가 된다 —
-      // 위 `PrismaClientOptionsWithPlayerOtpOmit` 타입 인자 덕분이다. 그 타입
-      // 인자 없이 `extends PrismaClient`만 썼을 때는 이 값이 런타임에만
-      // 걸리고 타입은 그대로 남아 빠뜨림이 조용히 `undefined`를 돌려주는
+      // 대해 정확히 그 방식이었고 **두 곳을 빠뜨려 실제로 누출됐다**
+      // (`startSession`·`updateSession`). 리뷰가 잡았지 테스트가 잡은 것이
+      // 아니다. 빠뜨림이 아무 신호도 내지 않기 때문이다. T51이 그 일곱 곳의
+      // 손 `omit`을 걷어내고 기본을 감춤으로 옮겼다.
+      //
+      // 기본을 감춤으로 두면 빠뜨림이 조용한 누출이 아니라 **컴파일 에러**가
+      // 된다 — 위 `PrismaClientOptionsWithSecretOmit` 타입 인자 덕분이다. 그
+      // 타입 인자 없이 `extends PrismaClient`만 썼을 때는 이 값이 런타임에만
+      // 걸리고 타입은 그대로 남아, 빠뜨림이 조용히 `undefined`를 돌려주는
       // 문제가 실제로 있었다.
       //
-      // 읽는 곳은 마이페이지 조회 단 하나이고 거기서만 `omit: { playerOtp: false }`를 준다.
-      omit: { tournamentParticipation: { playerOtp: true } },
+      // 읽는 곳은 각각 **단 하나**이고 거기서만 명시적으로 켠다.
+      //   - `playerOtp`  → `UserService.getMyParticipations` (마이페이지)
+      //   - `dealerOtpHash` → `DealerService.loginDealer` (해시 대조)
+      // 그 한 줄이 곧 "여기가 유일한 열람 경로다"라는 선언이다.
+      omit: {
+        tournamentParticipation: { playerOtp: true },
+        tournament: { dealerOtpHash: true },
+      },
     });
     this.pool = pool;
   }

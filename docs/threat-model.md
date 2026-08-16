@@ -105,7 +105,7 @@
 | 5 | 딜러가 고른 `tableId`를 검증 없이 토큰에 서명한다. 4절의 대조는 공격자가 고른 값을 기준으로 삼는다 | `DealerService.loginDealer` | 2 | **소속 검사만 (T23)** · 나머지는 계획 B |
 | 6 | 테이블 선점이 없다. 같은 OTP로 동일 테이블의 딜러 토큰이 여러 개 발급된다 | `DealerService.loginDealer` | 2·4 | **닫지 않는다** (backlog B1) |
 | 7 | 딜러 `sub`가 대회 단위라 단말을 구분하지 못한다 | `DealerService.loginDealer` | 감사 | **닫지 않는다** (backlog B1·B10) |
-| 8 | OTP 제거가 손으로 하는 구조분해 세 곳이다. 새 엔드포인트가 하나 빠뜨리면 그대로 샌다 | `payment.service.ts`의 `getStoreAvailableSessions`, `payment.controller.ts`의 `findAvailableSessions`, `dealer.controller.ts`의 `getTournamentWithTables` | 2 | **평문만 닫힘 (T23)** · 해시는 아직 규율 |
+| 8 | OTP 제거가 손으로 하는 구조분해 세 곳이다. 새 엔드포인트가 하나 빠뜨리면 그대로 샌다 | `payment.service.ts`의 `getStoreAvailableSessions`, `payment.controller.ts`의 `findAvailableSessions`, `dealer.controller.ts`의 `getTournamentWithTables` | 2 | **닫힘 (T23 + T51)** — 평문은 저장 자체를 없앴고, 해시는 클라이언트 수준 omit이 기본으로 감춘다 |
 | 9 | JWT 만료 1시간, 폐기 경로가 없다. 유출된 토큰을 무효화할 방법이 없다 | `auth.module.ts`의 `JwtModule.register` | 1·2·3 | **딜러 토큰만 닫힘 (T23)** |
 | 10 | 프론트가 httpOnly 쿠키를 읽어 클라이언트 prop으로 넘기고, 그것이 WS 쿼리스트링에 실린다. httpOnly를 건 이유를 정면으로 무효화한다 | T22 이월 항목 | 1·2·3 | **닫힘 (T24)** |
 
@@ -157,15 +157,18 @@
 > 평문이 DB에 없으므로 어떤 쿼리도 평문을 흘릴 수 없다 — 이건 구조적 보장이다.
 > 평문이 나가는 자리는 대회 생성 응답과 재발급 응답 둘뿐이고, 각각 한 번씩이다.
 >
-> 남은 절반: 해시는 여전히 **쿼리마다 `omit`으로 손수 지운다.** 구조분해 세 곳이던
+> **남은 절반도 T51이 닫았다.** `PrismaService`가 `dealerOtpHash`를 기본
+> 감춤으로 두고, 읽는 단 한 곳(`DealerService.loginDealer`)만 명시적으로 켠다.
+> 빠뜨림이 조용한 누출이 아니라 **컴파일 에러**가 된다. 아래는 그 전의 기술이다.
+>
+> 해시는 예전에는 **쿼리마다 `omit`으로 손수 지웠다.** 구조분해 세 곳이던
 > 것이 omit **일곱 곳**이 됐다(`session.service.ts`의 `getGameSession` ·
 > `getGameSessionWithTables` · `getStoreAllSessions` · `createSession` ·
 > `startSession` · `updateSession`, `payment.service.ts`의
 > `getStoreAvailableSessions`). `omit` 없이 쿼리를 새로 쓰면 6자리 비밀의 bcrypt 해시가
 > 그대로 나가고, 후보가 10^6뿐이라 GPU로 몇 분이다. **T23 자신이 그 실패 모드를
 > 증명했다** — `startSession`·`updateSession` 두 곳이 리뷰에서 잡혔고, 테스트는
-> 초록이었다. 구조로 옮기는 후속(Prisma 클라이언트 수준 `omit`)은 `backlog.md`의
-> B1 이월 항목에 있다.
+> 초록이었다. 구조로 옮기는 후속이 위의 T51이다.
 >
 > **Q6 — 토큰 폐기가 필요한가.** 필요하다. 다만 폐기 목록을 두지 않고 갱신 시점에
 > `DealerSession.tokenVersion`을 대조하는 방식으로 만들었다. 매 요청 조회 없이

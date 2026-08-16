@@ -49,6 +49,8 @@ describe('시나리오: 두 테이블 사이의 이동', () => {
 
     const p4 = await h.prisma.tournamentParticipation.findUniqueOrThrow({
       where: { tournamentId_userId: { tournamentId: h.tournamentId, userId: 'p4' } },
+      // 아래에서 `p4.playerOtp`로 다시 앉히므로 켠다. 기본은 감춤이다(T51).
+      omit: { playerOtp: false },
     });
     expect(`해제된 사람 상태 ${p4.status} / 칩 ${p4.currentStack}`)
       .toBe('해제된 사람 상태 WAITING / 칩 17300');

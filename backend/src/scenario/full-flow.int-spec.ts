@@ -151,8 +151,10 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
    * 현장에서 정해진다. 테스트는 그 사이의 "OTP를 폰에서 확인한다"를 DB 조회로
    * 대신한다.
    *
-   * `createTestPrisma()`는 클라이언트 수준 `omit`이 없는 맨 `PrismaClient`라
-   * `playerOtp`가 그대로 나온다. 테스트에서만 성립하는 사실이다.
+   * `playerOtp`는 `PrismaService`가 감추는 필드다(T51). 테스트 클라이언트도
+   * 같은 설정이므로, 제품의 마이페이지 조회와 **똑같이** 쿼리에서 명시적으로
+   * 켜야 읽을 수 있다 — 예전에는 테스트 클라이언트에만 omit이 없어서 그냥
+   * 나왔고, 그건 제품이 쓰지 않는 설정에 기댄 것이었다.
    */
   async function seatPlayer(
     tournamentId: string, tableId: string, seatIndex: number, userId: string,
@@ -160,6 +162,7 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
     await payment.joinSession({ tournamentId }, userId);
     const participation = await prisma.tournamentParticipation.findUniqueOrThrow({
       where: { tournamentId_userId: { tournamentId, userId } },
+      omit: { playerOtp: false },
     });
     await entry.enterSeat(tournamentId, {
       otp: participation.playerOtp, tableId, seatIndex,

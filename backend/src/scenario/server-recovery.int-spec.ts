@@ -108,6 +108,8 @@ describe('시나리오 — 서버 장애로부터의 부분 복구', () => {
     for (const [seatIndex, userId] of [[0, 'p3'], [4, 'p4']] as const) {
       const participation = await h.prisma.tournamentParticipation.findUniqueOrThrow({
         where: { tournamentId_userId: { tournamentId: h.tournamentId, userId } },
+        // `playerOtp`는 기본 감춤이라 읽으려면 켠다(T51).
+        omit: { playerOtp: false },
       });
       await h.entry.enterSeat(h.tournamentId, {
         otp: participation.playerOtp, tableId: table2Id, seatIndex,
