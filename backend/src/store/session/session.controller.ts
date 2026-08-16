@@ -24,9 +24,13 @@ export class SessionController {
     return await this.sessionService.getStoreAllSessions(storeId);
   }
 
+  // 수정도 남의 대회를 건드릴 수 없어야 한다. 참가비·시작 스택·블라인드
+  // 구조·상금 분배율이 전부 이 경로로 바뀐다. 소유권 확인은 다른 운영 조작과
+  // 같은 자리 — 서비스 메서드 안이다.
+  @Roles(Role.STORE_ADMIN)
   @Patch(':id')
-  async update(@Param('id') id: string, @Body() dto: UpdateTournamentDto) {
-    return await this.sessionService.updateSession(id, dto);
+  async update(@Req() req, @Param('id') id: string, @Body() dto: UpdateTournamentDto) {
+    return await this.sessionService.updateSession(id, dto, req.user.userId);
   }
 
   // 시작도 남의 대회를 건드릴 수 없어야 한다. 소유권 확인은 서비스 메서드

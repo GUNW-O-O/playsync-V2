@@ -735,8 +735,11 @@ export class SessionService {
    * 우회 불가능해야 값을 만든다. `store.service.ts`의 `updateStore`/
    * `removeStore`가 `getStoreDetail`을 내부에서 부르는 것과 같은 자리다.
    *
-   * `PATCH /store/sessions/:id` 등 기존 경로에는 이 검사가 없다. 그건 이
-   * 태스크 이전부터 있던 별도 항목이라 여기서 같이 고치지 않는다.
+   * `PATCH /store/sessions/:id`(`updateSession`)에는 이 검사가 없었다. T23이
+   * "별도 항목"으로 미뤄 둔 것을 T50이 닫았고, 지금은 운영 조작 여섯 곳
+   * (`createTable` · `deleteTable` · `releaseSeats` · `startSession` ·
+   * `cancelSession` · `updateSession`)과 재발급 · 내보내기 · 좌석 조회가
+   * 전부 이 함수를 첫 문장으로 부른다.
    */
   async assertTournamentOwnership(tournamentId: string, ownerId: string): Promise<void> {
     const tournament = await this.prismaService.tournament.findUnique({
@@ -848,8 +851,28 @@ export class SessionService {
     }
   }
 
-  // 세션 수정
-  async updateSession(id: string, dto: UpdateTournamentDto) {
+  /**
+   * 대회 설정을 고친다.
+   *
+   * **소유권 확인이 첫 문장이다.** 다른 운영 조작(`createTable`·`deleteTable`·
+   * `startSession`·`cancelSession`·`reissueDealerOtp`·`revokeDealerSession`)과
+   * 같은 자리다. 예전에는 이 경로만 검사가 없어서, 상점 관리자 역할만 있으면
+   * **남의 대회를 고칠 수 있었다** — 참가비·시작 스택·블라인드 구조·상금
+   * 분배율이 전부 여기로 바뀐다. 참가비를 0으로 만들거나 분배율을 자기 쪽으로
+   * 몰 수 있다는 뜻이다.
+   *
+   * 컨트롤러가 아니라 여기 두는 이유도 같다 — 컨트롤러에만 있으면 그 한 줄이
+   * 지워져도 서비스를 직접 부르는 어떤 호출부도 테스트도 잡아내지 못한다
+   * (`assertTournamentOwnership` 주석 참고).
+   *
+   * 없는 대회가 404가 되는 것도 이 한 줄이 함께 고친다. 예전에는
+   * `getGameSession`이 준 null을 그냥 지나가 `tournament.update`가 P2025로
+   * 죽어 **500**이 났다 — 없는 것을 물었을 뿐인데 서버 오류다.
+   * `revokeDealerSession`이 같은 모양이었고 T23이 고쳤다.
+   */
+  async updateSession(id: string, dto: UpdateTournamentDto, ownerId: string) {
+    await this.assertTournamentOwnership(id, ownerId);
+
     const session = await this.getGameSession(id);
     if (session && isClosedTournament(session.status)) {
       throw new ConflictException('닫힌 세션은 수정할 수 없습니다.');

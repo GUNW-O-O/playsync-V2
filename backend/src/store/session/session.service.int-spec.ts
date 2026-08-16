@@ -165,9 +165,11 @@ describe('SessionService.createSession — OTP 해시 통합', () => {
     it('대회 수정 응답에 해시가 없다', async () => {
       const created = await sessionService.createSession(makeCreateDto());
 
-      const updated = await sessionService.updateSession(created.id, {
-        name: '이름 변경',
-      });
+      const updated = await sessionService.updateSession(
+        created.id,
+        { name: '이름 변경' },
+        ownerId,
+      );
 
       expect(updated).not.toHaveProperty('dealerOtp');
       expect(updated).not.toHaveProperty('dealerOtpHash');
@@ -1930,7 +1932,7 @@ describe('취소된 대회는 종료된 대회와 같이 막힌다', () => {
 
   it('수정할 수 없다', async () => {
     await expect(
-      sessionService.updateSession(tournamentId, { name: '이름 변경' } as never),
+      sessionService.updateSession(tournamentId, { name: '이름 변경' } as never, ownerId),
     ).rejects.toThrow(ConflictException);
   });
 
@@ -1959,5 +1961,108 @@ describe('취소된 대회는 종료된 대회와 같이 막힌다', () => {
       .getMyParticipations(player.id);
 
     expect(`OTP ${rows[0].playerOtp === null ? '없음' : '있음'}`).toBe('OTP 없음');
+  });
+});
+
+/**
+ * 수정 경로의 상점 소유권 검사.
+ *
+ * T23이 재발급·내보내기에, T25가 테이블 추가·삭제에, T49가 취소에 각각
+ * `assertTournamentOwnership`을 **서비스 메서드 첫 문장**으로 넣었지만
+ * `updateSession`만 그대로였다. `assertTournamentOwnership`의 주석이 "그건 이
+ * 태스크 이전부터 있던 별도 항목이라 여기서 같이 고치지 않는다"고 가리키는
+ * 그 자리다.
+ *
+ * 뚫려 있는 것이 작지 않다. 참가비·시작 스택·블라인드 구조·상금 분배율이
+ * 전부 이 한 경로로 바뀐다 — 남의 대회 참가비를 0으로 만들거나 분배율을
+ * 자기 쪽으로 몰 수 있다는 뜻이다.
+ */
+describe('SessionService.updateSession — 상점 소유권', () => {
+  let prisma: PrismaClient;
+  let redis: Redis;
+  let sessionService: SessionService;
+  let tournamentId: string;
+  let ownerId: string;
+
+  beforeAll(() => {
+    prisma = createTestPrisma();
+    redis = createTestRedis();
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+    await closeTestPrisma(prisma);
+  });
+
+  beforeEach(async () => {
+    await truncateAll(prisma);
+    await flushTestRedis(redis);
+
+    sessionService = new SessionService(
+      prisma as unknown as PrismaService,
+      new RedisService(redis),
+      new OtpAttempts(redis),
+      new EventEmitter2(),
+    );
+
+    ({ ownerId, tournamentId } = await seedTournamentWithTable(prisma));
+  });
+
+  it('다른 상점 소유자가 수정을 호출하면 거부한다', async () => {
+    const intruder = await prisma.user.create({
+      data: { nickname: 'intruder', password: 'x', role: Role.STORE_ADMIN },
+    });
+
+    await expect(
+      sessionService.updateSession(tournamentId, { name: '가로챈 대회' } as never, intruder.id),
+    ).rejects.toThrow(ForbiddenException);
+  });
+
+  /**
+   * 거부만으로는 부족하다. 던지기 **전에** 값이 바뀌었는지를 따로 본다 —
+   * 검사를 첫 문장에 두는 이유가 그것이다.
+   */
+  it('거부된 수정은 값을 하나도 바꾸지 않는다', async () => {
+    const intruder = await prisma.user.create({
+      data: { nickname: 'intruder', password: 'x', role: Role.STORE_ADMIN },
+    });
+
+    await expect(
+      sessionService.updateSession(
+        tournamentId,
+        { name: '가로챈 대회', entryFee: 0 } as never,
+        intruder.id,
+      ),
+    ).rejects.toThrow(ForbiddenException);
+
+    const t = await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } });
+
+    expect(`이름 ${t.name} / 참가비 ${t.entryFee}`).toBe('이름 테스트 대회 / 참가비 10000');
+  });
+
+  it('본인 소유면 수정이 통과한다', async () => {
+    const updated = await sessionService.updateSession(
+      tournamentId,
+      { name: '이름 바꿈' } as never,
+      ownerId,
+    );
+
+    expect(`이름 ${updated.name}`).toBe('이름 이름 바꿈');
+  });
+
+  /**
+   * 없는 대회는 404여야 한다. 예전에는 `getGameSession`이 null을 주고 그대로
+   * 지나가, `tournament.update`가 P2025로 죽어 **500**이 났다 — 없는 것을
+   * 물었을 뿐인데 서버 오류다. `revokeDealerSession`이 같은 모양이었고
+   * T23이 고쳤다.
+   */
+  it('없는 대회를 수정하면 404다 — 예전에는 500이었다', async () => {
+    await expect(
+      sessionService.updateSession(
+        '00000000-0000-0000-0000-000000000000',
+        { name: '없는 대회' } as never,
+        ownerId,
+      ),
+    ).rejects.toThrow(NotFoundException);
   });
 });
