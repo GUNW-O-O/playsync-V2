@@ -12,6 +12,7 @@ import { ActionType, GamePhase, TablePlayer } from 'src/game-engine/types';
 import { PlaysyncService } from 'src/playsync/playsync.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
+import { isClosedTournament } from 'src/store/session/tournament-status';
 
 /**
  * 이 테이블의 Redis 스냅샷이 없다.
@@ -62,9 +63,10 @@ export class DealerService {
       throw new UnauthorizedException('인증 정보가 올바르지 않습니다.');
     }
 
-    // 끝난 대회의 OTP는 더 이상 유효하지 않다.
-    if (tournament.status === TournamentStatus.FINISHED) {
-      throw new ForbiddenException('종료된 대회입니다.');
+    // 닫힌 대회의 OTP는 더 이상 유효하지 않다. 취소도 마찬가지다 — 환불까지
+    // 끝난 대회에 딜러가 붙을 이유가 없다.
+    if (isClosedTournament(tournament.status)) {
+      throw new ForbiddenException('닫힌 대회입니다.');
     }
 
     if (!tournament.dealerSession) {
@@ -148,8 +150,8 @@ export class DealerService {
     if (!session || session.tournamentId !== payload.tournamentId) {
       throw new ForbiddenException('갱신할 수 없는 세션입니다.');
     }
-    if (session.tournament.status === TournamentStatus.FINISHED) {
-      throw new ForbiddenException('종료된 대회입니다.');
+    if (isClosedTournament(session.tournament.status)) {
+      throw new ForbiddenException('닫힌 대회입니다.');
     }
     if (session.tokenVersion !== payload.tokenVersion) {
       throw new ForbiddenException('만료된 딜러 세션입니다.');

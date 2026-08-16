@@ -41,6 +41,16 @@ export class SessionController {
     return await this.sessionService.completeSession(id);
   }
 
+  // 취소는 참가비를 돌려주는 **돈 경로**다. 재발급/내보내기와 같은 문을 쓴다 —
+  // 소유권 확인은 서비스 메서드 안이고, PLATFORM_ADMIN까지 우회 길을 늘리지
+  // 않는다.
+  @Roles(Role.STORE_ADMIN)
+  @Post(':id/cancel')
+  async cancel(@Req() req, @Param('id') id: string) {
+    await this.sessionService.cancelSession(id, req.user.userId);
+    return { ok: true };
+  }
+
   // 재발급/내보내기는 다른 상점의 대회를 건드릴 수 없어야 한다 — 재발급은
   // 평문 OTP를 응답에 실어 돌려주므로 역할만 확인하고 지나가면 그대로
   // 남의 대회 딜러 접근권을 만들어내는 경로가 된다. 소유권 확인은

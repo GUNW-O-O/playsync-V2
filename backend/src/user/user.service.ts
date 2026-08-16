@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { TournamentStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { isClosedTournament } from 'src/store/session/tournament-status';
 
 @Injectable()
 export class UserService {
@@ -76,7 +77,7 @@ export class UserService {
 
     return rows.map(row => ({
       ...row,
-      playerOtp: row.tournament.status === TournamentStatus.FINISHED ? null : row.playerOtp,
+      playerOtp: isClosedTournament(row.tournament.status) ? null : row.playerOtp,
     }));
   }
 }

@@ -7,6 +7,7 @@ import { RedisService } from 'src/redis/redis.service';
 import { SessionService } from 'src/store/session/session.service';
 import { UserService } from 'src/user/user.service';
 import * as playerOtp from './player-otp';
+import { isClosedTournament } from 'src/store/session/tournament-status';
 
 @Injectable()
 export class PaymentService {
@@ -178,8 +179,8 @@ export class PaymentService {
       where: { id: dto.tournamentId },
     });
     if (!session) throw new ConflictException('잘못된 세션 ID 입니다.');
-    if (session.status === TournamentStatus.FINISHED) {
-      throw new ConflictException('이미 종료된 세션입니다.');
+    if (isClosedTournament(session.status)) {
+      throw new ConflictException('이미 닫힌 세션입니다.');
     }
     await this.assertRegistrationOpen(session);
     if (user.points < session.entryFee) {
