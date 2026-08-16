@@ -184,9 +184,10 @@ export class SessionService {
     // 걸려야 한다. 아니면 "스냅샷이 없다"가 유실과 정상 둘 다를 뜻하게 되고,
     // 딜러가 손님보다 먼저 붙는 실제 순서에서 `GET /playsync/:tableId`가
     // 500을 낸다.
-    await this.redis.saveSnapShot(
+    await this.redis.saveSnapshotUnlocked(
       sessionInfo.tables[0].id,
       createEmptyTableState(sessionInfo.id),
+      'table-created',
     );
 
     // 평문은 여기 한 번만 실린다. 저장은 해시로만 했으므로 이후로는 어디에도
@@ -241,7 +242,11 @@ export class SessionService {
     // 테이블을 아는 경로가 아직 없다. 브로드캐스트보다 먼저 쓰는 것도
     // 그래서다 — `SEAT_LIST_UPDATED`를 보고 들어오는 화면이 상태를 찾지
     // 못하면 안 된다.
-    await this.redis.saveSnapShot(newTable.id, createEmptyTableState(tournamentId));
+    await this.redis.saveSnapshotUnlocked(
+      newTable.id,
+      createEmptyTableState(tournamentId),
+      'table-created',
+    );
     await this.emitSeatList(tournamentId);
 
     return newTable;
@@ -762,7 +767,7 @@ export class SessionService {
    *
    * **`FOR UPDATE` 대기가 락 TTL을 넘길 수 있다.** 이 트랜잭션은 진행 중인
    * 입장 트랜잭션의 커밋을 기다리므로 대기 시간이 우리 손 밖이다. 5초를
-   * 넘기면 레디스 락이 말없이 만료되고 뒤따르는 `saveSnapShot`이 보호 없이
+   * 넘기면 레디스 락이 말없이 만료되고 뒤따르는 스냅샷 쓰기가 보호 없이
    * 돈다 — T28이 트랜잭션을 락 밖으로 뺀 바로 그 위험이다. 그래도 고치지
    * 않는다: 복구가 셀프서비스이고(참가 OTP를 다시 넣으면 `alreadySeated`
    * 경로가 점유자를 진실로 고쳐 쓴다) 해제는 착석 러시가 아니라 쉬는 시간에
@@ -791,8 +796,7 @@ export class SessionService {
     // 놓은 뒤에 하기 때문이다.
     let released: TableState | null = null;
 
-    await this.redis.withTableLock(tableId, async () => {
-      const state = await this.redis.getSnapShot(tableId);
+    await this.redis.mutateSnapshot(tableId, async (state) => {
       if (!state) throw new NotFoundException('테이블 상태를 찾을 수 없습니다.');
 
       // 핸드 중에는 자리가 움직이지 않는다. 이 가드 하나가 팟·차례·폴드
@@ -890,7 +894,6 @@ export class SessionService {
       });
 
       for (const s of seats) state.players[s.seatIndex] = null;
-      await this.redis.saveSnapShot(tableId, state);
       released = state;
 
       // **비트맵과 유저 컨텍스트도 락 안이다.** 원자 연산이라 그 자체는 락이
@@ -903,6 +906,14 @@ export class SessionService {
       //
       // 둘 다 왕복이 정해진 Redis 호출이라 "기다림이 무한정인 일 금지"를
       // 어기지 않는다. 브로드캐스트만 락 밖으로 남긴다.
+      //
+      // **스냅샷 쓰기보다 앞에 온다**(T42). `mutateSnapshot`이 fn이 돌아온
+      // 뒤에 저장하기 때문이다. 예전에는 저장이 먼저였고 지금은 비트가 먼저
+      // 내려가지만, 둘 다 같은 락 안이라 다른 쓰기가 그 사이에 끼지 못한다.
+      // 갈리는 것은 락을 안 잡는 조회가 그 찰나에 볼 값뿐이고 — 예전에는
+      // "빈 스냅샷 / 비트 1", 지금은 "앉은 스냅샷 / 비트 0" — 둘 다 이
+      // 블록이 끝나며 사라진다. 위 문단이 말하는 **영구적인** 어긋남은
+      // 순서가 아니라 "락 밖에 두는 것"에서 나온다.
       //
       // 이것이 닫는 것은 **해제 → 입장** 방향뿐이고, 그나마 **같은 테이블에
       // 한해서다.** 락이 테이블 단위라 그렇다. 비트맵은 테이블별 필드라
@@ -921,6 +932,8 @@ export class SessionService {
       // 메서드 하나로 묶어 부분 성공을 없앤다.
       await this.redis.updateSeatBitmapMany(tournamentId, tableId, seatIndexes, false);
       await this.redis.deleteUserContexts(tournamentId, userIds);
+
+      return state;
     });
 
     // 락 밖. 락을 쥔 채로 브로드캐스트하지 않는다.

@@ -621,7 +621,7 @@ describe('PlaysyncService.syncTableInventoryToDb — 버튼 좌석', () => {
   it('핸드 종료 체크포인트가 버튼 좌석도 같은 트랜잭션에 남긴다', async () => {
     const state = await redisService.getSnapShot(tableId);
     state!.buttonUser = 5;
-    await redisService.saveSnapShot(tableId, state!);
+    await redisService.saveSnapshotUnlocked(tableId, state!, 'table-created');
 
     const ok = await playsync.syncTableInventoryToDb(tableId, state!);
     expect(ok).toBe(true);

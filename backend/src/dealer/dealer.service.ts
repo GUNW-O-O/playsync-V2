@@ -191,9 +191,8 @@ export class DealerService {
   }
 
   async startPreFlop(tournamentId: string, tableId: string) {
-    return this.redis.withTableLock(tableId, async () => {
+    return this.redis.mutateSnapshot(tableId, async (state) => {
       const blind = await this.redis.checkAndSyncBlindLevel(tournamentId);
-      const state = await this.redis.getSnapShot(tableId);
       // 이 값이 없다는 것은 **대회 메타가 Redis에 없다**는 뜻이고, 그건
       // 아직 `startSession`이 돌지 않았다는 뜻이다(T31의 복구 경로에서도
       // 메타부터 세운다). 딜러가 화면에서 읽는 문구이므로 원인이 아니라
@@ -226,14 +225,12 @@ export class DealerService {
       engine.startPreFlop();
 
       await this.playsync.scheduleTurnTimeout(tableId, state);
-      await this.redis.saveSnapShot(tableId, state);
       return engine.state;
     });
   }
 
   async handleDealerAction(tournamentId: string, tableId: string, targetUserId: string, type: 'FOLD' | 'KICK') {
-    return this.redis.withTableLock(tableId, async () => {
-      const state = await this.redis.getSnapShot(tableId);
+    return this.redis.mutateSnapshot(tableId, async (state) => {
       if (!state) throw new Error(SNAPSHOT_MISSING);
       const engine = new TableEngine(state);
       const targetIdx = state.players.findIndex(p => p?.id === targetUserId);
@@ -272,7 +269,6 @@ export class DealerService {
       }
 
       await this.playsync.scheduleTurnTimeout(tableId, state);
-      await this.redis.saveSnapShot(tableId, state);
       return state;
     });
   }
@@ -300,18 +296,20 @@ export class DealerService {
     }
 
     // 1. 팟 분배
-    const brokePlayerIds = await this.redis.withTableLock(tableId, async () => {
-      const state = await this.redis.getSnapShot(tableId);
+    const settled = await this.redis.mutateSnapshot(tableId, async (state) => {
       if (!state) throw new Error(SNAPSHOT_MISSING);
 
       const engine = new TableEngine(state);
       await engine.resolveWinner(winnerGroups);
-      await this.redis.saveSnapShot(tableId, state);
-
-      return state.players
-        .filter((p): p is TablePlayer => p != null && p.stack <= 0)
-        .map(p => p.id);
+      return state;
     });
+
+    // 파산자 추리기는 **락 밖**이다. 다시 읽는 것이 아니라 방금 저장한 그
+    // 객체를 순회하는 순수 계산이라 새 레이스가 아니다 — `mutateSnapshot`이
+    // 상태를 돌려주는 이유가 이것이다.
+    const brokePlayerIds = settled.players
+      .filter((p): p is TablePlayer => p != null && p.stack <= 0)
+      .map(p => p.id);
 
     // 2. 리바인 — 락 밖. 전원에게 동시에 묻고 같은 마감을 준다.
     //    수락한 사람은 남을 기다리지 않고 그 즉시 반영·전파된다.
@@ -331,8 +329,7 @@ export class DealerService {
     }
 
     // 3. 탈락 확정 — 락 안. 스냅샷은 아직 HAND_END다.
-    await this.redis.withTableLock(tableId, async () => {
-      const state = await this.redis.getSnapShot(tableId);
+    await this.redis.mutateSnapshot(tableId, async (state) => {
       if (!state) throw new Error(SNAPSHOT_MISSING);
 
       // 리바인으로 살아난 사람은 여기서 이미 스택이 있다.
@@ -340,7 +337,7 @@ export class DealerService {
         .filter((p): p is TablePlayer => p != null && p.stack <= 0);
 
       await this.playsync.eliminatePlayer(tournamentId, tableId, eliminatedPlayers, tournamentInfo);
-      await this.redis.saveSnapShot(tableId, state);
+      return state;
     });
 
     // 4. 체크포인트 — **락 밖.** 재시도가 백오프까지 포함하면 수 초가 되는데
@@ -391,13 +388,11 @@ export class DealerService {
 
   /** 체크포인트가 찍힌 뒤에만 부른다. 원천이 Redis로 넘어가는 지점. */
   private finishHand(tableId: string) {
-    return this.redis.withTableLock(tableId, async () => {
-      const state = await this.redis.getSnapShot(tableId);
+    return this.redis.mutateSnapshot(tableId, async (state) => {
       if (!state) throw new Error(SNAPSHOT_MISSING);
 
       delete state.dbSyncStatus;
       await new TableEngine(state).initTable();
-      await this.redis.saveSnapShot(tableId, state);
       return state;
     });
   }

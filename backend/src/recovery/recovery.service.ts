@@ -201,7 +201,11 @@ export class RecoveryService implements OnApplicationBootstrap {
         // 덮어쓰면 다음 핸드가 버튼 0 · sb 100에서 시작한다. "스냅샷이 있으면
         // 손대지 않는다"는 아래 좌석 있는 경로(:189)와도 같은 규칙이다.
         if (!(await this.redis.getSnapShot(table.id))) {
-          await this.redis.saveSnapShot(table.id, createEmptyTableState(tournamentId));
+          await this.redis.saveSnapshotUnlocked(
+            table.id,
+            createEmptyTableState(tournamentId),
+            'boot-recovery',
+          );
         }
         continue;
       }
@@ -355,7 +359,7 @@ export class RecoveryService implements OnApplicationBootstrap {
       tournamentId,
     };
 
-    await this.redis.saveSnapShot(table.id, state);
+    await this.redis.saveSnapshotUnlocked(table.id, state, 'boot-recovery');
 
     // 스냅샷만 세우면 나머지가 어긋난다. 좌석 비트맵이 없으면 `entry`가 좌석을
     // 비어 있는 것으로 보고 다른 사람에게 판다.

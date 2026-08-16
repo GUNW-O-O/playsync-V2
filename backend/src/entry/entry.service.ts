@@ -245,7 +245,7 @@ export class EntryService {
     // 놓은 뒤에 한다.
     let seated: TableState | null = null;
 
-    await this.redis.withTableLock(dto.tableId, async () => {
+    await this.redis.mutateSnapshot(dto.tableId, async (snapshot) => {
       // 권위는 DB 행이다. **추론하지 않고 여기서 확인한다.**
       //
       // 예전에는 "여기 도달했다 = DB가 이 좌석을 우리 것으로 확정했다"고
@@ -268,7 +268,6 @@ export class EntryService {
         throw new ConflictException('좌석 정보가 바뀌었습니다. 다시 시도해 주세요.');
       }
 
-      const snapshot = await this.redis.getSnapShot(dto.tableId);
       if (this.shouldBlockEmptySnapshot(table, snapshot)) {
         throw new ConflictException('테이블 상태를 복구하는 중입니다. 잠시 후 다시 시도해 주세요.');
       }
@@ -323,9 +322,12 @@ export class EntryService {
           hasChecked: false,
           totalContributed: 0,
         };
-        await this.redis.saveSnapShot(dto.tableId, state);
         seated = state;
+        return state;
       }
+
+      // 점유자가 이미 우리 자신이다. 손댈 것이 없으므로 쓰지 않고 나간다.
+      return null;
     });
 
     await this.redis.setUserContext(

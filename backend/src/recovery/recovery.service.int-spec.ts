@@ -408,7 +408,7 @@ describe('RecoveryService', () => {
         isAllIn: false,
         totalContributed: 200,
       };
-      await redisService.saveSnapShot(tableA, liveA);
+      await redisService.saveSnapshotUnlocked(tableA, liveA, 'table-created');
       const aBefore = JSON.stringify(await redisService.getSnapShot(tableA));
 
       // 테이블 B는 스냅샷을 만든 적이 없다(세션 시작 흐름을 거치지 않았다).
@@ -642,7 +642,7 @@ describe('RecoveryService', () => {
         ante: true,
         tournamentId,
       };
-      await redisService.saveSnapShot(tableId, live);
+      await redisService.saveSnapshotUnlocked(tableId, live, 'table-created');
 
       await recovery.recoverAll();
 
@@ -699,7 +699,7 @@ describe('RecoveryService', () => {
         bet: 100, hasFolded: false, hasChecked: false, isAllIn: false, totalContributed: 100 };
       live.players[6] = { id: userB, tableId, nickname: 'b', seatIndex: 6, stack: 5000,
         bet: 0, hasFolded: false, hasChecked: false, isAllIn: false, totalContributed: 0 };
-      await redisService.saveSnapShot(tableId, live);
+      await redisService.saveSnapshotUnlocked(tableId, live, 'table-created');
 
       await recovery.recoverAll();
 
@@ -742,7 +742,7 @@ describe('RecoveryService', () => {
       };
       live.players[2] = { id: seated, tableId, nickname: 'a', seatIndex: 2, stack: 5000,
         bet: 0, hasFolded: false, hasChecked: false, isAllIn: false, totalContributed: 0 };
-      await redisService.saveSnapShot(tableId, live);
+      await redisService.saveSnapshotUnlocked(tableId, live, 'table-created');
 
       await recovery.recoverAll();
 
@@ -771,7 +771,7 @@ describe('RecoveryService', () => {
       };
       live.players[0] = { id: userId, tableId, nickname: 'a', seatIndex: 0, stack: 5000,
         bet: 0, hasFolded: false, hasChecked: false, isAllIn: false, totalContributed: 0 };
-      await redisService.saveSnapShot(tableId, live);
+      await redisService.saveSnapshotUnlocked(tableId, live, 'table-created');
       // 스냅샷과 어긋나는 패턴을 일부러 심는다. 복구는 **없는 것만** 세운다 —
       // 있는 값을 스냅샷에 맞춰 고치는 것은 정합성 조정이지 유실 복구가 아니고,
       // 이 서비스의 판단 기준("지금 무엇이 없는지만 본다")과 다른 일이다.

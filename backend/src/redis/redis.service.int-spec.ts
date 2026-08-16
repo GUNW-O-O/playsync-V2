@@ -1,5 +1,6 @@
 import Redis from 'ioredis';
 import { RedisService } from './redis.service';
+import { GamePhase, TableState } from 'src/game-engine/types';
 import { createTestRedis, flushTestRedis } from '../../test/helpers/redis';
 
 /**
@@ -264,6 +265,215 @@ describe('RedisService.rebuildSeatBitmap', () => {
     // TTL이 없으면 -1이다. 값 자체(86400초)까지 정확히 볼 필요는 없다 —
     // "TTL이 세워져 있는가"가 본론이다.
     expect(ttl).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * T42 이행편. **정합성을 관행에서 구조로 옮긴다.**
+ *
+ * 지금까지 스냅샷을 고치는 자리는 전부 같은 네 줄을 손으로 반복했다 —
+ * `withTableLock` → `getSnapShot` → 고치기 → `saveSnapShot`. 열네 곳이 각자
+ * "락 안에서 다시 읽는다"를 기억해야 했고, T37이 그 대가를 실측했다
+ * (`entry.service.ts`의 재읽기를 지워도 어떤 테스트도 빨개지지 않는다).
+ *
+ * `mutateSnapshot`이 락·읽기·쓰기를 소유하면 호출자에게 `getSnapShot`이 아예
+ * 없어진다 — **지울 수 있는 줄 자체가 사라진다.** 낡은 스냅으로 쓰려면 인자를
+ * 무시하고 바깥 변수를 끌어와야 하고, 그건 리뷰에서 보인다.
+ *
+ * 진짜 Redis로 검증한다. 검증 대상이 락의 원자성과 "읽기가 락 안에 있는가"
+ * 자체라, mock으로 바꾸면 증명하려는 성질이 그대로 사라진다.
+ */
+describe('RedisService.mutateSnapshot', () => {
+  let redis: Redis;
+  let service: RedisService;
+
+  const TABLE = 'mutate-table-1';
+
+  function makeState(pot = 0): TableState {
+    return {
+      phase: GamePhase.WAITING,
+      players: Array(9).fill(null),
+      buttonUser: 0,
+      currentTurnSeatIndex: -1,
+      pot,
+      sidePots: [],
+      currentBet: 0,
+      smallBlind: 100,
+      ante: false,
+      tournamentId: 'mutate-tournament-1',
+    };
+  }
+
+  beforeAll(() => {
+    redis = createTestRedis();
+    service = new RedisService(redis);
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+  });
+
+  beforeEach(async () => {
+    await flushTestRedis(redis);
+  });
+
+  it('고친 상태를 저장한다', async () => {
+    await service.saveSnapshotUnlocked(TABLE, makeState(100), 'table-created');
+
+    await service.mutateSnapshot(TABLE, async (state) => {
+      state!.pot += 50;
+      return state;
+    });
+
+    expect((await service.getSnapShot(TABLE))!.pot).toBe(150);
+  });
+
+  it('스냅샷이 없으면 fn이 null을 받는다 — 만들어 돌려주면 그것이 저장된다', async () => {
+    // `enterSeat`의 경로다. 스냅샷을 잃은 상태에서 착석이 새로 세운다.
+    const seen: (TableState | null)[] = [];
+
+    await service.mutateSnapshot(TABLE, async (state) => {
+      seen.push(state);
+      return makeState(7);
+    });
+
+    expect(seen).toEqual([null]);
+    expect((await service.getSnapShot(TABLE))!.pot).toBe(7);
+  });
+
+  /**
+   * **이 테스트가 이 티켓의 본론이다.** 읽기가 락 밖에 있으면 두 호출이 같은
+   * 원본을 읽어, 나중에 쓴 쪽이 앞선 쓰기를 통째로 지운다(lost update).
+   * 락 안에서 읽으면 두 번째 호출은 첫 번째가 쓴 값을 본다.
+   *
+   * 두 호출이 실제로 겹치도록 fn 안에서 잠깐 기다린다 — 안 기다리면 첫 호출이
+   * 너무 빨리 끝나 창이 열리지 않고, 락 밖에서 읽는 구현도 초록이 된다.
+   */
+  it('락 안에서 읽는다 — 동시에 고쳐도 앞선 쓰기가 사라지지 않는다', async () => {
+    await service.saveSnapshotUnlocked(TABLE, makeState(0), 'table-created');
+
+    const add = (amount: number) =>
+      service.mutateSnapshot(TABLE, async (state) => {
+        await new Promise((r) => setTimeout(r, 100));
+        state!.pot += amount;
+        return state;
+      });
+
+    await Promise.all([add(10), add(200)]);
+
+    expect((await service.getSnapShot(TABLE))!.pot).toBe(210);
+  });
+
+  it('null을 돌려주면 쓰지 않는다', async () => {
+    // 낡은 `TIME_OUT`의 경로다(`playsync.service.ts`). 큐도 상태도 건드리지
+    // 않고 나가야 한다.
+    await service.saveSnapshotUnlocked(TABLE, makeState(100), 'table-created');
+
+    await service.mutateSnapshot(TABLE, async (state) => {
+      state!.pot = 999; // 고쳐 놓고 저장은 하지 않는다
+      return null;
+    });
+
+    expect((await service.getSnapShot(TABLE))!.pot).toBe(100);
+  });
+
+  it('저장한 상태를 돌려준다', async () => {
+    await service.saveSnapshotUnlocked(TABLE, makeState(100), 'table-created');
+
+    const result = await service.mutateSnapshot(TABLE, async (state) => {
+      state!.pot += 5;
+      return state;
+    });
+
+    expect(result!.pot).toBe(105);
+  });
+
+  /**
+   * 쓰지 않고 나가는 경로도 호출자는 상태를 받아야 한다 — 낡은 `TIME_OUT`이
+   * 게이트웨이에 돌려줄 것이 그 상태다. `null` 반환이 "저장하지 마"이지
+   * "호출자에게 줄 것이 없다"가 아니라는 뜻이다.
+   */
+  it('쓰지 않고 나가면 읽은 상태를 돌려준다', async () => {
+    await service.saveSnapshotUnlocked(TABLE, makeState(100), 'table-created');
+
+    const result = await service.mutateSnapshot(TABLE, async () => null);
+
+    expect(result!.pot).toBe(100);
+  });
+
+  it('스냅샷이 없고 만들지도 않으면 null을 돌려준다', async () => {
+    const result = await service.mutateSnapshot(TABLE, async () => null);
+
+    expect(result).toBeNull();
+  });
+
+  it('fn이 던지면 저장하지 않고 락을 해제한다', async () => {
+    await service.saveSnapshotUnlocked(TABLE, makeState(100), 'table-created');
+
+    await expect(
+      service.mutateSnapshot(TABLE, async (state) => {
+        state!.pot = 999;
+        throw new Error('엔진이 거절했다');
+      }),
+    ).rejects.toThrow('엔진이 거절했다');
+
+    expect((await service.getSnapShot(TABLE))!.pot).toBe(100);
+    // 락이 남아 있으면 다음 호출이 5초를 기다린 뒤 실패한다.
+    await expect(service.mutateSnapshot(TABLE, async (s) => s)).resolves.toBeTruthy();
+  });
+
+  it('TTL을 세운다 — 스냅샷이 24시간 뒤 사라지는 것은 그대로다', async () => {
+    await service.mutateSnapshot(TABLE, async () => makeState(1));
+
+    expect(await redis.ttl(`table:state:${TABLE}`)).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * 락 없이 쓰는 예외를 **이름으로 자백하게** 만든 API. 이유는 열거형이라
+ * 새 예외를 만들려면 `RedisService`의 유니온을 고쳐야 하고, 그 diff가 리뷰에
+ * 보인다.
+ */
+describe('RedisService.saveSnapshotUnlocked', () => {
+  let redis: Redis;
+  let service: RedisService;
+
+  const TABLE = 'unlocked-table-1';
+
+  beforeAll(() => {
+    redis = createTestRedis();
+    service = new RedisService(redis);
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+  });
+
+  beforeEach(async () => {
+    await flushTestRedis(redis);
+  });
+
+  it('락을 잡지 않고 쓴다 — 남이 락을 쥐고 있어도 기다리지 않는다', async () => {
+    // 부팅 복구가 이 성질에 기대는 것은 아니지만(경합 상대가 없다), "락을
+    // 거치지 않는다"가 이 API의 정의라 그것을 고정한다.
+    const state: TableState = {
+      phase: GamePhase.WAITING,
+      players: Array(9).fill(null),
+      buttonUser: 0,
+      currentTurnSeatIndex: -1,
+      pot: 42,
+      sidePots: [],
+      currentBet: 0,
+      smallBlind: 100,
+      ante: false,
+      tournamentId: 'unlocked-tournament-1',
+    };
+
+    await redis.set(`lock:table:state:${TABLE}`, 'someone-else', 'PX', 5000);
+    await service.saveSnapshotUnlocked(TABLE, state, 'boot-recovery');
+
+    expect((await service.getSnapShot(TABLE))!.pot).toBe(42);
+    expect(await redis.ttl(`table:state:${TABLE}`)).toBeGreaterThan(0);
   });
 });
 

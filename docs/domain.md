@@ -139,10 +139,10 @@ t=0에 둘이 같은 것은 우연이지 불변식이 아니다. 근거 주석�
 스택과 버튼을 **한 트랜잭션**으로 쓴다 — 갈라지면 "칩은 이 핸드, 버튼은 저
 핸드"가 된다.
 
-**복구는 락을 잡지 않는다**(`recovery.service.ts:306`이 락 밖에서
-`saveSnapShot`한다). 근거는 `recoverAll()`의 호출자가 `OnApplicationBootstrap`
-하나뿐이고 그것이 `app.listen()` 이전이라 경합 상대가 없다는 것 — **호출자를
-늘리면 이 근거가 깨진다.**
+**복구는 락을 잡지 않는다** — `saveSnapshotUnlocked(..., 'boot-recovery')`로
+그 사실을 코드에 적어 둔다(T42). 근거는 `recoverAll()`의 호출자가
+`OnApplicationBootstrap` 하나뿐이고 그것이 `app.listen()` 이전이라 경합 상대가
+없다는 것 — **호출자를 늘리면 이 근거가 깨진다.**
 
 예외가 좌석 입장이었다. 스냅샷이 없으면 빈 상태를 만들어 진행하던 경로가
 복구와 겹치면 이미 앉은 사람을 지운다. `shouldBlockEmptySnapshot`
@@ -223,30 +223,56 @@ t=0에 둘이 같은 것은 우연이지 불변식이 아니다. 근거 주석�
 
 ## 동시성 규약
 
-**스냅샷은 JSON 통째로 덮어쓴다.** 그래서 `getSnapShot` → 수정 → `saveSnapShot`이
-반드시 같은 락 안에 있어야 한다(`redis.service.ts:20`, `withTableLock`은 `:27`).
+**스냅샷은 JSON 통째로 덮어쓴다.** 읽기 → 수정 → 쓰기가 겹치면 나중에 쓴 쪽이
+앞선 쓰기를 통째로 지운다. 그래서 셋이 반드시 같은 락 안에 있어야 하고,
+**그 셋을 소유하는 것이 `RedisService.mutateSnapshot`이다**(`redis.service.ts:498`).
 
 ```ts
-await this.redis.withTableLock(tableId, async () => {
-  const state = await this.redis.getSnapShot(tableId);   // 락 안에서 다시 읽는다
+await this.redis.mutateSnapshot(tableId, async (state) => {
+  if (!state) throw new Error('...');   // 읽기는 이미 락 안에서 끝났다
   // ...고친다...
-  await this.redis.saveSnapShot(tableId, state);
+  return state;                          // 반환이 곧 저장. null이면 쓰지 않는다
 });
 ```
 
-**락 밖에서 읽은 스냅샷으로 쓰지 마라.** 조회 목적의 락 밖 읽기는 괜찮다.
+**스냅샷을 쓰는 길은 둘뿐이고, 그 밖에는 컴파일이 안 된다**(T42). 실제 쓰기
+(`writeSnapshot`)가 private이라 밖에서 부를 수 없다.
 
-지금 이 규약이 **구조가 아니라 관행**으로 서 있다 — 열한 곳이 같은 네 줄을 손으로
-반복하고, 재읽기를 지워도 빨개지는 테스트가 없다. 전수조사와 이행 계획은
-[`backlog.md`](./backlog.md) T42.
+| 길 | 언제 |
+|---|---|
+| `mutateSnapshot` | 그 외 전부. 락·읽기·쓰기를 이쪽이 소유한다 |
+| `saveSnapshotUnlocked(tableId, state, reason)` (`:533`) | 락이 필요 없다고 **선언된** 예외. `reason`이 열거형이라 새 예외는 유니온을 고쳐야 하고 그 diff가 리뷰에 보인다 |
 
-예외가 셋이다. 전부 근거가 있고, 근거가 깨지면 예외도 깨진다.
+`fn`의 규약 셋. **스냅샷이 없으면 `null`을 받는다**(착석이 유실 뒤 새로 세우는
+경로). **`null`을 돌려주면 쓰지 않는다**(낡은 `TIME_OUT`처럼 건드리지 않고 나가는
+자리). **반환값은 저장한 상태, 쓰지 않았으면 읽은 상태다** — 쓰지 않고 나가는
+호출자도 브로드캐스트할 것은 받아야 한다.
 
-| 자리 | 락 없이 쓴다 | 근거 |
+두 가지가 여기서 나온다.
+
+- **전파는 쓰기 뒤다.** 저장이 `fn`이 돌아온 뒤에 일어나므로, `fn` 안에서 emit하면
+  아직 Redis에 없는 상태가 먼저 나간다. 락을 안 잡는 조회가 그 틈에 낡은 값을
+  읽는다. emit은 `mutateSnapshot` **밖**에서 한다(`playsync.service.ts`의 두 자리).
+- **상태가 아닌 값**(예: 파산자 id 목록)은 반환된 상태에서 락 밖에서 파생시킨다.
+  다시 읽는 것이 아니라 방금 저장한 그 객체를 순회하는 순수 계산이라 새 레이스가
+  아니다(`dealer.service.ts`의 `resolveWinners` 1단계).
+
+**락 밖에서 읽은 스냅샷으로 쓰지 마라**는 규칙은 그대로지만, 이제 어길 수단이
+없다 — 호출자에게 `getSnapShot` 줄이 아예 없어서 **지울 수 있는 줄이 없다.**
+조회 목적의 락 밖 읽기는 여전히 괜찮다.
+
+`withTableLock`은 남아 있다. 스냅샷 **밖**의 것을 테이블 단위로 직렬화할 때
+쓴다.
+
+락 없는 쓰기 예외는 둘이고, 전부 근거가 있다. 근거가 깨지면 예외도 깨진다.
+
+| `reason` | 자리 | 근거 |
 |---|---|---|
-| `recovery.service.ts` — 재구성 `:358`, 빈 테이블 `:204`, 비트맵 되세우기 `:189`·`:236` | `saveSnapShot` · `rebuildSeatBitmap` | `app.listen()` 이전이라 경합 상대가 없다. 자리는 T44·T46에서 늘었고 근거는 하나로 같다 |
-| `session.service.ts:187`, `:244` | 빈 스냅샷 생성 | 테이블이 방금 생겨 아직 아무도 모른다 |
-| 좌석 비트맵 | Redis 원자 연산 | 읽고 고쳐 쓰는 것이 아니라 비트 하나다 (`redis.service.ts:73`) |
+| `boot-recovery` | `recovery.service.ts` 재구성 `:358`, 빈 테이블 `:204` | `app.listen()` 이전이라 경합 상대가 없다 |
+| `table-created` | `session.service.ts:187`, `:244` | 테이블이 방금 생겨 아직 아무도 모른다 |
+
+좌석 비트맵은 애초에 이 규약 밖이다 — 읽고 고쳐 쓰는 것이 아니라 Redis 원자
+연산이다(`redis.service.ts:73`). 복구의 비트맵 되세우기(`:189`·`:236`)도 같다.
 
 ### 트랜잭션과 락 — 규칙은 "기다림이 무한정인 일 금지"다
 
@@ -263,7 +289,8 @@ await this.redis.withTableLock(tableId, async () => {
 
 **`releaseSeats`는 알면서 감수한 것이다.** `SELECT ... FOR UPDATE` 대기가 진행
 중인 입장 트랜잭션의 커밋을 기다리므로 시간이 우리 손 밖이고, 5초를 넘기면 레디스
-락이 말없이 만료돼 뒤따르는 `saveSnapShot`이 보호 없이 돈다. 그래도 고치지 않는
+락이 말없이 만료돼 뒤따르는 스냅샷 쓰기가 보호 없이 돈다(`mutateSnapshot`으로
+옮긴 뒤에도 같다 — 헬퍼는 락을 잡아 줄 뿐 TTL을 늘려 주지 않는다). 그래도 고치지 않는
 근거는 (1) 복구가 셀프서비스이고(참가 OTP를 다시 넣으면 `alreadySeated` 경로가
 점유자를 고쳐 쓴다) (2) 해제는 착석 러시가 아니라 쉬는 시간에 일어난다는 것이다.
 근거 주석 전문은 `session.service.ts:763-768`. **막은 것이 아니라 감수한 것**이라고

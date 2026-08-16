@@ -363,7 +363,7 @@ describe('EntryService.enterSeat', () => {
     live.phase = GamePhase.FLOP;
     live.players[1]!.bet = 500;
     live.players[1]!.totalContributed = 500;
-    await redisService.saveSnapShot(TABLE, live);
+    await redisService.saveSnapshotUnlocked(TABLE, live, 'table-created');
 
     await service.enterSeat(TOURNAMENT, { otp: '00000001', tableId: TABLE, seatIndex: 1 });
 
@@ -378,7 +378,7 @@ describe('EntryService.enterSeat', () => {
     // DB를 쓰고 스냅샷을 쓰기 전에 죽은 상태를 그대로 만든다.
     const broken = (await snapshot())!;
     broken.players[1] = null;
-    await redisService.saveSnapShot(TABLE, broken);
+    await redisService.saveSnapshotUnlocked(TABLE, broken, 'table-created');
 
     await service.enterSeat(TOURNAMENT, { otp: '00000001', tableId: TABLE, seatIndex: 1 });
 
@@ -392,7 +392,7 @@ describe('EntryService.enterSeat', () => {
 
     const live = (await snapshot())!;
     live.phase = GamePhase.FLOP;
-    await redisService.saveSnapShot(TABLE, live);
+    await redisService.saveSnapshotUnlocked(TABLE, live, 'table-created');
 
     await service.enterSeat(TOURNAMENT, { otp: '00000002', tableId: TABLE, seatIndex: 4 });
 
@@ -607,7 +607,7 @@ describe('EntryService.enterSeat', () => {
     async function clearSeatInSnapshot() {
       const state = (await snapshot())!;
       state.players[1] = null;
-      await redisService.saveSnapShot(TABLE, state);
+      await redisService.saveSnapshotUnlocked(TABLE, state, 'table-created');
     }
 
     it('탈락한 자신을 스냅샷에 되살리지 않는다', async () => {
@@ -666,7 +666,7 @@ describe('EntryService.enterSeat', () => {
         id: 'u2', tableId: TABLE, nickname: 'u2', seatIndex: 1, stack: 10000,
         bet: 0, hasFolded: false, isAllIn: false, hasChecked: false, totalContributed: 0,
       };
-      await redisService.saveSnapShot(TABLE, withU2);
+      await redisService.saveSnapshotUnlocked(TABLE, withU2, 'table-created');
 
       const outcome = await blocked.release();
 
@@ -784,7 +784,7 @@ describe('EntryService.enterSeat — 칩은 좌석보다 오래 산다', () => {
     await prisma.tablePlayer.deleteMany({ where: { tournamentId: TOURNAMENT, userId: 'u1' } });
     const released = (await redisService.getSnapShot(TABLE))!;
     released.players[0] = null;
-    await redisService.saveSnapShot(TABLE, released);
+    await redisService.saveSnapshotUnlocked(TABLE, released, 'table-created');
 
     await service.enterSeat(TOURNAMENT, { otp: '11111111', tableId: TABLE, seatIndex: 5 });
 

@@ -57,7 +57,7 @@ describe('SessionService.createSession', () => {
     };
     const redis = {
       setSeatBitmap: jest.fn().mockResolvedValue(undefined),
-      saveSnapShot: jest.fn().mockResolvedValue(undefined),
+      saveSnapshotUnlocked: jest.fn().mockResolvedValue(undefined),
     };
 
     const service = new SessionService(
@@ -101,8 +101,8 @@ describe('SessionService.createSession', () => {
     await service.createSession({ ...baseDto(), blindId: 'blind-existing' });
 
     expect(redis.setSeatBitmap).toHaveBeenCalledWith('tournament-1', 'table-1');
-    expect(redis.saveSnapShot).toHaveBeenCalledTimes(1);
-    const [tableId, state] = redis.saveSnapShot.mock.calls[0];
+    expect(redis.saveSnapshotUnlocked).toHaveBeenCalledTimes(1);
+    const [tableId, state] = redis.saveSnapshotUnlocked.mock.calls[0];
     expect(tableId).toBe('table-1');
     expect(state.tournamentId).toBe('tournament-1');
     expect(state.phase).toBe(GamePhase.WAITING);
@@ -605,7 +605,7 @@ describe('SessionService.createTable — 소유권과 상태', () => {
     };
     const redis = {
       setSeatBitmap: jest.fn().mockResolvedValue(undefined),
-      saveSnapShot: jest.fn().mockResolvedValue(undefined),
+      saveSnapshotUnlocked: jest.fn().mockResolvedValue(undefined),
       // emitSeatList가 브로드캐스트할 좌석 목록을 읽어온다. 이 스위트가 보는
       // 것은 이벤트가 나가는지 여부라, 내용물은 비워 둔다.
       getTournamentTables: jest.fn().mockResolvedValue([]),
@@ -666,7 +666,7 @@ describe('SessionService.createTable — 소유권과 상태', () => {
 
     await service.createTable('tournament-1', 'owner-1');
 
-    expect(redis.saveSnapShot).toHaveBeenCalledWith(
+    expect(redis.saveSnapshotUnlocked).toHaveBeenCalledWith(
       'table-2',
       expect.objectContaining({
         tournamentId: 'tournament-1',
@@ -674,13 +674,15 @@ describe('SessionService.createTable — 소유권과 상태', () => {
         pot: 0,
         currentTurnSeatIndex: -1,
       }),
+      // 락 없이 쓰는 예외임을 호출부가 이름과 이유로 자백한다(T42).
+      'table-created',
     );
-    const [, state] = redis.saveSnapShot.mock.calls[0];
+    const [, state] = redis.saveSnapshotUnlocked.mock.calls[0];
     expect(`좌석 ${state.players.length}`).toBe('좌석 9');
     expect(`착석자 ${state.players.filter((p: unknown) => p !== null).length}`)
       .toBe('착석자 0');
 
-    const savedAt = redis.saveSnapShot.mock.invocationCallOrder[0];
+    const savedAt = redis.saveSnapshotUnlocked.mock.invocationCallOrder[0];
     const emittedAt = emitter.emit.mock.invocationCallOrder[0];
     expect(`스냅샷이 먼저 ${savedAt < emittedAt}`).toBe('스냅샷이 먼저 true');
   });
