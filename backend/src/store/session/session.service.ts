@@ -315,14 +315,34 @@ export class SessionService {
         throw new ConflictException('대회의 마지막 테이블은 삭제할 수 없습니다.');
       }
 
+      // **Redis를 먼저 치우고, 그것이 확인된 뒤에 DB를 지운다.**
+      //
+      // 예전에는 트랜잭션이 커밋된 **뒤에** 이 둘을 불렀다. 그 호출이 실패하면
+      // DB에 없는 테이블이 좌석 목록에 24시간 남고, 그 자리를 고른 손님은
+      // `tablePlayer.create`의 외래키 실패로 이유 없는 500을 본다. 아무도 안
+      // 치운다 — DB에 행이 없으니 복구도 그 테이블을 모른다.
+      //
+      // 뒤집었을 때의 실패 모양이 더 낫다. Redis가 실패하면 트랜잭션이 통째로
+      // 롤백돼 아무것도 안 지워지고 상점은 다시 누르면 된다. DB 커밋이
+      // 실패하면 Redis만 지워진 채로 남는데, 그건 목록에서 잠시 사라지는
+      // 것뿐이고 **재기동하면 복구가 되살린다**(T44가 빈 스냅샷을, T46이
+      // 비트맵을 세운다). 어느 쪽으로 실패해도 스스로 낫거나 재시도로 끝난다.
+      //
+      // **검사 셋을 통과한 뒤라는 위치가 요건이다.** 트랜잭션 맨 앞으로 옮기면
+      // 404 · 409로 거절되는 경로에서 **살아남은 테이블의** 비트맵과 스냅샷을
+      // 날린 것이 된다.
+      //
+      // 왕복이 각각 하나로 정해져 있어 `docs/domain.md`의 "기다림이 무한정인
+      // 일 금지"를 어기지 않는다.
+      await this.redis.removeSeatBitmap(tournamentId, tableId);
+      // 스냅샷도 함께 지운다. 남겨두면 24시간 동안 사라진 테이블의 게임 상태가
+      // 떠 있고, 같은 id가 다시 쓰이지 않더라도 `completeSession`이 지우는 대상
+      // 목록에서는 이미 빠져 있어 영영 남는다.
+      await this.redis.deleteTableState(tableId);
+
       await tx.table.delete({ where: { id: tableId } });
     });
 
-    await this.redis.removeSeatBitmap(tournamentId, tableId);
-    // 스냅샷도 함께 지운다. 남겨두면 24시간 동안 사라진 테이블의 게임 상태가
-    // 떠 있고, 같은 id가 다시 쓰이지 않더라도 `completeSession`이 지우는 대상
-    // 목록에서는 이미 빠져 있어 영영 남는다.
-    await this.redis.deleteTableState(tableId);
     await this.emitSeatList(tournamentId);
   }
 

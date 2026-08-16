@@ -311,7 +311,10 @@ T25(테이블 생성을 상점 수동으로)를 리뷰한 결과 남은 것들�
   일탈은 아니다.
 - **`SEAT_LIST_UPDATED` 단위 테스트가 `tournamentId`만 `objectContaining`으로
   본다.** 상태 페이로드 내용까지는 단언하지 않는다.
-- **`deleteTable`은 DB 삭제를 커밋한 뒤 Redis를 만진다.** `removeSeatBitmap`이나
+- ~~**`deleteTable`은 DB 삭제를 커밋한 뒤 Redis를 만진다.**~~ **T48에서 닫았다.**
+  Redis 정리를 트랜잭션 안, 거절 검사 셋을 통과한 직후로 옮겼다. 근거와 실패
+  방향 표는 `tickets-next.md` T48, 순서 규칙은 `domain.md` 「되돌릴 수 없는
+  일은 마지막에」. 아래는 그때의 기술이다. `removeSeatBitmap`이나
   `deleteTableState`가 실패하면 DB에 없는 테이블의 좌석 비트맵이 TTL(24시간)까지
   남고 `SEAT_LIST_UPDATED`도 나가지 않는다. **여기서 말하는 것은 Redis 호출이
   실제로 실패했을 때뿐이다** — 예전에 이 자리에 적혀 있던 항목은 T25 리뷰가
