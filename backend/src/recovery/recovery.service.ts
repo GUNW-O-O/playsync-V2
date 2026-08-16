@@ -5,7 +5,12 @@ import { RedisService } from 'src/redis/redis.service';
 import { buildTournamentMeta } from 'src/store/session/tournament-meta';
 // 엔진의 좌석 타입과 Prisma 모델 이름이 둘 다 `TablePlayer`다. 이 파일은
 // 양쪽을 다 쓰므로 import에서 가른다.
-import { TablePlayer as SeatPlayer, TableState, GamePhase } from 'src/game-engine/types';
+import {
+  TablePlayer as SeatPlayer,
+  TableState,
+  GamePhase,
+  createEmptyTableState,
+} from 'src/game-engine/types';
 
 @Injectable()
 export class RecoveryService implements OnApplicationBootstrap {
@@ -182,6 +187,21 @@ export class RecoveryService implements OnApplicationBootstrap {
         const bitmap = await this.redis.getTableSeatStatus(tournamentId, table.id);
         if (bitmap.length === 0) {
           await this.redis.rebuildSeatBitmap(tournamentId, table.id, []);
+        }
+        // 스냅샷도 같은 이유로 세운다. 생성 경로는 T38 이후 빈 테이블에도 빈
+        // 스냅샷을 세우고(`session.service.ts`의 createSession·createTable),
+        // 그래서 "스냅샷이 없다"의 뜻이 유실 하나로 좁혀져 있다. 복구가 이
+        // 테이블만 비워 두면 재기동이 그 뜻을 다시 넓힌다 — 아무도 안 앉은
+        // 테이블에 딜러가 붙는 순간 `PlaysyncService.joinTable`이 맨 `Error`를
+        // 던져 500이 난다(`playsync.service.ts:39`). T38이 고친 결함이
+        // 재기동으로 되살아나는 것이다.
+        //
+        // 위 비트맵과 같은 모양으로 **없을 때만** 세운다. 정상적으로 살아 있는
+        // 빈 테이블의 스냅샷에는 직전 핸드가 남긴 버튼과 블라인드가 들어 있어,
+        // 덮어쓰면 다음 핸드가 버튼 0 · sb 100에서 시작한다. "스냅샷이 있으면
+        // 손대지 않는다"는 아래 좌석 있는 경로(:189)와도 같은 규칙이다.
+        if (!(await this.redis.getSnapShot(table.id))) {
+          await this.redis.saveSnapShot(table.id, createEmptyTableState(tournamentId));
         }
         continue;
       }
