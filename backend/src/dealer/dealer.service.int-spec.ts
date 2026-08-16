@@ -468,7 +468,7 @@ describe('DealerService 동시성', () => {
         await redisService.withTableLock(TABLE, async () => {
           const mid = (await redisService.getSnapShot(TABLE))!;
           new TableEngine(mid).applyRebuy('carol', 10000);
-          await redisService.saveSnapShot(TABLE, mid);
+          await redisService.saveSnapshotUnlocked(TABLE, mid, 'table-created');
         });
         return 10000;
       });

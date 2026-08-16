@@ -58,8 +58,12 @@ export class PlaysyncService {
     dto: PlayerActionDto,
     expectedTimerEpoch?: number,
   ) {
-    return this.redis.withTableLock(tableId, async () => {
-      const state = await this.redis.getSnapShot(tableId);
+    // 낡은 TIME_OUT은 쓰지 않고 나간다. 그 경로를 전파에서 가르려면 "실제로
+    // 고쳤는가"가 필요하다 — 반환값만으로는 갈리지 않는다(쓰지 않고 나가도
+    // 읽은 상태가 돌아온다).
+    let acted = false;
+
+    const state = await this.redis.mutateSnapshot(tableId, async (state) => {
       if (!state) throw new Error(`Table ${tableId} not found`);
 
       const playerIdx = state.players.findIndex(p => p?.id === userId);
@@ -80,7 +84,10 @@ export class PlaysyncService {
           expectedTimerEpoch !== undefined &&
           expectedTimerEpoch !== (state.timerEpoch ?? 0);
 
-        if (isStaleTurn || isStaleEpoch) return state;
+        // 상태를 건드리지 않고 나간다. `null`이 곧 "저장하지 마"이고,
+        // `mutateSnapshot`은 그 경우 **읽은 상태**를 호출자에게 돌려준다 —
+        // 게이트웨이가 브로드캐스트할 것이 그것이다.
+        if (isStaleTurn || isStaleEpoch) return null;
       }
 
       // 판정 기준은 요청 도착 순서가 아니라 마감 시각이다.
@@ -110,16 +117,29 @@ export class PlaysyncService {
       // 이 함수를 부르지 않으므로 큐를 건드리지 않는다.
       await this.scheduleTurnTimeout(tableId, state);
 
-      await this.redis.saveSnapShot(tableId, state);
-
-      // 호출자가 타임아웃 프로세서인 경우에만 emit한다. WS 경로는 게이트웨이가
-      // 반환값을 받아 직접 브로드캐스트하므로(ws.gateway.ts) 여기서 또 쏘면
-      // 같은 상태가 두 번 나간다. 프로세서에는 응답할 소켓이 없어서 emit이 필요하다.
-      if (dto.action === ActionType.TIME_OUT) {
-        this.eventEmitter.emit('game.state.updated', { tableId, state: state })
-      }
+      acted = true;
       return state;
     });
+
+    // **전파는 쓰기 뒤다.** `mutateSnapshot`은 fn이 돌아온 **뒤에** 저장하므로,
+    // emit을 fn 안에 두면 아직 Redis에 없는 상태가 먼저 나간다. 락은 아직
+    // 쥔 채라 다른 쓰기가 끼어들지는 못하지만, 락을 안 잡는 조회(게이트웨이의
+    // renderGame)가 그 틈에 낡은 값을 읽는다.
+    //
+    // 호출자가 타임아웃 프로세서인 경우에만 emit한다. WS 경로는 게이트웨이가
+    // 반환값을 받아 직접 브로드캐스트하므로(ws.gateway.ts) 여기서 또 쏘면
+    // 같은 상태가 두 번 나간다. 프로세서에는 응답할 소켓이 없어서 emit이 필요하다.
+    // `acted`가 필요한 이유는 낡은 TIME_OUT이 쓰지 않고 나가기 때문이다 —
+    // 그 경로는 예전에도 emit하지 않았다.
+    if (dto.action === ActionType.TIME_OUT && acted) {
+      this.eventEmitter.emit('game.state.updated', { tableId, state });
+    }
+
+    // fn이 스냅샷 없음을 던지므로 여기에 null이 올 수 없다. 낡은 TIME_OUT은
+    // **쓰지 않고** 나갈 뿐이고, 그때 `mutateSnapshot`은 읽은 상태를 돌려준다.
+    // 반환 타입이 nullable로 넓어지면 게이트웨이가 `data: null`을 브로드캐스트할
+    // 수 있게 되므로 여기서 좁힌다.
+    return state!;
   }
 
   /**
@@ -266,15 +286,13 @@ export class PlaysyncService {
 
   /** 스냅샷의 체크포인트 상태만 바꾸고 테이블 전원에게 쏜다. */
   public async markDbSyncStatus(tableId: string, status: 'RETRYING' | 'FAILED' | null) {
-    const state = await this.redis.withTableLock(tableId, async () => {
-      const snapshot = await this.redis.getSnapShot(tableId);
+    const state = await this.redis.mutateSnapshot(tableId, async (snapshot) => {
       if (!snapshot) return null;
       if (status === null) {
         delete snapshot.dbSyncStatus;
       } else {
         snapshot.dbSyncStatus = status;
       }
-      await this.redis.saveSnapShot(tableId, snapshot);
       return snapshot;
     });
     if (state) {
@@ -428,13 +446,16 @@ export class PlaysyncService {
 
     // 반영이 먼저, 전파가 나중이다. 예전에는 트랜잭션 직후 전파하고 스택 반영은
     // 엔진이 콜백 반환 뒤에 했다 — 나가는 상태의 스택이 아직 0이었다.
-    await this.redis.withTableLock(tableId, async () => {
-      const state = await this.redis.getSnapShot(tableId);
-      if (!state) return;
+    const state = await this.redis.mutateSnapshot(tableId, async (state) => {
+      if (!state) return null;
       new TableEngine(state).applyRebuy(userId, resultStack);
-      await this.redis.saveSnapShot(tableId, state);
-      this.eventEmitter.emit('game.state.updated', { tableId, state });
+      return state;
     });
+    // 전파는 쓰기 뒤다(위 handleAction과 같은 이유). 스냅샷이 없어 아무것도
+    // 하지 않았으면 보낼 것도 없다.
+    if (state) {
+      this.eventEmitter.emit('game.state.updated', { tableId, state });
+    }
 
     return resultStack;
   }

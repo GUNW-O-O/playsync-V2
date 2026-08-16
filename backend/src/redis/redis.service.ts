@@ -15,10 +15,12 @@ export class RedisService {
   }
 
   /**
-   * 테이블 상태를 수정하는 구간은 반드시 이 락으로 감쌀 것.
+   * 테이블 락. **스냅샷을 고치는 데는 직접 쓰지 않는다** — 그건
+   * `mutateSnapshot`의 일이다(T42). 스냅샷 밖의 것을 테이블 단위로
+   * 직렬화해야 할 때만 이 락을 직접 잡는다.
    *
-   * 스냅샷은 JSON 통째로 덮어쓰므로, getSnapShot → 수정 → saveSnapShot 이
-   * 겹치면 나중에 쓴 쪽이 앞선 쓰기를 통째로 지운다. 진 쪽이 이미 실행한
+   * 스냅샷은 JSON 통째로 덮어쓰므로, 읽기 → 수정 → 쓰기가 겹치면 나중에 쓴
+   * 쪽이 앞선 쓰기를 통째로 지운다. 진 쪽이 이미 실행한
    * 큐 조작·DB 쓰기·WS 브로드캐스트는 되돌아가지 않으므로, Redis 상태만
    * 과거로 돌아가고 나머지 세계는 그대로 남는다.
    *
@@ -461,10 +463,90 @@ export class RedisService {
     }
   }
 
-  // Table 상태 저장
-  async saveSnapShot(tableId: string, table: TableState) {
+  /**
+   * 스냅샷을 고치는 **유일한** 길.
+   *
+   * 락·읽기·쓰기를 이 메서드가 소유한다. 예전에는 열네 곳이 각자
+   * `withTableLock` → `getSnapShot` → 고치기 → `saveSnapShot`을 손으로
+   * 반복했고, 그래서 정합성이 **구조가 아니라 관행** 위에 서 있었다 — 어느
+   * 한 곳이 락 밖에서 읽은 값으로 쓰면 나중에 쓴 쪽이 앞선 쓰기를 통째로
+   * 지운다(진 쪽이 이미 실행한 큐 조작·DB 쓰기·브로드캐스트는 되돌아가지
+   * 않으므로 Redis만 과거로 돌아간다). T37이 그 관행의 대가를 실측했다:
+   * `enterSeat`의 락 안 재읽기를 지워도 빨개지는 테스트가 하나도 없었다.
+   *
+   * 여기로 옮기면 호출자에게 **지울 수 있는 줄 자체가 없다.** 낡은 스냅으로
+   * 쓰려면 `fn`의 인자를 무시하고 바깥 변수를 끌어와야 하고, 그건 리뷰에서
+   * 보인다.
+   *
+   * 규약 셋.
+   * - `fn`은 스냅샷이 없으면 `null`을 받는다. 만들어 돌려주면 그것이 저장된다
+   *   (착석이 유실 뒤 새로 세우는 경로).
+   * - `fn`이 `null`을 돌려주면 **쓰지 않는다.** 낡은 `TIME_OUT`처럼 상태를
+   *   건드리지 않고 나가는 자리가 있고, 그 옵트아웃을 반환 타입으로 강제한다
+   *   — `return`을 빠뜨리면 컴파일이 막힌다.
+   * - 반환값은 **저장한 상태**, 쓰지 않았으면 **읽은 상태**다. 쓰지 않고
+   *   나가는 호출자도 브로드캐스트할 상태는 받아야 한다.
+   *
+   * 상태가 아닌 값(예: 파산자 id 목록)이 필요한 호출자는 반환된 상태에서
+   * 락 **밖에서** 파생시킨다. 다시 읽는 것이 아니라 방금 저장한 그 객체를
+   * 순회하는 순수 계산이라 새 레이스가 아니다.
+   */
+  // 오버로드 둘. `fn`이 **항상** 상태를 돌려주는 자리(스냅샷이 없으면 던지거나
+  // 새로 만드는 경로)는 반환도 절대 null이 아니므로, 호출부마다 `!`를 붙이지
+  // 않아도 되게 타입으로 가른다. 옵트아웃(null 반환)을 쓰는 자리만
+  // `TableState | null`을 받는다.
+  async mutateSnapshot(
+    tableId: string,
+    fn: (state: TableState | null) => Promise<TableState>,
+  ): Promise<TableState>;
+  async mutateSnapshot(
+    tableId: string,
+    fn: (state: TableState | null) => Promise<TableState | null>,
+  ): Promise<TableState | null>;
+  async mutateSnapshot(
+    tableId: string,
+    fn: (state: TableState | null) => Promise<TableState | null>,
+  ): Promise<TableState | null> {
+    return this.withTableLock(tableId, async () => {
+      const state = await this.getSnapShot(tableId);
+      const next = await fn(state);
+      if (!next) return state;
+      await this.writeSnapshot(tableId, next);
+      return next;
+    });
+  }
+
+  /**
+   * 락 없이 쓰는 **예외**. 이름과 `reason`이 그 사실을 자백한다.
+   *
+   * `reason`이 문자열이 아니라 열거형인 것이 핵심이다 — 새 예외를 만들려면
+   * 이 유니온을 고쳐야 하고, 그 diff가 리뷰에 보인다. 근거 없이 락을 건너뛰는
+   * 자리가 조용히 하나 더 생기는 것을 막는다.
+   *
+   * - `boot-recovery`: `RecoveryService`는 `app.listen()` 이전에 돈다.
+   *   경합할 상대가 아직 존재하지 않는다.
+   * - `table-created`: 방금 INSERT한 테이블에 빈 스냅샷을 세운다. 그 테이블을
+   *   아는 경로가 아직 없다(브로드캐스트보다 먼저 쓰는 이유도 같다).
+   *
+   * 근거가 깨지면 예외도 깨진다. 다른 호출자가 생기는 날 이 목록을 다시 본다.
+   */
+  async saveSnapshotUnlocked(
+    tableId: string,
+    table: TableState,
+    reason: 'boot-recovery' | 'table-created',
+  ) {
+    void reason; // 신호는 호출부에 남는다. 값 자체를 여기서 쓰지는 않는다.
+    await this.writeSnapshot(tableId, table);
+  }
+
+  /**
+   * 실제 쓰기. `mutateSnapshot`(락 안)과 `saveSnapshotUnlocked`(명시된 예외)
+   * 둘만 부른다 — 밖에서 부를 수 없어야 "스냅샷을 쓰는 길은 둘뿐"이 문서가
+   * 아니라 타입으로 선다.
+   */
+  private async writeSnapshot(tableId: string, table: TableState) {
     await this.redis.set(`table:state:${tableId}`, JSON.stringify(table));
-    this.redis.expire(`table:state:${tableId}`, 86400);
+    await this.redis.expire(`table:state:${tableId}`, 86400);
   }
 
   // Table 가져오기
