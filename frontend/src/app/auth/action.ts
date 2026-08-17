@@ -3,6 +3,7 @@
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { decodeSession, SESSION_COOKIE, type Session } from '@/lib/session';
+import { cookieMaxAgeFromToken } from '@/lib/token-cookie';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
 
@@ -52,7 +53,10 @@ export async function handleLogin(formData: FormData) {
     secure: process.env.NODE_ENV === 'production', // HTTPS에서만 전송
     sameSite: 'lax', // CSRF 방어
     path: '/', // 모든 경로에서 쿠키 유효
-    maxAge: 60 * 60 * 24, // 1일 (NestJS JWT 만료시간과 맞추는 것 권장)
+    // 하루로 박혀 있었다. 토큰은 역할에 따라 1시간(USER)이거나 12시간
+    // (STORE_ADMIN)이라(`auth/token-ttl.ts`), 참가자는 죽은 토큰을 스물세
+    // 시간 들고 다니며 401을 받았다. 수명은 토큰이 정한다.
+    maxAge: cookieMaxAgeFromToken(token),
   });
 
   redirect(landingPath(formData.get('next'), decodeSession(token)));

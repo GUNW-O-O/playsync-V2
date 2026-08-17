@@ -1,8 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/mocks/server';
 
-const cookieStore = { set: vi.fn(), get: vi.fn() };
+const cookieStore = { set: vi.fn(), get: vi.fn(), delete: vi.fn() };
 vi.mock('next/headers', () => ({
   cookies: async () => cookieStore,
 }));
@@ -13,14 +13,65 @@ const { authenticateDealer } = await import('./action');
 
 const INPUT = { tournamentId: 'trnmt-1', tableId: 'tbl-7', otp: '012345' };
 
+/** 12시간짜리 딜러 토큰. 서명은 검증되지 않으므로 모양만 맞으면 된다. */
+const NOW = 1_700_000_000_000;
+function tokenExpiringIn(seconds: number): string {
+  const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  return `${b64({ alg: 'HS256' })}.${b64({ exp: NOW / 1000 + seconds })}.sig`;
+}
+const DEALER_TOKEN = tokenExpiringIn(12 * 60 * 60);
+
 describe('authenticateDealer', () => {
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
     cookieStore.set.mockReset();
+    cookieStore.delete.mockReset();
     server.use(
       http.post('http://backend.test/dealer/auth', () =>
         HttpResponse.json({ accessToken: 'dealer-token' }),
       ),
     );
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /**
+   * T54. 쿠키 수명을 상수로 적으면 백엔드가 토큰 수명을 바꿀 때 조용히
+   * 어긋난다 — 실제로 T43에서 그랬다(토큰 12시간, 쿠키 1시간). 딜러 태블릿이
+   * 한 시간 만에 자격을 잃고 대회 도중 OTP를 다시 넣어야 했다.
+   */
+  it('쿠키 수명을 토큰의 exp에서 뽑는다', async () => {
+    server.use(
+      http.post('http://backend.test/dealer/auth', () =>
+        HttpResponse.json({ accessToken: DEALER_TOKEN }),
+      ),
+    );
+
+    await authenticateDealer(INPUT);
+
+    expect(cookieStore.set).toHaveBeenCalledWith(
+      'dealerToken',
+      DEALER_TOKEN,
+      expect.objectContaining({ maxAge: 12 * 60 * 60 }),
+    );
+  });
+
+  /**
+   * 태블릿 하나는 한 번에 한 자리다. 딜러 태블릿이 고장 나 좌석 태블릿을
+   * 딜러용으로 돌려 쓰는 일이 실제로 있고, 그때 옛 `accessToken`이 남아
+   * 있으면 이 기기의 역할이 두 개가 된다.
+   *
+   * 우선순위가 `dealerToken`을 먼저 보므로(`api/ws-ticket/route.ts`) 이
+   * 방향에서는 아직 안 물리지만, 반대 방향(`enterSeat`)과 규칙을 같게 둔다 —
+   * **마지막에 인증한 역할이 그 태블릿의 역할이다.**
+   */
+  it('딜러로 인증하면 좌석·사용자 토큰을 지운다', async () => {
+    await authenticateDealer(INPUT);
+
+    expect(cookieStore.delete).toHaveBeenCalledWith('accessToken');
   });
 
   it('성공하면 딜러 토큰을 httpOnly 쿠키로 심는다', async () => {
