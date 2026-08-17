@@ -93,6 +93,13 @@ services:
       # 이것이 켜져야 `/internal/metrics`가 뜨고 이벤트 루프 지연 수집이 돈다.
       # 기본값(미설정)이면 둘 다 일어나지 않는다.
       LOAD_METRICS: 1
+      # 요청율 상한을 무대에 맞춘다(T53). k6는 컨테이너 하나라 **모든 가상
+      # 사용자가 한 주소에서 온다** — 운영 기본값(분당 600 / 인증 120)이면
+      # 램프가 자기 자신에게 막힌다. 끄는 스위치를 두지 않고 값만 올린 이유는,
+      # 제한 코드가 부하에서도 그대로 실행돼야 "켜면 무너지는" 상태가 안
+      # 생기기 때문이다. 근거는 `src/auth/throttle.ts`.
+      THROTTLE_LIMIT: 100000
+      THROTTLE_AUTH_LIMIT: 100000
     depends_on:
       db-test:
         condition: service_healthy

@@ -137,10 +137,13 @@ describe('딜러 로그인', () => {
     expect(typeof result.accessToken).toBe('string');
   });
 
-  it('5회 실패하면 맞는 OTP도 거부된다', async () => {
+  it('한도만큼 실패하면 맞는 OTP도 거부된다', async () => {
     const { tournamentId, tableId, otp } = await seedTournament();
 
-    for (let i = 0; i < 5; i++) {
+    // 숫자를 박지 않고 상수를 쓴다. 한도는 동시에 붙는 태블릿 수에 따라
+    // 조정되는 값이라(T53에서 5 → 10), 박아 두면 상수를 고칠 때 이 스펙이
+    // 조용히 다른 것을 재게 된다.
+    for (let i = 0; i < MAX_ATTEMPTS; i++) {
       await expect(
         dealerService.loginDealer({ tournamentId, tableId, otp: '000000' }),
       ).rejects.toThrow(UnauthorizedException);
@@ -156,7 +159,7 @@ describe('딜러 로그인', () => {
     const a = await seedTournament();
     const b = await seedTournament();
 
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < MAX_ATTEMPTS; i++) {
       await expect(
         dealerService.loginDealer({ tournamentId: a.tournamentId, tableId: a.tableId, otp: '000000' }),
       ).rejects.toThrow(UnauthorizedException);
@@ -173,7 +176,8 @@ describe('딜러 로그인', () => {
   it('성공하면 실패 카운터가 지워진다', async () => {
     const { tournamentId, tableId, otp } = await seedTournament();
 
-    for (let i = 0; i < 4; i++) {
+    // 한도 직전까지 채운다.
+    for (let i = 0; i < MAX_ATTEMPTS - 1; i++) {
       await expect(
         dealerService.loginDealer({ tournamentId, tableId, otp: '000000' }),
       ).rejects.toThrow(UnauthorizedException);
@@ -191,7 +195,7 @@ describe('딜러 로그인', () => {
   });
 
   /**
-   * 순차 5회가 아니라 **동시 버스트**를 본다.
+   * 순차 한도가 아니라 **동시 버스트**를 본다.
    *
    * 카운터를 읽고(GET) → bcrypt를 돌리고(~80ms) → 그 뒤에 증가(INCR)하면, 읽기와
    * 증가 사이가 bcrypt 한 라운드만큼 벌어진다. 그 창에 들어온 요청은 전부 같은
@@ -224,8 +228,79 @@ describe('딜러 로그인', () => {
     ).length;
 
     // 상한만 보면 "게이트가 전부 막는" 퇴화 구현도 통과한다. INCR이 원자적이라
-    // 1~5를 받은 다섯 개가 정확히 통과하므로 등호로 못 박는다.
+    // 1~MAX_ATTEMPTS를 받은 만큼이 정확히 통과하므로 등호로 못 박는다.
     expect(reachedCredentialCheck).toBe(MAX_ATTEMPTS);
+  });
+
+  /**
+   * T53. **OTP가 맞았는데 다른 이유로 막히는 경로가 시도 초과로 둔갑했다.**
+   *
+   * 게이트가 bcrypt 앞이라 대조 전에 슬롯을 하나 쓴다. 대조를 통과한 뒤
+   * 던지는 경로(닫힌 대회 · 딜러 세션 없음 · 남의 테이블)는 `clear`를 부르지
+   * 않으므로 그 슬롯이 그대로 남는다. 딜러가 몇 번 다시 눌러 보면 여섯
+   * 번째부터 안내가 "시도가 너무 많습니다"로 바뀐다 — **OTP는 맞았는데 OTP를
+   * 의심하게 만드는 안내다.** 현장에서는 그 말을 듣고 상점에 재발급을
+   * 요청하게 되고, 원인은 그대로 남는다.
+   *
+   * 고치는 방향은 게이트를 뒤로 옮기는 것이 **아니다**(그러면 bcrypt 한
+   * 라운드만큼 창이 열려 동시 버스트가 전부 통과한다 — 바로 위 스펙).
+   * 대조를 통과한 요청만 슬롯을 되돌린다. 반납의 조건이 "OTP를 맞혔다"라서
+   * 추측하는 쪽은 반납을 못 받는다.
+   */
+  it('OTP가 맞으면 그 뒤에 막혀도 시도 초과로 바뀌지 않는다', async () => {
+    const { tournamentId, tableId, otp } = await seedTournament({
+      status: TournamentStatus.FINISHED,
+    });
+
+    // 여섯 번은 지금의 한도(5)를 넘기는 횟수다. 전부 같은 이유로 막혀야 한다.
+    const messages: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      messages.push(
+        await dealerService
+          .loginDealer({ tournamentId, tableId, otp })
+          .then(() => '통과했다')
+          .catch((e: Error) => e.message),
+      );
+    }
+
+    expect(new Set(messages)).toEqual(new Set(['닫힌 대회입니다.']));
+  });
+
+  it('맞은 OTP는 슬롯을 되돌린다 — 카운터가 남지 않는다', async () => {
+    const { tournamentId, tableId, otp } = await seedTournament({
+      status: TournamentStatus.FINISHED,
+    });
+
+    await expect(
+      dealerService.loginDealer({ tournamentId, tableId, otp }),
+    ).rejects.toThrow(ForbiddenException);
+
+    // 키 자체가 없어야 한다. 0으로 남겨 두면 TTL만 있고 뜻이 없는 키가 된다.
+    const left = await redis.get(`dealer:otp:fail:${tournamentId}`);
+    expect(`남은 카운터 ${left ?? '없음'}`).toBe('남은 카운터 없음');
+  });
+
+  it('틀린 OTP는 반납받지 못한다 — 한도만큼 추측하면 잠긴다', async () => {
+    const { tournamentId, tableId, otp } = await seedTournament();
+
+    // 한도 직전까지 틀리고, 하나는 맞았지만 남의 테이블이라 막힌다(반납 대상).
+    for (let i = 0; i < MAX_ATTEMPTS - 1; i++) {
+      await expect(
+        dealerService.loginDealer({ tournamentId, tableId, otp: '000000' }),
+      ).rejects.toThrow(UnauthorizedException);
+    }
+    const other = await seedTournament();
+    await expect(
+      dealerService.loginDealer({ tournamentId, tableId: other.tableId, otp }),
+    ).rejects.toThrow(ForbiddenException);
+
+    // 반납이 실패한 추측까지 지워 주면 안 된다. 마지막 추측에서 잠겨야 한다.
+    await expect(
+      dealerService.loginDealer({ tournamentId, tableId, otp: '000000' }),
+    ).rejects.toThrow(UnauthorizedException);
+    await expect(
+      dealerService.loginDealer({ tournamentId, tableId, otp }),
+    ).rejects.toThrow(ForbiddenException);
   });
 
   it('실패 카운터에 TTL이 붙는다 — 없으면 대회가 영구 잠긴다', async () => {

@@ -68,6 +68,15 @@ export class DealerService {
       throw new UnauthorizedException('인증 정보가 올바르지 않습니다.');
     }
 
+    // **여기서부터는 추측이 아니다.** 대조를 통과했으므로 위에서 쓴 슬롯을
+    // 되돌린다. 아래 검사들(닫힌 대회 · 딜러 세션 없음 · 남의 테이블)은 OTP와
+    // 무관한 이유로 막는 것이라, 카운터에 흔적을 남기면 여섯 번째 재시도부터
+    // 안내가 "시도가 너무 많습니다"로 바뀌어 진짜 원인을 가린다(T53).
+    //
+    // 성공 경로의 `clear`와 겹치지 않는다 — `clear`는 토큰이 나간 뒤 카운터를
+    // 통째로 지우는 것이고, 여기는 **이 요청이 쓴 한 칸**만 돌려준다.
+    await this.otpAttempts.refund(dto.tournamentId);
+
     // 닫힌 대회의 OTP는 더 이상 유효하지 않다. 취소도 마찬가지다 — 환불까지
     // 끝난 대회에 딜러가 붙을 이유가 없다.
     if (isClosedTournament(tournament.status)) {
