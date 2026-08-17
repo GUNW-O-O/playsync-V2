@@ -1047,9 +1047,18 @@ export class SessionService {
         // 조건이 없으면 방금 매겨진 `AWARDED`가 `WAITING`으로 지워지고,
         // 상금은 이미 나갔는데 멱등 키(=상태)가 다시 열려 같은 등수가 한 번 더
         // 지급될 수 있다. 조건에 걸려 0행이 되면 조용히 넘어가지 않고 던진다.
+        //
+        // **되돌리는 곳이 `WAITING`이 아니라 `RELEASED`다**(T55). `WAITING`은
+        // "결제만 하고 한 번도 안 앉았다"는 뜻이고, 이 사람은 앉았다가 뗀
+        // 사람이라 칩을 들고 살아 있다. 둘을 같은 값으로 두면
+        // `activePlayers`가 셀 대상을 상태만으로 고를 수 없다 — 노쇼까지 세게
+        // 되고, 그러면 최후 1인 판정이 영영 안 걸린다.
+        //
+        // 인원수는 여기서 줄이지 않는다. 자리를 뗐을 뿐 대회에서 나간 것이
+        // 아니다(`store/session/player-status.ts`의 `LIVE_PLAYER_STATUSES`).
         const updated = await tx.tournamentParticipation.updateMany({
           where: { tournamentId, userId: { in: userIds }, status: PlayerStatus.PLAYING },
-          data: { status: PlayerStatus.WAITING },
+          data: { status: PlayerStatus.RELEASED },
         });
         if (updated.count !== userIds.length) {
           throw new ConflictException('해제 중 참가 상태가 바뀌었습니다. 다시 시도해 주세요.');

@@ -53,7 +53,7 @@ describe('시나리오: 두 테이블 사이의 이동', () => {
       omit: { playerOtp: false },
     });
     expect(`해제된 사람 상태 ${p4.status} / 칩 ${p4.currentStack}`)
-      .toBe('해제된 사람 상태 WAITING / 칩 17300');
+      .toBe('해제된 사람 상태 RELEASED / 칩 17300');
 
     // 걸어가서 2번 테이블 0번 자리에 앉아 OTP를 넣는다. p4는 이미 결제를
     // 마친 참가자라(위에서 조회한 p4.playerOtp) `h.seatPlayer`(결제+입장 묶음)를

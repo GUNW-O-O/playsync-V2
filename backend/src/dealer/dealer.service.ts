@@ -105,9 +105,15 @@ export class DealerService {
       }
 
       if (tournament.status === 'ONGOING') {
-        // 참가자 상태 변경
+        // 앉아 있는데 아직 `WAITING`인 사람을 올린다. T28 이후로는 착석이
+        // 이미 올리므로 평소에는 0행이고, 남겨 두는 것은 옛 데이터를 위한
+        // 보정이다.
+        //
+        // **올렸으면 인원수도 같이 올린다**(T55). 여기가 두 번째 승격
+        // 지점이라, 카운터를 착석 한 곳에만 붙이면 이 경로로 올라간 사람이
+        // 영영 안 세어진다 — 그러면 최후 1인 판정이 실제보다 일찍 걸린다.
         const userIds = table.tablePlayers.map(p => p.userId);
-        await tx.tournamentParticipation.updateMany({
+        const promoted = await tx.tournamentParticipation.updateMany({
           where: {
             userId: { in: userIds },
             tournamentId: dto.tournamentId,
@@ -115,6 +121,12 @@ export class DealerService {
           },
           data: { status: 'PLAYING' }
         });
+        if (promoted.count > 0) {
+          await tx.tournament.update({
+            where: { id: dto.tournamentId },
+            data: { activePlayers: { increment: promoted.count } },
+          });
+        }
       }
       const accessToken = {
         sub: tournament.dealerSession!.id,

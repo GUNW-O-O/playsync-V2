@@ -45,9 +45,17 @@ enum TournamentStatus {
   CANCELLED
 }
 
+/// 참가자의 생애. **`WAITING`과 `RELEASED`를 가르는 것이 이 enum의 핵심이다.**
+///
+/// 둘 다 "지금 자리에 없다"인데 뜻이 반대다. `WAITING`은 결제만 하고 아직 한
+/// 번도 안 앉은 사람(노쇼가 여기 머문다)이고, `RELEASED`는 앉았다가 상점이
+/// 좌석을 뗀 사람(T29)이라 **살아 있고 칩도 있다.** T55 전에는 해제가
+/// `WAITING`으로 되돌려서 둘이 같은 값이었고, 그래서 `activePlayers`가 셀
+/// 대상을 상태만으로 고를 수 없었다.
 enum PlayerStatus {
-  WAITING // 바이인 완료 후 대기
+  WAITING // 바이인 완료 후 대기 — 아직 한 번도 앉지 않았다
   PLAYING // 테이블 착석 중
+  RELEASED // 상점이 좌석을 해제했다. 살아 있고 칩도 있다 — 다시 앉으면 PLAYING
   ELIMINATED // 탈락
   AWARDED // 상금권 진입 후 종료
 }

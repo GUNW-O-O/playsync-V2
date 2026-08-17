@@ -223,7 +223,12 @@ export class PaymentService {
             where: { id: dto.tournamentId },
             data: {
               totalPlayers: { increment: 1 },
-              activePlayers: { increment: 1 },
+              // `activePlayers`는 **여기서 올리지 않는다**(T55). 결제는 "돈을
+              // 냈다"이고 그 축은 위 둘(`totalPlayers`·`totalBuyinAmount`)이
+              // 든다. 인원수가 세는 것은 지금 대회에 살아 있는 사람이고, 그건
+              // 첫 착석(`EntryService`의 `claimSeat`)이 올린다 — 결제에서
+              // 올리면 끝내 안 온 사람이 카운터에 영원히 남아 최후 1인 판정이
+              // 걸리지 않는다.
               totalBuyinAmount: { increment: session.entryFee },
             },
           });

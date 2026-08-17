@@ -8,6 +8,7 @@ import { Dashboard } from 'shared/types/tournamentMeta';
 import { TableEngine } from 'src/game-engine/table-engine';
 import { ActionType, GamePhase, TablePlayer, TableState } from 'src/game-engine/types';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { LIVE_PLAYER_STATUSES } from 'src/store/session/player-status';
 import { RedisService } from 'src/redis/redis.service';
 import { retryAsync } from 'src/common/retry';
 import { awardPrize, prizeFor } from './prize';
@@ -374,10 +375,15 @@ export class PlaysyncService {
 
   // 최후 1인
   async tournamentFinished(tournamentId: string) {
+    // 살아 있는 사람 중에서 고른다. `PLAYING`만 보면 **쉬는 시간에 좌석이
+    // 해제된 채로 마지막 탈락이 나는 경우** 우승자를 못 찾아 던진다 —
+    // 해제된 사람(`RELEASED`)은 칩을 들고 있고 다시 앉을 수 있는 사람이다.
+    // `WAITING`을 넣지 않는 것도 같은 이유다: 한 번도 안 앉은 사람이 우승자가
+    // 되면 안 된다(`store/session/player-status.ts`).
     const user = await this.prisma.tournamentParticipation.findFirst({
       where: {
         tournamentId: tournamentId,
-        status: PlayerStatus.PLAYING,
+        status: { in: [...LIVE_PLAYER_STATUSES] },
       }
     });
     if (!user) throw new Error('유저 없음.');

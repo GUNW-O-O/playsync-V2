@@ -370,13 +370,36 @@ export class RedisService {
     await this.recalculateAvgStack(tournamentId, startStack, entryFee);
   }
 
+  /**
+   * 결제. 바이인 축만 올린다.
+   *
+   * 예전에는 `activePlayer`도 여기서 올렸다. 그러면 결제만 하고 안 온 사람이
+   * 전광판 인원과 최후 1인 판정에 영원히 남는다 — 인원은 착석이 올린다
+   * (`seatPlayer`). 근거는 `store/session/player-status.ts`.
+   */
   async joinPlayer(tournamentId: string, entryFee: number) {
     const key = this.getInfoKey(tournamentId);
     await this.redis.pipeline()
       .hincrby(key, 'totalPlayer', 1)
-      .hincrby(key, 'activePlayer', 1)
       .hincrby(key, 'totalBuyinAmount', entryFee)
       .exec();
+  }
+
+  /**
+   * 첫 착석. **DB의 `activePlayers` 증가와 짝이다**(T55).
+   *
+   * 호출자가 "실제로 `WAITING`에서 올라간 행 수"를 세어 넘긴다. 재착석
+   * (`RELEASED` → `PLAYING`)은 0이라 여기 오지 않는다 — 그 사람은 이미 세고
+   * 있었다.
+   *
+   * 평균 스택도 다시 계산한다. 분모가 이 인원이므로, 올리기만 하고 두면
+   * 전광판의 평균이 한 박자 늦는다.
+   */
+  async seatPlayer(tournamentId: string, count: number, startStack: number, entryFee: number) {
+    if (count <= 0) return;
+    const key = this.getInfoKey(tournamentId);
+    await this.redis.hincrby(key, 'activePlayer', count);
+    await this.recalculateAvgStack(tournamentId, startStack, entryFee);
   }
 
   async getTournamentBlind(id: string): Promise<BlindField | null> {
