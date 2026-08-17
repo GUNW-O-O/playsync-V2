@@ -1,11 +1,19 @@
 import { Body, Controller, Post, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { CreateUserDto, LoginUserDto } from 'shared/dto/user.dto';
+import { authThrottle } from './throttle';
 
 @Controller('auth')
 export class AuthController {
   constructor(private authService : AuthService) {};
 
+  /**
+   * 전역 상한보다 좁게 잡는다. 인증 없는 라우트인데 bcrypt를 돌리는 자리라,
+   * 여기가 스레드풀을 직접 태울 수 있는 문이다(T41 실측 p50 58ms).
+   * 근거와 값은 `throttle.ts`에.
+   */
+  @Throttle(authThrottle())
   @Post('login')
   @UsePipes(new ValidationPipe({ whitelist : true }))
   async login(@Body() dto : LoginUserDto) {
@@ -23,6 +31,7 @@ export class AuthController {
    * `STORE_ADMIN`은 이제 시드(`prisma/seed.ts`)가 만든다. SaaS라면 플랫폼이
    * 발급하는 자리이고, 그 화면은 범위 밖이다(`docs/backlog.md`의 B5 절).
    */
+  @Throttle(authThrottle())
   @Post('join')
   @UsePipes(new ValidationPipe({ whitelist : true }))
   async join(@Body() dto : CreateUserDto) {

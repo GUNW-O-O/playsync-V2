@@ -1,5 +1,7 @@
 import { Body, Controller, ForbiddenException, NotFoundException, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { Role } from '@prisma/client';
+import { authThrottle } from 'src/auth/throttle';
 import { DealerService } from './dealer.service';
 import { DealerDto } from 'shared/dto/dealer.dto';
 import { SessionService } from 'src/store/session/session.service';
@@ -19,6 +21,12 @@ export class DealerController {
   }
 
 
+  /**
+   * 대회 단위 잠금(`OtpAttempts`)이 추측을 막고, 이 상한이 **폭주**를 막는다.
+   * 잠금만 있으면 틀린 OTP 한도만큼으로 그 대회의 로그인 창구를 공짜로 닫을 수
+   * 있다 — 방어 장치를 무기로 쓰는 쪽에 값을 매기는 것이 여기다(T53).
+   */
+  @Throttle(authThrottle())
   @Post('auth')
   async loginDealer(@Body() dto: DealerDto) {
     const dealerSession = await this.dealerService.loginDealer(dto);
