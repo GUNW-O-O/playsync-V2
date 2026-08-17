@@ -1,6 +1,7 @@
 'use server';
 
 import { cookies } from 'next/headers';
+import { cookieMaxAgeFromToken } from '@/lib/token-cookie';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
 const DEFAULT_ENTER_ERROR = 'OTP를 확인하세요.';
@@ -42,16 +43,25 @@ export async function enterSeat(input: {
   const body = await res.json().catch(() => null);
   if (!res.ok) return { error: failureMessage(body) };
 
+  const token = (body as { accessToken: string }).accessToken;
   const cookieStore = await cookies();
-  cookieStore.set('accessToken', (body as { accessToken: string }).accessToken, {
+
+  cookieStore.set('accessToken', token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
     path: '/',
-    // 백엔드 JWT 만료가 1시간이다. 더 길게 잡으면 죽은 토큰으로 붙으려다
-    // 티켓 발급에서 401을 받는다(`dealer/action.ts`와 같은 근거).
-    maxAge: 60 * 60,
+    // 수명은 토큰이 정한다(`lib/token-cookie.ts`). 좌석 토큰은 12시간인데
+    // 여기 1시간이 박혀 있어서, 좌석마다 한 시간에 한 번 OTP를 다시 넣어야
+    // 했다 — T43이 없앤 증상이 프론트에 남아 있었다.
+    maxAge: cookieMaxAgeFromToken(token),
   });
+
+  // **이 태블릿이 아까 딜러였을 수 있다.** `api/ws-ticket/route.ts`가
+  // `dealerToken`을 먼저 보므로, 지우지 않으면 손님의 좌석 토큰 대신 옛 딜러
+  // 토큰으로 티켓이 나가고 게이트웨이가 1008로 끊는다. 그 자리는 쿠키가
+  // 만료될 때까지 못 붙는다.
+  cookieStore.delete('dealerToken');
 
   return { ok: true, tableId: input.tableId };
 }

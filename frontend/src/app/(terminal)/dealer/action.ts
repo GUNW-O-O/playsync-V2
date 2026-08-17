@@ -1,6 +1,7 @@
 'use server';
 
 import { cookies } from 'next/headers';
+import { cookieMaxAgeFromToken } from '@/lib/token-cookie';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
 const DEFAULT_AUTH_ERROR = 'OTP를 확인하세요.';
@@ -48,16 +49,23 @@ export async function authenticateDealer(input: {
     return { error: failureMessage(body) };
   }
 
+  const token = (body as { accessToken: string }).accessToken;
   const cookieStore = await cookies();
-  cookieStore.set('dealerToken', (body as { accessToken: string }).accessToken, {
+
+  cookieStore.set('dealerToken', token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
     path: '/',
-    // 백엔드 JWT 만료가 1시간이다. 쿠키를 더 길게 잡으면 이미 죽은 토큰으로
-    // 붙으려다 티켓 발급에서 401을 받는다.
-    maxAge: 60 * 60,
+    // 수명은 토큰이 정한다. 숫자를 여기 적으면 백엔드가 바꿀 때 조용히
+    // 어긋난다 — T43에서 실제로 그랬다(`lib/token-cookie.ts`).
+    maxAge: cookieMaxAgeFromToken(token),
   });
+
+  // **태블릿 하나는 한 번에 한 자리다.** 딜러 태블릿이 고장 나면 좌석
+  // 태블릿을 딜러용으로 돌려 쓰는 일이 실제로 있고, 그때 옛 좌석 토큰이
+  // 남아 있으면 이 기기의 역할이 둘이 된다. 마지막에 인증한 역할만 남긴다.
+  cookieStore.delete('accessToken');
 
   return { ok: true };
 }
