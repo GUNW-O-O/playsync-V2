@@ -739,9 +739,12 @@ describe('SessionService.deleteTable', () => {
   });
 
   /**
-   * 대회는 테이블이 최소 하나 있다는 전제 위에 서 있다. 전부 지우면
-   * `getTournamentInfo`가 비트맵이 빈 대회를 복구하려다 `tables[0].id`를
-   * 읽어 500을 내고, 그 대회를 보고 있는 참가자 전원이 함께 죽는다.
+   * 대회는 테이블이 최소 하나 있다는 전제 위에 서 있다. 전부 지우면 열려
+   * 있는데 아무도 앉을 수 없는 대회가 되고, 되돌리는 길은 상점 콘솔의 테이블
+   * 추가뿐이다.
+   *
+   * 예전 근거였던 "`getTournamentInfo`가 `tables[0].id`를 읽어 500"은 T52에서
+   * 그 재구성 경로 자체가 사라지며 없어졌다. 규칙은 남고 근거만 바뀌었다.
    */
   it('마지막 남은 테이블은 지울 수 없다', async () => {
     await sessionService.deleteTable(tournamentId, tableId, ownerId);
