@@ -1,3 +1,4 @@
+import exec from 'k6/execution';
 import { WebSocket } from 'k6/experimental/websockets';
 import { setTimeout, clearTimeout } from 'k6/timers';
 import { Trend, Counter } from 'k6/metrics';
@@ -124,6 +125,27 @@ const LATE_RATIO = Number(__ENV.LOAD_LATE_RATIO || 0.02);
 const LATE_MS = Number(__ENV.LOAD_LATE_MS || 30300);
 
 /**
+ * **태우기 — 무대가 다 선 뒤에만 액션 속도를 올린다.**
+ *
+ * 이 기계에서 테이블 수를 더 못 올리는 이유가 서버가 아니라 측정기라서다
+ * (VU 하나가 소켓 열 개를 들어 480테이블에서 k6가 Docker VM 메모리를 채운다).
+ * 그래서 축을 바꿔 **테이블당 액션 속도**를 올리는데, 생각 시간을 처음부터
+ * 압축하면 **착석 중인 테이블과 이미 도는 테이블이 같은 코어를 두고 싸운다** —
+ * 실측에서 95테이블 만에 죽었고, 그때 잰 것은 처리 정원이 아니라 도착 경합이다.
+ *
+ * 그래서 시각으로 가른다. 실행 시작 후 `LOAD_BURN_AFTER_S`까지는 라이브 속도로
+ * 무대를 세우고, 그 뒤부터 압축값으로 돈다. 0이면 하지 않는다.
+ */
+const BURN_AFTER_S = Number(__ENV.LOAD_BURN_AFTER_S || 0);
+const BURN_FAST_MS = Number(__ENV.LOAD_BURN_FAST_MS || 400);
+const BURN_SLOW_MS = Number(__ENV.LOAD_BURN_SLOW_MS || 3000);
+const BURN_DEAL_MS = Number(__ENV.LOAD_BURN_DEAL_MS || 4000);
+
+function burning() {
+  return BURN_AFTER_S > 0 && exec.instance.currentTestRunDuration > BURN_AFTER_S * 1000;
+}
+
+/**
  * 이 액션을 언제(혹은 아예 안) 보낼지.
  *
  * @returns `null`이면 보내지 않는다 — 서버 타임아웃에 맡긴다.
@@ -134,7 +156,8 @@ function thinkMs() {
   if (Math.random() < LATE_RATIO) return LATE_MS;
 
   const slow = Math.random() < THINK_SLOW_RATIO;
-  const base = slow ? THINK_SLOW_MS : THINK_FAST_MS;
+  const hot = burning();
+  const base = slow ? (hot ? BURN_SLOW_MS : THINK_SLOW_MS) : hot ? BURN_FAST_MS : THINK_FAST_MS;
   // 같은 값이 겹치면 인위적인 동시 도착이 생긴다. 절반~1.5배로 흩는다.
   const jittered = base * (0.5 + Math.random());
   // 여기서는 30초를 넘기지 않는다. 넘기는 경우는 위 두 분기가 따로 만든다.
@@ -470,7 +493,7 @@ export function runHands({
       entry.ws.send(JSON.stringify(payload));
     };
     const isDeal = entry.role === 'dealer' && payload.data.action === 'START_PRE_FLOP';
-    const wait = isDeal ? DEAL_MS : thinkMs();
+    const wait = isDeal ? (burning() ? BURN_DEAL_MS : DEAL_MS) : thinkMs();
 
     // `null`은 "자리에 없다" — 아예 보내지 않고 서버 타임아웃에 맡긴다.
     // 예약 플래그는 풀어 둬야 다음 핸드에서 이 좌석이 다시 움직인다.
