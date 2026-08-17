@@ -1,5 +1,5 @@
 import { ConflictException, Injectable, Logger } from '@nestjs/common';
-import { PlayerStatus, Tournament, TournamentStatus } from '@prisma/client';
+import { PlayerStatus, TournamentStatus } from '@prisma/client';
 import { PayMentDto } from 'shared/dto/payment.dto';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { isRegistrationOpenNow } from 'src/store/session/registration';
@@ -8,6 +8,20 @@ import { SessionService } from 'src/store/session/session.service';
 import { UserService } from 'src/user/user.service';
 import * as playerOtp from './player-otp';
 import { isClosedTournament } from 'src/store/session/tournament-status';
+
+/**
+ * 등록 마감 판정이 **읽는 것만** 받는다.
+ *
+ * `Tournament` 모델 전체를 받으면 `PrismaService`가 감추는 `dealerOtpHash`가
+ * 빠진 행을 넘길 수 없다(T51). 그리고 그 필드는 이 판정과 아무 상관이 없다 —
+ * `tournament-meta.ts`의 `TournamentMetaSource`와 같은 이유로, 실제로 읽는
+ * 셋만 요구한다.
+ */
+interface RegistrationGateSource {
+  id: string;
+  startedAt: Date | null;
+  isRegistrationOpen: boolean;
+}
 
 @Injectable()
 export class PaymentService {
@@ -36,7 +50,6 @@ export class PaymentService {
         }
       },
       // 참가자용 조회다. 해시라도 응답에 실으면 안 된다.
-      omit: { dealerOtpHash: true },
       orderBy: {
         createdAt: 'desc',
       },
@@ -119,7 +132,7 @@ export class PaymentService {
    * 닫혀 있으면 거절하면서 **DB 컬럼도 닫는다**(아래). 판정 규칙 자체는
    * `registration.ts` 한 곳뿐이고, 전광판·리바인·여기가 모두 그것을 지난다.
    */
-  private async assertRegistrationOpen(session: Tournament) {
+  private async assertRegistrationOpen(session: RegistrationGateSource) {
     const open = await this.isRegistrationOpen(session);
     if (open) return;
 
@@ -127,7 +140,7 @@ export class PaymentService {
     throw new ConflictException('등록이 마감된 대회입니다.');
   }
 
-  private async isRegistrationOpen(session: Tournament): Promise<boolean> {
+  private async isRegistrationOpen(session: RegistrationGateSource): Promise<boolean> {
     if (!session.startedAt) return session.isRegistrationOpen;
 
     const dashboard = await this.redisService.getTournamentDashboard(session.id);

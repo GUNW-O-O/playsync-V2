@@ -48,10 +48,13 @@ export class SessionService {
 
   // dealerOtpHash는 어느 조회 경로에도 담아 보내지 않는다 — 해시라도 값이
   // 새어 나가면 오프라인 무차별 대입을 시도할 수 있다.
+  //
+  // 쿼리마다 `omit`을 붙이지 않는다(T51). `PrismaService`가 기본을 감춤으로
+  // 두므로 여기 아무것도 안 써도 해시는 안 나가고, 새 쿼리를 무심코 써도
+  // 마찬가지다. 반대로 실으려면 명시해야 하고 그 줄이 리뷰에 보인다.
   async getGameSession(id: string) {
     return await this.prismaService.tournament.findUnique({
       where: { id },
-      omit: { dealerOtpHash: true },
       include: {
         tables: true,
         tornamentParticipations: true,
@@ -71,7 +74,6 @@ export class SessionService {
           in: [TournamentStatus.ONGOING, TournamentStatus.PENDING],
         }
       },
-      omit: { dealerOtpHash: true },
       include: {
         tables: true,
       },
@@ -84,7 +86,6 @@ export class SessionService {
       where: {
         storeId: storeId,
       },
-      omit: { dealerOtpHash: true },
       orderBy: {
         createdAt: 'desc',
       },
@@ -171,8 +172,7 @@ export class SessionService {
       });
       const updatedSession = await tx.tournament.findUnique({
         where: { id: session.id },
-        omit: { dealerOtpHash: true },
-        include: {
+          include: {
           tables: true,
         }
       });
@@ -453,8 +453,7 @@ export class SessionService {
       return await tx.tournament.update({
         where: { id },
         data: { status: TournamentStatus.ONGOING, startedAt },
-        omit: { dealerOtpHash: true },
-      });
+        });
     });
 
     /*
@@ -901,7 +900,6 @@ export class SessionService {
         id: id,
       },
       data: updateData,
-      omit: { dealerOtpHash: true },
     });
   }
 

@@ -25,7 +25,21 @@ export function createTestPrisma(): PrismaClient {
   }
 
   const pool = new Pool({ connectionString });
-  const prisma = new PrismaClient({ adapter: new PrismaPg(pool) });
+  // **omit까지 제품과 같아야 한다**(T51). 예전에는 어댑터만 맞추고 맨
+  // `PrismaClient`를 만들었는데, 그러면 통합 테스트가 **제품이 실제로 쓰는
+  // 클라이언트 설정을 한 번도 밟지 않는다** — 비밀을 감추는 것이 그 설정에
+  // 있으므로, 다르면 "테스트는 초록인데 제품은 샌다"와 그 반대가 둘 다
+  // 가능해진다.
+  //
+  // 감춰진 필드를 읽어야 하는 스펙은 제품과 똑같이 쿼리에서
+  // `omit: { ...: false }`로 켠다.
+  const prisma = new PrismaClient({
+    adapter: new PrismaPg(pool),
+    omit: {
+      tournamentParticipation: { playerOtp: true },
+      tournament: { dealerOtpHash: true },
+    },
+  });
   pools.set(prisma, pool);
   return prisma;
 }

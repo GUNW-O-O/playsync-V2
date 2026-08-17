@@ -2689,6 +2689,85 @@ e2e 13 / 타입 에러 0.
 
 ---
 
+## T51 — 비밀 필드를 클라이언트 수준에서 감춘다
+
+**항목**: `backlog.md`의 T23 이월 항목 · `threat-model.md` 8번의 "남은 절반".
+**범위**: `prisma.service.ts` · `test/helpers/prisma.ts` · `dealer.service.ts` ·
+`session.service.ts` · `payment.service.ts` · 시나리오 하네스 여섯 자리 ·
+`prisma.service.int-spec.ts`(신규).
+**프론트 영향**: 없음.
+**끝났다고 하는 기준**: `omit`을 쓰지 않은 조회가 딜러 OTP 해시를 담지 않는다.
+
+### 문제 — 규율은 이미 한 번 실패했다
+
+`dealerOtpHash`를 지우는 `omit`이 **일곱 곳**에 손으로 박혀 있었다. 새 쿼리가
+하나 빠뜨리면 6자리 비밀의 bcrypt 해시가 그대로 나가고, 후보가 10^6뿐이라
+GPU로 몇 분이다.
+
+**T23 자신이 그 실패 모드를 증명했다** — `startSession`·`updateSession` 두 곳을
+빠뜨렸고, **리뷰가 잡았지 테스트가 잡은 것이 아니다.** 빠뜨림이 아무 신호도
+내지 않기 때문이다.
+
+`PrismaService`는 `playerOtp`에 대해 이미 답을 갖고 있었다. 기본을 감춤으로
+두고 읽는 곳에서만 켜는 것, 그리고 `PrismaClient<Options>`에 **타입 인자를
+명시해야** 런타임이 아니라 컴파일 타임에 걸린다는 것까지 주석에 적혀 있었다.
+같은 것을 `dealerOtpHash`에 적용했다.
+
+### 딸려 나온 것 둘 — 이게 이 티켓의 수확이다
+
+**1. 테스트 클라이언트가 제품과 다른 물건이었다.**
+`createTestPrisma()`는 `omit` 설정이 없는 맨 `PrismaClient`였다. 즉 통합
+394건이 **제품이 실제로 쓰는 클라이언트 설정을 한 번도 밟지 않았다** — 비밀을
+감추는 것이 바로 그 설정인데. 그대로 두면 "테스트는 초록인데 제품에서만 새는"
+경우와 그 반대가 둘 다 가능하다. 헬퍼를 제품과 같은 설정으로 맞췄다.
+
+그 결과 시나리오 12 스위트 80건이 한꺼번에 빨개졌다. 원인은 하나 —
+하네스가 `playerOtp`를 **읽어서** `enterSeat`에 넘기는데 이제 `undefined`가
+온다. 하네스 주석이 이미 그 사실을 적어 두고 있었다: "`createTestPrisma()`는
+클라이언트 수준 `omit`이 없는 맨 `PrismaClient`라 `playerOtp`가 그대로 나온다.
+**테스트에서만 성립하는 사실이다.**" 제품에서는 마이페이지가 명시적으로 켜서
+읽으므로, 하네스도 여섯 자리에서 같은 한 줄을 쓰게 했다. `payment` 스펙의
+`playerOtp` 읽기는 `$queryRaw`라 클라이언트 `omit`을 우회하므로 그대로 뒀다.
+
+**2. 타입이 과잉 결합을 잡아냈다.**
+`payment.service.ts`의 `assertRegistrationOpen`·`isRegistrationOpen`이
+`Tournament` 모델 **전체**를 인자로 요구하고 있었다. 해시를 감추자 그 행을
+넘길 수 없어 컴파일 에러가 났고, 확인해 보니 두 함수가 실제로 읽는 것은
+`id`·`startedAt`·`isRegistrationOpen` 셋뿐이었다. `tournament-meta.ts`의
+`TournamentMetaSource`와 같은 방식으로 좁혔다. **손 `omit` 방식으로는 영원히
+드러나지 않았을 자리다.**
+
+### RED 재현
+
+새 스펙(`prisma.service.int-spec.ts`)이 **`createTestPrisma()`가 아니라
+`new PrismaService()`를 쓴다.** 그것이 요점이다 — 헬퍼로 검사하면 제품 설정을
+밟지 않는다.
+
+| 검사 | expected / received |
+|---|---|
+| omit을 쓰지 않은 조회도 해시를 담지 않는다 | `"해시 없음"` / `"해시 있음"` |
+| 여러 건 조회도 마찬가지다 | `"해시 든 행 0건"` / `"해시 든 행 1건"` |
+| update가 돌려주는 행에도 해시가 없다 | `"해시 없음"` / `"해시 있음"` |
+
+나머지 둘(명시적으로 켜면 읽힌다 · 참가 OTP도 기본 감춤)은 회귀 방어라 처음부터
+초록이다. 고친 뒤 `PrismaService`의 `omit`에서 `tournament` 줄을 빼 세 건이
+다시 빨개지는 것을 확인하고 `diff`로 복원했다.
+
+### 헤맨 자리 하나
+
+통합 스위트를 `jest ... | grep | head`로 돌려 **진행 상황이 안 보였다.** 파이프가
+버퍼링해 출력이 0바이트였고, 22분째 프로세스가 살아 있어 "멈췄다"고 판단해
+죽였다. 실제로는 88초에 완주했고 80건 실패 + 하네스 `afterAll`이 `undefined`를
+만져(`h.close()`) 핸들이 안 닫힌 것이었다 — jest가 종료를 못 한 것이지 테스트가
+매달린 것이 아니다. **긴 실행은 파이프 대신 파일로 흘린다.**
+
+### 기준선
+
+통합 394 → **399**(28 → **29** suites). contract 62 · 백엔드 단위 198 ·
+프론트 100 · e2e 13 · 타입 에러 0 그대로.
+
+---
+
 ## T50 — 수정 경로의 상점 소유권 검사
 
 **항목**: `backlog.md`의 T23 이월 항목.

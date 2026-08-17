@@ -30,6 +30,8 @@ describe('시나리오: 동시 요청 폭탄', () => {
     const rows = await Promise.all(ids.map(userId =>
       h.prisma.tournamentParticipation.findUniqueOrThrow({
         where: { tournamentId_userId: { tournamentId: h.tournamentId, userId } },
+        // `playerOtp`는 기본 감춤이라 읽으려면 켠다(T51).
+        omit: { playerOtp: false },
       }),
     ));
     return rows.map(r => r.playerOtp);
