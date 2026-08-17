@@ -229,7 +229,7 @@ describe('시나리오 — 대회 하나를 끝까지', () => {
     prizePayouts: [{ place: 1, percent: 100 }],
       isRegistrationOpen: true,
       blindId: BLIND,
-    } as never);
+    } as never, OWNER);
 
     // `createSession`은 아무것도 반환하지 않는다. 의도된 설계다 — 대회 정보와
     // 딜러 OTP는 상점 관리 페이지가 따로 조회해서 보여준다. 생성 응답에 OTP를

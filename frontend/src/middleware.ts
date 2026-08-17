@@ -5,9 +5,19 @@ import { decodeSession, SESSION_COOKIE, type Role } from '@/lib/session';
 const PUBLIC_PREFIXES = ['/login', '/register', '/table', '/dealer'];
 
 // 경로별로 요구하는 역할. 앞에서부터 처음 걸리는 것이 적용된다.
+//
+// 참가자 화면(`/tournaments`·`/me`)이 USER 전용인 이유는, 상점 관리자가
+// 상점 페이지를 관리하는 계정이지 참가자가 아니기 때문이다. 백엔드는 이미
+// 그렇게 되어 있었다 — 참가비 결제(`POST /tournaments/payment`)가
+// `@Roles(Role.USER)`이고, 좌석 입장의 자격 증명인 참가 OTP는 그 결제가
+// 발급한다. 화면만 열려 있어서 상점주가 참가자 화면에 들어간 다음 버튼을
+// 눌러야 거절당했다. 역할의 진실은 여전히 백엔드지만, 애초에 못 가는 화면을
+// 열어 두면 그 화면은 상점주에게 고장난 것으로 보인다.
 const ROLE_RULES: { prefix: string; allow: readonly Role[] }[] = [
   { prefix: '/admin', allow: ['PLATFORM_ADMIN'] },
   { prefix: '/stores', allow: ['STORE_ADMIN', 'PLATFORM_ADMIN'] },
+  { prefix: '/tournaments', allow: ['USER'] },
+  { prefix: '/me', allow: ['USER'] },
 ];
 
 function startsWithSegment(pathname: string, prefix: string): boolean {

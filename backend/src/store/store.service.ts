@@ -36,8 +36,8 @@ export class StoreService {
     });
   }
 
-  async updateStore(storeId: string, dto: UpdateStoreDto) {
-    await this.getStoreDetail(storeId, dto.ownerId);
+  async updateStore(storeId: string, ownerId: string, dto: UpdateStoreDto) {
+    await this.getStoreDetail(storeId, ownerId);
     return this.prisma.store.update({
       where: { id: storeId },
       data: { name: dto.storeName },

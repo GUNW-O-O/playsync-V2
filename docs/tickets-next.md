@@ -2689,6 +2689,122 @@ e2e 13 / 타입 에러 0.
 
 ---
 
+## T56 — 상점 경계를 요청이 아니라 토큰이 정한다
+
+**항목**: `backlog.md`의 B6(상점 가드).
+**범위**: `session.service.ts`의 `createSession` · `getStoreAllSessions` ·
+`completeSession` · `assertStoreOwnership`(신규) · `session.controller.ts` ·
+`store.controller.ts` · `store.service.ts`의 `updateStore` ·
+`shared/dto/store.dto.ts` · `frontend/src/middleware.ts` · 스펙들.
+**프론트 영향**: 있다. 미들웨어의 역할 규칙에 참가자 화면 둘이 추가된다.
+
+### 문제 — 소유권 검사가 없거나, 검사의 근거가 요청이었다
+
+T50이 운영 조작 여섯 곳에 `assertTournamentOwnership`을 넣었지만 **그 함수를
+부르지 않는 자리가 세 곳 남아 있었다.** 셋 다 대회 id가 아니라 상점 id를
+받거나, 아예 호출자를 받지 않아서 눈에 띄지 않았다.
+
+| 자리 | 무엇이 되나 |
+|---|---|
+| `createSession` | `dto.storeId`를 그대로 믿는다 — 남의 상점에 대회를 세운다. 참가비와 상금이 남의 장부에 얹힌다 |
+| `getStoreAllSessions` | 호출자를 인자로 받지 않는다 — 상점 관리자 아무나 남의 상점 대회 목록을 읽는다 |
+| `completeSession` | 호출자를 받지 않는다 — 남의 대회를 닫고 정산을 확정한다 |
+
+`store.controller.ts`에는 다른 모양의 구멍이 둘 있었다. **소유권 검사의
+근거가 클라이언트 입력이었다.**
+
+```ts
+// 예전 코드
+async updateStore(@Param('id') id, @Body() dto: UpdateStoreDto) {
+  return this.storeService.updateStore(id, dto);   // 안에서 dto.ownerId로 비교
+}
+async removeStore(@Param('id') id, @Param('ownerId') ownerId) { ... }
+```
+
+`updateStore`는 `getStoreDetail(storeId, dto.ownerId)`로 소유권을 봤는데,
+`dto.ownerId`를 보내는 쪽이 곧 검사 대상이다. **남의 `ownerId`를 실어 보내면
+검사가 그대로 통과한다.** 삭제는 같은 값이 URL 파라미터에 있었을 뿐이다.
+
+### 결정
+
+**1. 어드민 기능은 만들지 않는다.** 사람 판단이다. 이 프로젝트가 보이려는
+것은 게임이 끝까지 도는 것과 부하·정합성 검증이고, SaaS 쪽은 **기본적인
+테넌트 분리까지**다. 그래서 `PLATFORM_ADMIN`이 남의 상점 콘솔을 열람하는
+경로도, 어드민 화면도, `GET /store`의 전체 조회도 이 티켓에 없다.
+
+이 결정이 하나를 남긴다 — `PLATFORM_ADMIN`은 `@Roles`와 프론트 미들웨어의
+`/stores`에 여전히 들어 있는데 소유자가 아니라 실제로는 전부 403이다.
+**그 어긋남은 그대로 둔다.** 어드민을 만들 때 같이 정할 일이라, 지금
+`@Roles`에서 빼면 어드민을 세우는 쪽이 되돌려야 한다.
+
+**2. 상점 생성·수정·삭제 라우트는 끊는다.** 프론트 호출자가 0개였고 상점은
+시드가 만든다(부하 무대도 데모도 거기서 출발한다). T32가 `createStoreAdmin`에
+한 것과 같은 처리 — **서비스 메서드는 남기고 라우트만 끊는다.** 위의 IDOR 둘이
+경로째 사라진다. 소유권을 `req.user.userId`로 옮겨 라우트를 살려 두는 안도
+있었지만, 아무도 부르지 않는 경로에 검사를 세우는 것은 **지킬 사람이 없는
+규칙을 하나 더 만드는 쪽**이라 접었다.
+
+`UpdateStoreDto.ownerId`는 지웠다. 그 필드가 존재하는 한 다시 여는 사람이
+같은 방식으로 검사를 세운다 — **구조로 막는다.**
+
+**3. 상점 관리자는 게임에 참여하지 않는다.** 사람 판단이다. 백엔드는 이미
+그렇게 되어 있었다 — 참가비 결제(`POST /tournaments/payment`)가
+`@Roles(Role.USER)`이고, 좌석 입장의 자격 증명인 참가 OTP는 그 결제가
+발급한다. **안 막혀 있던 것은 화면이다.** 미들웨어의 `ROLE_RULES`에
+`/tournaments`·`/me`가 없어 상점주가 참가자 화면에 들어간 다음 버튼을
+눌러야 거절당했다. 두 줄을 더해 `USER` 전용으로 좁혔다.
+
+역할 분기로 버튼을 숨기지 않는다는 이 리포의 방식과 어긋나지 않는다 —
+권한의 진실은 여전히 백엔드고, 여기서 막는 것은 **애초에 갈 수 없는 화면**이다.
+
+### 검사가 하나로는 부족했다 — 상점 id가 요청에 두 번 실린다
+
+`createSession`은 상점 id를 `dto.storeId`와 `blindStructure.storeId` 두 곳에서
+받고, `dto.blindId`로 기존 구조를 가리킬 수도 있다. `dto.storeId` 하나만
+확인하면 **두 값이 어긋나는 입력이 그대로 통과한다** — 본인 상점 대회를
+만들면서 블라인드 구조는 남의 상점에 심거나(`blindStructure.storeId`), 남의
+상점 구조를 자기 대회에 붙일 수 있다.
+
+소유권은 `assertStoreOwnership`이 한 번 보고, 나머지 둘은 **같은 상점을
+가리키는지**만 본다. T29에서 배운 것 그대로다 — 검사가 둘이면 **둘이 어긋나는
+입력**이 있어야 각각이 증명된다.
+
+### `assertStoreOwnership`을 따로 둔 이유
+
+`assertTournamentOwnership`은 대회 → 상점 → 소유자로 거슬러 올라간다. 대회가
+아직 없는 자리(생성·목록 조회)에서는 그 길이 없다. 없는 상점을 404로 가르지
+않고 403으로 뭉갠 것은, 여기서는 상점 id가 곧 남의 테넌트를 가리키는 값이라
+응답 차이만으로 실재하는 상점 id를 훑을 수 있어서다.
+
+### 테스트
+
+| 파일 | 계층 | 무엇 |
+|---|---|---|
+| `store/session/tenant-isolation.int-spec.ts` (신규) | 통합 | 상점 A 주인이 B의 상점·대회를 건드리는 다섯 갈래 + 본인 것은 통과하는 대조 셋 |
+| `frontend/src/middleware.test.ts` | 프론트 단위 | 상점주가 `/tournaments`·`/me`에서 404, 참가자는 통과 |
+
+목을 쓰지 않은 이유는 검사의 근거가 DB의 `Store.ownerId` 관계 자체라서다.
+목으로 두면 "무엇을 조회했는가"만 보게 되고 남의 행에 닿는지는 안 본다.
+
+### RED 재현
+
+- **구현 전에 먼저 봤다.** 통합 8건 중 5건이 빨갰다 — 넷은
+  `Received promise resolved instead of rejected`(거부해야 하는데 통과했다),
+  하나는 아직 없는 시그니처에 막혔다. 프론트 2건은 `expected 200 to be 404`.
+- **두 겹치는 검사는 따로 되돌려 확인했다.** `blindStructure.storeId`
+  대조와 `dto.blindId` 대조를 함께 지우면 정확히 그 두 스펙만 빨개진다
+  (2 failed / 6 passed). 소유권 검사 하나로는 못 잡는 입력이라는 증거다.
+
+### 이 티켓이 건드리지 않은 것
+
+- **인증 없는 조회 셋.** 상점 콘솔 상세가 `GET /tournaments/:id` ·
+  `GET /dealer/:id` · `GET /playsync/dashboard/:id`를 **토큰 없이** 부른다.
+  좌석 조회만 Authorization 헤더를 싣는다. 딜러·좌석 단말이 같은 경로를 쓰는
+  구조라 별건이다. `backlog.md`에 적었다.
+- **`GET /store`·`GET /store/:id`.** 소유권 검사가 이미 있고 호출자는 없다.
+
+---
+
 ## T55 — 인원수를 결제가 아니라 착석이 센다
 
 **항목**: `backlog.md`의 T30.

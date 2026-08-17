@@ -21,6 +21,9 @@ import { SessionService } from './session.service';
  * FK 위반을 DB에게 물어보는 게 아니라 애초에 트랜잭션까지 가지 않아야 한다.
  */
 describe('SessionService.createSession', () => {
+  /** 목 상점 `store-1`의 주인. 소유권 검사(T56)를 통과하는 호출자다. */
+  const OWNER = 'owner-1';
+
   const baseDto = (): CreateTournamentDto => ({
     name: '테스트 토너먼트',
     type: GameType.TOURNAMENT,
@@ -52,7 +55,14 @@ describe('SessionService.createSession', () => {
     };
 
     const prisma = {
-      blindStructure: { create: blindCreate },
+      // 소유권 검사(T56)가 보는 두 행. 여기서는 전부 `store-1`을 가리키게
+      // 두어 검사를 통과시킨다 — 어긋나는 입력을 거부하는지는 DB가 있어야
+      // 의미가 있어서 `tenant-isolation.int-spec.ts`가 본다.
+      store: { findUnique: jest.fn().mockResolvedValue({ ownerId: OWNER }) },
+      blindStructure: {
+        create: blindCreate,
+        findUnique: jest.fn().mockResolvedValue({ storeId: 'store-1' }),
+      },
       $transaction: jest.fn((fn: (t: typeof tx) => unknown) => fn(tx)),
     };
     const redis = {
@@ -75,7 +85,7 @@ describe('SessionService.createSession', () => {
   it('기존 블라인드 id를 넘기면 그대로 연결한다', async () => {
     const { service, tournamentCreate } = setup();
 
-    await service.createSession({ ...baseDto(), blindId: 'blind-existing' });
+    await service.createSession({ ...baseDto(), blindId: 'blind-existing' }, OWNER);
 
     expect(tournamentCreate).toHaveBeenCalledTimes(1);
     expect(tournamentCreate.mock.calls[0][0].data.blindId).toBe('blind-existing');
@@ -84,7 +94,7 @@ describe('SessionService.createSession', () => {
   it('블라인드 구조를 넘기면 새로 만들어 연결한다', async () => {
     const { service, tournamentCreate, blindCreate } = setup();
 
-    await service.createSession(baseDto(), blindStructure());
+    await service.createSession(baseDto(), OWNER, blindStructure());
 
     expect(blindCreate).toHaveBeenCalledTimes(1);
     expect(tournamentCreate.mock.calls[0][0].data.blindId).toBe('blind-new');
@@ -98,7 +108,7 @@ describe('SessionService.createSession', () => {
   it('1번 테이블의 빈 스냅샷을 좌석 비트맵과 함께 세운다', async () => {
     const { service, redis } = setup();
 
-    await service.createSession({ ...baseDto(), blindId: 'blind-existing' });
+    await service.createSession({ ...baseDto(), blindId: 'blind-existing' }, OWNER);
 
     expect(redis.setSeatBitmap).toHaveBeenCalledWith('tournament-1', 'table-1');
     expect(redis.saveSnapshotUnlocked).toHaveBeenCalledTimes(1);
@@ -116,7 +126,7 @@ describe('SessionService.createSession', () => {
     // game.blindStructure.structure 접근에서 죽는다 — 참가자가 다 앉은 다음에.
     const { service, prisma, tournamentCreate } = setup();
 
-    await expect(service.createSession(baseDto())).rejects.toThrow();
+    await expect(service.createSession(baseDto(), OWNER)).rejects.toThrow();
 
     expect(prisma.$transaction).not.toHaveBeenCalled();
     expect(tournamentCreate).not.toHaveBeenCalled();
@@ -128,7 +138,7 @@ describe('SessionService.createSession', () => {
     // 프론트도 재시도할 요청과 고쳐서 보낼 요청을 구분할 수 없다.
     const { service } = setup();
 
-    await expect(service.createSession(baseDto())).rejects.toThrow(BadRequestException);
+    await expect(service.createSession(baseDto(), OWNER)).rejects.toThrow(BadRequestException);
   });
 
   describe('상금 분배율', () => {
@@ -138,7 +148,7 @@ describe('SessionService.createSession', () => {
     it('분배율을 그대로 저장한다', async () => {
       const { service, tournamentCreate } = setup();
 
-      await service.createSession({ ...baseDto(), blindId: 'blind-1' });
+      await service.createSession({ ...baseDto(), blindId: 'blind-1' }, OWNER);
 
       expect(tournamentCreate.mock.calls[0][0].data.prizePayouts).toEqual([
         { place: 1, percent: 50 },
@@ -159,7 +169,7 @@ describe('SessionService.createSession', () => {
           { place: 1, percent: 60 },
           { place: 2, percent: 40 },
         ],
-      });
+      }, OWNER);
 
       expect(tournamentCreate.mock.calls[0][0].data.itmCount).toBe(2);
     });
@@ -171,7 +181,7 @@ describe('SessionService.createSession', () => {
         ...baseDto(),
         blindId: 'blind-1',
         prizePayouts: [{ place: 1, percent: 90 }],
-      })).rejects.toThrow(BadRequestException);
+      }, OWNER)).rejects.toThrow(BadRequestException);
 
       expect(prisma.$transaction).not.toHaveBeenCalled();
     });
@@ -185,7 +195,7 @@ describe('SessionService.createSession', () => {
         ...baseDto(),
         blindId: 'blind-1',
         prizePayouts: [],
-      })).rejects.toThrow(BadRequestException);
+      }, OWNER)).rejects.toThrow(BadRequestException);
 
       expect(prisma.$transaction).not.toHaveBeenCalled();
     });
@@ -243,6 +253,9 @@ describe('SessionService HTTP 에러 타입', () => {
 });
 
 describe('SessionService.completeSession — 정산 게이트', () => {
+  /** 목 대회 `t1`이 속한 상점의 주인. 소유권 검사(T56)를 통과하는 호출자다. */
+  const OWNER = 'owner-1';
+
   /**
    * 대회를 닫는 것은 **되돌릴 수 없는 일**이다. 테이블과 딜러 세션을 지우고
    * Redis를 비운다. 그 뒤에는 누가 몇 등이었는지, 얼마를 받아야 했는지
@@ -263,6 +276,9 @@ describe('SessionService.completeSession — 정산 게이트', () => {
           id: 't1',
           status: opts.status ?? TournamentStatus.ONGOING,
           totalBuyinAmount: opts.pool,
+          // 소유권 검사(T56)가 보는 것. 같은 `findUnique` 목이 검사와 본문
+          // 양쪽에 답하므로 두 모양을 한 행에 겹쳐 둔다.
+          store: { ownerId: OWNER },
         }),
         update: jest.fn(),
       },
@@ -287,7 +303,7 @@ describe('SessionService.completeSession — 정산 게이트', () => {
   it('상금이 한 푼도 안 나갔으면 닫지 않는다', async () => {
     const { service, prisma, redis } = setup({ pool: 30000, prizes: [0, 0, 0] });
 
-    await expect(service.completeSession('t1')).rejects.toThrow(ConflictException);
+    await expect(service.completeSession('t1', OWNER)).rejects.toThrow(ConflictException);
 
     expect(prisma.$transaction).not.toHaveBeenCalled();
     expect(redis.deleteTournament).not.toHaveBeenCalled();
@@ -298,14 +314,14 @@ describe('SessionService.completeSession — 정산 게이트', () => {
     // 다시 누르는 것 말고 할 수 있는 일이 없다.
     const { service } = setup({ pool: 30000, prizes: [18000] });
 
-    await expect(service.completeSession('t1')).rejects.toThrow(/12000/);
+    await expect(service.completeSession('t1', OWNER)).rejects.toThrow(/12000/);
   });
 
   it('더 나갔어도 닫지 않는다', async () => {
     // 초과 지급은 부족보다 나쁘다. 이미 나간 돈이라 회수할 근거가 없다.
     const { service, prisma } = setup({ pool: 30000, prizes: [40000] });
 
-    await expect(service.completeSession('t1')).rejects.toThrow(ConflictException);
+    await expect(service.completeSession('t1', OWNER)).rejects.toThrow(ConflictException);
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
@@ -313,7 +329,7 @@ describe('SessionService.completeSession — 정산 게이트', () => {
     // 찹으로 3등분한 대회도 통과해야 한다. 분배율대로인지 묻지 않는다.
     const { service, prisma, redis } = setup({ pool: 30000, prizes: [10000, 10000, 10000] });
 
-    await service.completeSession('t1');
+    await service.completeSession('t1', OWNER);
 
     expect(prisma.$transaction).toHaveBeenCalled();
     expect(redis.deleteTournament).toHaveBeenCalled();
@@ -324,7 +340,7 @@ describe('SessionService.completeSession — 정산 게이트', () => {
       pool: 30000, prizes: [30000], status: TournamentStatus.FINISHED,
     });
 
-    await expect(service.completeSession('t1')).rejects.toThrow(ConflictException);
+    await expect(service.completeSession('t1', OWNER)).rejects.toThrow(ConflictException);
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
@@ -337,7 +353,7 @@ describe('SessionService.completeSession — 정산 게이트', () => {
       prisma as any, {} as any, {} as any, { emit: jest.fn() } as any,
     );
 
-    await expect(service.completeSession('없는-대회')).rejects.toThrow(NotFoundException);
+    await expect(service.completeSession('없는-대회', 'owner-1')).rejects.toThrow(NotFoundException);
   });
 });
 

@@ -91,7 +91,7 @@ describe('SessionService.createSession — OTP 해시 통합', () => {
   });
 
   it('대회를 만들면 평문 OTP는 반환에만 있고 DB에는 해시만 남는다', async () => {
-    const created = await sessionService.createSession(makeCreateDto());
+    const created = await sessionService.createSession(makeCreateDto(), ownerId);
 
     expect(created.dealerOtp).toMatch(/^[0-9]{6}$/);
 
@@ -106,7 +106,7 @@ describe('SessionService.createSession — OTP 해시 통합', () => {
   });
 
   it('대회 조회 응답에는 OTP도 해시도 실리지 않는다', async () => {
-    const created = await sessionService.createSession(makeCreateDto());
+    const created = await sessionService.createSession(makeCreateDto(), ownerId);
 
     const fetched = await sessionService.getGameSession(created.id);
 
@@ -125,7 +125,7 @@ describe('SessionService.createSession — OTP 해시 통합', () => {
    * `createEmptyTableState`로 덮어 주므로 보이지 않는다.
    */
   it('대회를 만들면 1번 테이블의 빈 스냅샷도 함께 선다', async () => {
-    const created = await sessionService.createSession(makeCreateDto());
+    const created = await sessionService.createSession(makeCreateDto(), ownerId);
     const tableId = created.tables[0].id;
 
     const raw = await redis.get(`table:state:${tableId}`);
@@ -148,7 +148,7 @@ describe('SessionService.createSession — OTP 해시 통합', () => {
    */
   describe('쓰기 경로도 해시를 담아 보내지 않는다', () => {
     it('대회 시작 응답에 해시가 없다', async () => {
-      const created = await sessionService.createSession(makeCreateDto());
+      const created = await sessionService.createSession(makeCreateDto(), ownerId);
 
       // 시작 최소 인원 게이트를 우회한다 — 여기서 보는 것은 게임 시작
       // 로직이 아니라 응답에 해시가 실리는지 여부다.
@@ -163,7 +163,7 @@ describe('SessionService.createSession — OTP 해시 통합', () => {
     });
 
     it('대회 수정 응답에 해시가 없다', async () => {
-      const created = await sessionService.createSession(makeCreateDto());
+      const created = await sessionService.createSession(makeCreateDto(), ownerId);
 
       const updated = await sessionService.updateSession(
         created.id,
@@ -178,7 +178,7 @@ describe('SessionService.createSession — OTP 해시 통합', () => {
 
   describe('시작은 참가자 상태를 올리지 않는다', () => {
     it('결제만 한 사람이 WAITING으로 남는다', async () => {
-      const created = await sessionService.createSession(makeCreateDto());
+      const created = await sessionService.createSession(makeCreateDto(), ownerId);
       const noshow = await prisma.user.create({
         data: { nickname: 'noshow', password: 'x' },
       });
@@ -297,7 +297,7 @@ describe('SessionService — 딜러 OTP 재발급과 내보내기', () => {
       rebuyUntil: 5,
       isRegistrationOpen: true,
       prizePayouts: [{ place: 1, percent: 100 }],
-    } as CreateTournamentDto);
+    } as CreateTournamentDto, owner.id);
 
     const table = await prisma.table.findFirstOrThrow({
       where: { tournamentId: created.id },
@@ -1943,7 +1943,7 @@ describe('취소된 대회는 종료된 대회와 같이 막힌다', () => {
 
   it('다시 닫을 수 없다', async () => {
     await expect(
-      sessionService.completeSession(tournamentId),
+      sessionService.completeSession(tournamentId, ownerId),
     ).rejects.toThrow(ConflictException);
   });
 
