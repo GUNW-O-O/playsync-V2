@@ -1,5 +1,6 @@
 import { sleep } from 'k6';
 import exec from 'k6/execution';
+import { SharedArray } from 'k6/data';
 import { Counter, Trend } from 'k6/metrics';
 import { createTableWithRetry, login, startTournament } from '../lib/api.js';
 import { sample, stepLabel as monitorLabel } from '../lib/monitor.js';
@@ -21,7 +22,23 @@ import { runHands, seatPlayers } from '../lib/table.js';
  *                                  ("홀덤펍이 하나 더 생겼다")
  */
 
-const manifest = JSON.parse(open('/load/.load-seed.json'));
+/**
+ * 매니페스트는 `SharedArray`로 읽는다 — **VU마다 파싱하면 측정기가 피측정자를
+ * 굶긴다.**
+ *
+ * 평범한 `JSON.parse(open(...))`은 init 컨텍스트에 있어 VU 하나마다 다시
+ * 돈다. 상점 170개짜리 매니페스트가 42KB인데 VU가 660이면 파싱이 660번이고,
+ * 실측에서 k6가 램프 첫 10초 동안 코어 19개 분량을 먹었다. 호스트가 포화되면
+ * 백엔드의 `cpus: 1`은 **상한일 뿐 하한이 아니라서** 서버 이벤트 루프 지연이
+ * 12테이블에서 180ms까지 올라갔고 붕괴 판정이 걸려 실행이 죽었다 — 서버는
+ * 그 순간 CPU 10%였다.
+ *
+ * `SharedArray`는 배열만 담으므로 객체 하나를 원소로 감싼다. 읽기 전용이라
+ * 매니페스트에 맞는다.
+ */
+const manifest = new SharedArray('load-seed', () => [
+  JSON.parse(open('/load/.load-seed.json')),
+])[0];
 
 const SEAT_COUNT = 9;
 const START_TABLES = Number(__ENV.LOAD_START_TABLES || 6);
@@ -37,6 +54,17 @@ const STEP_TABLES = Number(__ENV.LOAD_STEP_TABLES || 6);
 const MAX_TABLES = Number(__ENV.LOAD_MAX_TABLES || 66);
 /** 한 단계를 늘리는 데 주는 시간. 증설 자체가 몰림이라 짧을수록 험한 부하다. */
 const GROW_S = Number(__ENV.LOAD_GROW_S || 30);
+/**
+ * **첫 단계에만 주는 증설 시간.** 미설정이면 `GROW_S`와 같다.
+ *
+ * 이미 통과한 규모를 출발선으로 삼을 때 필요하다. `LOAD_START_TABLES`가 크면
+ * 첫 단계 하나가 나머지 단계 전부보다 많은 사람을 앉히는데(330테이블 =
+ * 2,970명), 단계마다 같은 시간을 주면 첫 단계의 **도착률만 몇 배**가 된다 —
+ * 그리고 실측에서 무너지는 것은 언제나 도착이지 동시접속이 아니다
+ * (`docs/results/2026-08-15-load-ramp.md`의 "벽은 동시접속이 아니라 도착이다").
+ * 출발선을 옮기려다 재려던 것과 다른 것을 재게 된다.
+ */
+const START_GROW_S = Number(__ENV.LOAD_START_GROW_S || GROW_S);
 /** 고원. 핸드 하나가 약 2분이라 그보다 짧으면 딜링 대기만 잡는 단계가 생긴다. */
 const STEADY_S = Number(__ENV.LOAD_STEADY_S || 180);
 /** 0이면 램프 B(전부 한 대회). 6이면 램프 A. */
@@ -67,7 +95,8 @@ export const tableSetupMs = new Trend('table_setup_ms', true);
 function stages() {
   const out = [];
   for (let n = START_TABLES; n <= MAX_TABLES; n += STEP_TABLES) {
-    out.push({ target: n, duration: `${GROW_S}s` });
+    const grow = n === START_TABLES ? START_GROW_S : GROW_S;
+    out.push({ target: n, duration: `${grow}s` });
     out.push({ target: n, duration: `${STEADY_S}s` });
   }
   return out;
