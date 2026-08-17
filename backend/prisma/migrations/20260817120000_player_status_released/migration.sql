@@ -1,0 +1,11 @@
+-- 좌석이 해제된 참가자의 상태를 따로 만든다(T55).
+--
+-- 그 전에는 해제(`releaseSeats`)가 `PLAYING`을 `WAITING`으로 되돌렸다. 그래서
+-- **결제만 하고 한 번도 안 앉은 사람(노쇼)과 앉았다가 뗀 사람이 같은 값**이
+-- 됐고, `Tournament.activePlayers`가 셀 대상을 상태만으로 고를 수 없었다.
+-- RELEASED는 "살아 있고 칩도 있는데 지금 자리에 없다"는 뜻이다.
+--
+-- ALTER TYPE ... ADD VALUE는 PostgreSQL 12부터 트랜잭션 안에서 돌 수 있다.
+-- 추가한 값을 같은 트랜잭션에서 쓸 수 없다는 제약이 있는데, 이 마이그레이션은
+-- 값을 쓰지 않으므로 걸리지 않는다.
+ALTER TYPE "PlayerStatus" ADD VALUE 'RELEASED';

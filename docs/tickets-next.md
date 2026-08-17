@@ -2689,6 +2689,123 @@ e2e 13 / 타입 에러 0.
 
 ---
 
+## T55 — 인원수를 결제가 아니라 착석이 센다
+
+**항목**: `backlog.md`의 T30.
+**범위**: `schema.prisma`(enum 값 하나) · 마이그레이션 · `player-status.ts`(신규) ·
+`payment.service.ts` · `entry.service.ts` · `redis.service.ts` ·
+`session.service.ts`의 `releaseSeats` · `playsync.service.ts`의
+`tournamentFinished` · `dealer.service.ts`의 `loginDealer` · 스펙들.
+**프론트 영향**: 없다. 마이페이지가 끝난 상태를 **배제 목록**으로 고르고
+있어서(`ELIMINATED`·`AWARDED`) 새 상태가 자동으로 "진행 중"에 들어간다.
+**끝났다고 하는 기준**: 노쇼가 있어도 최후 1인 판정이 걸린다.
+
+### 문제 — 세는 집합과 빼는 집합이 달랐다
+
+`Tournament.activePlayers`가 **결제에서 늘고 착석 기반 탈락에서 줄었다.**
+한 명이라도 끝내 안 오면 카운터가 영구히 실제보다 크게 남아
+`activePlayerCount <= 1`이 성립하지 않는다 — **우승 상금이 자동으로 나가지
+않고** 상점이 `completeSession`으로 손수 닫아야 한다.
+
+방침은 사람이 정했다: **`activePlayers`가 세는 것은 지금 대회에 살아 있는
+사람이다.** 결제한 사람 수가 필요하면 그건 이미 따로 있다 — `totalPlayers`와
+`totalBuyinAmount`가 바이인의 횟수와 금액을 든다. **두 축을 한 카운터에 섞고
+있던 것이 이 결함의 실체다.**
+
+### 막힌 자리 — 노쇼와 해제된 사람이 같은 상태였다
+
+착수하자마자 걸렸다. `releaseSeats`(T29)가 좌석을 떼면서 상태를
+`PLAYING` → `WAITING`으로 되돌린다. 그래서 상태만으로는 이 둘이 구별되지 않았다.
+
+```
+노쇼       : 결제만 함        → WAITING
+해제된 사람 : 앉았다가 뗌      → WAITING   ← 살아 있고 칩도 있다
+```
+
+`currentStack`도 못 가른다 — 결제 시점에 `startStack`이 이미 박힌다.
+
+**`PlayerStatus`에 `RELEASED`를 더했다.** 세 선택지 중 이것을 고른 이유:
+
+| | 왜 아닌가 |
+|---|---|
+| `seatedAt` 컬럼 추가 | 카운터 조건이 컬럼과 상태 두 곳에 걸린다 |
+| 해제가 상태를 안 되돌린다(`PLAYING` 유지) | "PLAYING인데 자리 없음"이라 이름과 사실이 어긋나고, T29의 결정을 뒤집는다 |
+
+`RELEASED`는 뜻이 스키마에 드러나고, 카운터 증감이 **상태 전이 하나**로
+떨어진다 — 첫 착석만 +1, 재착석(`RELEASED` → `PLAYING`)은 0.
+
+**enum 값을 늘리는 대가**는 이 리포가 이미 아는 것이다("상태를 나열해서
+살아있는 것만 고르면, 나중에 상태가 하나 늘 때 조용히 빠진다" — `SYNCING`이
+그랬다). 그래서 제품 코드의 상태 열거 아홉 곳을 전수로 봤고, 판정을
+`store/session/player-status.ts` 한 곳에 모았다. `LIVE_PLAYER_STATUSES`가
+인원이 세는 집합이고, `FINISHED_PLAYER_STATUSES`는 **배제 목록**이다 — 새
+상태가 생기면 기본이 "아직 안 끝났다"가 되어야 상금·재입장 경로가 사람을 잃지
+않는다.
+
+### 카운터가 움직이는 자리
+
+| | DB | Redis |
+|---|---|---|
+| 결제 | `totalPlayers`·`totalBuyinAmount`만 | `totalPlayer`·`totalBuyinAmount`만 |
+| **첫 착석** | `activePlayers` +1 | `activePlayer` +1, 평균 스택 재계산 |
+| 재착석 | 0 | 0 |
+| 좌석 해제 | 0 (`RELEASED`는 살아 있다) | 0 |
+| 탈락·킥 | 바뀐 행 수만큼 −1 | 같은 수만큼 −1 |
+
+`update`가 아니라 **`WAITING` 조건을 건 `updateMany`**로 올린다. "몇 명이
+실제로 올라갔는가"가 카운터의 입력이라야 재착석이 두 번 세지 않는다 — 탈락이
+`changed.count`로 줄이는 것과 같은 모양이고 같은 이유(멱등)다.
+
+승격 지점이 하나가 아니라는 것도 이번에 드러났다. `DealerService.loginDealer`가
+그 테이블의 `WAITING`을 `PLAYING`으로 올리는 코드를 아직 갖고 있다(T28 이후로는
+평소 0행인 보정 경로다). 카운터를 착석 한 곳에만 붙였으면 이 경로로 올라간
+사람이 영영 안 세어져 **최후 1인 판정이 실제보다 일찍** 걸렸다.
+
+`tournamentFinished`의 우승자 조회도 `PLAYING` 하나에서
+`LIVE_PLAYER_STATUSES`로 넓혔다. 쉬는 시간에 좌석이 해제된 채 마지막 탈락이
+나면 우승자를 못 찾아 던진다.
+
+### RED 재현
+
+새 시나리오(`scenario/no-show.int-spec.ts`) 여섯 단계 중 넷이 빨갰다.
+
+| 검사 | expected / received |
+|---|---|
+| 결제는 인원수를 올리지 않는다 | `앉은 2 / 결제 3` / `앉은 3 / 결제 3` |
+| 전광판 카운터도 같은 값 | `전광판 2명` / `전광판 3명` |
+| 앉은 사람이 하나 남으면 자동으로 우승 상금 | `AWARDED 1위 3000원` / `PLAYING null위 0원` |
+| 정산 게이트가 닫힌다 | resolve / reject |
+
+세 번째가 이 티켓의 그림이다 — **노쇼 하나 때문에 대회가 스스로 닫히지
+않는다.** 구현 뒤 초록을 본 다음, 제품 코드 여섯 파일만
+`git stash`하고 같은 넷이 다시 빨개지는 것을 확인했다(테스트를 도중에 한 번
+고쳤기 때문이다 — `eliminatePlayer`의 `players[].id`는 좌석 행 id가 아니라
+userId다).
+
+### 스스로 만든 회귀 하나
+
+Redis 카운터 올리기를 **DB 커밋과 스냅샷 쓰기 사이**에 넣었더니 동시 착석
+스펙이 빨개졌다(`다른 좌석에 동시에 앉으면 서로를 지우지 않는다`). 그 구간이
+곧 "좌석 행은 있는데 스냅샷이 없다"는 창이고, `shouldBlockEmptySnapshot`이
+그것을 보고 409를 던진다 — Redis 왕복 하나가 창을 넓혀 동시에 들어온 다음
+사람이 복구 중이라는 안내를 받았다. 스냅샷을 쓴 **뒤로** 옮겼다.
+
+### 마이그레이션에서 만난 것
+
+`prisma migrate dev`가 **체크섬 검증**으로 멈췄다 —
+`20260729114800_add_tableplayer_tournament_user_unique`가 적용 뒤에 수정된
+파일이라(T28에서 주석을 고쳤다) 개발 DB 리셋을 요구했다. `backlog.md`의
+가드레일이 "버전이 올라가 체크섬 검증이 들어오면 그날부터 깨진다"고 적어 둔
+바로 그 상황이다. 마이그레이션 파일을 손으로 쓰고 `migrate deploy`로 적용해
+개발 DB를 지키지 않고 넘어갔다 — `deploy`는 체크섬을 보지 않는다.
+
+### 기준선
+
+통합 403 → **409**(29 → **30** suites). 백엔드 단위 208 · contract 62 ·
+프론트 114 · e2e 13 · 타입 에러 0 그대로.
+
+---
+
 ## T54 — 쿠키 수명을 토큰에서 뽑는다
 
 **항목**: T53을 닫고 남은 것을 훑다가 **새로 찾았다.** `backlog.md`의 T24 이월

@@ -1079,7 +1079,9 @@ describe('SessionService.releaseSeats', () => {
     const bitmap = await redis.hget(`tournament:${tournamentId}:seat`, `table:${tableId}`);
 
     expect(`좌석행 ${rows} / 상태 ${p.status} / 칩 ${p.currentStack} / 스냅샷 ${state.players[3] === null ? '빔' : '있음'} / 비트 ${bitmap![3]}`)
-      .toBe('좌석행 0 / 상태 WAITING / 칩 23400 / 스냅샷 빔 / 비트 0');
+      // 상태가 `WAITING`이 아니라 `RELEASED`다(T55). `WAITING`은 "한 번도 안
+      // 앉았다"는 뜻이라, 해제된 사람을 거기로 되돌리면 노쇼와 구별되지 않는다.
+      .toBe('좌석행 0 / 상태 RELEASED / 칩 23400 / 스냅샷 빔 / 비트 0');
   });
 
   it('해제한 테이블에 새 스냅샷을 알린다', async () => {
@@ -1151,7 +1153,7 @@ describe('SessionService.releaseSeats', () => {
     expect(
       `좌석행 ${rows} / 상태 ${p1.status}·${p2.status} / 칩 ${p1.currentStack}·${p2.currentStack} / `
       + `비트 ${bitmap![3]}${bitmap![5]} / 컨텍스트 ${ctx1 === null ? '없음' : '있음'}·${ctx2 === null ? '없음' : '있음'}`
-    ).toBe('좌석행 0 / 상태 WAITING·WAITING / 칩 23400·17700 / 비트 00 / 컨텍스트 없음·없음');
+    ).toBe('좌석행 0 / 상태 RELEASED·RELEASED / 칩 23400·17700 / 비트 00 / 컨텍스트 없음·없음');
   });
 
   it('핸드 중에는 409고 아무것도 바뀌지 않는다', async () => {

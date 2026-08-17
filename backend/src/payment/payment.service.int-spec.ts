@@ -157,8 +157,11 @@ describe('PaymentService — 참가 OTP 발급', () => {
     // 대회 집계도 마찬가지로 시도 횟수가 아니라 성공한 참가 한 건만큼만 는다.
     const afterTournament = await prisma.tournament.findUniqueOrThrow({ where: { id: TOURNAMENT } });
     expect(afterTournament.totalPlayers).toBe(beforeTournament.totalPlayers + 1);
-    expect(afterTournament.activePlayers).toBe(beforeTournament.activePlayers + 1);
     expect(afterTournament.totalBuyinAmount).toBe(beforeTournament.totalBuyinAmount + 1000);
+    // **결제는 `activePlayers`를 건드리지 않는다**(T55). 그 카운터가 세는 것은
+    // 지금 살아 있는 사람이고, 올리는 것은 첫 착석이다 — 여기서 오르면 끝내
+    // 안 온 사람이 최후 1인 판정을 영영 막는다.
+    expect(afterTournament.activePlayers).toBe(beforeTournament.activePlayers);
 
     // 참가 행도 재시도로 실패한 첫 시도의 잔해 없이 정확히 하나다. 착석은
     // 이제 결제와 무관하다(T28) — 여기서 TablePlayer를 세지 않는다.
