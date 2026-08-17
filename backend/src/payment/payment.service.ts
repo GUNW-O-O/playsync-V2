@@ -87,25 +87,19 @@ export class PaymentService {
       },
     });
     if (!tournament) throw new ConflictException('잘못된 세션 ID 입니다.');
-    let seatStatus = await this.redisService.getTournamentTables(tournamentId);
-    if (!seatStatus || seatStatus.length === 0) {
-      const session = await this.prismaService.tournament.findUnique({
-        where: { id: tournamentId },
-        include: {
-          tables: true
-        }
-      });
-      if (!session) throw new ConflictException('잘못된 세션 ID 입니다.');
-      // `!session.tables`로는 빈 배열을 걸러내지 못한다 — `[]`는 truthy라
-      // 그대로 통과한 뒤 `tables[0].id`에서 TypeError로 죽었다. 대회를 보고
-      // 있는 참가자 전원이 500을 본다. 테이블이 하나도 없는 상태는 실제로
-      // 생긴다: `completeSession`이 대회를 닫으며 전부 지운 경우다.
-      // 되살릴 대상이 없을 뿐이므로 거부가 아니라 그냥 건너뛴다.
-      if (session.totalPlayers === 0 && session.tables.length > 0) {
-        await this.redisService.setSeatBitmap(tournamentId, session.tables[0].id);
-      }
-      // TODO : 다중 테이블 기능 개발시 유저자리 매핑하는로직
-    }
+    // **읽기 경로는 읽기만 한다.** 예전에는 좌석 해시가 비어 있으면 여기서
+    // `tables[0]`의 비트맵을 다시 세웠다. 셋 다 틀린 일이었다.
+    //
+    // - 되살리는 대상이 0번 하나뿐이라, 테이블이 셋이면 둘은 없는 채로 남는다.
+    //   유실도 정상도 아닌 세 번째 모양이 Redis에 남아 다음에 읽는 코드가
+    //   무엇을 믿을지 정할 수 없게 된다.
+    // - 되살린 값을 응답에 반영하지도 않았다. 이 함수가 돌려주는 `seatStatus`는
+    //   그 위에서 이미 읽은 것이라 그대로 빈 배열이다 — 부르는 쪽이 얻는 것이
+    //   없는 순수한 부수효과였다.
+    // - 유실을 되세우는 권위는 `RecoveryService.recoverTournament`(T46) 하나다.
+    //   그쪽은 좌석 행이 있는 테이블 **전부**를 스냅샷 기준으로 세운다.
+    //   가드 없는 공개 조회가 두 번째 권위가 되면 둘이 어긋난다.
+    const seatStatus = await this.redisService.getTournamentTables(tournamentId);
     return { tournament, seatStatus };
   }
 

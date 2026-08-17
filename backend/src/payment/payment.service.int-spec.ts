@@ -251,8 +251,15 @@ describe('PaymentService — 참가 OTP 발급', () => {
  * 그 대회를 보고 있는 참가자 전원에게 500이 된다.
  *
  * 테이블 0개는 실제로 생긴다 — `completeSession`이 대회를 닫으며 전부 지운다.
+ *
+ * T52. **그 재구성 자체를 걷어냈다.** 되살리는 대상이 `tables[0]` 하나뿐이라
+ * 테이블이 셋이면 둘은 비트맵 없이 남았고, 게다가 되살린 값을 응답의
+ * `seatStatus`에 반영하지도 않았다(`let`으로 받아 놓고 다시 읽지 않는다) —
+ * 부르는 쪽이 얻는 것이 없는 순수한 부수효과였다. 유실을 되세우는 권위는
+ * `RecoveryService.recoverTournament`(T46) 하나다. 아래 스펙은 그 경계를
+ * 지킨다: **읽기 경로는 읽기만 한다.**
  */
-describe('PaymentService.getTournamentInfo — 테이블이 없는 대회', () => {
+describe('PaymentService.getTournamentInfo — 좌석 비트맵이 빈 대회', () => {
   let redis: Redis;
   let redisService: RedisService;
 
@@ -294,13 +301,28 @@ describe('PaymentService.getTournamentInfo — 테이블이 없는 대회', () =
     expect(`좌석 목록 ${info.seatStatus.length}개`).toBe('좌석 목록 0개');
   });
 
-  it('테이블이 있으면 예전처럼 비트맵을 되살린다', async () => {
+  it('비트맵이 비어도 읽기 경로는 Redis에 쓰지 않는다', async () => {
     const service = makeService([{ id: 'table-a' }], 0);
 
     await service.getTournamentInfo(TOURNAMENT);
 
-    expect(await redis.hget(`tournament:${TOURNAMENT}:seat`, 'table:table-a'))
-      .toBe('000000000');
+    const fields = await redis.hkeys(`tournament:${TOURNAMENT}:seat`);
+    expect(`남긴 필드 ${fields.length}개`).toBe('남긴 필드 0개');
+  });
+
+  /**
+   * 부분 재구성이 왜 위험한지 그대로 드러나는 자리. 예전 코드가 남기던 것은
+   * "테이블 셋 중 1번만 있는 좌석 해시"였다 — 유실도 정상도 아닌 세 번째
+   * 모양이라, 다음에 읽는 코드가 무엇을 믿어야 할지 정할 수 없다.
+   */
+  it('테이블이 셋이어도 1번만 되살아나는 반쪽 상태를 만들지 않는다', async () => {
+    const service = makeService([{ id: 'table-a' }, { id: 'table-b' }, { id: 'table-c' }], 0);
+
+    const info = await service.getTournamentInfo(TOURNAMENT);
+
+    const fields = await redis.hkeys(`tournament:${TOURNAMENT}:seat`);
+    expect(`필드 ${fields.length}개 / 응답 좌석 ${info.seatStatus.length}개`)
+      .toBe('필드 0개 / 응답 좌석 0개');
   });
 });
 

@@ -308,9 +308,13 @@ export class SessionService {
       }
 
       // 마지막 하나는 남긴다. 대회는 테이블이 최소 하나 있다는 전제 위에 서
-      // 있다 — `createSession`이 1번을 함께 만들고, `payment.service.ts`의
-      // `getTournamentInfo`는 비트맵이 비었을 때 `tables[0]`으로 복구한다.
-      // 전부 지우면 그 경로가 빈 배열의 0번을 읽어 참가자 화면이 500이 된다.
+      // 있다 — `createSession`이 1번을 함께 만들고, 참가자는 좌석 목록에서
+      // 자리를 고른다. 테이블이 0개인 대회는 열려 있는데 아무도 앉을 수 없는
+      // 상태이고, 다시 여는 길은 상점 콘솔의 테이블 추가뿐이다.
+      //
+      // 예전에는 여기 근거로 `getTournamentInfo`가 `tables[0]`을 읽어 500을
+      // 낸다고 적혀 있었다. 그 경로는 T52에서 통째로 사라졌다(읽기 경로는
+      // 비트맵을 되살리지 않는다). 근거는 바뀌었지만 규칙은 남는다.
       const remaining = await tx.table.count({ where: { tournamentId } });
       if (remaining <= 1) {
         throw new ConflictException('대회의 마지막 테이블은 삭제할 수 없습니다.');
