@@ -567,12 +567,35 @@ scenario/full-flow.int-spec.ts        참가 전후 포인트 총합 일치
   이제 `USER`만 만들고, `STORE_ADMIN`은 시드(`backend/prisma/seed.ts`)가
   발급한다 — SaaS라면 플랫폼의 온보딩 화면이 설 자리이고 그 화면은 범위 밖이다.
   `createStoreAdmin` 자체는 남았다(라우트만 끊었다).
-- **`POST /store` 가드가 `STORE_ADMIN`을 허용한다.** SaaS라면 `PLATFORM_ADMIN`
-  전용이어야 한다. 게다가 `req.user.userId`를 소유자로 박으므로 어드민이 만들면
-  어드민이 소유자가 된다.
-- **`GET /store`가 소유자 기준이다**(`getUserStores(req.user.userId)`).
-  어드민이 전체 상점을 보는 경로가 없다.
+- ~~**`POST /store` 가드가 `STORE_ADMIN`을 허용한다.**~~ **해결(T56).**
+  생성·수정·삭제 라우트를 끊었다. 상점은 시드가 만들고 프론트 호출자는 0개였다 —
+  T32가 `createStoreAdmin`에 한 것과 같이 서비스 메서드는 남기고 라우트만
+  끊었다. 같이 닫힌 것이 둘 더 있다: `PUT :id`가 소유자를 요청 본문
+  (`dto.ownerId`)에서, `DELETE :ownerId/:id`가 URL 파라미터에서 뽑아 **그 값끼리**
+  비교했다 — 남의 `ownerId`를 실어 보내면 통과했다.
+- ~~**`GET /store`가 소유자 기준이다**~~ **판단으로 닫음(T56).** 어드민이
+  전체 상점을 보는 경로는 만들지 않는다. **어드민 기능 자체가 범위 밖**이라는
+  사람 판단이다 — 이 프로젝트가 보이려는 것은 게임 완주와 부하·정합성 검증이고,
+  SaaS 쪽은 기본적인 테넌트 분리까지다.
+- **`PLATFORM_ADMIN`이 `@Roles`에 남아 있지만 실제로는 전부 403이다.** 위
+  판단의 결과다. 소유자가 아니므로 상점 콘솔의 어떤 조회·조작도 통과하지
+  못하는데, 백엔드 `@Roles`와 프론트 미들웨어 `/stores`에는 들어 있다.
+  어드민을 세울 때 같이 정한다 — 지금 빼면 그쪽이 되돌려야 한다.
 - 나머지 미정 8개는 화면 목록 문서의 "백엔드 미정" 표에 있다.
+
+**T56이 여기서 함께 닫은 것 — 테넌트 분리.** B6이 적어 두지 않았던 자리다.
+소유권 검사가 **아예 없는** 서비스 메서드가 셋 있었다: `createSession`
+(남의 상점에 대회 생성), `getStoreAllSessions`(남의 상점 대회 목록 열람),
+`completeSession`(남의 대회 종료·정산 확정). 셋 다 대회 id가 아니라 상점 id를
+받거나 호출자를 아예 받지 않아서 T50의 소유권 정리에 걸리지 않았다. 판단
+근거와 RED 재현은 `tickets-next.md`의 T56에 있다.
+
+**T56이 남긴 것 — 인증 없는 조회 셋.** 상점 콘솔 상세
+(`(console)/stores/[storeId]/tournaments/[tournamentId]/page.tsx`)가
+`GET /tournaments/:id` · `GET /dealer/:id` · `GET /playsync/dashboard/:id`를
+**토큰 없이** 부른다. 좌석 조회만 Authorization 헤더를 싣는다. 딜러 단말과
+좌석 태블릿이 같은 경로를 OTP 자격으로 쓰고 있어서, 막으려면 그 두 단말의
+진입 경로를 같이 봐야 한다 — 별건이다.
 
 ## B7 — 프론트 재구성
 

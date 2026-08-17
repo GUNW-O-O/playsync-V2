@@ -81,7 +81,9 @@ export class SessionService {
   }
 
   // 해당 매장의 전체 토너먼트 정보
-  async getStoreAllSessions(storeId: string) {
+  async getStoreAllSessions(storeId: string, ownerId: string) {
+    await this.assertStoreOwnership(storeId, ownerId);
+
     return await this.prismaService.tournament.findMany({
       where: {
         storeId: storeId,
@@ -103,7 +105,16 @@ export class SessionService {
     return blind;
   }
 
-  async createSession(dto: CreateTournamentDto, blindStructure?: CreateBlindStructureDto) {
+  async createSession(
+    dto: CreateTournamentDto,
+    ownerId: string,
+    blindStructure?: CreateBlindStructureDto,
+  ) {
+    // 대회가 어느 상점에 속하는지는 요청이 정한다(`dto.storeId`). 그래서
+    // 여기서 묻지 않으면 상점주 아무나 남의 상점에 대회를 세울 수 있다 —
+    // 그 대회의 참가비와 상금은 남의 상점 장부에 얹힌다.
+    await this.assertStoreOwnership(dto.storeId, ownerId);
+
     // blindId와 blindStructure 둘 다 선택 인자라 "아무것도 안 넘긴" 호출이
     // 타입상 합법이다. 예전에는 그때 자리 채우기용 문자열이 FK로 들어갔고,
     // 운이 좋으면 외래키 에러로 즉시 죽고 운이 나쁘면 생성만 성공한 뒤
@@ -111,6 +122,25 @@ export class SessionService {
     // 다 앉은 다음에. 기본값을 고치는 대신 입구에서 거부한다.
     if (!dto.blindId && !blindStructure) {
       throw new BadRequestException('블라인드 구조 정보가 필요합니다.');
+    }
+
+    // **상점 id가 요청에 두 번 실린다.** `dto.storeId`만 확인하면 나머지
+    // 하나가 그대로 통과한다 — 본인 상점 대회를 만들면서 블라인드 구조는
+    // 남의 상점에 심거나(아래 create의 storeId), 남의 상점 구조를 자기 대회에
+    // 붙일 수 있다. 소유권은 위에서 한 번 봤으므로 여기서는 **두 값이 같은
+    // 상점을 가리키는지**만 본다.
+    if (blindStructure && blindStructure.storeId !== dto.storeId) {
+      throw new ForbiddenException('본인의 매장이 아닙니다.');
+    }
+    if (dto.blindId) {
+      const blind = await this.prismaService.blindStructure.findUnique({
+        where: { id: dto.blindId },
+        select: { storeId: true },
+      });
+      if (!blind) throw new NotFoundException('블라인드 구조를 찾을 수 없습니다.');
+      if (blind.storeId !== dto.storeId) {
+        throw new ForbiddenException('본인의 매장이 아닙니다.');
+      }
     }
 
     // dto.blindId(기존 구조 재사용)가 우선이고, 없을 때만 새로 만든다.
@@ -553,7 +583,11 @@ export class SessionService {
    * 나오기 전에 관리자가 정산할 수 있어야 한다. 이 게이트는 그 자유를 막지
    * 않는다 — 어떻게 나눴든 합만 맞으면 통과한다.
    */
-  async completeSession(id: string) {
+  async completeSession(id: string, ownerId: string) {
+    // 종료는 대회를 닫고 정산을 확정하는 자리다. 다른 운영 조작과 같은 문을
+    // 쓴다 — 남의 대회를 끝낼 수 있으면 그 상점의 장부가 남의 손에 닫힌다.
+    await this.assertTournamentOwnership(id, ownerId);
+
     const tournament = await this.prismaService.tournament.findUnique({
       where: { id },
     });
@@ -741,8 +775,8 @@ export class SessionService {
    * `PATCH /store/sessions/:id`(`updateSession`)에는 이 검사가 없었다. T23이
    * "별도 항목"으로 미뤄 둔 것을 T50이 닫았고, 지금은 운영 조작 여섯 곳
    * (`createTable` · `deleteTable` · `releaseSeats` · `startSession` ·
-   * `cancelSession` · `updateSession`)과 재발급 · 내보내기 · 좌석 조회가
-   * 전부 이 함수를 첫 문장으로 부른다.
+   * `cancelSession` · `updateSession`)과 재발급 · 내보내기 · 좌석 조회 ·
+   * 종료(`completeSession`)가 전부 이 함수를 첫 문장으로 부른다.
    */
   async assertTournamentOwnership(tournamentId: string, ownerId: string): Promise<void> {
     const tournament = await this.prismaService.tournament.findUnique({
@@ -751,6 +785,28 @@ export class SessionService {
     });
     if (!tournament) throw new NotFoundException('세션을 찾을 수 없습니다.');
     if (tournament.store.ownerId !== ownerId) {
+      throw new ForbiddenException('본인의 매장이 아닙니다.');
+    }
+  }
+
+  /**
+   * 매장 소유권 확인.
+   *
+   * `assertTournamentOwnership`과 같은 일을 하되 **대회가 아직 없는 자리**에
+   * 쓴다 — 대회 생성(`createSession`)과 목록 조회(`getStoreAllSessions`)다.
+   * 이 둘은 대회 id가 아니라 상점 id를 요청에서 받으므로 대회를 거쳐 소유자를
+   * 찾을 수가 없다.
+   *
+   * 없는 상점을 404로 가르지 않고 403으로 뭉갠다. 대회 쪽과 달리 여기서는
+   * 상점 id가 곧 남의 테넌트를 가리키는 값이고, 404와 403이 갈리면 그 응답
+   * 차이만으로 어떤 상점 id가 실재하는지 훑을 수 있다.
+   */
+  private async assertStoreOwnership(storeId: string, ownerId: string): Promise<void> {
+    const store = await this.prismaService.store.findUnique({
+      where: { id: storeId },
+      select: { ownerId: true },
+    });
+    if (!store || store.ownerId !== ownerId) {
       throw new ForbiddenException('본인의 매장이 아닙니다.');
     }
   }

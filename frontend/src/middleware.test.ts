@@ -86,6 +86,23 @@ describe('역할 가드', () => {
     expectPass(middleware(request('/tournaments', 'USER')));
   });
 
+  it('일반 유저는 내 참가 목록을 통과한다', () => {
+    expectPass(middleware(request('/me', 'USER')));
+  });
+
+  // 상점 관리자는 상점 페이지를 관리하는 계정이지 참가자가 아니다. 백엔드는
+  // 이미 그렇게 되어 있다 — 참가비 결제(`POST /tournaments/payment`)가
+  // `@Roles(Role.USER)`이고, 좌석 입장의 자격 증명인 참가 OTP는 그 결제가
+  // 발급한다. 화면만 열려 있어서 상점주가 참가자 화면에 들어간 뒤 버튼을
+  // 눌러야 거절당했다.
+  it('상점주는 모바일 화면에 접근하면 404', () => {
+    expect(middleware(request('/tournaments', 'STORE_ADMIN')).status).toBe(404);
+  });
+
+  it('상점주는 내 참가 목록에 접근하면 404', () => {
+    expect(middleware(request('/me', 'STORE_ADMIN')).status).toBe(404);
+  });
+
   // 예전에는 빈 본문 404를 그대로 내보내 백지가 떴다. 상태 코드가 404라
   // 정보 노출 요건(그 자원이 존재한다는 사실을 숨긴다)은 이미 충족했으므로
   // 상태 코드는 그대로 두고 본문만 채운다.

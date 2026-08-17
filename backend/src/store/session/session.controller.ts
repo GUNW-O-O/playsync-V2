@@ -14,14 +14,22 @@ import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 export class SessionController {
   constructor(private readonly sessionService: SessionService) {}
 
+  // 생성·목록은 대회가 아니라 **상점**을 가리키는 경로라 소유권의 근거가
+  // `dto.storeId`/`:storeId`다. 그 값을 그대로 믿으면 다른 상점 관리자가
+  // 남의 상점에 대회를 세우고 남의 대회 목록을 읽는다 — 확인은 다른 운영
+  // 조작과 같은 자리, 서비스 메서드 안(`assertStoreOwnership`)이다.
   @Post()
-  async create(@Body('dto') dto: CreateTournamentDto, @Body('blindStructure') blindStructure?: any) {
-    return await this.sessionService.createSession(dto, blindStructure);
+  async create(
+    @Req() req,
+    @Body('dto') dto: CreateTournamentDto,
+    @Body('blindStructure') blindStructure?: any,
+  ) {
+    return await this.sessionService.createSession(dto, req.user.userId, blindStructure);
   }
 
   @Get(':storeId')
-  async findAll(@Param('storeId') storeId: string) {
-    return await this.sessionService.getStoreAllSessions(storeId);
+  async findAll(@Req() req, @Param('storeId') storeId: string) {
+    return await this.sessionService.getStoreAllSessions(storeId, req.user.userId);
   }
 
   // 수정도 남의 대회를 건드릴 수 없어야 한다. 참가비·시작 스택·블라인드
@@ -40,9 +48,11 @@ export class SessionController {
     return await this.sessionService.startSession(id, req.user.userId);
   }
 
+  // 종료도 남의 대회를 건드릴 수 없어야 한다 — 대회를 닫고 정산을 확정한다.
+  // 소유권 확인은 다른 운영 조작과 같은 자리, 서비스 메서드 안이다.
   @Patch(':id/complete')
-  async complete(@Param('id') id: string) {
-    return await this.sessionService.completeSession(id);
+  async complete(@Req() req, @Param('id') id: string) {
+    return await this.sessionService.completeSession(id, req.user.userId);
   }
 
   // 취소는 참가비를 돌려주는 **돈 경로**다. 재발급/내보내기와 같은 문을 쓴다 —

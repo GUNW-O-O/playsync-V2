@@ -156,7 +156,7 @@ export async function setupTournament(
     // 리바인을 보지 않는 시나리오는 착석을 마친 뒤 닫는다(`closeRegistration`).
     isRegistrationOpen: opts.registrationOpen ?? true,
     blindId: SCENARIO.blind,
-  } as never);
+  } as never, SCENARIO.owner);
 
   // `createSession`은 아무것도 반환하지 않는다. 의도된 설계다 — 대회 정보와
   // 딜러 OTP는 상점 관리 페이지가 따로 조회해서 보여준다.

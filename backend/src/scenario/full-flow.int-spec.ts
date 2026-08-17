@@ -287,7 +287,7 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
       prizePayouts: PAYOUTS,
       isRegistrationOpen: true,
       blindId: blind.id,
-    } as never);
+    } as never, userIds.owner);
     dealerOtp = result.dealerOtp;
 
     const created = await prisma.tournament.findFirstOrThrow({ where: { storeId } });
@@ -474,7 +474,7 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
 
   it('21. 정산이 안 끝났으면 대회를 닫을 수 없다', async () => {
     // T19. 닫으면 테이블·딜러 세션·Redis가 지워져 재구성할 근거가 사라진다.
-    await expect(session.completeSession(tournamentId)).rejects.toThrow(/정산이 끝나지 않았/);
+    await expect(session.completeSession(tournamentId, userIds.owner)).rejects.toThrow(/정산이 끝나지 않았/);
   });
 
   it('22. 사람이 줄어들면 상금이 포인트로 들어온다', async () => {
@@ -499,7 +499,7 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
   });
 
   it('23. 정산이 끝나면 대회가 닫히고 캐시가 정리된다', async () => {
-    await session.completeSession(tournamentId);
+    await session.completeSession(tournamentId, userIds.owner);
 
     const t = await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } });
     expect(t.status).toBe('FINISHED');

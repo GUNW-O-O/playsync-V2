@@ -373,10 +373,11 @@ AI는 코드를 읽지만 **왜 그렇게 짰는지**는 모른다. 스킬도 �
   진행했다. (chat-log #20)
 - **리뷰 예산을 실측으로 잘랐다.** 티켓 하나에 2시간 · 1.53M 토큰이 들었는데,
   최종 전체 리뷰가 발견을 다 잡는 동안 태스크 리뷰 둘은 16분을 쓰고 0건이었다.
-  태스크 리뷰를 줄이고 최종 전체 리뷰만 남겼다. (chat-log2 #13)
+  태스크 리뷰를 줄이고 최종 전체 리뷰만 남겼다. (chat-log2 「티켓당 비용 절감 — 리뷰 예산 규칙」)
 
-판단 과정은 [`docs/chat-log.md`](./docs/chat-log.md)(1단계 38항목)와
-[`docs/chat-log2.md`](./docs/chat-log2.md)(2단계)에 남아 있다. 각 항목은
+판단 과정은 [`docs/chat-log.md`](./docs/chat-log.md)(1단계 T1~T21)와
+[`docs/chat-log2.md`](./docs/chat-log2.md)(2단계 T22~T36),
+[`docs/chat-log3.md`](./docs/chat-log3.md)(3단계 T37~T55)에 남아 있다. 각 항목은
 **요청 → AI 제안 → 사람 판단 → 근거 → 결과** 형식이고, **기각되거나 철회된 AI
 제안도 그대로 남겼다.** 누가 정했는지도 갈라 적는다 — 워크트리 위임의 세부
 제약은 "AI가 정한 위임 세부사항"이라고 적혀 있다.
@@ -766,7 +767,8 @@ REDIS_PASSWORD=<password>
 | [`CLAUDE.md`](./CLAUDE.md) | **작업 규칙.** 명령어 · 기준선 · 테스트 계층 |
 | [`docs/domain.md`](./docs/domain.md) | **도메인 규칙과 코드 좌표.** §1의 작업용 대응물 |
 | [`docs/chat-log.md`](./docs/chat-log.md) | **결정 로그(1단계).** 기각된 AI 제안까지 포함한 판단 과정 원본 |
-| [`docs/chat-log2.md`](./docs/chat-log2.md) | **결정 로그(2단계).** T22~T36 · 화면과 데모까지 |
+| [`docs/chat-log2.md`](./docs/chat-log2.md) | **결정 로그(2단계).** T22~T36 · 위협 모델에서 화면과 데모까지 |
+| [`docs/chat-log3.md`](./docs/chat-log3.md) | **결정 로그(3단계).** T37~T55 · 부하테스트와 남은 결함 |
 | [`docs/review.md`](./docs/review.md) | MVP 시점 전수 코드 리뷰 — 모든 발견의 출발점 |
 | [`docs/fixlist.md`](./docs/fixlist.md) | 1단계 발견 대장 (닫힘) |
 | [`docs/tickets.md`](./docs/tickets.md) | 1단계 작업 기록 T1~T21과 판단 근거 (닫힘) |

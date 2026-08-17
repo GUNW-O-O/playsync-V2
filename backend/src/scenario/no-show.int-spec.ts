@@ -100,7 +100,7 @@ describe('시나리오: 노쇼가 있어도 대회가 스스로 닫힌다', () =
 
   it('6. 정산 게이트가 닫힌다 — 걷은 것과 나간 것이 같다', async () => {
     // 노쇼가 있어도 `걷은 것 == 상금`이 성립해야 상점이 대회를 닫을 수 있다.
-    await expect(h.session.completeSession(h.tournamentId)).resolves.not.toThrow();
+    await expect(h.session.completeSession(h.tournamentId, SCENARIO.owner)).resolves.not.toThrow();
 
     const t = await h.prisma.tournament.findUniqueOrThrow({ where: { id: h.tournamentId } });
     expect(`대회 ${t.status}`).toBe('대회 FINISHED');
