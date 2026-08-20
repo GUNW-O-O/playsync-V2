@@ -514,23 +514,6 @@ export class TableEngine {
    * `initTable`이 매 핸드 시작 시 0으로 맞춰 둔 값이라 되돌려도 잃는
    * 정보가 없다.
    */
-  /**
-   * 앤티를 걷는다. 블라인드보다 먼저다.
-   *
-   * T58: 예전에는 스택에서 직접 빼서 `state.pot`에만 더하고 `executeBet`을
-   * 건너뛰었다. `totalContributed`가 안 올라 `calculateSidePots`가 앤티만
-   * 낸 사람을 기여자 목록에서 놓쳤고, `resolveWinner`가 마지막에 `pot`을
-   * 0으로 지우는 순간 그 차액이 증발했다. 지금은 `executeBet`을 그대로
-   * 써서 상한·올인 판정·`totalContributed`가 한 곳에서 같이 움직인다.
-   *
-   * `executeBet`은 `player.bet`도 올리는데, 앤티는 이번 라운드의 베팅이
-   * 아니다. 그대로 두면 블라인드를 안 낸 사람의 콜 금액(`handleCall`의
-   * `currentBet - player.bet`)이 앤티만큼 할인되고, 그 왜곡이 라운드를
-   * 아예 끝내지 못하게 만든다(직접 확인함 — 이 줄을 지우면 쇼다운에
-   * 도달하지 못한다). 그래서 여기서만 `bet`을 다시 0으로 되돌린다 —
-   * `initTable`이 매 핸드 시작 시 0으로 맞춰 둔 값이라 되돌려도 잃는
-   * 정보가 없다.
-   */
   private payAnte(ante: number) {
     this.state.players.forEach(p => {
       if (p && !p.hasFolded) {
