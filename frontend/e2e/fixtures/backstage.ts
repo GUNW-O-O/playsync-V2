@@ -1,4 +1,4 @@
-import { APIRequestContext } from '@playwright/test';
+import { APIRequestContext, Page } from '@playwright/test';
 
 /**
  * 카메라에 잡히지 않는 손. 백엔드 API를 직접 친다.
@@ -36,6 +36,30 @@ export async function login(
 
 export function bearer(token: string) {
   return { Authorization: `Bearer ${token}` };
+}
+
+/**
+ * 딜러 태블릿의 쿠키 창고에서 `dealerToken`을 꺼낸다.
+ *
+ * `GET /playsync/:tableId`(아래 `tableState`)는 T66부터 REST에도 WS와 같은
+ * 판정(`PlaysyncService.assertTableAccess`)을 건다 — 그 테이블의 딜러이거나
+ * 실제로 앉은 플레이어여야 한다. 촬영이 원본 스냅샷을 관찰하려고 상점
+ * 소유자의 로그인 토큰을 썼던 것은 그 판정이 없던 시절의 지름길이었다 —
+ * 소유자는 그 테이블의 딜러도 좌석의 주인도 아니라서 지금은 거부된다.
+ *
+ * `authenticateDealer`(`(terminal)/dealer/action.ts`)가 심는 `dealerToken`은
+ * httpOnly라 페이지 JS는 못 읽지만, Playwright는 `document.cookie`를 거치지
+ * 않고 브라우저의 쿠키 창고를 직접 본다 — 자동화 API라 httpOnly의 적용
+ * 대상이 아니다. 그 값을 그대로 쓰면 딜러가 실제로 로그인해 얻은, 그
+ * 테이블에만 유효한 진짜 토큰을 재사용하는 것이다.
+ */
+export async function dealerBearerToken(page: Page): Promise<string> {
+  const cookies = await page.context().cookies();
+  const token = cookies.find((c) => c.name === 'dealerToken')?.value;
+  if (!token) {
+    throw new Error('딜러 토큰 쿠키를 찾지 못했다 — enterDealer가 먼저 끝났는지 확인할 것.');
+  }
+  return token;
 }
 
 /**

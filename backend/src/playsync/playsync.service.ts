@@ -1,7 +1,7 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable, Logger } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { PlayerStatus, TransactionType } from '@prisma/client';
+import { PlayerStatus, Role, TransactionType } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { PlayerActionDto } from 'shared/dto/playsync.dto';
 import { Dashboard } from 'shared/types/tournamentMeta';
@@ -36,6 +36,45 @@ export class PlaysyncService {
     private readonly prisma: PrismaService,
     private readonly eventEmitter: EventEmitter2,
   ) { }
+
+  /**
+   * 이 호출자가 이 테이블을 볼 자격이 있는지 확인한다.
+   *
+   * REST(`joinTable`)와 WS(`ws.gateway.ts`의 `handleConnection`)가 **같은
+   * 판정 함수**를 부른다. 한 자원에 문이 둘이었는데(REST `GET /playsync/:id`,
+   * WS 접속) WS 쪽만 이 규칙을 걸고 있었다 — `JwtAuthGuard`만 걸린
+   * `joinTable`은 인증만 되면 소유권·좌석·대회 소속을 아무것도 대조하지
+   * 않고 전체 스냅샷을 그대로 돌려줬다(T66). 게이트웨이의
+   * `assertTournamentAccess` 주석이 이미 같은 논법을 남겼다 — 한쪽만
+   * 뚫려 있던 비대칭 자체가 빠뜨렸다는 증거다.
+   *
+   * 판정을 두 벌로 두지 않는다. 두 벌이면 한쪽만 고쳐지는 날이 온다
+   * (`SessionService.assertBlindBelongsToStore`와 같은 이유, T64).
+   *
+   * 어느 쪽도 클라이언트가 보낸 값을 근거로 삼지 않는다. 딜러는 로그인 시
+   * 서명된 토큰의 tableId를, 플레이어는 서버가 들고 있는 스냅샷의 좌석을
+   * 본다.
+   */
+  async assertTableAccess(
+    identity: { sub: string; role: Role; tableId?: string },
+    tableId: string,
+  ): Promise<void> {
+    if (identity.role === Role.DEALER) {
+      // 토큰의 tableId는 loginDealer가 서명해 넣은 값이고, 요청의 tableId는
+      // 클라이언트가 고른 값이다. 대조하지 않으면 A테이블 딜러가 B테이블의
+      // 스냅샷을 그대로 받는다.
+      if (identity.tableId !== tableId) {
+        throw new ForbiddenException('토큰에 없는 테이블입니다.');
+      }
+      return;
+    }
+
+    const state = await this.redis.getSnapShot(tableId);
+    if (!state) throw new NotFoundException('테이블을 찾을 수 없습니다.');
+
+    const isSeated = state.players.some((p) => p?.id === identity.sub);
+    if (!isSeated) throw new ForbiddenException('이 테이블의 좌석이 없습니다.');
+  }
 
   async joinTable(tableId: string, userId?: string) {
     const tableState = await this.redis.getSnapShot(tableId);

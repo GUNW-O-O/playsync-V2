@@ -48,9 +48,9 @@ contract       62  (4 suites)   전부 통과
 | # | 티켓 | 무엇이 깨지나 | 등급 | 기다리는 것 | 상태 |
 |---|---|---|---|---|---|
 | T64 | 대회 입력이 검증을 지나가지 않는다 | 포인트가 찍히고 전광판이 멎는다 | 높음 | — | **완료 (#60)** |
-| T58 | 앤티가 사이드팟에 담기지 않고 화면에도 없다 | 칩이 증발하고 참가자가 모른다 | 치명 | T64 | 대기 |
+| T58 | 앤티가 사이드팟에 담기지 않고 화면에도 없다 | 칩이 증발하고 참가자가 모른다 | 치명 | T64 | **완료 (#62)** |
 | T60 | 인원수가 DB와 Redis에서 갈라진다 | 최후 1인 판정과 등수가 통째로 틀어진다 | 치명 | T64 | 대기 |
-| T66 | 가드 없는 읽기 경로 | 남의 대회·상점이 그대로 나간다 | 높음 | T64 | 대기 |
+| T66 | 가드 없는 읽기 경로 | 남의 대회·상점이 그대로 나간다 | 높음 | T64 | **완료 (#63)** |
 | T70 | 콘솔 좌석 선택이 새로 그린 판을 따라간다 | 엉뚱한 사람이 좌석에서 빠진다 | 중간 | T64 | 대기 |
 | T68 | 레이즈 입력이 낼 수 있는 금액과 어긋난다 | 합법적인 레이즈 불가 / 조용한 올인 | 중간 | T58 | 대기 |
 | T59 | 동시 파산의 등수와 상금 | 상금이 두 번 나가고 대회가 안 닫힌다 | 치명 | T60 | 대기 |
@@ -62,6 +62,8 @@ contract       62  (4 suites)   전부 통과
 | T65 | 비턴 액션이 현재 턴의 타이머를 리셋한다 | 제한시간을 무한히 늘릴 수 있다 | 높음 | T62 · T71 | 대기 |
 | T69 | 체크포인트 실패의 탈출구가 화면에 없다 | 멈춘 테이블에서 나올 길이 없다 | 중간 | T62 · T71 | 대기 |
 | T72 | 목업 결제와 실패 경로 | 부하가 거절을 한 번도 안 밟았다 | 중간 | T66 | 대기 |
+| T73 | 데모 e2e가 소켓 연결 전에 딜러 버튼을 누른다 | `npm run demo` 장면 3~5를 아무도 검증 못 한다 | 중간 | — | 대기 |
+| T74 | 예외 필터가 하나도 없다 | raw Prisma·postgres 오류가 그대로 500으로 나간다 | 중간 | — | 대기 |
 
 아래 **잔여 목록**은 티켓을 따로 세우지 않은 것들이다. 가까운 티켓에 묻어 간다.
 
@@ -964,6 +966,46 @@ T64가 부하 무대의 `entryFee: 0`을 걷어내면서(6-3) 드러난 자리�
 
 ---
 
+## T73 — 데모 e2e가 소켓 연결 전에 딜러 버튼을 누른다
+
+**등급**: 중간 · **범위**: `frontend/e2e/demo/tournament.spec.ts` · **프론트 영향**: 없음
+
+**전수검사가 아니라 T66 작업 중에 드러났다.** T66이 REST 가드를 걸면서 데모가
+깨졌고, 고친 뒤 `npm run demo`를 두 번 돌렸는데 **두 번 다 장면 3~5에 못 갔다.**
+죽은 자리는 T66이 건드린 곳이 아니라 `pressUntilEffective`가 딜러의 "핸드 시작"을
+누르는 대목이다.
+
+딜러 화면은 SSR 스냅샷으로 펠트를 먼저 그린다 — **버튼이 보인다고 소켓이 붙은
+것이 아니다.** 소켓이 안 열린 채 누른 클릭은 `console.error` 하나만 남기고
+사라지고, 스크립트는 상태가 바뀌기를 기다리다 죽는다. 그 파일의
+`pressUntilEffective` 주석이 이미 "한 번은 20초를 기다리다 죽었다"고 적어 뒀는데
+이번 환경에서 **2/2로 재현됐다** — 전보다 나빠졌을 수 있다.
+
+`CLAUDE.md`가 "e2e에서 조작의 성공 조건은 눌렀다가 아니라 상태가 바뀌었다"고
+적은 바로 그 함정이다. 지금은 **누른 뒤에** 상태를 기다리는 모양이라, 소켓이
+열린 것을 먼저 기다리는 쪽으로 뒤집어야 한다.
+
+**CI가 안 도는 경로다.** 데모는 사람이 손으로 돌리므로 깨진 채로 오래 남는다.
+
+---
+
+## T74 — 예외 필터가 하나도 없다
+
+**등급**: 중간 · **범위**: `backend/src/main.ts`, `backend/src/**/*.controller.ts` · **프론트 영향**: 있음
+
+리포 전역에 `ExceptionFilter` 구현이 **0건**이다. 그래서 도메인 예외가 아닌 것은
+전부 raw로 500이 된다 — postgres `22003`(numeric out of range), Prisma `P2002`
+(unique 위반) 같은 것들이다. 아래 잔여 목록의 `CreateTournamentDto` 항목과
+`backlog.md`의 "T57이 남긴 것"이 **같은 뿌리의 증상을 각각 적고 있다.**
+
+화면 쪽 비용이 크다. 서버 액션들이 `failureMessage(body)`로 문구를 꺼내는데 500
+본문에는 그 모양이 없어, 사용자에게는 원인 없는 실패로 보인다.
+
+T64에서 범위 밖으로 재정했다 — 입력 검증 티켓이 응답 규약까지 바꾸면 diff에서
+둘이 안 갈린다. **그래서 따로 세운다.**
+
+---
+
 ## 잔여 목록
 
 티켓을 따로 세우지 않는다. 괄호 안 티켓에 묻어 간다.
@@ -976,11 +1018,13 @@ T64가 부하 무대의 `entryFee: 0`을 걷어내면서(6-3) 드러난 자리�
 | `WaitingClient.poll` · `DisplayClient.poll` · `selectTournament` · `ConsoleClient.run` | `try`/`catch`가 없다. 네트워크 블립마다 처리되지 않은 프라미스 거부가 난다. 폴링 쪽은 다음 주기에 낫지만 `selectTournament`는 테이블 목록이 낡은 채 아무 안내도 안 뜬다 | T67 · T70 |
 | `auth/action.ts`의 `handleLogin` · `handleRegister` | `res.ok` 확인 **전에** `await res.json()`. 리포의 다른 액션 파일은 전부 `.catch(() => null)` + `failureMessage`를 쓴다. 프록시 502나 rate-limit HTML이 오면 서버 액션이 던지고 빈 에러 바운더리가 뜬다 | T67 |
 | `UserService.findByUUID` | `await`가 빠져 `if (!user) throw`가 도달 불가한 죽은 분기다. **오동작은 없다** — `async` 반환값이 thenable을 풀어 주고 호출부 둘(`paymentPoint` · `joinSession`)이 각자 null을 막는다. 정리 대상 | 아무 티켓 |
-| `EntryController` · `PaymentController` | 둘이 같은 `@Controller('tournaments')`를 쓴다. 겹치는 패턴은 `GET /tournaments/stores/:storeId`(Payment)와 `GET /tournaments/:id/seats`(Entry)이고, 지금 맞게 도는 이유는 `app.module.ts`의 `imports`에서 `PaymentModule`이 앞이기 때문이다. **순서가 바뀌면 깨지는데 아무 테스트도 안 운다** — 같은 베이스를 쓴다는 사실이 어디에도 표시돼 있지 않다 | T66 |
+| `EntryController` · `PaymentController` | 둘이 같은 `@Controller('tournaments')`를 쓴다. 겹치는 패턴은 `GET /tournaments/stores/:storeId`(Payment)와 `GET /tournaments/:id/seats`(Entry)이고, 지금 맞게 도는 이유는 `app.module.ts`의 `imports`에서 `PaymentModule`이 앞이기 때문이다. **순서가 바뀌면 깨지는데 아무 테스트도 안 운다** — 같은 베이스를 쓴다는 사실이 어디에도 표시돼 있지 않았다. T66이 회귀 테스트로 못 박았다 | 완료 (#63) |
 | `CreateTournamentDto` | `startStack` · `entryFee` · `rebuyUntil`에 `@Max`가 없다. class-validator의 `@IsInt()`는 `2^31`을 넘는 안전 정수를 통과시키는데 Prisma `Int`는 postgres `integer`다. 22003이 예외 필터 없이 **500**으로 나가고, `totalBuyinAmount` 쪽은 **대회 도중에** 터진다 | T64 |
 | `WsIdentity.role` | 타입이 Prisma `Role`인데 좌석 티켓은 `SEAT_ROLE = 'PLAYER'`를 싣는다. 그 값은 enum에 없다(`req: any`라 타입 체커가 못 잡는다). 게이트웨이가 `role === Role.DEALER`만 보므로 지금은 동작하지만, 티켓 신원의 타입이 실제로 흐르는 값과 다르다 | T71 |
 | `WaitingClient`의 좌석 도식 | `seatStatus.map`이 `SEAT_POSITIONS[i]`를 인덱싱한다. 비트맵이 9칸보다 길면 `.left`에서 던진다. 지금은 어디서나 9칸 | 아무 티켓 |
-| `middleware.ts`의 `config.matcher` | 마지막 세그먼트에 점이 있는 경로를 통째로 건너뛴다(`[^/]+\.[a-zA-Z0-9]+$`). 지금 그런 라우트 파라미터가 없어 악용 불가지만, slug나 닉네임이 URL에 들어오는 날 가드가 꺼진다 | T66 |
+| `middleware.ts`의 `config.matcher` | 마지막 세그먼트에 점이 있는 경로를 통째로 건너뛴다(`[^/]+\.[a-zA-Z0-9]+$`). 지금 그런 라우트 파라미터가 없어 악용 불가지만, slug나 닉네임이 URL에 들어오는 날 가드가 꺼진다. T66은 범위 밖으로 뒀다 — 그런 파라미터를 처음 들이는 쪽이 함께 본다 | 아무 티켓 |
+| `backend/.env.example`의 `DATABASE_URL` | 사용자가 `user`인데 `backend/docker-compose.yml`은 `POSTGRES_USER: root`다. 예제대로 `.env`를 만들면 개발 DB에 못 붙는다. 한 글자다 | 아무 티켓 |
+| `UpdateTournamentDto` | `isRegistrationOpen`이 없다. `forbidNonWhitelisted: true`라 그 키를 보내면 400이고, `checkAndSyncBlindLevel`은 단조로 닫기만 한다 — **등록 마감을 사람이 되돌릴 API가 지금 없다** | T63 |
 
 ---
 

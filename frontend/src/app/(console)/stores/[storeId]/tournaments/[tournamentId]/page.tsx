@@ -94,13 +94,11 @@ async function fetchDashboard(tournamentId: string): Promise<FullTournamentInfo 
  *
  * 미들웨어는 `/stores`에 STORE_ADMIN·PLATFORM_ADMIN을 둘 다 들이지만 이
  * 엔드포인트는 STORE_ADMIN만 통과시킨다 — PLATFORM_ADMIN이 이 화면을 열면
- * 좌석 정보를 아예 못 받는다. 화면에서 역할 분기로 숨기지 않고, 서버가
- * 돌려준 실패 문구를 그대로 배너로 띄운다.
+ * 좌석 정보를 아예 못 받는다.
  *
- * 이 어긋남은 T56이 **그대로 두기로 판단한 것**이다. 어드민 기능 자체가
- * 범위 밖이라(`backlog.md` B6) PLATFORM_ADMIN은 소유자가 아니어서 이 화면의
- * 어떤 조회·조작도 통과하지 못한다. `@Roles`에서 빼는 쪽은 어드민을 세울 때
- * 되돌려야 하므로 그때 같이 정한다.
+ * 이 실패는 좌석 패널 하나가 아니라 **페이지 전체의 문지기**다(T66). 왜
+ * 그렇게 뒀고 왜 PLATFORM_ADMIN에도 예외가 없는지는 아래
+ * `ConsoleTournamentPage` 주석에 적었다 — 여기서 두 번 적지 않는다.
  */
 async function fetchSeatOccupants(
   tournamentId: string,
@@ -121,6 +119,33 @@ async function fetchSeatOccupants(
 /**
  * 상점 콘솔의 대회 상세. 서버 컴포넌트에서 직접 백엔드로 네 번 조회한다.
  * 조작 다섯 개는 전부 서버 액션(`./action.ts`)이 맡는다.
+ *
+ * `storeId`·`tournamentId`는 URL 파라미터라 그 조합이 로그인한 관리자의
+ * 것인지 아무도 확인하지 않았다(T66). 미들웨어(`ROLE_RULES`)는 `/stores`에
+ * **역할만** 보고 URL의 소유권은 안 본다 — 아무 `STORE_ADMIN`이나
+ * `/stores/<남의 상점>/tournaments/<남의 대회>`를 열면 대회명·상태·
+ * 프라이즈풀·테이블 목록·블라인드 시계가 그대로 렌더됐다.
+ *
+ * 소유권을 서버에서 확인하는 유일한 경로는 `fetchSeatOccupants`가 부르는
+ * `GET /store/sessions/:id/seats`다(`SessionService.assertTournamentOwnership`
+ * 가 첫 문장). 그 결과를 좌석 패널 하나가 아니라 **페이지 전체**의 문지기로
+ * 쓴다 — 다른 세 조회(`fetchTournament`·`fetchTables`·`fetchDashboard`)는
+ * 가드가 없어 소유권과 무관하게 성공하므로, 그쪽 결과를 그대로 내려보내면
+ * 소유권 확인이 있으나 마나가 된다.
+ *
+ * 예외를 두지 않는다 — 소유권 확인이 실패하면(토큰이 없거나, 역할을 못
+ * 읽거나, `PLATFORM_ADMIN`이거나) 전부 차단이다. `PLATFORM_ADMIN`도
+ * 예외가 아니다: `docs/backlog.md`의 "`GET /store`가 소유자 기준이다"
+ * 판단이 어드민이 전체 상점을 보는 경로 자체를 만들지 않기로 정했고,
+ * `@Roles`에 `PLATFORM_ADMIN`이 남아 있는 것은 그 판단을 뒤집은 게
+ * 아니라 "지금 빼면 나중에 되돌려야 하니 남겨 뒀다"는 잔재일 뿐이다(같은
+ * 문서, "`PLATFORM_ADMIN`이 `@Roles`에 남아 있지만 실제로는 전부 403이다").
+ * 이 페이지가 그 역할에 구멍을 하나 열어 주면 그 판단과 어긋난다.
+ *
+ * 나중에 어드민 화면을 실제로 세운다면 그 자리는 여기(페이지 컴포넌트의
+ * 분기)가 아니라 컨트롤러다 — `SessionController`가 이미 쓰는 방식대로
+ * `@Roles(Role.PLATFORM_ADMIN)`을 해당 라우트에 얹는다. 권한의 진실은
+ * 백엔드 한 곳에 두고, 프론트는 그 결과(성공/실패)만 따른다.
  */
 export default async function ConsoleTournamentPage({
   params,
@@ -137,13 +162,15 @@ export default async function ConsoleTournamentPage({
     fetchSeatOccupants(tournamentId, token),
   ]);
 
+  const ownershipDenied = seatResult.seatError !== null;
+
   return (
     <ConsoleClient
       storeId={storeId}
       tournamentId={tournamentId}
-      tournament={tournament}
-      dashboard={dashboard}
-      tables={tables}
+      tournament={ownershipDenied ? null : tournament}
+      dashboard={ownershipDenied ? null : dashboard}
+      tables={ownershipDenied ? [] : tables}
       seatOccupants={seatResult.seatOccupants}
       seatError={seatResult.seatError}
       startTournament={startTournament}

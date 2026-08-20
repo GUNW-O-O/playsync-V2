@@ -2,6 +2,7 @@ import { Page } from '@playwright/test';
 import { join, resolve } from 'path';
 import {
   chipsOnTable,
+  dealerBearerToken,
   login,
   seat,
   tableState,
@@ -390,6 +391,13 @@ test.describe('데모 — 한 대회', () => {
     //    한참 딴짓하다 자리로 간다"가 된다.
     await sitDown(p1Page, manifest.store.id, table1.id, SEATS.p1, mid.otp);
 
+    // mid는 이 시점부터 table1에 실제로 앉아 있다. 딜러가 아직 안 들어와
+    // 딜러 토큰이 없는 장면 1의 유일한 `tableState` 조회(아래 `seated`)가
+    // 이 값을 쓴다 — 소유자가 아니라 **그 테이블에 실제로 앉은 사람**의
+    // 진짜 토큰이라 T66의 판정을 그대로 통과한다. 장면 4에서 mid가 다시
+    // 로그인해 받는 `midToken`(폰 화면용)과는 용도가 달라 이름을 나눈다.
+    const midSeatToken = await login(request, mid.nickname, manifest.password);
+
     // 1. 폰에서 **상점을 찾는다.** 대회는 상점이 여는 것이라 참가도 상점을
     //    고르는 데서 시작한다 — 이 걸음이 없으면 화면만 보고는 시스템이
     //    상점 하나짜리인지 여럿을 나눠 담는지 알 수 없다.
@@ -489,7 +497,7 @@ test.describe('데모 — 한 대회', () => {
       otp: mover3.otp,
     });
 
-    const seated = await tableState(request, table1.id, ownerToken);
+    const seated = await tableState(request, table1.id, midSeatToken);
     // 이 값이 촬영 끝까지 이 테이블의 기준선이다. 사람이 옮겨 오면 그만큼
     // 늘리고(장면 5), 그 밖의 이유로 변하면 거기서 멈춘다.
     let total = chipsOnTable(seated);
@@ -509,6 +517,12 @@ test.describe('데모 — 한 대회', () => {
     await enterDealer(dealer, manifest.store.id, table1.id, shownDealerOtp);
     await expect(dealer.getByTestId(`seat-${SEATS.hero}`)).toBeVisible();
     await linger(dealer, 1_200);
+
+    // 이 시점부터 딜러가 table1의 진짜 딜러다 — 이후 모든 `tableState` 조회는
+    // 이 토큰을 쓴다. 딜러 판정(`assertTableAccess`)은 좌석 점유와 무관하게
+    // 토큰의 tableId만 대조하므로, 장면 4에서 누가 탈락해 좌석에서 빠져도
+    // (mid의 토큰과 달리) 계속 유효하다.
+    const tableToken = await dealerBearerToken(dealer);
 
     // **아직 대회가 열리지 않았다.** 버튼은 눌리지만 서버가 거절하고, 그
     // 사실이 딜러 화면에 모달로 남는다 — 조용히 사라지지 않는 것이 요점이다.
@@ -537,7 +551,7 @@ test.describe('데모 — 한 대회', () => {
     ).toBeVisible({ timeout: 20_000 });
     await linger(dealer, 2_500);
 
-    expectChips(await tableState(request, table1.id, ownerToken), '대회 시작 후', total);
+    expectChips(await tableState(request, table1.id, tableToken), '대회 시작 후', total);
 
     // --- 워밍업 한 판 --------------------------------------------------
     // 스택을 벌리는 것이 목적이고, 그 자체가 장면이다. 손으로 스냅샷을
@@ -552,13 +566,13 @@ test.describe('데모 — 한 대회', () => {
     await pressUntilEffective(
       dealer,
       '핸드 시작',
-      async () => (await tableState(request, table1.id, ownerToken)).phase !== PHASE.WAITING,
+      async () => (await tableState(request, table1.id, tableToken)).phase !== PHASE.WAITING,
     );
 
     const reached = await driveToShowdown({
       request,
       tableId: table1.id,
-      token: ownerToken,
+      token: tableToken,
       total,
       step: '워밍업',
       pageBySeat,
@@ -590,7 +604,7 @@ test.describe('데모 — 한 대회', () => {
     );
 
     // 딜러가 승자를 찍는다. 카드는 테이블 위에 있고 시스템은 장부만 맡는다.
-    const showdown = await tableState(request, table1.id, ownerToken);
+    const showdown = await tableState(request, table1.id, tableToken);
     const warmupWinnerId = showdown.players[SEATS.p2]!.id;
 
     await press(dealer, dealer.getByRole('button', { name: '승자 결정' }));
@@ -599,11 +613,11 @@ test.describe('데모 — 한 대회', () => {
     await pressUntilEffective(
       dealer,
       '배분',
-      async () => (await tableState(request, table1.id, ownerToken)).phase === PHASE.WAITING,
+      async () => (await tableState(request, table1.id, tableToken)).phase === PHASE.WAITING,
       3,
     );
 
-    const after = await tableState(request, table1.id, ownerToken);
+    const after = await tableState(request, table1.id, tableToken);
     expectChips(after, '워밍업 정산', total);
 
     // 스택이 갈렸다. 이것이 장면 3의 무대다.
@@ -632,19 +646,19 @@ test.describe('데모 — 한 대회', () => {
     await pressUntilEffective(
       dealer,
       '핸드 시작',
-      async () => (await tableState(request, table1.id, ownerToken)).phase !== PHASE.WAITING,
+      async () => (await tableState(request, table1.id, tableToken)).phase !== PHASE.WAITING,
     );
 
     // **상한은 mid의 전 재산이다.** deep이 그보다 더 밀면 아무도 콜하지 못해
     // 환급으로 되돌아오고, 그러면 층이 갈리지 않는다(`allin-sidepot` 2번의
     // 같은 계산).
-    const opened = await tableState(request, table1.id, ownerToken);
+    const opened = await tableState(request, table1.id, tableToken);
     const midTotal = opened.players[SEATS.p1]!.stack + opened.players[SEATS.p1]!.bet;
 
     await driveToShowdown({
       request,
       tableId: table1.id,
-      token: ownerToken,
+      token: tableToken,
       total,
       step: '사이드팟',
       pageBySeat,
@@ -665,12 +679,12 @@ test.describe('데모 — 한 대회', () => {
     // 기다렸다가 층을 읽는다.
     await expect
       .poll(
-        async () => (await tableState(request, table1.id, ownerToken)).phase,
+        async () => (await tableState(request, table1.id, tableToken)).phase,
         { timeout: 30_000 },
       )
       .toBe(PHASE.SHOWDOWN);
 
-    const layered = await tableState(request, table1.id, ownerToken);
+    const layered = await tableState(request, table1.id, tableToken);
     expectChips(layered, '올인 쇼다운', total);
     // **사이드팟 합 == 팟.** 갈라놓고 어긋나면 지급에서 증발한다.
     expect(`층 ${layered.sidePots.length}`).toBe('층 2');
@@ -704,7 +718,7 @@ test.describe('데모 — 한 대회', () => {
     await press(dealer, dealer.getByRole('button', { name: '확인' }));
 
     // 거부는 아무것도 건드리지 않는다. 딜러가 다시 찍을 수 있어야 한다.
-    const refused = await tableState(request, table1.id, ownerToken);
+    const refused = await tableState(request, table1.id, tableToken);
     expectChips(refused, '거부 후', total);
     expect(`거부 후 페이즈 ${refused.phase}`).toBe(`거부 후 페이즈 ${PHASE.SHOWDOWN}`);
     expect(`거부 후 팟 ${refused.pot}`).toBe(`거부 후 팟 ${layered.pot}`);
@@ -755,12 +769,12 @@ test.describe('데모 — 한 대회', () => {
 
     await expect
       .poll(
-        async () => (await tableState(request, table1.id, ownerToken)).phase,
+        async () => (await tableState(request, table1.id, tableToken)).phase,
         { timeout: 30_000 },
       )
       .toBe(PHASE.WAITING);
 
-    const settled = await tableState(request, table1.id, ownerToken);
+    const settled = await tableState(request, table1.id, tableToken);
     expectChips(settled, '사이드팟 정산', total);
     // 층마다 알맞은 사람에게 갔다. mid는 2층의 자격자였지만 지명되지 않아
     // 0이 됐고, 그래서 탈락했다.
@@ -850,7 +864,7 @@ test.describe('데모 — 한 대회', () => {
 
     // **칩이 좌석보다 오래 산다.** 옮겨 앉아도 스택이 그대로다.
     total += 5_000;
-    const moved = await tableState(request, table1.id, ownerToken);
+    const moved = await tableState(request, table1.id, tableToken);
     expectChips(moved, '옮겨 앉은 뒤', total);
     expect(`옮겨 온 사람 ${moved.players[MOVED_SEATS.p3]!.nickname}`).toBe(
       `옮겨 온 사람 ${mover.nickname}`,
@@ -874,7 +888,7 @@ test.describe('데모 — 한 대회', () => {
       });
       total += 5_000;
     }
-    expectChips(await tableState(request, table1.id, ownerToken), '셋 다 옮긴 뒤', total);
+    expectChips(await tableState(request, table1.id, tableToken), '셋 다 옮긴 뒤', total);
 
     // 5. 빈 테이블을 닫는다. 사람이 남아 있으면 버튼이 잠긴다(`ConsoleClient`가
     //    `occupants.length > 0`으로 막는다) — 그 잠금이 풀린 것 자체가 2번

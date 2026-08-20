@@ -666,12 +666,16 @@ scenario/full-flow.int-spec.ts        참가 전후 포인트 총합 일치
   없었고, 딜러 화면이 부르는 `GET /playsync/:tableId`가 그 없음을 맨 `Error`로
   던졌다. 이제 `createTable`이 빈 스냅샷도 세운다 — 근거는 B11절의 T38에.
   화면 티켓에서 미뤄 둔 것을 부하 하네스가 막히면서 뗐다.
-- **`PLATFORM_ADMIN`이 상점 콘솔을 열면 좌석 정보를 못 받는다.** 미들웨어는
+- **`PLATFORM_ADMIN`이 상점 콘솔을 열면 아무것도 못 받는다.** 미들웨어는
   `/stores`에 `STORE_ADMIN`·`PLATFORM_ADMIN`을 둘 다 들이는데
-  `GET /store/sessions/:id/seats`는 `STORE_ADMIN` 전용이다. 화면은 서버가
-  돌려준 실패 문구를 배너로 띄운다 — 역할 분기로 버튼을 숨기지 않는 것이
-  이 리포의 방식이다(권한의 진실은 백엔드 한 곳). 어긋남 자체는 B6의
-  "`POST /store` 가드가 `STORE_ADMIN`을 허용한다"와 같은 갈래다.
+  `GET /store/sessions/:id/seats`는 `STORE_ADMIN` 전용이다. **T66이 그 실패를
+  좌석 패널이 아니라 페이지 전체의 문지기로 바꿨다** — 배너만 뜨고 대회명·
+  프라이즈풀·테이블 목록은 그려지던 것을, 소유권 확인이 실패하면 그 셋을
+  아예 안 내려보내는 쪽으로 옮겼다. 역할 분기로 버튼을 숨기지 않는 것이
+  이 리포의 방식인데(권한의 진실은 백엔드 한 곳), T66은 그 방식을 화면
+  전체로 넓힌 것이다. 어긋남 자체는 B6의 "`POST /store` 가드가
+  `STORE_ADMIN`을 허용한다"와 같은 갈래이고, 어드민을 세울 때 컨트롤러
+  `@Roles`로 같이 정한다.
 - **e2e가 상태를 남긴다.** `terminal.spec.ts`가 사람을 앉히므로 반복 실행에는
   `npm run seed -w backend`가 앞에 붙는다. 파일 이름의 알파벳 순서가 곧 실행
   순서라는 것에 기대고 있다(워커 하나).
@@ -1081,6 +1085,20 @@ withTableLock(tableId, async () => {
 
 **재현**: 같은 계정으로 `POST /tournaments/payment`를 같은 `tournamentId`에
 두 번. 고칠 때는 실패하는 테스트를 먼저 만든다.
+
+### T58이 남긴 것 — `payAnte`의 저수준 프리미티브 분리
+
+앤티를 `executeBet`으로 태우면서 `payAnte`에 `p.bet = 0` 보정이 하나 남았다.
+앤티는 베팅이 아니라 강제 납부라 라운드 베팅액에 남으면 안 되는데, 그 되돌림이
+**`initTable`이 `bet`을 0으로 맞춰 둔다는 암묵 전제**에 기대고 있다.
+
+리뷰어의 제안은 "칩을 팟으로 옮기는 저수준 프리미티브를 따로 두고 `executeBet`과
+`payAnte`가 각각 그 위에 서게 하라"였다. 옳지만 **칩 이동 코드의 리팩터**라,
+결함 수정과 같은 브랜치에서 하면 diff에서 둘이 안 갈린다. T58에서 미뤘다
+(2026-08-20).
+
+전제가 깨지면 테스트가 잡는다 — 앤티 시나리오(`backend/src/scenario/ante.int-spec.ts`)가
+단계마다 칩 총량 보존을 본다.
 
 ## 아직 판단하지 않은 것
 
