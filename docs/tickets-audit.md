@@ -294,6 +294,18 @@ grep -rn "ante" frontend/src  →  테스트 파일 다섯과 타입 선언 둘.
 `sb / 5`를 직접 계산해야 한다.** 그 순간 금액 규칙이 두 곳이 되고, 백엔드가 식을
 바꾸면 조용히 어긋난다 — T71이 적은 드리프트와 같은 모양이다.
 
+**고칠 자리가 이미 있다.** `DealerService.startHand`가 매 핸드 `startPreFlop` 직전에
+현재 레벨에서 `smallBlind`와 `ante`를 다시 싣는다. 거기서 `state.ante`에 **금액**을
+넣으면 `payAnte`는 계산하지 않고 그 값을 쓰고, 화면은 받아서 그린다. `sb / 5`가 한
+곳에만 남는다.
+
+`BlindLevelDto.ante`는 `boolean`으로 남는다 — **구조는 "앤티가 붙나"를 선언하고
+상태는 "얼마인가"를 든다.** 층이 갈리는 것이 맞다.
+
+주의: `state.ante`를 쓰는 곳이 둘이다(`DealerService.startHand`와
+`RecoveryService`의 메타 재구성). 금액 계산을 양쪽에 각각 적으면 T64가 막 걷어낸
+두 벌 문제를 새로 만드는 것이다.
+
 ### 결정 — 5의 배수를 강제한다 (2026-08-20)
 
 앤티는 **전원이 낸다**(지금 코드가 맞다). 오프라인이 BB 앤티를 쓰는 이유는 딜러가
@@ -313,8 +325,9 @@ grep -rn "ante" frontend/src  →  테스트 파일 다섯과 타입 선언 둘.
 
 - `payAnte`가 `executeBet`을 거치게 한다. 상한과 올인 판정도 그 한 곳에 모인다.
 - `BlindLevelDto.sb`에 5의 배수 제약을 건다.
-- **앤티 금액을 한 곳에서 계산한다.** 프론트가 `sb / 5`를 다시 쓰지 않게, 파생을
-  백엔드나 contract 한 곳에 두고 화면은 받아 그린다.
+- **`TableState.ante`가 금액을 들게 한다**(`boolean` → `number`, 앤티 없으면 0).
+  `DealerService.startHand`와 `RecoveryService`가 **같은 함수**로 그 값을 만든다.
+  `payAnte`는 계산하지 않고 받는다. contract와 `frontend/types/game.ts`의 타입도 따라온다.
 - **`Felt`와 `DisplayClient`에 앤티를 그린다.** 유무와 금액 둘 다.
 - **시나리오에 앤티 핸드를 추가한다.** 이 티켓의 값은 고침이 아니라 여기 있다 —
   불변식이 있는데도 통과한 이유가 "그 입력이 없어서"였다.
