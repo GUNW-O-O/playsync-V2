@@ -386,7 +386,7 @@ AI는 코드를 읽지만 **왜 그렇게 짰는지**는 모른다. 스킬도 �
 
 판단 과정은 [`docs/chat-log.md`](./docs/chat-log.md)(1단계 T1~T21)와
 [`docs/chat-log2.md`](./docs/chat-log2.md)(2단계 T22~T36),
-[`docs/chat-log3.md`](./docs/chat-log3.md)(3단계 T37~T55)에 남아 있다. 각 항목은
+[`docs/chat-log3.md`](./docs/chat-log3.md)(3단계 T37~T57)에 남아 있다. 각 항목은
 **요청 → AI 제안 → 사람 판단 → 근거 → 결과** 형식이고, **기각되거나 철회된 AI
 제안도 그대로 남겼다.** 누가 정했는지도 갈라 적는다 — 워크트리 위임의 세부
 제약은 "AI가 정한 위임 세부사항"이라고 적혀 있다.
@@ -781,6 +781,8 @@ REDIS_PASSWORD=<password>
 | [`docs/review.md`](./docs/review.md) | MVP 시점 전수 코드 리뷰 — 모든 발견의 출발점 |
 | [`docs/fixlist.md`](./docs/fixlist.md) | 1단계 발견 대장 (닫힘) |
 | [`docs/tickets.md`](./docs/tickets.md) | 1단계 작업 기록 T1~T21과 판단 근거 (닫힘) |
-| [`docs/backlog.md`](./docs/backlog.md) | 2단계 할 일 B1~B10과 **안 하기로 한 것의 근거** |
-| [`docs/tickets-next.md`](./docs/tickets-next.md) | 2단계 작업 기록 T22~T36과 판단 근거 |
+| [`docs/backlog.md`](./docs/backlog.md) | 할 일 B1~B11과 **안 하기로 한 것의 근거** |
+| [`docs/tickets-audit.md`](./docs/tickets-audit.md) | 전수검사가 찾은 결함 T58~T71. 상태 열이 진행 현황이다 |
+| `docs/superpowers/plans/` · `specs/` | 티켓별 계획과 설계 |
+| [`load/README.md`](./load/README.md) | 부하 무대와 봇 |
 | [`docs/threat-model.md`](./docs/threat-model.md) | 신뢰 경계. 인증 판단의 전제 |

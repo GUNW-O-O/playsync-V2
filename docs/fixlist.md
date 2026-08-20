@@ -4,8 +4,8 @@
 > T1~T21에서 처리됐다. **발견 대장으로서 닫힌 문서**이고, 새 항목은 추가하지
 > 않는다.
 >
-> 이후의 할 일은 [`backlog.md`](./backlog.md), 작업 기록은
-> [`tickets-next.md`](./tickets-next.md)에 있다.
+> 이후의 할 일은 [`backlog.md`](./backlog.md)와
+> [`tickets-audit.md`](./tickets-audit.md)에 있다.
 
 각 항목은 **문제 → 위치 → 수정 방법** 순서다.
 P0 = 즉시(보안/돈), P1 = 게임 멈춤, P2 = 정합성, P3 = 품질.

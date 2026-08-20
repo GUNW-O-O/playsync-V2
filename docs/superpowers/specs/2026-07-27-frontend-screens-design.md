@@ -297,4 +297,3 @@ MVP 범위다. 대시보드 통계, 가맹점 문의, 계정 정지는 넣지 �
 | [`../../../README.md`](../../../README.md) | 도메인 전제와 구조 |
 | [`../../backlog.md`](../../backlog.md) | 2단계 백로그. B1~B9 |
 | [`../../../DESIGN.md`](../../../DESIGN.md) | 색·타이포·컴포넌트 토큰 |
-| [`../../tickets-next.md`](../../tickets-next.md) | 2단계 작업 기록 |
