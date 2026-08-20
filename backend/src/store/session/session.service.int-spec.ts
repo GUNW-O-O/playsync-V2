@@ -1059,7 +1059,7 @@ describe('SessionService.releaseSeats', () => {
     }
     await redis.set(`table:state:${tableId}`, JSON.stringify({
       phase, players, pot: 0, currentBet: 0, buttonUser: 0,
-      currentTurnSeatIndex: -1, sidePots: [], ante: false, tournamentId, smallBlind: 100,
+      currentTurnSeatIndex: -1, sidePots: [], ante: 0, tournamentId, smallBlind: 100,
     }));
     await redis.hset(`tournament:${tournamentId}:seat`, `table:${tableId}`,
       Array(9).fill('0').map((c, i) => seated.some(s => s.seatIndex === i) ? '1' : c).join(''));
@@ -1505,7 +1505,7 @@ describe('SessionService.startSession — 버튼 좌석 영속화', () => {
           ...Array(7).fill(null),
         ],
         pot: 0, currentBet: 0, buttonUser: 0, currentTurnSeatIndex: -1,
-        sidePots: [], ante: false, tournamentId, smallBlind: 100,
+        sidePots: [], ante: 0, tournamentId, smallBlind: 100,
       },
     }]);
   });

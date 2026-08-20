@@ -299,7 +299,7 @@ describe('RedisService.mutateSnapshot', () => {
       sidePots: [],
       currentBet: 0,
       smallBlind: 100,
-      ante: false,
+      ante: 0,
       tournamentId: 'mutate-tournament-1',
     };
   }
@@ -465,7 +465,7 @@ describe('RedisService.saveSnapshotUnlocked', () => {
       sidePots: [],
       currentBet: 0,
       smallBlind: 100,
-      ante: false,
+      ante: 0,
       tournamentId: 'unlocked-tournament-1',
     };
 

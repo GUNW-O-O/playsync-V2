@@ -35,7 +35,7 @@ function makeState(
     sidePots: [],
     currentBet: 0,
     smallBlind: 100,
-    ante: false,
+    ante: 0,
     tournamentId: 'tour1',
     ...overrides,
   };
@@ -1070,7 +1070,7 @@ describe('블라인드가 스택보다 클 때', () => {
     // 스택을 넘으면 안 된다.
     const state = makeState(
       [makePlayer('rich', 0, 50000), makePlayer('short', 1, 300)],
-      { buttonUser: 0, smallBlind: 400, ante: true },
+      { buttonUser: 0, smallBlind: 400, ante: 80 },
     );
 
     new TableEngine(state).startPreFlop();
@@ -1082,7 +1082,7 @@ describe('블라인드가 스택보다 클 때', () => {
   it('칩 총량이 보존된다', async () => {
     const state = makeState(
       [makePlayer('rich', 0, 50000), makePlayer('short', 1, 300)],
-      { buttonUser: 0, smallBlind: 400, ante: true },
+      { buttonUser: 0, smallBlind: 400, ante: 80 },
     );
     const before = totalChips(state);
 
@@ -1107,6 +1107,83 @@ describe('블라인드가 스택보다 클 때', () => {
 
     expect(state.players[2]!.isAllIn).toBe(true);
     expect(state.currentTurnSeatIndex).not.toBe(2);
+  });
+});
+
+describe('앤티 — T58', () => {
+  /**
+   * `payAnte`가 `executeBet`을 거치지 않고 스택에서 직접 빼서 `state.pot`에만
+   * 더했다. `totalContributed`가 안 올라 `calculateSidePots`의 기여자 목록
+   * (`totalContributed > 0`인 사람)에서 앤티만 낸 사람이 빠질 수 있고,
+   * `resolveWinner`가 마지막에 `pot`을 0으로 지우는 순간 그 차액이 증발했다.
+   *
+   * 3인 · sb 100 · 앤티 20(=sb/5)인 핸드가 브리핑이 실측한 재현 조건이다.
+   * 버튼(c)은 헤즈업이 아니므로 블라인드를 내지 않는다 — 앤티만 낸 사람이라
+   * 예전 코드에서 `totalContributed`가 0으로 남는 자리다.
+   */
+  function threeHandedAnte(ante: number) {
+    return makeState(
+      [makePlayer('a', 0, 1000), makePlayer('b', 1, 1000), makePlayer('c', 2, 1000)],
+      { buttonUser: 0, smallBlind: 100, ante },
+    );
+  }
+
+  it('버튼처럼 앤티만 낸 사람도 totalContributed에 반영된다', () => {
+    const state = threeHandedAnte(20);
+
+    new TableEngine(state).startPreFlop();
+
+    // btnIdx는 (buttonUser+1)%3 = 1(b)이므로 블라인드는 c(SB)·a(BB)가 낸다.
+    // b는 앤티 20만 냈다.
+    const btn = state.players[1]!;
+    expect(btn.totalContributed).toBe(20);
+  });
+
+  it('앤티는 이번 라운드 베팅(bet)으로 치지 않는다', () => {
+    // bet은 콜 금액(currentBet - bet)을 재는 자리다. 앤티가 bet에 남으면
+    // 블라인드를 안 낸 사람이 콜해야 할 금액에서 앤티만큼 할인을 받는다.
+    const state = threeHandedAnte(20);
+
+    new TableEngine(state).startPreFlop();
+
+    const btn = state.players[1]!;
+    expect(btn.bet).toBe(0);
+  });
+
+  it('쇼다운의 사이드팟 총액이 팟과 어긋나지 않는다', async () => {
+    const state = threeHandedAnte(20);
+    const engine = new TableEngine(state);
+    engine.startPreFlop();
+
+    // 아무도 레이즈하지 않고 전원이 체크/콜로 쇼다운까지 간다.
+    for (let guard = 0; guard < 20 && state.phase !== GamePhase.SHOWDOWN; guard++) {
+      const idx = state.currentTurnSeatIndex;
+      const turn = state.players[idx]!;
+      await engine.act(idx, turn.bet < state.currentBet ? ActionType.CALL : ActionType.CHECK);
+    }
+    expect(state.phase).toBe(GamePhase.SHOWDOWN);
+
+    const sidePotSum = state.sidePots.reduce((sum, p) => sum + p.amount, 0);
+    expect(sidePotSum).toBe(state.pot);
+  });
+
+  it('쇼다운을 거쳐 정산해도 앤티만큼 칩이 사라지지 않는다', async () => {
+    const state = threeHandedAnte(20);
+    const before = totalChips(state);
+    const engine = new TableEngine(state);
+    engine.startPreFlop();
+
+    for (let guard = 0; guard < 20 && state.phase !== GamePhase.SHOWDOWN; guard++) {
+      const idx = state.currentTurnSeatIndex;
+      const turn = state.players[idx]!;
+      await engine.act(idx, turn.bet < state.currentBet ? ActionType.CALL : ActionType.CHECK);
+    }
+
+    // 승자는 계산되지 않고 딜러가 입력한다 — 셋 다 살아 있으니 셋을 공동
+    // 우승으로 지명한다. 이 테스트가 보는 것은 승부가 아니라 부기다.
+    await engine.resolveWinner([['a', 'b', 'c']]);
+
+    expect(totalChips(state)).toBe(before);
   });
 });
 
