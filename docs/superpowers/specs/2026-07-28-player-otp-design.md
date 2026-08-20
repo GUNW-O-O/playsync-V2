@@ -222,6 +222,6 @@ JWT의 `userId`로만 조회한다. 경로에 `userId`를 받지 않는다 — �
 | | |
 |---|---|
 | [`../../threat-model.md`](../../threat-model.md) | 신뢰 경계, 같은 망 단말, 오프라인 감지 루프 |
-| [`../../tickets-next.md`](../../tickets-next.md) | T23 — 딜러 OTP의 반대 결론과 그 근거 |
+| [`../../chat-log2.md`](../../chat-log2.md) | T23 — 딜러 OTP의 반대 결론과 그 근거 |
 | [`../../backlog.md`](../../backlog.md) | B1 이월 — 클라이언트 수준 omit, 전역 Throttler |
 | [`2026-07-27-frontend-screens-design.md`](./2026-07-27-frontend-screens-design.md) | 태블릿 진입 흐름 (front-end 워크트리) |

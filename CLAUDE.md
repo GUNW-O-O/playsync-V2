@@ -9,19 +9,44 @@
 
 ## 문서 지도
 
+**매 세션 읽는다.**
+
 | 문서 | 무엇 |
 |---|---|
-| **`CLAUDE.md`** (이 파일) | 작업 규칙 · 명령어 · 기준선. 매 세션 |
+| **`CLAUDE.md`** (이 파일) | 작업 규칙 · 명령어 · 기준선 |
 | [`docs/domain.md`](./docs/domain.md) | 도메인 규칙과 **코드 좌표**. 어기면 뭐가 깨지나 |
-| [`docs/backlog.md`](./docs/backlog.md) | **지금 단계의 할 일** |
-| [`docs/tickets-next.md`](./docs/tickets-next.md) | 작업 기록. 판단 근거를 여기 쓴다 |
-| [`docs/review-budget.md`](./docs/review-budget.md) | 서브에이전트로 티켓 돌릴 때만 |
-| [`load/README.md`](./load/README.md) | 부하 무대 · 봇. 부하 작업할 때만 |
+
+**작업할 때 연다.**
+
+| 문서 | 언제 |
+|---|---|
+| [`docs/tickets-audit.md`](./docs/tickets-audit.md) | **이미 깨져 있는 것.** 결함 대장이고, 상태 열이 진행 현황이다 |
+| [`docs/backlog.md`](./docs/backlog.md) | **하기로 정한 방향**과 안 하기로 한 것의 근거 |
+| `docs/superpowers/plans/` · `specs/` | 티켓의 계획과 설계. 스킬이 만든다 |
 | [`docs/threat-model.md`](./docs/threat-model.md) | 신뢰 경계 |
-| [`README.md`](./README.md) | 프로젝트 설명. 왜 이렇게 만들었나 |
-| `docs/fixlist.md` · `docs/tickets.md` | 1단계 기록. **닫힌 문서** |
+| [`load/README.md`](./load/README.md) | 부하 무대 · 봇. 부하 작업할 때만 |
+
+**사람 기록물 — 작업 중에 읽지 않는다.**
+`README.md` · `docs/chat-log*.md` · `docs/tickets.md` · `docs/fixlist.md` ·
+`docs/review.md` · `docs/results/`.
 
 같은 내용을 두 곳에 쓰지 않는다. 두 벌이 되면 어긋난다.
+
+### 티켓을 어디에 기록하나
+
+`docs/tickets-next.md`를 폐기하면서 정했다(2026-08-20). 그 문서는 네 가지를
+한꺼번에 들고 있었는데, 넷 다 이미 다른 자리가 있었다 — 34개 티켓 중 30개가
+`chat-log`에 더 자세히(기각한 안까지) 있었고, 최종 설계는 `domain.md`가 살아
+있는 판으로 들고 있었다. 4,714줄이 그 셋의 요약본이었다.
+
+| 무엇 | 어디 |
+|---|---|
+| 무엇을 할지 | `tickets-audit.md`(결함) · `backlog.md`(방향) |
+| 계획 · 설계 | `docs/superpowers/plans/` · `specs/` |
+| 진행 상태 | `tickets-audit.md`의 상태 열 (`대기` → `완료 (#PR)`) |
+| 지금 코드의 규칙 | `domain.md` |
+| 판단 과정 | `docs/chat-log*.md` (세션 대화를 걸러 커밋한다) |
+| 무엇을 했나 | PR 본문 + 커밋 |
 
 ## 구조
 
@@ -164,9 +189,9 @@ Prisma는 드라이버 어댑터 구성이라 `$disconnect()`가 pg Pool을 닫�
 하는데, **어긋난 것을 잡아 주는 장치가 없다** — 타입 체커도 CI도 안 본다.
 이름은 바뀌면 `grep`이 0건을 내므로 리팩터링 자체가 문서를 밀어낸다.
 
-예외는 `docs/tickets-next.md`·`docs/tickets.md`·`docs/fixlist.md`다. **기록물이라
-갱신하지 않는다** — 그때의 좌표를 지금 것으로 고치면 "그때 무엇을 봤는가"가
-거짓이 된다. 다만 **새로 쓰는 절은 이름으로 적는다.**
+예외는 `docs/tickets.md`·`docs/fixlist.md`다. **기록물이라 갱신하지 않는다** —
+그때의 좌표를 지금 것으로 고치면 "그때 무엇을 봤는가"가 거짓이 된다. 다만
+**새로 쓰는 절은 이름으로 적는다.**
 
 ### 셸
 
@@ -176,6 +201,10 @@ Bash 툴의 작업 디렉터리는 **호출 사이에 유지된다.** `cd backen
 
 ### 서브에이전트
 
-티켓을 서브에이전트에 분배할 때만 [`docs/review-budget.md`](./docs/review-budget.md)를
-읽는다. 요점: **태스크를 덜 쪼개고, 태스크 리뷰는 동시성에 닿는 제품 코드만
-받고, 최종 전체 리뷰는 opus로 자르지 않는다.**
+**태스크를 덜 쪼개고, 태스크 리뷰는 동시성에 닿는 제품 코드만 받고, 최종 전체
+리뷰는 opus로 자르지 않는다.**
+
+숫자가 근거다. T29가 2시간 · 1.53M 토큰을 썼는데 **태스크 리뷰 둘이 16분을 쓰고
+아무것도 잡지 못했고, 최종 전체 리뷰 하나가 Important 3건을 혼자 다 잡았다.**
+태스크 경계의 기준은 **리뷰어가 이웃 태스크는 통과시키면서 이것만 반려할 수
+있는가**다 — 설정 · 문서 · 스캐폴딩은 그것을 필요로 하는 태스크에 접는다.

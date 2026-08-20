@@ -242,4 +242,3 @@ B2에서 한꺼번에 본다.
 |---|---|
 | [`../../backlog.md`](../../backlog.md) | B8. 자동 밸런싱을 하지 않는 근거 |
 | [`2026-07-28-table-creation-design.md`](./2026-07-28-table-creation-design.md) | T25. 테이블 생성·삭제, `FOR UPDATE` 경합 처리 |
-| [`../../tickets-next.md`](../../tickets-next.md) | 작업 기록 |

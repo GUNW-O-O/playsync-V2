@@ -7,8 +7,8 @@
 > 이 문서는 **판단 근거의 기록**으로 남긴다. 같은 자리를 다시 볼 때 왜 그렇게
 > 정했는지가 여기 있다.
 >
-> 2단계 할 일은 [`backlog.md`](./backlog.md), 작업 기록은
-> [`tickets-next.md`](./tickets-next.md)에 있다.
+> 이후의 할 일은 [`backlog.md`](./backlog.md)와
+> [`tickets-audit.md`](./tickets-audit.md)에 있다.
 
 > 브랜치 하나 = 티켓 하나 = PR 하나.
 > 각 티켓은 [fixlist.md](./fixlist.md)의 항목을 참조만 한다. 문제의 상세와 수정

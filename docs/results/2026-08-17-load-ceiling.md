@@ -4,8 +4,8 @@
 약 1,200테이블"까지 남기고 끝났다. 그때 상한은 **계산**이었고, 실측이 멈춘
 자리는 도착(로그인 bcrypt)이 코어를 채운 지점이었다.
 
-이번에는 그 위를 실제로 재려고 여섯 번 돌렸다. 판단의 기록은
-[`../tickets-next.md`](../tickets-next.md)의 T57에 있다.
+이번에는 그 위를 실제로 재려고 여섯 번 돌렸다. 판단의 기록은 PR #58과
+[`../superpowers/specs/2026-08-15-load-ramp-design.md`](../superpowers/specs/2026-08-15-load-ramp-design.md)에 있다.
 
 ## 결론부터
 

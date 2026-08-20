@@ -513,7 +513,7 @@ test.describe('데모 — 한 대회', () => {
     // **아직 대회가 열리지 않았다.** 버튼은 눌리지만 서버가 거절하고, 그
     // 사실이 딜러 화면에 모달로 남는다 — 조용히 사라지지 않는 것이 요점이다.
     // (버튼 자체를 잠그려면 딜러 화면이 대회 상태를 실시간으로 알아야 하는데,
-    // 스냅샷에 그 정보가 없다. `docs/tickets-next.md` T36에 남겨 뒀다.)
+    // 스냅샷에 그 정보가 없다.)
     mark('장면 2 — 대회 전에는 핸드가 열리지 않는다');
     await press(dealer, dealer.getByRole('button', { name: '핸드 시작' }));
     await expect(dealer.getByTestId('dealer-action-error')).toBeVisible({ timeout: 15_000 });
