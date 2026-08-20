@@ -11,7 +11,14 @@ process.env.BACKEND_URL = 'http://backend.test';
 
 const { default: ConsoleTournamentPage } = await import('./page');
 
-/** 서명 검증 없이 role만 실은 JWT 모양. `decodeSession`은 서명을 보지 않는다. */
+/**
+ * 쿠키에 실릴 JWT 모양. 서명은 아무도 보지 않는다.
+ *
+ * role은 **판정에 안 쓰인다** — 페이지는 `GET /store/sessions/:id/seats`의
+ * 성공/실패만 본다(T66). 그래도 PLATFORM_ADMIN 토큰으로 한 건 남긴 것은,
+ * 페이지가 역할을 다시 읽어 예외를 만드는 순간 빨간불이 되게 하려는 못
+ * 박기다.
+ */
 function fakeToken(payload: { sub: string; nickname: string; role: string }): string {
   const b64 = (obj: unknown) => Buffer.from(JSON.stringify(obj)).toString('base64url');
   return `${b64({ alg: 'none' })}.${b64(payload)}.sig`;

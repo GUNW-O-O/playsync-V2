@@ -666,12 +666,16 @@ scenario/full-flow.int-spec.ts        참가 전후 포인트 총합 일치
   없었고, 딜러 화면이 부르는 `GET /playsync/:tableId`가 그 없음을 맨 `Error`로
   던졌다. 이제 `createTable`이 빈 스냅샷도 세운다 — 근거는 B11절의 T38에.
   화면 티켓에서 미뤄 둔 것을 부하 하네스가 막히면서 뗐다.
-- **`PLATFORM_ADMIN`이 상점 콘솔을 열면 좌석 정보를 못 받는다.** 미들웨어는
+- **`PLATFORM_ADMIN`이 상점 콘솔을 열면 아무것도 못 받는다.** 미들웨어는
   `/stores`에 `STORE_ADMIN`·`PLATFORM_ADMIN`을 둘 다 들이는데
-  `GET /store/sessions/:id/seats`는 `STORE_ADMIN` 전용이다. 화면은 서버가
-  돌려준 실패 문구를 배너로 띄운다 — 역할 분기로 버튼을 숨기지 않는 것이
-  이 리포의 방식이다(권한의 진실은 백엔드 한 곳). 어긋남 자체는 B6의
-  "`POST /store` 가드가 `STORE_ADMIN`을 허용한다"와 같은 갈래다.
+  `GET /store/sessions/:id/seats`는 `STORE_ADMIN` 전용이다. **T66이 그 실패를
+  좌석 패널이 아니라 페이지 전체의 문지기로 바꿨다** — 배너만 뜨고 대회명·
+  프라이즈풀·테이블 목록은 그려지던 것을, 소유권 확인이 실패하면 그 셋을
+  아예 안 내려보내는 쪽으로 옮겼다. 역할 분기로 버튼을 숨기지 않는 것이
+  이 리포의 방식인데(권한의 진실은 백엔드 한 곳), T66은 그 방식을 화면
+  전체로 넓힌 것이다. 어긋남 자체는 B6의 "`POST /store` 가드가
+  `STORE_ADMIN`을 허용한다"와 같은 갈래이고, 어드민을 세울 때 컨트롤러
+  `@Roles`로 같이 정한다.
 - **e2e가 상태를 남긴다.** `terminal.spec.ts`가 사람을 앉히므로 반복 실행에는
   `npm run seed -w backend`가 앞에 붙는다. 파일 이름의 알파벳 순서가 곧 실행
   순서라는 것에 기대고 있다(워커 하나).

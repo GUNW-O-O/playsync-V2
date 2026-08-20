@@ -94,13 +94,11 @@ async function fetchDashboard(tournamentId: string): Promise<FullTournamentInfo 
  *
  * 미들웨어는 `/stores`에 STORE_ADMIN·PLATFORM_ADMIN을 둘 다 들이지만 이
  * 엔드포인트는 STORE_ADMIN만 통과시킨다 — PLATFORM_ADMIN이 이 화면을 열면
- * 좌석 정보를 아예 못 받는다. 화면에서 역할 분기로 숨기지 않고, 서버가
- * 돌려준 실패 문구를 그대로 배너로 띄운다.
+ * 좌석 정보를 아예 못 받는다.
  *
- * 이 어긋남은 T56이 **그대로 두기로 판단한 것**이다. 어드민 기능 자체가
- * 범위 밖이라(`backlog.md` B6) PLATFORM_ADMIN은 소유자가 아니어서 이 화면의
- * 어떤 조회·조작도 통과하지 못한다. `@Roles`에서 빼는 쪽은 어드민을 세울 때
- * 되돌려야 하므로 그때 같이 정한다.
+ * 이 실패는 좌석 패널 하나가 아니라 **페이지 전체의 문지기**다(T66). 왜
+ * 그렇게 뒀고 왜 PLATFORM_ADMIN에도 예외가 없는지는 아래
+ * `ConsoleTournamentPage` 주석에 적었다 — 여기서 두 번 적지 않는다.
  */
 async function fetchSeatOccupants(
   tournamentId: string,
