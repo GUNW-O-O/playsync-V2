@@ -81,7 +81,15 @@ export const TableStateSchema = z.object({
   sidePots: z.array(SidePotSchema),
   currentBet: chips,
   smallBlind: chips,
-  ante: z.boolean(),
+  /**
+   * 앤티 금액. 0이면 없다는 뜻이다.
+   *
+   * T58 전에는 `boolean`이었다. `BlindLevelSchema.ante`(대회 블라인드
+   * 구조 쪽)는 여전히 `boolean`으로 남는다 — 구조는 "앤티가 붙나"를
+   * 선언하고, 이 스냅샷의 값은 "얼마인가"를 든다. 화면(`Felt`)이 금액을
+   * 직접 계산하지 않고 여기서 받아 그리게 하려고 층을 나눴다.
+   */
+  ante: chips,
   actionDeadline: z.int().optional(),
   /**
    * 핸드 종료 체크포인트(DB 동기화)의 상태. 정상 진행 중에는 없다.
