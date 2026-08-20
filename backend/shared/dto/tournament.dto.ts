@@ -11,11 +11,17 @@ import { GameType } from '@prisma/client';
  *
  * 상한이 있는 이유는 Prisma `Int`가 postgres `integer`이기 때문이다.
  * class-validator의 `@IsInt()`는 `2^31`을 넘는 안전 정수를 통과시키고, 리포에
- * 예외 필터가 없어 22003이 그대로 500으로 나간다. `totalBuyinAmount`처럼
- * 누적되는 값은 **대회 도중에** 터진다.
+ * 예외 필터가 없어 22003이 그대로 500으로 나간다.
+ *
+ * **`ENTRY_FEE_MAX`는 단발 값이 아니라 누적에서 역산한다.** `entryFee` 자체를
+ * `Int` 상한(2,147,483,647) 아래로 막는 것만으로는 부족하다 — 실제로 터지는
+ * 것은 그 값이 누적되는 `Tournament.totalBuyinAmount`(역시 `Int`)이고, 그 값은
+ * 대회 도중에 참가·리바인이 쌓이며 커진다. T57이 594테이블(5,346명)을 실측한
+ * 리포라 참가자 규모를 만 명으로 잡으면, `200_000 × 10_000 = 2,000,000,000 <
+ * 2^31`이 안전한 상한이고 홀덤펍 참가비의 현실적 범위이기도 하다.
  */
 export const ENTRY_FEE_MIN = 1;
-export const ENTRY_FEE_MAX = 10_000_000;
+export const ENTRY_FEE_MAX = 200_000;
 export const START_STACK_MIN = 1;
 export const START_STACK_MAX = 1_000_000_000;
 export const REBUY_UNTIL_MIN = 0;

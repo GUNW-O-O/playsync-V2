@@ -39,7 +39,7 @@ describe('대회 DTO의 경계', () => {
   const cases: { 필드: 'entryFee' | 'startStack' | 'rebuyUntil'; 값: number; 왜: string }[] = [
     { 필드: 'entryFee', 값: 0, 왜: 'recalculateAvgStack이 0으로 나눠 NaN이 되고 전광판이 멎는다' },
     { 필드: 'entryFee', 값: -50000, 왜: 'paymentPoint의 decrement가 음수라 포인트를 발행한다' },
-    { 필드: 'entryFee', 값: ENTRY_FEE_MAX + 1, 왜: 'postgres integer를 넘겨 22003이 500으로 나간다' },
+    { 필드: 'entryFee', 값: ENTRY_FEE_MAX + 1, 왜: '만 명이 낼 때 totalBuyinAmount가 postgres integer를 넘긴다' },
     { 필드: 'startStack', 값: -1, 왜: 'currentStack이 음수가 되어 칩 보존이 깨진다' },
     { 필드: 'startStack', 값: START_STACK_MAX + 1, 왜: '같은 22003' },
     { 필드: 'rebuyUntil', 값: -1, 왜: '레벨 번호와 비교되는 값이라 음수가 뜻을 갖지 않는다' },

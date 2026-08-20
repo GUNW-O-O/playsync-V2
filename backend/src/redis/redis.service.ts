@@ -464,6 +464,11 @@ export class RedisService {
       return { ...blind, serverTime: now };
     }
     // 시간 경과 시에만 상세 계산 수행
+    // `parseBlindStructure`를 거치지 않고 바로 넘긴다 — 안전한 이유는 이
+    // `blind.blindStructure`가 `buildTournamentMeta`(→`parseBlindStructure`)가
+    // Redis에 쓴 값이기 때문이다(`getTournamentBlind` 참고). 다음에
+    // `getCurrentBlindLevel`을 부르는 새 호출자가 파싱 안 된 구조를 넘기면
+    // 여기서 조용히 깨진다.
     const calculated = getCurrentBlindLevel(blind.blindStructure, blind.startedAt);
     // 레벨 인덱스가 바뀌었거나, 휴식 상태(isBreak)가 변경되었을 때만 업데이트
     if (

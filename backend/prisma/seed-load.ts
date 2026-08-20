@@ -77,8 +77,18 @@ const DEALER_OTP = '123456';
  */
 const BLIND_STRUCTURE = [{ lv: 1, sb: 100, ante: false, duration: 600 }];
 
-/** 등록 마감까지의 분. 램프가 이 안에서 끝나야 착석이 계속 열려 있다. */
-const REBUY_UNTIL = 600;
+/**
+ * 등록이 자동으로 닫히는 레벨 번호(`lv`) — **분이 아니다.** `isRegistrationOpenAtLevel`
+ * (`registration.ts`)이 `currentLv < rebuyUntil`로 비교하는 값이 이것이다.
+ *
+ * `REBUY_UNTIL_MAX`(99, `tournament.dto.ts`)를 넘지 않는다. 여기는 Prisma
+ * 직접 쓰기라 그 상한에 막히지 않지만, 시드가 DTO 검증이 막는 값 위에 서
+ * 있으면 안 된다 — 예전에는 600이라 이 대회는 등록이 자동으로 닫힐 길이
+ * 아예 없었다(블라인드 구조가 `lv: 1` 한 레벨뿐이라 `currentLv`가 600을
+ * 넘을 수 없다). 램프 내내 등록이 열린 채로 남는 것이 의도라 값 자체는
+ * 바뀌지 않는다 — 상한 안에서 같은 뜻을 낸다.
+ */
+const REBUY_UNTIL = 99;
 
 const START_STACK = 100_000;
 
