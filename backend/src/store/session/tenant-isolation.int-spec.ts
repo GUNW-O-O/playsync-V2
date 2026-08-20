@@ -95,6 +95,21 @@ describe('상점 경계 — 남의 상점을 건드릴 수 없다', () => {
     prizePayouts: [{ place: 1, percent: 100 }],
   });
 
+  /**
+   * blindId 없이 blindStructure를 넘기는 호출용 기본 dto. `storeId`는 호출부에서
+   * 덮어쓰고, `blindId`는 일부러 비워 `createSession`이 세 번째 인자로 새
+   * 블라인드 구조를 만들게 한다.
+   */
+  const baseDto: Omit<CreateTournamentDto, 'storeId' | 'blindId'> = {
+    name: '대회',
+    type: GameType.TOURNAMENT,
+    startStack: 10000,
+    entryFee: 1000,
+    rebuyUntil: 5,
+    isRegistrationOpen: true,
+    prizePayouts: [{ place: 1, percent: 100 }],
+  };
+
   describe('createSession', () => {
     it('남의 상점 id로는 대회를 만들 수 없다', async () => {
       await expect(
@@ -131,6 +146,41 @@ describe('상점 경계 — 남의 상점을 건드릴 수 없다', () => {
       ).rejects.toThrow(ForbiddenException);
 
       await expect(prisma.blindStructure.count({ where: { storeId: storeB } })).resolves.toBe(1);
+    });
+
+    it('두 상점이 같은 이름의 블라인드 구조를 쓸 수 있다', async () => {
+      // 전역 유니크였을 때는 두 번째 상점의 `POST /store/sessions`가 P2002로
+      // 500이었다. 응답 차이로 다른 상점이 어떤 이름을 쓰는지 떠볼 수도 있었다.
+      // `seed-load.ts`가 상점마다 이름에 인덱스를 붙인 것이 이 사실의 흔적이다.
+      await sessionService.createSession(
+        { ...baseDto, storeId: storeA } as CreateTournamentDto,
+        ownerA,
+        { name: '주말 딥스택', storeId: storeA, structure: [{ lv: 1, sb: 100, ante: false, duration: 10 }] },
+      );
+
+      await expect(
+        sessionService.createSession(
+          { ...baseDto, storeId: storeB } as CreateTournamentDto,
+          ownerB,
+          { name: '주말 딥스택', storeId: storeB, structure: [{ lv: 1, sb: 100, ante: false, duration: 10 }] },
+        ),
+      ).resolves.toBeDefined();
+    });
+
+    it('같은 상점 안에서는 이름이 겹치지 않는다', async () => {
+      await sessionService.createSession(
+        { ...baseDto, storeId: storeA } as CreateTournamentDto,
+        ownerA,
+        { name: '중복 이름', storeId: storeA, structure: [{ lv: 1, sb: 100, ante: false, duration: 10 }] },
+      );
+
+      await expect(
+        sessionService.createSession(
+          { ...baseDto, storeId: storeA } as CreateTournamentDto,
+          ownerA,
+          { name: '중복 이름', storeId: storeA, structure: [{ lv: 1, sb: 100, ante: false, duration: 10 }] },
+        ),
+      ).rejects.toThrow();
     });
   });
 
