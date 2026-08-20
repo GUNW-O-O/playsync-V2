@@ -1,3 +1,9 @@
+// `shared/dto/tournament.dto`가 class-validator 데코레이터를 쓰고
+// (`emitDecoratorMetadata: true`), 그 메타데이터가 `Reflect.getMetadata`를
+// 찾는다. Nest 부트스트랩(main.ts)에서는 프레임워크가 미리 불러 두지만 이
+// 시드는 그 경로를 안 타므로 여기서 직접 불러야 한다 — 없으면
+// `TypeError: Reflect.getMetadata is not a function`으로 죽는다.
+import 'reflect-metadata';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient, Role, TournamentStatus } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
@@ -7,6 +13,11 @@ import { resolve } from 'path';
 import { Pool } from 'pg';
 import { hashDealerOtp } from '../src/dealer/dealer-otp';
 import { resetAll, setEmptySnapshot, setSeatBitmap } from './seed-helpers';
+// `shared/...` 별칭(jest의 moduleNameMapper·tsconfig의 baseUrl)은 컴파일
+// 타임 타입 체크는 통과시키지만 ts-node의 실제 require 호출까지는 풀어 주지
+// 않는다 — 실행하면 `Cannot find module 'shared/dto/tournament.dto'`로 죽는다.
+// 상대경로로 내려간다.
+import { ENTRY_FEE_MIN } from '../shared/dto/tournament.dto';
 
 /**
  * 부하테스트용 시드.
@@ -19,12 +30,13 @@ import { resetAll, setEmptySnapshot, setSeatBitmap } from './seed-helpers';
  * 두 종류가 **실제로 일어나는 시점이 다르다**는 것이다 — 가입의 `hash`는 몇
  * 주 전에 흩어져 일어나고, 로그인의 `compare`만 대회 직전에 몰린다.
  *
- * **참가비가 0이다.** 회원가입이 포인트를 주지 않고(`schema.prisma`의
+ * **참가비가 1이다.** 회원가입이 포인트를 주지 않고(`schema.prisma`의
  * `points @default(0)`) 충전 경로도 없다 — 실제 PG 결제가 아직 판단하지 않은
- * 항목이라 포인트 차감이 결제를 대신하고 있다. `joinSession`의 게이트가
- * `user.points < session.entryFee`라 0원이면 통과하므로, 결제 경로의 DB 쓰기
- * (참가 행 · 참가 OTP · 거래 내역 · 프라이즈풀 갱신)는 그대로 돌면서 잔고
- * 문제만 비껴간다.
+ * 항목이라 포인트 차감이 결제를 대신하고 있다. 예전에는 참가비를 0으로 두어
+ * `joinSession`의 `user.points < session.entryFee` 게이트를 비껴갔는데,
+ * **그 값이 `recalculateAvgStack`의 분모라 `0 / 0 = NaN`이 되어 전광판이
+ * 죽은 상태로 부하를 쟀다**(T64 6-3). 지금은 참가비를 `ENTRY_FEE_MIN`으로 두고
+ * 풀 계정에 포인트를 미리 실어, 결제 경로가 게이트까지 정직하게 지나간다.
  *
  * **비밀은 매니페스트로 나간다.** 딜러 OTP는 해시로만 저장되므로 여기서
  * 내보내지 않으면 다시 볼 방법이 재발급뿐이다. k6가 읽어야 하므로 stdout이
@@ -118,6 +130,15 @@ const ACCOUNT_POOL = Number(process.env.LOAD_ACCOUNT_POOL ?? 600);
 const ACCOUNT_PREFIX = 'p';
 
 /**
+ * 풀 계정의 초기 포인트. 참가와 리바인이 전부 이 잔고에서 나간다.
+ *
+ * 참가비가 `ENTRY_FEE_MIN`(1)이라 게이트 자체는 잔고를 거의 요구하지 않지만,
+ * 램프가 한 계정으로 여러 대회에 들어가고 리바인도 여러 번 돈다 — 넉넉히
+ * 줘서 부하 무대의 관심이 잔고가 아니라 처리량에 머물게 한다.
+ */
+const BOT_POINTS = 100_000_000;
+
+/**
  * k6가 읽는 매니페스트.
  *
  * 데모 시드는 리포 루트에 떨어뜨리는데 이건 `load/` 안이다. **k6 컨테이너가
@@ -163,6 +184,8 @@ async function main() {
           nickname: `${ACCOUNT_PREFIX}${String(i).padStart(4, '0')}`,
           password,
           role: Role.USER,
+          // 참가와 리바인이 전부 이 잔고에서 나간다. 근거는 위 `BOT_POINTS` 주석.
+          points: BOT_POINTS,
         })),
       });
     }
@@ -178,15 +201,21 @@ async function main() {
     }[] = [];
 
     for (let s = 0; s < STORE_COUNT; s++) {
+      // `Store.name`은 `@@unique([ownerId, name])`다(상점 범위가 아니라 소유자
+      // 범위). 이 시드는 상점을 전부 같은 `owner` 하나에 붙이므로 이름이
+      // 겹치면 두 번째 상점부터 P2002다 — 인덱스를 상점 스코프로 좁힌
+      // 마이그레이션(cf92f74) 뒤에도 여기서는 여전히 인덱스와 부딪힌다.
       const store = await prisma.store.create({
         data: { name: `${STORE_NAME} ${s + 1}`, ownerId: owner.id },
       });
 
-      // `BlindStructure.name`이 **전역** 유니크다(상점 범위가 아니다). 상점을
-      // 여럿 세우면서 드러났다 — 같은 이름을 쓰면 두 번째 상점에서 P2002다.
+      // `BlindStructure.name`은 `@@unique([storeId, name])`다(cf92f74로 전역
+      // 유니크에서 상점 스코프로 좁혔다). 상점마다 `storeId`가 다르므로 이제는
+      // 같은 이름을 여러 상점에서 그대로 써도 부딪히지 않는다 — 위 `Store`와
+      // 달리 여기서는 상점별 접미사가 더 필요 없다.
       const blind = await prisma.blindStructure.create({
         data: {
-          name: `부하 (한 레벨) ${s + 1}`,
+          name: '부하 (한 레벨)',
           structure: BLIND_STRUCTURE,
           storeId: store.id,
         },
@@ -198,8 +227,9 @@ async function main() {
           status: TournamentStatus.PENDING,
           storeId: store.id,
           blindId: blind.id,
-          // 위 주석 참고 — 포인트 충전 경로가 없어서 0이어야 결제가 통과한다.
-          entryFee: 0,
+          // 0이 아니다 — 머리말 참고. 분모로 쓰이는 값이라 0이면
+          // `recalculateAvgStack`이 NaN을 만든다.
+          entryFee: ENTRY_FEE_MIN,
           startStack: START_STACK,
           rebuyUntil: REBUY_UNTIL,
           itmCount: 1,
