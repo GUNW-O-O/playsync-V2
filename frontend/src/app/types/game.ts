@@ -39,7 +39,8 @@ export interface TableState {
   sidePots: SidePot[];
   currentBet: number;
   smallBlind: number;
-  ante: boolean;
+  /** 앤티 금액. 0이면 없다는 뜻이다(T58). 화면은 이 값을 그대로 그린다. */
+  ante: number;
   actionDeadline?: number;
   tournamentId: string;
 }

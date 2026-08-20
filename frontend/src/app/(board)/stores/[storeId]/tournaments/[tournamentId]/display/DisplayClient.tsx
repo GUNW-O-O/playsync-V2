@@ -138,6 +138,18 @@ export default function DisplayClient({ tournamentId }: { tournamentId: string }
         <div className="flex flex-col gap-1.5">
           <span className="font-cond text-sm uppercase tracking-[0.18em] text-sb-dim">
             Level {current?.lv} · 블라인드
+            {/*
+              칩이 디지털이고 화면이 유일한 장부다. 딜러가 이 대회에 앤티가
+              붙는지 화면으로는 몰랐다(T58). 구조(BlindLevel.ante)는 "붙나"만
+              선언한다 — 얼마인지(state.ante, sb/5)는 실제로 핸드가 도는
+              테이블의 몫이라 여기서 sb/5를 다시 계산하지 않는다. 그 계산이
+              두 곳에 있으면 백엔드가 식을 바꿀 때 조용히 어긋난다.
+            */}
+            {current?.ante && (
+              <span data-testid="ante-badge" className="ml-2 text-sb-live">
+                · 앤티 있음
+              </span>
+            )}
           </span>
           <span className="font-cond text-[clamp(56px,12vw,140px)] font-bold leading-[0.86] tabular-nums">
             {current?.sb.toLocaleString()} / {((current?.sb ?? 0) * 2).toLocaleString()}

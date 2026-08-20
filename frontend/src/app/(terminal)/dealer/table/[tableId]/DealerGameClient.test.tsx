@@ -70,7 +70,7 @@ function baseState(overrides: Partial<TableState> = {}): TableState {
     sidePots: [],
     currentBet: 0,
     smallBlind: 100,
-    ante: false,
+    ante: 0,
     tournamentId: 'trn-1',
     ...overrides,
   };

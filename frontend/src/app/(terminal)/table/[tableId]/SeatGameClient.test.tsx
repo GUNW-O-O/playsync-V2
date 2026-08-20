@@ -87,7 +87,7 @@ const BASE_STATE: TableState = {
   sidePots: [],
   currentBet: 0,
   smallBlind: 100,
-  ante: false,
+  ante: 0,
   tournamentId: 'trn-1',
 };
 
