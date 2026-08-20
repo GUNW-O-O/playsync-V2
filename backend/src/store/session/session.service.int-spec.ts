@@ -2071,3 +2071,138 @@ describe('SessionService.updateSession — 상점 소유권', () => {
     ).rejects.toThrow(NotFoundException);
   });
 });
+
+/**
+ * 수정 경로가 생성과 같은 검사를 지나가는지 본다.
+ *
+ * `createSession`은 `dto.blindId`가 넘어오면 `blindStructure.findUnique` →
+ * `blind.storeId !== dto.storeId`로 남의 상점 구조를 걸러낸다.
+ * `updateSession`은 그 값을 그대로 저장했다 — 남의 상점 블라인드 구조 id를
+ * 자기 대회에 붙일 수 있었고, 없는 id는 외래키 위반(P2003)이 예외 필터 없이
+ * 500으로 나갔다.
+ *
+ * 통합 테스트인 이유는 **실제 외래키와 실제 행**이 있어야 P2003과 소유권이
+ * 의미를 갖기 때문이다. 실제 테넌트(상점) 둘을 세우고, 한쪽 소유자로
+ * 다른 쪽 블라인드 구조를 붙이려 한다.
+ */
+describe('SessionService.updateSession — 수정 경로의 검사', () => {
+  let prisma: PrismaClient;
+  let redis: Redis;
+  let sessionService: SessionService;
+  let myTournamentId: string;
+  let myOtherBlindId: string;
+  let otherStoreBlindId: string;
+  let ownerId: string;
+
+  beforeAll(() => {
+    prisma = createTestPrisma();
+    redis = createTestRedis();
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+    await closeTestPrisma(prisma);
+  });
+
+  beforeEach(async () => {
+    await truncateAll(prisma);
+    await flushTestRedis(redis);
+
+    sessionService = new SessionService(
+      prisma as unknown as PrismaService,
+      new RedisService(redis),
+      new OtpAttempts(redis),
+      new EventEmitter2(),
+    );
+
+    // seedTournamentWithTable이 내 상점·내 대회·첫 블라인드 구조를 세운다.
+    ({ ownerId, tournamentId: myTournamentId } = await seedTournamentWithTable(prisma));
+    const myTournament = await prisma.tournament.findUniqueOrThrow({
+      where: { id: myTournamentId },
+      select: { storeId: true },
+    });
+
+    // 내 상점의 **다른** 블라인드 구조. 정상적으로 바꿀 수 있어야 하는 값이다.
+    const myOtherBlind = await prisma.blindStructure.create({
+      data: {
+        name: '내 상점의 다른 구조',
+        storeId: myTournament.storeId,
+        structure: [{ lv: 1, sb: 200, ante: false, duration: 20 }],
+      },
+    });
+    myOtherBlindId = myOtherBlind.id;
+
+    // 다른 테넌트. 이 상점의 구조를 내 대회에 붙이면 막혀야 한다.
+    const otherOwner = await prisma.user.create({
+      data: { nickname: '다른-상점주', password: 'x', role: Role.STORE_ADMIN },
+    });
+    const otherStore = await prisma.store.create({
+      data: { name: '다른 상점', ownerId: otherOwner.id },
+    });
+    const otherBlind = await prisma.blindStructure.create({
+      data: {
+        name: '남의 구조',
+        storeId: otherStore.id,
+        structure: [{ lv: 1, sb: 300, ante: false, duration: 20 }],
+      },
+    });
+    otherStoreBlindId = otherBlind.id;
+  });
+
+  it('남의 상점 블라인드 구조로 바꿀 수 없다', async () => {
+    await expect(
+      sessionService.updateSession(myTournamentId, { blindId: otherStoreBlindId } as never, ownerId),
+    ).rejects.toThrow(ForbiddenException);
+  });
+
+  it('없는 블라인드 구조 id는 404다 — 외래키 위반이 500으로 나가지 않는다', async () => {
+    await expect(
+      sessionService.updateSession(myTournamentId, { blindId: '존재하지-않는-id' } as never, ownerId),
+    ).rejects.toThrow(NotFoundException);
+  });
+
+  it('진행 중인 대회의 entryFee는 바꿀 수 없다', async () => {
+    // 한 번 바꾸면 `recalculateAvgStack`의 역산과 `cancelSession`의
+    // `참가자 수 × entryFee === totalBuyinAmount`가 영영 어긋나, 그 대회는
+    // 취소도 종료도 못 하는 상태로 굳는다.
+    await prisma.tournament.update({
+      where: { id: myTournamentId },
+      data: { status: TournamentStatus.ONGOING },
+    });
+    await expect(
+      sessionService.updateSession(myTournamentId, { entryFee: 99000 } as never, ownerId),
+    ).rejects.toThrow(ConflictException);
+  });
+
+  it('진행 중인 대회의 startStack도 바꿀 수 없다', async () => {
+    await prisma.tournament.update({
+      where: { id: myTournamentId },
+      data: { status: TournamentStatus.ONGOING },
+    });
+    await expect(
+      sessionService.updateSession(myTournamentId, { startStack: 50000 } as never, ownerId),
+    ).rejects.toThrow(ConflictException);
+  });
+
+  it('진행 중이어도 이름은 바꿀 수 있다 — 돈에 닿지 않는 값이다', async () => {
+    await prisma.tournament.update({
+      where: { id: myTournamentId },
+      data: { status: TournamentStatus.ONGOING },
+    });
+    const updated = await sessionService.updateSession(
+      myTournamentId,
+      { name: '새 이름' } as never,
+      ownerId,
+    );
+    expect(updated.name).toBe('새 이름');
+  });
+
+  it('자기 상점 구조로는 바꿀 수 있다', async () => {
+    const updated = await sessionService.updateSession(
+      myTournamentId,
+      { blindId: myOtherBlindId } as never,
+      ownerId,
+    );
+    expect(updated.blindId).toBe(myOtherBlindId);
+  });
+});

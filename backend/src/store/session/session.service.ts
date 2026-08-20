@@ -133,14 +133,7 @@ export class SessionService {
       throw new ForbiddenException('본인의 매장이 아닙니다.');
     }
     if (dto.blindId) {
-      const blind = await this.prismaService.blindStructure.findUnique({
-        where: { id: dto.blindId },
-        select: { storeId: true },
-      });
-      if (!blind) throw new NotFoundException('블라인드 구조를 찾을 수 없습니다.');
-      if (blind.storeId !== dto.storeId) {
-        throw new ForbiddenException('본인의 매장이 아닙니다.');
-      }
+      await this.assertBlindBelongsToStore(dto.blindId, dto.storeId);
     }
 
     // dto.blindId(기존 구조 재사용)가 우선이고, 없을 때만 새로 만든다.
@@ -812,6 +805,27 @@ export class SessionService {
   }
 
   /**
+   * 블라인드 구조가 그 상점의 것인지 본다.
+   *
+   * 생성에만 있던 검사다. 수정(`updateSession`)이 `blindId`를 그대로 저장해서,
+   * 남의 상점 구조를 자기 대회에 붙일 수 있었고 그 대회가 다른 테넌트의
+   * 구조로 돌았다. 없는 id는 외래키 위반(P2003)이 되어 예외 필터가 없는 이
+   * 리포에서 500으로 나갔다.
+   *
+   * **판정이 한 곳이어야 한다.** 두 벌이 되면 한쪽만 고쳐지는 날이 온다.
+   */
+  private async assertBlindBelongsToStore(blindId: string, storeId: string) {
+    const blind = await this.prismaService.blindStructure.findUnique({
+      where: { id: blindId },
+      select: { storeId: true },
+    });
+    if (!blind) throw new NotFoundException('블라인드 구조를 찾을 수 없습니다.');
+    if (blind.storeId !== storeId) {
+      throw new ForbiddenException('본인의 매장이 아닙니다.');
+    }
+  }
+
+  /**
    * 좌석 해제 화면의 입력. `POST .../seats/release`의 DTO(`ReleaseSeatItem`)가
    * `seatIndex`뿐 아니라 `userId`도 요구한다 — 상점 콘솔이 조금 전에 그린
    * 판을 보고 체크하는 사이 그 자리 사람이 바뀔 수 있어서다(T28이 핸드
@@ -936,6 +950,22 @@ export class SessionService {
     if (session && isClosedTournament(session.status)) {
       throw new ConflictException('닫힌 세션은 수정할 수 없습니다.');
     }
+
+    // 진행 중에 참가비를 바꾸면 그 대회는 취소도 종료도 못 하게 굳는다.
+    // `recalculateAvgStack`은 `totalBuyinAmount / entryFee`로 바이인 건수를
+    // 역산하고, `cancelSession`은 `참가자 수 × entryFee === totalBuyinAmount`를
+    // 요구한다. 이미 걷은 돈으로 계산된 값들이라, 나눗셈의 분모만 바꾸면
+    // 둘 다 영영 안 맞는다. 시작 스택도 같은 성질이다.
+    if (session && session.status === TournamentStatus.ONGOING) {
+      if (dto.entryFee !== undefined || dto.startStack !== undefined) {
+        throw new ConflictException('진행 중인 대회의 참가비와 시작 스택은 바꿀 수 없습니다.');
+      }
+    }
+
+    if (dto.blindId) {
+      await this.assertBlindBelongsToStore(dto.blindId, session!.storeId);
+    }
+
     const updateData: any = {
       name: dto.name,
       blindId: dto.blindId,
