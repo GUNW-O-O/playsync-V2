@@ -6,6 +6,7 @@ import { Role } from '@prisma/client';
 import { Roles } from 'src/auth/decorator/roles.decorator';
 import { CreateTournamentDto, UpdateTournamentDto } from 'shared/dto/tournament.dto';
 import { ReleaseSeatsDto } from 'shared/dto/seat-release.dto';
+import { CreateBlindStructureDto } from 'shared/dto/blind-structure.dto';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -18,11 +19,16 @@ export class SessionController {
   // `dto.storeId`/`:storeId`다. 그 값을 그대로 믿으면 다른 상점 관리자가
   // 남의 상점에 대회를 세우고 남의 대회 목록을 읽는다 — 확인은 다른 운영
   // 조작과 같은 자리, 서비스 메서드 안(`assertStoreOwnership`)이다.
+  // 타입이 `any`가 아니어야 한다. 전역 ValidationPipe는 **파라미터의
+  // 메타타입**으로 검증할 DTO를 고르므로, `any`면 고를 것이 없어
+  // `CreateBlindStructureDto`와 `BlindLevelDto`의 규칙이 하나도 안 돈다.
+  // Prisma가 이 값을 Json 컬럼에 넣는 것은 **저장 타입의 문제지 입력 타입의
+  // 문제가 아니다** — 저장 쪽은 서비스에서 `as any`로 이미 넘긴다.
   @Post()
   async create(
     @Req() req,
     @Body('dto') dto: CreateTournamentDto,
-    @Body('blindStructure') blindStructure?: any,
+    @Body('blindStructure') blindStructure?: CreateBlindStructureDto,
   ) {
     return await this.sessionService.createSession(dto, req.user.userId, blindStructure);
   }

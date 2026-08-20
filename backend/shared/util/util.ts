@@ -36,6 +36,14 @@ export function parseBlindStructure(data: unknown): BlindLevelDto[] {
     throw new Error("Invalid blind structure");
   }
 
+  // 빈 구조를 여기서 끊는다. 통과시키면 `getCurrentBlindLevel`이 마지막 레벨을
+  // 읽는 대목에서 `structure[-1]`이 되어 `undefined.lv`로 죽는다. 입구(DTO)와
+  // 여기가 둘인 것은 **검사가 둘**이라서가 아니라 경계가 둘이기 때문이다 —
+  // DTO는 요청을, 여기는 DB에 이미 있는 행을 받는다.
+  if (data.length === 0) {
+    throw new Error("Invalid blind structure");
+  }
+
   return data.map((item) => {
     if (
       typeof item.lv !== "number" ||
