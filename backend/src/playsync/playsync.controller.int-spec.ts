@@ -58,7 +58,7 @@ describe('PlaysyncController.joinTable — REST도 WS와 같은 문을 쓴다', 
       sidePots: [],
       currentBet: 0,
       smallBlind: 50,
-      ante: false,
+      ante: 0,
       tournamentId: TOURNAMENT,
     };
   }

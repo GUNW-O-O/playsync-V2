@@ -274,7 +274,7 @@ describe('테이블 경계 — 남의 테이블 스냅샷을 볼 수 없다', ()
       sidePots: [],
       currentBet: 0,
       smallBlind: 50,
-      ante: false,
+      ante: 0,
       tournamentId: TOURNAMENT,
     };
   }
