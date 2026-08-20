@@ -1,5 +1,6 @@
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { JwtService } from '@nestjs/jwt';
+import { Queue } from 'bullmq';
 import Redis from 'ioredis';
 import { WsGateway } from './ws.gateway';
 import { WsTicketService } from './ws-ticket.service';
@@ -25,7 +26,7 @@ describe('WsGateway 인바운드 경계', () => {
   let prisma: PrismaClient;
   let gateway: WsGateway;
   let tickets: WsTicketService;
-  let playsync: { handleAction: jest.Mock };
+  let playsync: PlaysyncService;
   let dealer: {
     startPreFlop: jest.Mock;
     resolveWinners: jest.Mock;
@@ -115,7 +116,16 @@ describe('WsGateway 인바운드 경계', () => {
     redis = createTestRedis();
     prisma = createTestPrisma();
     tickets = new WsTicketService(redis);
-    playsync = { handleAction: jest.fn().mockResolvedValue(makeState()) };
+    // 진짜 `PlaysyncService`를 쓴다. `assertTableAccess`(T66)가 진짜
+    // Redis 스냅샷을 읽어 판정하므로, 목으로 두면 검증 대상인 그 대조 자체가
+    // 사라진다 — `handleAction`만 스파이로 감싸 호출 여부·인자를 본다.
+    playsync = new PlaysyncService(
+      {} as unknown as Queue,
+      new RedisService(redis),
+      prisma as unknown as PrismaService,
+      new EventEmitter2(),
+    );
+    jest.spyOn(playsync, 'handleAction').mockResolvedValue(makeState());
     dealer = {
       startPreFlop: jest.fn().mockResolvedValue(makeState()),
       resolveWinners: jest.fn().mockResolvedValue(makeState()),
@@ -124,7 +134,7 @@ describe('WsGateway 인바운드 경계', () => {
 
     gateway = new WsGateway(
       dealer as unknown as DealerService,
-      playsync as unknown as PlaysyncService,
+      playsync,
       new RedisService(redis),
       tickets,
       new EventEmitter2(),

@@ -68,26 +68,17 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   /**
    * 이 접속이 이 테이블을 볼 자격이 있는지 확인한다.
    *
-   * 어느 쪽도 클라이언트가 보낸 값을 근거로 삼지 않는다. 딜러는 로그인 시
-   * 서명된 토큰의 tableId를, 플레이어는 서버가 들고 있는 스냅샷의 좌석을 본다.
+   * 판정 자체는 `PlaysyncService.assertTableAccess`에 있다 — REST
+   * (`playsync.controller.ts`의 `joinTable`)가 같은 자원을 여는 두 번째
+   * 문이라, 규칙을 여기 두 벌로 두면 한쪽만 고쳐지는 날이 온다(T66).
+   * 이 메서드는 `handleConnection`의 호출부만 남긴 얇은 위임이다.
+   *
+   * `handleConnection`은 `catch (err)`에서 `err.message`만 로그로 남기고
+   * 소켓을 닫으므로, 서비스가 던지는 것이 `Error`든 Nest 예외든 상관없다 —
+   * 둘 다 `Error`를 상속한다.
    */
   private async assertTableAccess(payload: WsIdentity, tableId: string) {
-    if (payload.role === Role.DEALER) {
-      // 토큰의 tableId는 loginDealer가 서명해 넣은 값이고, 쿼리의 tableId는
-      // 클라이언트가 고른 값이다. 대조하지 않으면 A테이블 딜러가 B테이블의
-      // 핸드 시작·킥·승자 지정 권한을 그대로 얻는다. 승자는 계산되는 값이
-      // 아니라 딜러가 입력하는 값이라 사후에 검증할 정답도 없다.
-      if (payload.tableId !== tableId) {
-        throw new Error('토큰에 없는 테이블입니다.');
-      }
-      return;
-    }
-
-    const state = await this.redis.getSnapShot(tableId);
-    if (!state) throw new Error('테이블을 찾을 수 없습니다.');
-
-    const isSeated = state.players.some((p) => p?.id === payload.sub);
-    if (!isSeated) throw new Error('이 테이블의 좌석이 없습니다.');
+    await this.playsync.assertTableAccess(payload, tableId);
   }
 
   /**

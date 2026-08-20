@@ -1,9 +1,12 @@
-import { ForbiddenException } from '@nestjs/common';
+import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { GameType, PrismaClient } from '@prisma/client';
+import { GameType, PrismaClient, Role } from '@prisma/client';
+import { Queue } from 'bullmq';
 import Redis from 'ioredis';
 import { CreateTournamentDto } from 'shared/dto/tournament.dto';
 import { OtpAttempts } from 'src/dealer/otp-attempts';
+import { GamePhase, TablePlayer, TableState } from 'src/game-engine/types';
+import { PlaysyncService } from 'src/playsync/playsync.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { closeTestPrisma, createTestPrisma, truncateAll } from '../../../test/helpers/prisma';
@@ -221,5 +224,115 @@ describe('상점 경계 — 남의 상점을 건드릴 수 없다', () => {
 
       await expect(sessionService.completeSession(mine.id, ownerA)).resolves.not.toThrow();
     });
+  });
+});
+
+/**
+ * 테이블 경계 — 대회·상점만이 아니라 **테이블도** 남의 자리다.
+ *
+ * `GET /playsync/:id`(`joinTable`)에는 `JwtAuthGuard`밖에 없었다 — 인증만
+ * 되면 소유권·좌석·대회 소속을 아무것도 대조하지 않고 `getSnapShot`이 주는
+ * 전체 스냅샷을 그대로 돌려줬다. WS는 같은 자원에 `assertTableAccess`를
+ * 걸어 왔는데(딜러는 서명된 토큰의 tableId 대조, 플레이어는 실제 좌석 대조),
+ * REST 쪽 문만 잠겨 있지 않았다(T66).
+ *
+ * 판정은 `PlaysyncService.assertTableAccess` 한 곳이고 REST·WS가 함께
+ * 부른다 — 여기서는 그 판정 함수 자체를, `PlaysyncController`의 배선과
+ * 별개로 진짜 Redis 스냅샷을 놓고 검증한다(`playsync.controller.int-spec.ts`는
+ * 반대로 배선을 본다).
+ */
+describe('테이블 경계 — 남의 테이블 스냅샷을 볼 수 없다', () => {
+  let redis: Redis;
+  let playsync: PlaysyncService;
+
+  const TABLE = 'boundary-table-1';
+  const OTHER_TABLE = 'boundary-table-2';
+  const TOURNAMENT = 'boundary-tournament-1';
+
+  function makePlayer(id: string, seatIndex: number): TablePlayer {
+    return {
+      id,
+      tableId: TABLE,
+      nickname: id,
+      seatIndex,
+      stack: 10000,
+      bet: 0,
+      hasFolded: false,
+      hasChecked: false,
+      isAllIn: false,
+      totalContributed: 0,
+    };
+  }
+
+  function makeState(playerIds: string[]): TableState {
+    return {
+      phase: GamePhase.PRE_FLOP,
+      players: playerIds.map((id, i) => makePlayer(id, i)),
+      buttonUser: 0,
+      currentTurnSeatIndex: 0,
+      pot: 0,
+      sidePots: [],
+      currentBet: 0,
+      smallBlind: 50,
+      ante: false,
+      tournamentId: TOURNAMENT,
+    };
+  }
+
+  beforeAll(() => {
+    redis = createTestRedis();
+    playsync = new PlaysyncService(
+      {} as unknown as Queue,
+      new RedisService(redis),
+      {} as unknown as PrismaService,
+      new EventEmitter2(),
+    );
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+  });
+
+  beforeEach(async () => {
+    await flushTestRedis(redis);
+    await redis.set(`table:state:${TABLE}`, JSON.stringify(makeState(['alice'])));
+  });
+
+  it('앉지 않은 유저는 거부된다', async () => {
+    await expect(
+      playsync.assertTableAccess({ sub: 'mallory', role: Role.USER }, TABLE),
+    ).rejects.toThrow(ForbiddenException);
+  });
+
+  it('앉은 유저는 통과한다', async () => {
+    await expect(
+      playsync.assertTableAccess({ sub: 'alice', role: Role.USER }, TABLE),
+    ).resolves.toBeUndefined();
+  });
+
+  it('딜러는 토큰에 서명된 테이블이 아니면 거부된다', async () => {
+    await redis.set(`table:state:${OTHER_TABLE}`, JSON.stringify(makeState(['bob'])));
+
+    await expect(
+      playsync.assertTableAccess(
+        { sub: 'dealer-session-1', role: Role.DEALER, tableId: TABLE },
+        OTHER_TABLE,
+      ),
+    ).rejects.toThrow(ForbiddenException);
+  });
+
+  it('딜러는 토큰에 서명된 테이블이면 좌석이 없어도 통과한다', async () => {
+    await expect(
+      playsync.assertTableAccess(
+        { sub: 'dealer-session-1', role: Role.DEALER, tableId: TABLE },
+        TABLE,
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it('스냅샷이 없는 테이블은 존재 여부를 감추지 않고 404다', async () => {
+    await expect(
+      playsync.assertTableAccess({ sub: 'alice', role: Role.USER }, 'no-such-table'),
+    ).rejects.toThrow(NotFoundException);
   });
 });
