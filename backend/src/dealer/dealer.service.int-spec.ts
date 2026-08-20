@@ -58,7 +58,7 @@ describe('DealerService 동시성', () => {
       sidePots: [],
       currentBet: 100,
       smallBlind: 50,
-      ante: false,
+      ante: 0,
       actionDeadline: Date.now() + 30000,
       tournamentId: TOURNAMENT,
       ...overrides,

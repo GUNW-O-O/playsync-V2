@@ -82,7 +82,7 @@ describe('탈락 처리 멱등성', () => {
       sidePots: [],
       currentBet: 100,
       smallBlind: 50,
-      ante: false,
+      ante: 0,
       tournamentId: TOURNAMENT,
     };
   }

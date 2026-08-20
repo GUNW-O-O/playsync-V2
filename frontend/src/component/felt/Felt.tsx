@@ -97,6 +97,18 @@ export default function Felt({
               사이드팟 {i + 1} · {sidePot.amount.toLocaleString()}
             </div>
           ))}
+          {/*
+            칩이 디지털이고 화면이 유일한 장부다. 매 핸드 스택에서 앤티가
+            빠지는데 왜 빠졌는지 화면에 없으면 참가자가 확인할 방법이 없고,
+            딜러도 이 대회에 앤티가 붙는지 화면으로는 모른다(T58).
+
+            state.ante는 이미 금액이다(0이면 없음) — DealerService.startPreFlop이
+            deriveAnteAmount로 채운 값을 그대로 받아 그린다. sb / 5를 여기서
+            다시 계산하지 않는다.
+          */}
+          <div data-testid="ante" className="font-mono text-[11px] text-tb-muted">
+            앤티 {state && state.ante > 0 ? state.ante.toLocaleString() : '없음'}
+          </div>
         </div>
 
         {/* 보드 — 장수만 보여준다 */}

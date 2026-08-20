@@ -1,5 +1,5 @@
 // /src/session/dto/blind-structure.dto.ts
-import { IsString, IsArray, IsNotEmpty, ValidateNested, IsInt, Min, IsBoolean, ArrayNotEmpty } from 'class-validator';
+import { IsString, IsArray, IsNotEmpty, ValidateNested, IsInt, Min, IsBoolean, ArrayNotEmpty, IsDivisibleBy } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class BlindLevelDto {
@@ -7,8 +7,13 @@ export class BlindLevelDto {
   @Min(1)
   lv: number;
 
+  // T58. 앤티는 sb/5로 계산된다(deriveAnteAmount). sb가 5의 배수가 아니면
+  // 앤티가 소수가 되어 스택과 팟이 소수가 되고, syncTableInventoryToDb가
+  // Int 컬럼에 쓰다 실패해 그 테이블이 HAND_END에서 못 나온다(T62와 같은
+  // 막다른 곳). Math.floor로 감추지 않고 입구에서 막는다.
   @IsInt()
   @Min(100)
+  @IsDivisibleBy(5)
   sb: number;
 
   @IsBoolean()

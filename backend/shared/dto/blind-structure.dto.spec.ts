@@ -38,6 +38,18 @@ describe('CreateBlindStructureDto', () => {
     expect(has(validate({ ...정상, structure: [{ lv: 1, sb: 50, ante: false, duration: 10 }] }))).toBe('오류 있음');
   });
 
+  // T58. 앤티는 sb/5로 계산된다(deriveAnteAmount, shared/util/util.ts). sb가
+  // 5의 배수가 아니면 앤티가 소수가 되어 스택과 팟이 소수가 되고,
+  // syncTableInventoryToDb가 Int 컬럼에 쓰다 실패해 그 테이블이 HAND_END에서
+  // 못 나온다. 코드가 Math.floor로 감추지 않으므로 입구에서 막아야 한다.
+  it('5의 배수가 아닌 sb를 거부한다', () => {
+    expect(has(validate({ ...정상, structure: [{ lv: 1, sb: 101, ante: false, duration: 10 }] }))).toBe('오류 있음');
+  });
+
+  it('5의 배수인 sb는 통과한다', () => {
+    expect(has(validate({ ...정상, structure: [{ lv: 1, sb: 105, ante: false, duration: 10 }] }))).toBe('오류 없음');
+  });
+
   it('ante가 boolean이 아니면 거부한다', () => {
     expect(has(validate({ ...정상, structure: [{ lv: 1, sb: 100, ante: 'yes', duration: 10 }] }))).toBe('오류 있음');
   });

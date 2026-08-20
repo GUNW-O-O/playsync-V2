@@ -1,4 +1,4 @@
-import { getCurrentBlindLevel, parseBlindStructure } from './util';
+import { deriveAnteAmount, getCurrentBlindLevel, parseBlindStructure } from './util';
 
 describe('parseBlindStructure', () => {
   it('배열이 아니면 거부한다', () => {
@@ -20,6 +20,25 @@ describe('parseBlindStructure', () => {
   it('정상 구조는 그대로 돌려준다', () => {
     const 구조 = [{ lv: 1, sb: 100, ante: false, duration: 3 }];
     expect(parseBlindStructure(구조)).toEqual(구조);
+  });
+});
+
+describe('deriveAnteAmount', () => {
+  // T58. payAnte는 이 계산을 직접 하지 않는다 — DealerService.startPreFlop과
+  // RecoveryService가 이 함수 하나로 state.ante를 채운다.
+  it('앤티가 없으면 0이다', () => {
+    expect(deriveAnteAmount(100, false)).toBe(0);
+  });
+
+  it('앤티가 있으면 sb의 1/5이다', () => {
+    expect(deriveAnteAmount(100, true)).toBe(20);
+  });
+
+  // sb는 BlindLevelDto의 @IsDivisibleBy(5)가 입구에서 5의 배수만 통과시킨다.
+  // 그래서 여기서 Math.floor를 하지 않는다 — 소수가 나온다면 그건 이미
+  // 경계를 지나온 값이 잘못됐다는 뜻이라, 몰래 반올림하면 그 오류를 감춘다.
+  it('Math.floor하지 않는다 — 5의 배수가 아닌 sb는 그대로 소수를 낸다', () => {
+    expect(deriveAnteAmount(101, true)).toBe(20.2);
   });
 });
 

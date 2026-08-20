@@ -76,7 +76,7 @@ describe('시나리오 — 블라인드 상승과 상금 지급', () => {
 
     const state = await checkInvariants(h, '레벨1 프리플랍', chips);
     expect(state.smallBlind).toBe(100);
-    expect(state.ante).toBe(false);
+    expect(state.ante).toBe(0);
   });
 
   it('3. 시간이 지나면 레벨이 오른다', async () => {
@@ -112,7 +112,8 @@ describe('시나리오 — 블라인드 상승과 상금 지급', () => {
 
     const state = await checkInvariants(h, '레벨3 프리플랍', chips);
     expect(state.smallBlind).toBe(400);
-    expect(state.ante).toBe(true);
+    // T58: state.ante는 이제 boolean이 아니라 금액이다(sb/5 = 80).
+    expect(state.ante).toBe(80);
   });
 
   it('6. 리바인 마감 레벨을 지나면 등록이 자동으로 닫힌다', async () => {

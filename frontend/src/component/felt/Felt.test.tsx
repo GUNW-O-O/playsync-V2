@@ -33,7 +33,7 @@ function stateWithButton(buttonUser: number): TableState {
     sidePots: [],
     currentBet: 200,
     smallBlind: 100,
-    ante: false,
+    ante: 0,
     tournamentId: 'trn-1',
   };
 }
@@ -70,6 +70,26 @@ describe('Felt — 딜러 180° 회전', () => {
       expect(dealerLeft).toBeCloseTo(100 - playerLeft, 5);
       expect(dealerTop).toBeCloseTo(100 - playerTop, 5);
     }
+  });
+});
+
+describe('Felt — 앤티 (T58)', () => {
+  /**
+   * 칩이 디지털이고 화면이 유일한 장부인데, 매 핸드 스택에서 앤티가 빠지면서
+   * 왜 빠졌는지 화면에 없었다. `state.ante`는 이제 금액이다(0이면 없음) —
+   * 프론트가 `sb / 5`를 다시 계산하지 않고 받은 값을 그대로 그린다.
+   */
+  it('앤티 금액을 보여준다', () => {
+    const state = { ...stateWithButton(0), ante: 20 };
+    render(<Felt state={state} orientation="player" mySeatIndex={null} />);
+
+    expect(screen.getByTestId('ante')).toHaveTextContent('20');
+  });
+
+  it('앤티가 없는 레벨에서는 없다고 보여준다', () => {
+    render(<Felt state={stateWithButton(0)} orientation="player" mySeatIndex={null} />);
+
+    expect(screen.getByTestId('ante')).toHaveTextContent('없음');
   });
 });
 

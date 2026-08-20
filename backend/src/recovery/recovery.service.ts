@@ -3,6 +3,7 @@ import { PlayerStatus, TournamentStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { buildTournamentMeta } from 'src/store/session/tournament-meta';
+import { deriveAnteAmount } from 'shared/util/util';
 // 엔진의 좌석 타입과 Prisma 모델 이름이 둘 다 `TablePlayer`다. 이 파일은
 // 양쪽을 다 쓰므로 import에서 가른다.
 import {
@@ -355,7 +356,11 @@ export class RecoveryService implements OnApplicationBootstrap {
       sidePots: [],
       currentBet: 0,
       smallBlind: level.sb,
-      ante: level.ante,
+      // T58: deriveAnteAmount 하나로 DealerService.startPreFlop과 같은
+      // 계산을 쓴다. 값 자체는 다음 핸드 시작 시 startPreFlop이 다시
+      // 덮어쓰므로(위 주석) 정확도가 결정적이지 않지만, 계산식이 두 곳에
+      // 따로 있으면 그 자체가 T64가 걷어낸 문제를 재현하는 것이다.
+      ante: deriveAnteAmount(level.sb, level.ante),
       tournamentId,
     };
 

@@ -61,7 +61,7 @@ describe('WsGateway 인바운드 경계', () => {
       sidePots: [],
       currentBet: 100,
       smallBlind: 50,
-      ante: false,
+      ante: 0,
       tournamentId: TOURNAMENT,
     };
   }

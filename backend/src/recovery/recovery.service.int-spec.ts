@@ -393,7 +393,7 @@ describe('RecoveryService', () => {
         sidePots: [],
         currentBet: 200,
         smallBlind: 100,
-        ante: false,
+        ante: 0,
         tournamentId,
       };
       liveA.players[0] = {
@@ -639,7 +639,7 @@ describe('RecoveryService', () => {
         sidePots: [],
         currentBet: 0,
         smallBlind: 400,
-        ante: true,
+        ante: 80,
         tournamentId,
       };
       await redisService.saveSnapshotUnlocked(tableId, live, 'table-created');
@@ -692,7 +692,7 @@ describe('RecoveryService', () => {
         sidePots: [],
         currentBet: 100,
         smallBlind: 100,
-        ante: false,
+        ante: 0,
         tournamentId,
       };
       live.players[1] = { id: userA, tableId, nickname: 'a', seatIndex: 1, stack: 4900,
@@ -737,7 +737,7 @@ describe('RecoveryService', () => {
         sidePots: [],
         currentBet: 0,
         smallBlind: 100,
-        ante: false,
+        ante: 0,
         tournamentId,
       };
       live.players[2] = { id: seated, tableId, nickname: 'a', seatIndex: 2, stack: 5000,
@@ -766,7 +766,7 @@ describe('RecoveryService', () => {
         sidePots: [],
         currentBet: 0,
         smallBlind: 100,
-        ante: false,
+        ante: 0,
         tournamentId,
       };
       live.players[0] = { id: userId, tableId, nickname: 'a', seatIndex: 0, stack: 5000,

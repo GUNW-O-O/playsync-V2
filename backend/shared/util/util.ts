@@ -31,6 +31,24 @@ export function getCurrentBlindLevel(
     isBreak: structure[structure.length - 1].lv === 99
   };
 }
+/**
+ * 앤티 금액을 sb에서 뽑는다.
+ *
+ * `TableEngine.payAnte`(`game-engine/table-engine.ts`)는 이 계산을 하지
+ * 않는다 — 값을 받아서 쓸 뿐이다. `state.ante`를 채우는 자리가
+ * `DealerService.startPreFlop`과 `RecoveryService`(스냅샷 재구성) 둘이라,
+ * 계산식을 양쪽에 각각 적으면 T64가 막 걷어낸 "두 벌" 문제가 여기서 다시
+ * 생긴다. 그래서 함수 하나로 묶는다(T58).
+ *
+ * `BlindLevelDto.sb`가 입구(`@IsDivisibleBy(5)`)에서 5의 배수로 강제되므로
+ * 여기서 `Math.floor`하지 않는다. 소수가 나온다면 그건 경계를 지나온 값이
+ * 이미 잘못됐다는 뜻이고, 몰래 반올림하면 그 오류를 감추는 것이다 — 딜러가
+ * 모르는 사이에 칩이 증발한다.
+ */
+export function deriveAnteAmount(sb: number, hasAnte: boolean): number {
+  return hasAnte ? sb / 5 : 0;
+}
+
 export function parseBlindStructure(data: unknown): BlindLevelDto[] {
   if (!Array.isArray(data)) {
     throw new Error("Invalid blind structure");

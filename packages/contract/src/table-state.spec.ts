@@ -31,7 +31,7 @@ function snapshot(overrides: Record<string, unknown> = {}) {
     sidePots: [],
     currentBet: 200,
     smallBlind: 100,
-    ante: false,
+    ante: 0,
     tournamentId: "tournament-1",
     ...overrides,
   };

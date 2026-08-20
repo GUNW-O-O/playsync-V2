@@ -117,7 +117,7 @@ describe('상금 지급', () => {
       phase: GamePhase.PRE_FLOP,
       players: USERS.map((u, i) => makePlayer(u, i, 10000)),
       buttonUser: 0, currentTurnSeatIndex: 0, pot: 0, sidePots: [],
-      currentBet: 100, smallBlind: 50, ante: false, tournamentId: TOURNAMENT,
+      currentBet: 100, smallBlind: 50, ante: 0, tournamentId: TOURNAMENT,
     };
   }
 

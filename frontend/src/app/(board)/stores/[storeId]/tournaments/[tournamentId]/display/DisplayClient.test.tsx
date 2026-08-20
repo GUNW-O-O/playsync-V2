@@ -91,4 +91,28 @@ describe('DisplayClient', () => {
     expect(await screen.findByText('350,000')).toBeInTheDocument();
     expect(screen.getByText('7')).toBeInTheDocument();
   });
+
+  /**
+   * T58. 칩이 디지털이고 화면이 유일한 장부인데, 딜러가 이 대회에 앤티가
+   * 붙는지 전광판으로는 몰랐다. BlindLevel.ante는 구조 층의 값이라 여전히
+   * boolean이다 — 얼마인지는 실제 핸드가 도는 Felt가 그린다(state.ante).
+   */
+  it('현재 레벨에 앤티가 붙으면 배지를 보여준다', async () => {
+    server.use(http.get('*/playsync/dashboard/:id', () => HttpResponse.json({
+      ...VALID,
+      blindField: {
+        ...VALID.blindField,
+        blindStructure: [{ lv: 1, sb: 100, ante: true, duration: 10 }],
+      },
+    })));
+    render(<DisplayClient tournamentId="t1" />);
+    expect(await screen.findByTestId('ante-badge')).toBeInTheDocument();
+  });
+
+  it('앤티가 없는 레벨에서는 배지가 없다', async () => {
+    server.use(http.get('*/playsync/dashboard/:id', () => HttpResponse.json(VALID)));
+    render(<DisplayClient tournamentId="t1" />);
+    await screen.findByText('350,000');
+    expect(screen.queryByTestId('ante-badge')).not.toBeInTheDocument();
+  });
 });

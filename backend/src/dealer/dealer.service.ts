@@ -4,6 +4,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Role, TournamentStatus } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { DealerDto } from 'shared/dto/dealer.dto';
+import { deriveAnteAmount } from 'shared/util/util';
 import { tokenTtl } from 'src/auth/token-ttl';
 import { verifyDealerOtp } from 'src/dealer/dealer-otp';
 import { OtpAttempts } from 'src/dealer/otp-attempts';
@@ -245,10 +246,13 @@ export class DealerService {
         throw new Error('대기 상태가 아닙니다.');
       }
 
-      const ante = blind.blindStructure[blind.currentBlindLv].ante;
-      const smallBlind = blind.blindStructure[blind.currentBlindLv].sb;
-      state.smallBlind = smallBlind;
-      state.ante = ante;
+      // T58: state.ante는 boolean이 아니라 금액이다. sb / 5 계산은
+      // deriveAnteAmount 한 곳에만 둔다 — RecoveryService의 재구성도 같은
+      // 함수를 쓴다. 여기서 각자 계산하면 T64가 걷어낸 "두 벌" 문제가
+      // 다시 생긴다.
+      const level = blind.blindStructure[blind.currentBlindLv];
+      state.smallBlind = level.sb;
+      state.ante = deriveAnteAmount(level.sb, level.ante);
       const engine = new TableEngine(state);
       engine.startPreFlop();
 

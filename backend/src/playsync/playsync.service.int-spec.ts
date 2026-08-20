@@ -51,7 +51,7 @@ describe('PlaysyncService.handleAction', () => {
       sidePots: [],
       currentBet: 100,
       smallBlind: 50,
-      ante: false,
+      ante: 0,
       actionDeadline: Date.now() + 30000,
       tournamentId: TOURNAMENT,
       ...overrides,
@@ -286,7 +286,7 @@ describe('PlaysyncService.processRebuy', () => {
       sidePots: [],
       currentBet: 0,
       smallBlind: 50,
-      ante: false,
+      ante: 0,
       tournamentId: TOURNAMENT,
     };
   }
@@ -515,7 +515,7 @@ describe('PlaysyncService.syncTableInventoryToDb', () => {
         ...Array(8).fill(null),
       ],
       pot: 0, currentBet: 0, buttonUser: 0, currentTurnSeatIndex: -1,
-      sidePots: [], ante: false, tournamentId: TOURNAMENT, smallBlind: 100,
+      sidePots: [], ante: 0, tournamentId: TOURNAMENT, smallBlind: 100,
     };
 
     const ok = await service.syncTableInventoryToDb(TABLE, state);
@@ -613,7 +613,7 @@ describe('PlaysyncService.syncTableInventoryToDb — 버튼 좌석', () => {
           ...Array(8).fill(null),
         ],
         pot: 0, currentBet: 0, buttonUser: 0, currentTurnSeatIndex: -1,
-        sidePots: [], ante: false, tournamentId, smallBlind: 100,
+        sidePots: [], ante: 0, tournamentId, smallBlind: 100,
       },
     }]);
   });

@@ -62,7 +62,16 @@ export interface TableState {
   sidePots: SidePot[];
   currentBet: number;
   smallBlind: number;
-  ante: boolean;
+  /**
+   * 앤티 금액이다. 0이면 앤티가 없다는 뜻이다.
+   *
+   * T58 전에는 `boolean`이었다 — `payAnte`가 그때마다 `smallBlind / 5`를
+   * 다시 계산했다. 지금은 `DealerService.startPreFlop`과 `RecoveryService`가
+   * `deriveAnteAmount`(`shared/util/util.ts`) 하나로 값을 만들어 여기 싣고,
+   * `payAnte`는 계산하지 않고 이 값을 그대로 쓴다. `BlindLevelDto.ante`는
+   * 여전히 `boolean`이다 — 구조는 "붙나"를 선언하고 상태는 "얼마인가"를 든다.
+   */
+  ante: number;
   actionDeadline?: number;
   /**
    * 타이머 세대. 타임아웃 잡을 새로 등록할 때마다 1씩 오른다.
@@ -118,7 +127,7 @@ export function createEmptyTableState(tournamentId: string): TableState {
     buttonUser: 0,
     currentTurnSeatIndex: -1,
     sidePots: [],
-    ante: false,
+    ante: 0,
     tournamentId,
     smallBlind: 100,
   };
