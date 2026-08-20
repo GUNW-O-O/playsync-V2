@@ -145,6 +145,17 @@ POST /dealer/auth              bcrypt.compare — 테이블마다 한 번
 만큼만 실행 중에 한다. 풀이 모자라면 자동으로 신규로 넘어가고, 그 사실은
 `signups` 카운터에 남는다.
 
+**신규 가입 봇도 참가비를 낼 수 있어야 한다.** 가입은 포인트를 주지 않고
+(`User.points @default(0)`) 충전 경로도 없어서, 그대로 두면
+`PaymentService.joinSession`의 `user.points < session.entryFee` 게이트가 신규
+가입 봇을 409로 막고 `lib/api.js`의 `must()`가 VU를 중단시킨다. 실 PG 연동
+계획이 없는 지금 일반 가입에 기본으로 포인트를 얹을 수는 없다 — 결제 없이
+참가할 길이 열린다. 그래서 `AuthService.createUser`는 `SIGNUP_INITIAL_POINTS`
+환경변수가 있을 때만 초기 포인트를 싣고, 기본은 0이다.
+`docker-compose.test.yml`의 `backend-load` 서비스가 이 값을 켠다 — `seed-load.ts`의
+`BOT_POINTS`와 **같은 변수**를 읽으므로 풀 계정과 실행 중 신규 계정의 잔고가
+갈리지 않는다.
+
 풀 계정은 `p0000` 형식이고 크기는 `LOAD_ACCOUNT_POOL`(기본 600)이다. 테이블마다
 `poolBase`를 밀어 줘야 한다 — 겹치면 `@@unique([tournamentId, userId])`가 두
 번째를 409로 막는다.

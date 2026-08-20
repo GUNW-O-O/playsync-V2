@@ -135,8 +135,14 @@ const ACCOUNT_PREFIX = 'p';
  * 참가비가 `ENTRY_FEE_MIN`(1)이라 게이트 자체는 잔고를 거의 요구하지 않지만,
  * 램프가 한 계정으로 여러 대회에 들어가고 리바인도 여러 번 돈다 — 넉넉히
  * 줘서 부하 무대의 관심이 잔고가 아니라 처리량에 머물게 한다.
+ *
+ * **`SIGNUP_INITIAL_POINTS`와 같은 값을 읽는다** — `AuthService.createUser`가
+ * 그 환경변수로 신규 가입 봇(`NEW_USER_RATIO`)에 초기 포인트를 싣는다. 이
+ * 시드가 여는 백엔드와 같은 프로세스 환경을 공유하므로, 두 상수를 따로 두면
+ * 풀 계정과 실행 중 신규 가입 계정의 잔고가 어긋난다. 환경변수가 없는 호스트
+ * 실행(`load/README.md`의 수동 시드 명령)에서는 이 값이 폴백이다.
  */
-const BOT_POINTS = 100_000_000;
+const BOT_POINTS = Number(process.env.SIGNUP_INITIAL_POINTS ?? 100_000_000);
 
 /**
  * k6가 읽는 매니페스트.
