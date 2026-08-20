@@ -1,5 +1,6 @@
 import { cookies } from 'next/headers';
 import { FullTournamentInfoSchema, type FullTournamentInfo } from '@playsync/contract';
+import { decodeSession } from '@/lib/session';
 import ConsoleClient, { type TournamentMeta, type TableInfo, type TableSeatInfo } from './ConsoleClient';
 import {
   startTournament,
@@ -121,6 +122,29 @@ async function fetchSeatOccupants(
 /**
  * 상점 콘솔의 대회 상세. 서버 컴포넌트에서 직접 백엔드로 네 번 조회한다.
  * 조작 다섯 개는 전부 서버 액션(`./action.ts`)이 맡는다.
+ *
+ * `storeId`·`tournamentId`는 URL 파라미터라 그 조합이 로그인한 관리자의
+ * 것인지 아무도 확인하지 않았다(T66). 미들웨어(`ROLE_RULES`)는 `/stores`에
+ * **역할만** 보고 URL의 소유권은 안 본다 — 아무 `STORE_ADMIN`이나
+ * `/stores/<남의 상점>/tournaments/<남의 대회>`를 열면 대회명·상태·
+ * 프라이즈풀·테이블 목록·블라인드 시계가 그대로 렌더됐다.
+ *
+ * 소유권을 서버에서 확인하는 유일한 경로는 `fetchSeatOccupants`가 부르는
+ * `GET /store/sessions/:id/seats`다(`SessionService.assertTournamentOwnership`
+ * 가 첫 문장). 그 결과를 좌석 패널 하나가 아니라 **페이지 전체**의 문지기로
+ * 쓴다 — 다른 세 조회(`fetchTournament`·`fetchTables`·`fetchDashboard`)는
+ * 가드가 없어 소유권과 무관하게 성공하므로, 그쪽 결과를 그대로 내려보내면
+ * 소유권 확인이 있으나 마나가 된다.
+ *
+ * `PLATFORM_ADMIN`은 예외다. `getSeatOccupants`가 `@Roles(Role.STORE_ADMIN)`
+ * 전용이라 PLATFORM_ADMIN은 소유권과 무관하게 항상 403이고, 그 실패를
+ * 페이지 전체로 넓히면 T56이 "그대로 두기로" 정한 어긋남(좌석 패널만 배너,
+ * 나머지는 보임 — `getStoreDetail`·상점 경계 절 참고)을 이 기능이 뒤집는다.
+ * 그래서 실패는 기본이 차단이고, **PLATFORM_ADMIN만** 예외로 뺀다(토큰이
+ * 없거나 역할을 못 읽는 경우도 차단 쪽이다 — 소유권을 확인 못 했으면 안
+ * 보여주는 쪽이 안전하다). 역할 판정은 `decodeSession`으로 토큰을 그대로
+ * 디코드한다(`lib/session.ts`) — 서명 검증이 아니라 화면 분기용이고, 실제
+ * 권한은 여전히 `getSeatOccupants`의 서버 판정이 진다.
  */
 export default async function ConsoleTournamentPage({
   params,
@@ -129,6 +153,7 @@ export default async function ConsoleTournamentPage({
 }) {
   const { storeId, tournamentId } = await params;
   const token = (await cookies()).get('accessToken')?.value;
+  const role = decodeSession(token)?.role;
 
   const [tournament, dashboard, tables, seatResult] = await Promise.all([
     fetchTournament(tournamentId),
@@ -137,13 +162,15 @@ export default async function ConsoleTournamentPage({
     fetchSeatOccupants(tournamentId, token),
   ]);
 
+  const ownershipDenied = seatResult.seatError !== null && role !== 'PLATFORM_ADMIN';
+
   return (
     <ConsoleClient
       storeId={storeId}
       tournamentId={tournamentId}
-      tournament={tournament}
-      dashboard={dashboard}
-      tables={tables}
+      tournament={ownershipDenied ? null : tournament}
+      dashboard={ownershipDenied ? null : dashboard}
+      tables={ownershipDenied ? [] : tables}
       seatOccupants={seatResult.seatOccupants}
       seatError={seatResult.seatError}
       startTournament={startTournament}
