@@ -52,3 +52,56 @@ describe('AuthController.join', () => {
     expect(created.password).not.toBe('pw-joiner');
   });
 });
+
+/**
+ * C-2. 부하 램프의 `NEW_USER_RATIO`(`load/lib/table.js`) 분기가 실행 중에
+ * signup → login → joinTournament를 탄다. 가입은 `points @default(0)`이고
+ * 충전 경로가 없어서, `PaymentService.joinSession`의
+ * `user.points < session.entryFee` 게이트가 신규 가입 봇을 409로 막고
+ * `load/lib/api.js`의 `must()`가 VU를 중단시켰다.
+ *
+ * 실 PG 연동이 없는 지금 일반 가입에 기본으로 포인트를 얹으면 결제 없이
+ * 참가할 길이 열린다 — 그래서 환경변수 없이는 지금과 똑같이 0이어야 한다.
+ * 값은 `seed-load.ts`의 `BOT_POINTS`와 같은 `SIGNUP_INITIAL_POINTS`를 읽는다
+ * (근거는 `load/README.md`) — 두 벌이 되면 어긋난다.
+ */
+describe('AuthController.join — 초기 포인트(SIGNUP_INITIAL_POINTS)', () => {
+  let prisma: PrismaClient;
+  let controller: AuthController;
+
+  beforeAll(async () => {
+    prisma = createTestPrisma();
+    const service = new AuthService(
+      prisma as unknown as PrismaService,
+      {} as UserService,
+      {} as JwtService,
+    );
+    controller = new AuthController(service);
+  });
+
+  beforeEach(async () => {
+    await truncateAll(prisma);
+    delete process.env.SIGNUP_INITIAL_POINTS;
+  });
+
+  afterAll(async () => {
+    delete process.env.SIGNUP_INITIAL_POINTS;
+    await closeTestPrisma(prisma);
+  });
+
+  it('환경변수가 없으면 포인트는 0이다 — 일반 가입에는 열지 않는다', async () => {
+    await controller.join({ nickname: 'freepoints-off', password: 'pw' } as never);
+
+    const created = await prisma.user.findUniqueOrThrow({ where: { nickname: 'freepoints-off' } });
+    expect(created.points).toBe(0);
+  });
+
+  it('SIGNUP_INITIAL_POINTS를 켜면 가입이 그 값을 싣고 나온다', async () => {
+    process.env.SIGNUP_INITIAL_POINTS = '5000000';
+
+    await controller.join({ nickname: 'freepoints-on', password: 'pw' } as never);
+
+    const created = await prisma.user.findUniqueOrThrow({ where: { nickname: 'freepoints-on' } });
+    expect(created.points).toBe(5000000);
+  });
+});

@@ -4,8 +4,9 @@ import { SessionService } from './session.service';
 import { RolesGuard } from 'src/auth/guard/roles.guard';
 import { Role } from '@prisma/client';
 import { Roles } from 'src/auth/decorator/roles.decorator';
-import { CreateTournamentDto, UpdateTournamentDto } from 'shared/dto/tournament.dto';
+import { UpdateTournamentDto } from 'shared/dto/tournament.dto';
 import { ReleaseSeatsDto } from 'shared/dto/seat-release.dto';
+import { CreateSessionBody } from 'shared/dto/create-session-body.dto';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
 
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -18,13 +19,17 @@ export class SessionController {
   // `dto.storeId`/`:storeId`다. 그 값을 그대로 믿으면 다른 상점 관리자가
   // 남의 상점에 대회를 세우고 남의 대회 목록을 읽는다 — 확인은 다른 운영
   // 조작과 같은 자리, 서비스 메서드 안(`assertStoreOwnership`)이다.
+  //
+  // `dto`·`blindStructure`를 **봉투 하나**(`CreateSessionBody`)로 받는다.
+  // 예전에는 파라미터 둘로 나눠 받았는데, 선택값인 `blindStructure`에 붙인
+  // `@IsOptional()`이 필드 데코레이터라 파라미터 레벨에서는 아무 효과가
+  // 없었다 — `blindStructure`를 생략한 정상 요청(`dto.blindId`로 기존 구조를
+  // 재사용하는 경로)까지 400으로 막혔다. 근거는 `CreateSessionBody`의 주석.
+  // Prisma가 `structure`를 Json 컬럼에 넣는 것은 **저장 타입의 문제지 입력
+  // 타입의 문제가 아니다** — 저장 쪽은 서비스에서 `as any`로 이미 넘긴다.
   @Post()
-  async create(
-    @Req() req,
-    @Body('dto') dto: CreateTournamentDto,
-    @Body('blindStructure') blindStructure?: any,
-  ) {
-    return await this.sessionService.createSession(dto, req.user.userId, blindStructure);
+  async create(@Req() req, @Body() body: CreateSessionBody) {
+    return await this.sessionService.createSession(body.dto, req.user.userId, body.blindStructure);
   }
 
   @Get(':storeId')

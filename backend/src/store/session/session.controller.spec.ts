@@ -1,8 +1,23 @@
+// 이 스펙은 Nest 부트스트랩(main.ts)을 거치지 않고 컨트롤러를 직접 로드한다.
+// `seat-release.dto.spec.ts`와 같은 이유로 reflect-metadata를 먼저 불러온다 —
+// 아래 `create의 body 파라미터가 검증 가능한 타입이다`가 읽는
+// `design:paramtypes` 메타데이터는 이 import가 있어야 존재한다.
+import 'reflect-metadata';
 import { ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { Role } from '@prisma/client';
 import { RolesGuard } from 'src/auth/guard/roles.guard';
+import { CreateSessionBody } from 'shared/dto/create-session-body.dto';
 import { SessionController } from './session.controller';
+
+it('create의 body 파라미터가 검증 가능한 타입이다', () => {
+  // ValidationPipe는 **파라미터의 메타타입**으로 검증할 DTO를 고른다. `any`면
+  // 고를 것이 없어 CreateSessionBody(그리고 그 안의 CreateTournamentDto ·
+  // CreateBlindStructureDto)의 규칙이 하나도 안 돈다. `dto`·`blindStructure`를
+  // 봉투 하나로 받는 이유는 `CreateSessionBody`의 주석 참고(C-1).
+  const types = Reflect.getMetadata('design:paramtypes', SessionController.prototype, 'create');
+  expect(types[1]).toBe(CreateSessionBody);
+});
 
 /**
  * 재발급/내보내기는 STORE_ADMIN 전용이다.

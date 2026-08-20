@@ -100,6 +100,12 @@ services:
       # 생기기 때문이다. 근거는 `src/auth/throttle.ts`.
       THROTTLE_LIMIT: 100000
       THROTTLE_AUTH_LIMIT: 100000
+      # `NEW_USER_RATIO`(load/lib/table.js) 분기가 실행 중에 만드는 신규 가입
+      # 봇의 초기 포인트. 없으면 0으로 나와 `PaymentService.joinSession`의
+      # `user.points < session.entryFee` 게이트가 409로 막는다(C-2). 값은
+      # `seed-load.ts`의 `BOT_POINTS`와 같은 변수라 — 여기서 안 맞추면 풀
+      # 계정과 실행 중 신규 계정의 잔고가 벌어진다.
+      SIGNUP_INITIAL_POINTS: 100000000
     depends_on:
       db-test:
         condition: service_healthy

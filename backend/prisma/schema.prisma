@@ -91,7 +91,7 @@ model PointTransaction {
 
 model Store {
   id      String @id @default(uuid())
-  name    String @unique
+  name    String
   ownerId String
   owner   User   @relation(fields: [ownerId], references: [id])
 
@@ -99,11 +99,15 @@ model Store {
   blindStructures BlindStructure[]
 
   createdAt DateTime @default(now())
+
+  // 이름은 소유자 안에서만 유일하다. 전역 유니크였을 때는 남이 먼저 쓴
+  // 이름을 못 쓰고, 그 실패가 다른 테넌트의 이름을 떠보는 통로가 됐다.
+  @@unique([ownerId, name])
 }
 
 model BlindStructure {
   id   String @id @default(uuid())
-  name String @unique
+  name String
 
   structure Json // [{lv:1, sb:100, ante:false, duration:10}, ...]
 
@@ -113,6 +117,9 @@ model BlindStructure {
   tournaments Tournament[]
 
   createdAt DateTime @default(now())
+
+  // Store.name과 같은 이유. 상점 안에서만 유일하다.
+  @@unique([storeId, name])
 }
 
 model Tournament {

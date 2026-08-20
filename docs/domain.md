@@ -338,6 +338,35 @@ t=0에 둘이 같은 것은 우연이지 불변식이 아니다. 근거 주석�
 `rebuyUntil: 0`은 "처음부터 닫힘"이라는 뜻이다(스키마 기본값이 0이다). 리바인이
 열린 대회를 만들려면 첫 레벨보다 큰 값이어야 한다.
 
+## 대회 입력의 경계
+
+`CreateTournamentDto`·`UpdateTournamentDto`(`shared/dto/tournament.dto.ts`)와
+`CreateBlindStructureDto`(`shared/dto/blind-structure.dto.ts`)가 입구에서 막는
+규칙들이다. 여기서 안 막으면 400이 아니라, 대회가 이미 진행되는 도중에 조용히
+깨진다 — 그래서 경계가 여기 있는 이유를 함께 적는다.
+
+- **참가비는 1 이상이다.** 0을 허용하면 `recalculateAvgStack`이
+  `totalBuyinAmount / entryFee`를 0으로 나눠 NaN이 되고, `DashboardSchema.avgStack`이
+  `safeParse`에서 거부해 전광판이 "대기 중"에 영구히 머문다. 상한(`ENTRY_FEE_MAX`)은
+  `entryFee` 단발 값이 아니라 **그 값이 쌓이는 `Tournament.totalBuyinAmount`**
+  (postgres `integer`, 2,147,483,647)에서 역산한다 — 참가자 규모를 만 명으로 잡으면
+  `200_000 × 10_000 < 2^31`이다(T57이 594테이블·5,346명을 실측한 리포).
+- **블라인드 구조는 비어 있을 수 없다.** 빈 배열을 통과시키면
+  `getCurrentBlindLevel`이 모든 레벨을 지난 경우에 읽는
+  `structure[structure.length - 1]`이 `structure[-1]`이 되어 `undefined.lv`로
+  죽는다. 그 자리가 대회 시작이라, 참가자가 다 앉은 뒤에야 500이 난다.
+- **이미 걷은 돈이 있으면 참가비·시작 스택을 잠근다.** 문지기는 `status`가
+  아니라 **`Tournament.totalBuyinAmount > 0`**이다(`SessionService.updateSession`).
+  돈은 대회가 시작하기 전, `PENDING`에서 이미 걷힌다(`PaymentService.joinSession`은
+  `isClosedTournament`와 등록 마감만 보고 시작 여부는 묻지 않는다). 걷은 뒤에
+  분모(`entryFee`)나 `startStack`을 바꾸면 `recalculateAvgStack`의 역산과
+  `cancelSession`의 `참가자 수 × entryFee == totalBuyinAmount`가 영영 어긋나, 그
+  대회는 취소도 종료도 못 하는 상태로 굳는다(위 「상금」 절의 취소 게이트).
+- **상점·블라인드 구조 이름의 유니크는 소유자·상점 스코프다**
+  (`Store.@@unique([ownerId, name])` · `BlindStructure.@@unique([storeId, name])`).
+  전역 유니크였을 때는 남이 먼저 쓴 이름을 못 쓰는 실패 자체가, 다른 테넌트가
+  그 이름을 이미 쓰고 있다는 것을 알려주는 통로였다.
+
 ## 동시성 규약
 
 **스냅샷은 JSON 통째로 덮어쓴다.** 읽기 → 수정 → 쓰기가 겹치면 나중에 쓴 쪽이

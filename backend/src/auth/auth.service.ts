@@ -8,6 +8,28 @@ import { JwtService } from '@nestjs/jwt';
 import { tokenTtl } from './token-ttl';
 
 
+/**
+ * 신규 가입이 싣고 나오는 초기 포인트. **기본은 0이다.**
+ *
+ * 실 PG 연동 계획이 없다 — 지금은 회원가입이 포인트를 주지 않고 충전 경로도
+ * 없어서, 포인트 차감이 결제를 대신하고 있다(`seed-load.ts`의 `BOT_POINTS`
+ * 주석 참고). 일반 가입에 기본으로 포인트를 얹으면 결제 없이 참가할 길이
+ * 그대로 열린다.
+ *
+ * 부하 램프의 `NEW_USER_RATIO`(`load/lib/table.js`) 분기는 실행 중에
+ * signup → login → joinTournament를 탄다. 신규 가입 봇이 포인트 0으로
+ * 나오면 `PaymentService.joinSession`의 `user.points < session.entryFee`
+ * 게이트에 막혀 409로 VU가 죽는다 — 부하 무대에서만 이 환경변수를 켠다.
+ * 값은 `seed-load.ts`의 `BOT_POINTS`와 **같은 환경변수**를 읽는다(근거는
+ * `load/README.md`) — 두 벌이 되면 어긋난다.
+ *
+ * 호출 시점에 읽는 것은 `minPlayersToStart`(`session.service.ts`)와 같은
+ * 이유다 — 모듈 로드 시점에 고정하면 테스트가 값을 바꿀 수 없다.
+ */
+function signupInitialPoints(): number {
+  return Number(process.env.SIGNUP_INITIAL_POINTS ?? 0);
+}
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -22,7 +44,7 @@ export class AuthService {
 
     const hashedPassword = await bcrypt.hash(dto.password, 10);
     const user = await this.prisma.user.create({
-      data: { nickname: dto.nickname, password: hashedPassword },
+      data: { nickname: dto.nickname, password: hashedPassword, points: signupInitialPoints() },
     });
     return user ? (`회원가입 성공! ID는 ${user.nickname} 입니다.`) : ('회원가입 실패');
   }
