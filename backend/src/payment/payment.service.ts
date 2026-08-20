@@ -33,10 +33,22 @@ export class PaymentService {
     private redisService: RedisService,
   ) { };
 
-  // 가맹점 이름으로 검색
+  /**
+   * 가맹점 이름으로 검색. 가드가 없다 — 참가자용 대회 목록 화면
+   * (`(player)/tournaments/page.tsx`의 `fetchStores('')`)이 빈 쿼리로
+   * 불러 **전체 목록**을 받는 것을 그대로 쓴다. `contains: undefined`를
+   * Prisma가 "조건 없음"으로 처리해서 빈 문자열이 전체 조회가 된다 —
+   * 의도된 동작이라 유지한다(T66).
+   *
+   * `ownerId`는 select에서 뺀다. 가드도 페이징도 없는 공개 라우트라, 이
+   * 목록을 그대로 두면 상점 관리자 uuid가 전부 열거됐다 — 화면
+   * (`(player)/tournaments/page.tsx`의 `Store` 타입)이 쓰는 것도 `id`·
+   * `name`뿐이다.
+   */
   async searchStore(name: string) {
     return await this.prismaService.store.findMany({
-      where: { name: { contains: name } }
+      where: { name: { contains: name } },
+      select: { id: true, name: true },
     });
   }
 
@@ -82,7 +94,11 @@ export class PaymentService {
         storeId: true,
         startedAt: true,
         createdAt: true,
-        tables: true,
+        // `id`·`tableOrder`만 쓴다(`(terminal)/table/[tableId]/page.tsx`와
+        // `(terminal)/dealer/table/[tableId]/page.tsx`가 테이블 번호를 구하는
+        // 두 자리뿐이다). `tables: true`로 통째로 select하면 `dealerId`
+        // (딜러 세션 FK)까지 가드 없는 공개 라우트로 나간다(T66).
+        tables: { select: { id: true, tableOrder: true } },
         blindStructure: true,
       },
     });

@@ -65,7 +65,18 @@ export class SessionService {
   }
 
 
-  // 딜러인증시 테이블도 포함
+  /**
+   * `GET /dealer/:id` — 딜러·좌석 태블릿이 **로그인 전**에 부르는 조회다.
+   * 대기 화면(`(terminal)/dealer/page.tsx`·`(terminal)/table/page.tsx`)이
+   * 테이블 목록을 그려야 OTP를 넣을 테이블을 고를 수 있는데, 그 시점의
+   * 태블릿은 자격 증명이 하나도 없다 — 그래서 가드를 걸 수 없다
+   * (`EntryController`의 `enter`·`seats`와 같은 이유).
+   *
+   * 가드를 못 거는 대신 **싣는 것을 줄인다.** 예전에는 `tables: true`가
+   * `Tournament` 행 전체(해시만 제외)와 테이블의 `dealerId`(딜러 세션 FK)까지
+   * 실었다(T66) — 소비자 셋(딜러/좌석 대기 화면, 상점 콘솔의 `fetchTables`)
+   * 모두 `tables[].{id,tableOrder}`만 읽는다.
+   */
   async getGameSessionWithTables(tournamentId: string) {
     return await this.prismaService.tournament.findUnique({
       where: {
@@ -74,8 +85,9 @@ export class SessionService {
           in: [TournamentStatus.ONGOING, TournamentStatus.PENDING],
         }
       },
-      include: {
-        tables: true,
+      select: {
+        id: true,
+        tables: { select: { id: true, tableOrder: true } },
       },
     });
   }
@@ -831,8 +843,11 @@ export class SessionService {
    * 판을 보고 체크하는 사이 그 자리 사람이 바뀔 수 있어서다(T28이 핸드
    * 도중 착석을 허용한다). 그런데 지금 있는 조회 셋 다 가드가 없는 공개
    * 라우트다 — `GET /tournaments/:id/seats`(entry.controller)와
-   * `GET /dealer/:id`는 지금은 redis 비트맵이나 테이블 뼈대만 줘서 누가
-   * 앉았는지는 안 새지만, `GET /tournaments/:id`(payment.service.ts의
+   * `GET /dealer/:id`(`getGameSessionWithTables`)는 redis 비트맵이나
+   * `{id, tableOrder}`로 좁힌 테이블 뼈대만 줘서 누가 앉았는지는 안 새지만
+   * (`getGameSessionWithTables`가 예전에는 `tables: true`로 통째로 select해
+   * `Tournament` 행 전체와 테이블의 `dealerId`까지 실었다 — T66이 좁혔다),
+   * `GET /tournaments/:id`(payment.service.ts의
    * `getTournamentInfo`)는 `tablePlayers`까지 include하는 조회를 그대로
    * 썼던 적이 있다 — 참가자 userId·닉네임이 공개 라우트로 그대로 나갔다는
    * 뜻이다(그 조회는 이제 화면이 쓰는 필드만 select하도록 좁혔다,

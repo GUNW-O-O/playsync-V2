@@ -1662,6 +1662,55 @@ describe('SessionService.getSeatOccupants', () => {
 });
 
 /**
+ * T66. `GET /dealer/:id`(`getGameSessionWithTables`)는 딜러·좌석 태블릿이
+ * **로그인 전**에 부르는 가드 없는 공개 라우트다 — OTP를 넣기 전이라
+ * 자격 증명이 없다. 예전에는 `include: { tables: true }`로 `Table` 행을
+ * 통째로 실어 `dealerId`(딜러 세션 FK)까지 나갔고, `Tournament` 쪽도
+ * select 없이 조회해 `entryFee`·`prizePayouts`·`startedAt` 등 행 전체가
+ * (해시만 제외하고) 그대로 나갔다.
+ */
+describe('SessionService.getGameSessionWithTables', () => {
+  let prisma: PrismaClient;
+  let redis: Redis;
+  let sessionService: SessionService;
+  let tournamentId: string;
+  let tableId: string;
+
+  beforeAll(() => {
+    prisma = createTestPrisma();
+    redis = createTestRedis();
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+    await closeTestPrisma(prisma);
+  });
+
+  beforeEach(async () => {
+    await truncateAll(prisma);
+    await flushTestRedis(redis);
+
+    sessionService = new SessionService(
+      prisma as unknown as PrismaService,
+      new RedisService(redis),
+      new OtpAttempts(redis),
+      new EventEmitter2(),
+    );
+
+    ({ tournamentId, tableId } = await seedTournamentWithTable(prisma));
+  });
+
+  it('id·tables[].{id,tableOrder}만 준다 — entryFee·dealerId 같은 필드는 새지 않는다', async () => {
+    const result = await sessionService.getGameSessionWithTables(tournamentId);
+
+    expect(result).toEqual({
+      id: tournamentId,
+      tables: [{ id: tableId, tableOrder: 1 }],
+    });
+  });
+});
+
+/**
  * 대회 취소와 전액 환불.
  *
  * **시작 전에만 취소한다.** 리바인은 `HAND_END`에서만 나가므로 시작 전 대회의

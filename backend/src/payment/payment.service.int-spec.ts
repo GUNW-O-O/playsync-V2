@@ -242,6 +242,19 @@ describe('PaymentService — 참가 OTP 발급', () => {
     `;
     expect(after[0].playerOtp).toBe(before[0].playerOtp);
   });
+
+  /**
+   * T66. `getTournamentInfo`는 가드 없는 공개 라우트(`GET /tournaments/:id`)의
+   * 조회다 — 예전에는 `tables: true`로 `Table` 행을 통째로 select해
+   * `dealerId`(딜러 세션 FK)까지 실었다. 이 스펙의 `seedDb`가 만드는
+   * `TABLE` 행은 실제로 `dealerId`를 갖는다(딜러 세션과 연결돼 있다) —
+   * 좁히지 않으면 이 테스트가 그 값을 그대로 잡아낸다.
+   */
+  it('tables에 dealerId 같은 관리용 컬럼을 싣지 않는다', async () => {
+    const info = await service.getTournamentInfo(TOURNAMENT);
+
+    expect(info.tournament?.tables).toEqual([{ id: TABLE, tableOrder: 1 }]);
+  });
 });
 
 /**
@@ -326,6 +339,57 @@ describe('PaymentService.getTournamentInfo — 좌석 비트맵이 빈 대회', 
     const fields = await redis.hkeys(`tournament:${TOURNAMENT}:seat`);
     expect(`필드 ${fields.length}개 / 응답 좌석 ${info.seatStatus.length}개`)
       .toBe('필드 0개 / 응답 좌석 0개');
+  });
+});
+
+/**
+ * T66. `GET /tournaments/stores`(`searchStore`)는 가드도 페이징도 없는 공개
+ * 라우트다. 참가자용 대회 목록 화면(`(player)/tournaments/page.tsx`의
+ * `fetchStores('')`)이 빈 쿼리로 불러 전체 목록을 받는 것이 의도된
+ * 동작이라 그 자체는 유지한다 — 그런데 `store.findMany`가 행을 통째로
+ * 돌려줘서 상점 관리자의 `ownerId`(uuid)까지 그 목록에 실렸다. 누구나
+ * 열람 가능한 라우트에서 관리자 계정 id를 열거할 수 있었다는 뜻이다.
+ */
+describe('PaymentService.searchStore', () => {
+  let prisma: PrismaClient;
+  let service: PaymentService;
+
+  beforeAll(() => {
+    prisma = createTestPrisma();
+    service = new PaymentService(
+      {} as unknown as UserService,
+      {} as unknown as SessionService,
+      prisma as unknown as PrismaService,
+      {} as unknown as RedisService,
+    );
+  });
+
+  afterAll(async () => {
+    await closeTestPrisma(prisma);
+  });
+
+  beforeEach(async () => {
+    await truncateAll(prisma);
+  });
+
+  it('ownerId를 싣지 않는다', async () => {
+    const owner = await prisma.user.create({ data: { nickname: 'store-owner', password: 'x' } });
+    await prisma.store.create({ data: { name: '검색 대상 상점', ownerId: owner.id } });
+
+    const [store] = await service.searchStore('검색');
+
+    expect(store).toEqual({ id: expect.any(String), name: '검색 대상 상점' });
+    expect(store).not.toHaveProperty('ownerId');
+  });
+
+  it('빈 쿼리는 전체 목록을 준다 — 참가자용 대회 목록 화면이 이 동작에 기대고 있다', async () => {
+    const owner = await prisma.user.create({ data: { nickname: 'store-owner-2', password: 'x' } });
+    await prisma.store.create({ data: { name: '상점 A', ownerId: owner.id } });
+    await prisma.store.create({ data: { name: '상점 B', ownerId: owner.id } });
+
+    const stores = await service.searchStore('');
+
+    expect(stores).toHaveLength(2);
   });
 });
 
