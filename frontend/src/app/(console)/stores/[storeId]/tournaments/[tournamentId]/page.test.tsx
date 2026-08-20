@@ -94,13 +94,13 @@ describe('상점 콘솔 대회 상세 — storeId 소유권(T66)', () => {
   });
 
   /**
-   * T56이 "그대로 두기로" 정한 어긋남 — PLATFORM_ADMIN은 `getSeatOccupants`가
-   * STORE_ADMIN 전용이라 소유권과 무관하게 항상 403이다. 이 기능이 그
-   * 실패를 페이지 전체로 넓히면 PLATFORM_ADMIN은 자기 화면에서도 항상
-   * "대회를 찾을 수 없습니다"만 보게 된다 — 그건 이 티켓이 만들려는
-   * 동작이 아니다.
+   * `PLATFORM_ADMIN`도 예외가 아니다. `docs/backlog.md`의 "`GET /store`가
+   * 소유자 기준이다" 판단이 어드민의 전체 상점 열람 경로 자체를 만들지
+   * 않기로 정했다 — `getSeatOccupants`가 `@Roles(Role.STORE_ADMIN)` 전용이라
+   * PLATFORM_ADMIN은 소유권과 무관하게 항상 403인데, 그 역할에만 페이지
+   * 전체를 열어 주면 그 판단을 이 화면이 뒤집는 것이 된다.
    */
-  it('PLATFORM_ADMIN은 좌석 조회만 막히고 나머지는 그대로 보인다(T56)', async () => {
+  it('PLATFORM_ADMIN도 소유자가 아니므로 똑같이 차단된다', async () => {
     const token = fakeToken({ sub: 'admin-1', nickname: '플랫폼 관리자', role: 'PLATFORM_ADMIN' });
     cookieStore.get.mockImplementation((name: string) => (name === 'accessToken' ? { value: token } : undefined));
     useFixtures(403);
@@ -109,7 +109,7 @@ describe('상점 콘솔 대회 상세 — storeId 소유권(T66)', () => {
       params: Promise.resolve({ storeId: 'store-a', tournamentId: 'trn-1' }),
     });
 
-    expect(element.props.tournament?.name).toBe('남의 대회');
+    expect(element.props.tournament).toBeNull();
     expect(element.props.seatError).not.toBeNull();
   });
 
@@ -121,8 +121,6 @@ describe('상점 콘솔 대회 상세 — storeId 소유권(T66)', () => {
       params: Promise.resolve({ storeId: 'store-a', tournamentId: 'trn-1' }),
     });
 
-    // role을 못 읽는 경우도 "PLATFORM_ADMIN이 아니다"이므로 차단 쪽이다 —
-    // 확인 못 했으면 안 보여주는 쪽이 안전하다.
     expect(element.props.seatError).toBe('로그인이 필요합니다.');
     expect(element.props.tournament).toBeNull();
   });

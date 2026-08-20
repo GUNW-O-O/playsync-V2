@@ -1,6 +1,5 @@
 import { cookies } from 'next/headers';
 import { FullTournamentInfoSchema, type FullTournamentInfo } from '@playsync/contract';
-import { decodeSession } from '@/lib/session';
 import ConsoleClient, { type TournamentMeta, type TableInfo, type TableSeatInfo } from './ConsoleClient';
 import {
   startTournament,
@@ -136,15 +135,19 @@ async function fetchSeatOccupants(
  * 가드가 없어 소유권과 무관하게 성공하므로, 그쪽 결과를 그대로 내려보내면
  * 소유권 확인이 있으나 마나가 된다.
  *
- * `PLATFORM_ADMIN`은 예외다. `getSeatOccupants`가 `@Roles(Role.STORE_ADMIN)`
- * 전용이라 PLATFORM_ADMIN은 소유권과 무관하게 항상 403이고, 그 실패를
- * 페이지 전체로 넓히면 T56이 "그대로 두기로" 정한 어긋남(좌석 패널만 배너,
- * 나머지는 보임 — `getStoreDetail`·상점 경계 절 참고)을 이 기능이 뒤집는다.
- * 그래서 실패는 기본이 차단이고, **PLATFORM_ADMIN만** 예외로 뺀다(토큰이
- * 없거나 역할을 못 읽는 경우도 차단 쪽이다 — 소유권을 확인 못 했으면 안
- * 보여주는 쪽이 안전하다). 역할 판정은 `decodeSession`으로 토큰을 그대로
- * 디코드한다(`lib/session.ts`) — 서명 검증이 아니라 화면 분기용이고, 실제
- * 권한은 여전히 `getSeatOccupants`의 서버 판정이 진다.
+ * 예외를 두지 않는다 — 소유권 확인이 실패하면(토큰이 없거나, 역할을 못
+ * 읽거나, `PLATFORM_ADMIN`이거나) 전부 차단이다. `PLATFORM_ADMIN`도
+ * 예외가 아니다: `docs/backlog.md`의 "`GET /store`가 소유자 기준이다"
+ * 판단이 어드민이 전체 상점을 보는 경로 자체를 만들지 않기로 정했고,
+ * `@Roles`에 `PLATFORM_ADMIN`이 남아 있는 것은 그 판단을 뒤집은 게
+ * 아니라 "지금 빼면 나중에 되돌려야 하니 남겨 뒀다"는 잔재일 뿐이다(같은
+ * 문서, "`PLATFORM_ADMIN`이 `@Roles`에 남아 있지만 실제로는 전부 403이다").
+ * 이 페이지가 그 역할에 구멍을 하나 열어 주면 그 판단과 어긋난다.
+ *
+ * 나중에 어드민 화면을 실제로 세운다면 그 자리는 여기(페이지 컴포넌트의
+ * 분기)가 아니라 컨트롤러다 — `SessionController`가 이미 쓰는 방식대로
+ * `@Roles(Role.PLATFORM_ADMIN)`을 해당 라우트에 얹는다. 권한의 진실은
+ * 백엔드 한 곳에 두고, 프론트는 그 결과(성공/실패)만 따른다.
  */
 export default async function ConsoleTournamentPage({
   params,
@@ -153,7 +156,6 @@ export default async function ConsoleTournamentPage({
 }) {
   const { storeId, tournamentId } = await params;
   const token = (await cookies()).get('accessToken')?.value;
-  const role = decodeSession(token)?.role;
 
   const [tournament, dashboard, tables, seatResult] = await Promise.all([
     fetchTournament(tournamentId),
@@ -162,7 +164,7 @@ export default async function ConsoleTournamentPage({
     fetchSeatOccupants(tournamentId, token),
   ]);
 
-  const ownershipDenied = seatResult.seatError !== null && role !== 'PLATFORM_ADMIN';
+  const ownershipDenied = seatResult.seatError !== null;
 
   return (
     <ConsoleClient
