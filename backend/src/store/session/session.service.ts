@@ -951,14 +951,21 @@ export class SessionService {
       throw new ConflictException('닫힌 세션은 수정할 수 없습니다.');
     }
 
-    // 진행 중에 참가비를 바꾸면 그 대회는 취소도 종료도 못 하게 굳는다.
-    // `recalculateAvgStack`은 `totalBuyinAmount / entryFee`로 바이인 건수를
-    // 역산하고, `cancelSession`은 `참가자 수 × entryFee === totalBuyinAmount`를
-    // 요구한다. 이미 걷은 돈으로 계산된 값들이라, 나눗셈의 분모만 바꾸면
-    // 둘 다 영영 안 맞는다. 시작 스택도 같은 성질이다.
-    if (session && session.status === TournamentStatus.ONGOING) {
+    // 이미 걷은 돈이 있으면 참가비와 시작 스택을 잠근다. 한 번 바꾸면 그
+    // 대회는 취소도 종료도 못 하게 굳는다 — `recalculateAvgStack`은
+    // `totalBuyinAmount / entryFee`로 바이인 건수를 역산하고, `cancelSession`은
+    // `참가자 수 × entryFee === totalBuyinAmount`를 요구한다. 둘 다 이미 걷은
+    // 돈으로 계산된 값이라, 나눗셈의 분모만 바꾸면 영영 안 맞는다.
+    //
+    // 문지기는 **상태가 아니라 `totalBuyinAmount`**다. 돈은 대회가 시작하기
+    // 전, `PENDING`에서 걷힌다 — `PaymentService.joinSession`은
+    // `isClosedTournament`와 등록 마감만 보고 시작 여부는 묻지 않는다. 잠금이
+    // `status === ONGOING`이던 때는 N명이 결제한 뒤 아직 시작 전인 대회의
+    // entryFee를 그대로 바꿀 수 있었고, 위와 같은 굳음이 시작 전에도 그대로
+    // 재현됐다. 시작 스택도 같은 성질이다.
+    if (session && session.totalBuyinAmount > 0) {
       if (dto.entryFee !== undefined || dto.startStack !== undefined) {
-        throw new ConflictException('진행 중인 대회의 참가비와 시작 스택은 바꿀 수 없습니다.');
+        throw new ConflictException('이미 걷은 참가비가 있는 대회의 참가비와 시작 스택은 바꿀 수 없습니다.');
       }
     }
 

@@ -2164,10 +2164,13 @@ describe('SessionService.updateSession — 수정 경로의 검사', () => {
   it('진행 중인 대회의 entryFee는 바꿀 수 없다', async () => {
     // 한 번 바꾸면 `recalculateAvgStack`의 역산과 `cancelSession`의
     // `참가자 수 × entryFee === totalBuyinAmount`가 영영 어긋나, 그 대회는
-    // 취소도 종료도 못 하는 상태로 굳는다.
+    // 취소도 종료도 못 하는 상태로 굳는다. ONGOING인 대회는 실제로는 최소
+    // 인원이 결제하고 앉아야 시작되므로(`minPlayersToStart`) `totalBuyinAmount`가
+    // 0일 수 없다 — 그 사실을 픽스처에도 반영한다. 진짜 문지기는 상태가 아니라
+    // `totalBuyinAmount > 0`이라서다(아래 'PENDING이어도' 케이스가 그 증거다).
     await prisma.tournament.update({
       where: { id: myTournamentId },
-      data: { status: TournamentStatus.ONGOING },
+      data: { status: TournamentStatus.ONGOING, totalBuyinAmount: 10000 },
     });
     await expect(
       sessionService.updateSession(myTournamentId, { entryFee: 99000 } as never, ownerId),
@@ -2177,7 +2180,7 @@ describe('SessionService.updateSession — 수정 경로의 검사', () => {
   it('진행 중인 대회의 startStack도 바꿀 수 없다', async () => {
     await prisma.tournament.update({
       where: { id: myTournamentId },
-      data: { status: TournamentStatus.ONGOING },
+      data: { status: TournamentStatus.ONGOING, totalBuyinAmount: 10000 },
     });
     await expect(
       sessionService.updateSession(myTournamentId, { startStack: 50000 } as never, ownerId),
@@ -2187,7 +2190,7 @@ describe('SessionService.updateSession — 수정 경로의 검사', () => {
   it('진행 중이어도 이름은 바꿀 수 있다 — 돈에 닿지 않는 값이다', async () => {
     await prisma.tournament.update({
       where: { id: myTournamentId },
-      data: { status: TournamentStatus.ONGOING },
+      data: { status: TournamentStatus.ONGOING, totalBuyinAmount: 10000 },
     });
     const updated = await sessionService.updateSession(
       myTournamentId,
@@ -2195,6 +2198,35 @@ describe('SessionService.updateSession — 수정 경로의 검사', () => {
       ownerId,
     );
     expect(updated.name).toBe('새 이름');
+  });
+
+  /**
+   * I-3. 문지기가 `status === ONGOING`이던 시절에는 이 창이 열려 있었다.
+   * 돈은 `PENDING`에서 걷힌다(`PaymentService.joinSession`은 `isClosedTournament`와
+   * 등록 마감만 보고 대회 시작 전에 참가비를 받는다) — 그런데 잠금은 ONGOING만
+   * 봤으므로, N명이 결제하고 아직 시작 전인 대회의 entryFee를 그대로 바꿀 수
+   * 있었다. 한 번 바꾸면 위 ONGOING 케이스와 같은 이유로 `cancelSession`이
+   * 영영 막힌다. 실제 불변식은 상태가 아니라 "이미 걷은 돈이 있는가"다.
+   */
+  it('PENDING이어도 이미 걷은 돈이 있으면 entryFee를 바꿀 수 없다', async () => {
+    await prisma.tournament.update({
+      where: { id: myTournamentId },
+      data: { totalBuyinAmount: 10000 },
+    });
+    await expect(
+      sessionService.updateSession(myTournamentId, { entryFee: 99000 } as never, ownerId),
+    ).rejects.toThrow(ConflictException);
+  });
+
+  it('PENDING이고 걷은 돈이 없으면 entryFee를 바꿀 수 있다', async () => {
+    // 위 케이스와 대조. 잠금이 상태가 아니라 걷은 돈으로 옮겨간 것을 이 픽스처가
+    // 증명한다 — status는 두 테스트 모두 PENDING(시드 기본값)이다.
+    const updated = await sessionService.updateSession(
+      myTournamentId,
+      { entryFee: 99000 } as never,
+      ownerId,
+    );
+    expect(updated.entryFee).toBe(99000);
   });
 
   it('자기 상점 구조로는 바꿀 수 있다', async () => {
