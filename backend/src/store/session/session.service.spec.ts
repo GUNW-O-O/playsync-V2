@@ -393,7 +393,7 @@ describe('SessionService.startSession', () => {
     tables,
   });
 
-  const setup = (opts: { tables?: unknown[]; snapshot?: unknown; redisFails?: boolean } = {}) => {
+  const setup = (opts: { tables?: unknown[]; snapshot?: unknown; redisError?: Error } = {}) => {
     const tables = opts.tables ?? [{ id: 'table-1', tablePlayers: [{ seatPosition: 0 }] }];
 
     const update = jest.fn().mockResolvedValue({});
@@ -412,21 +412,21 @@ describe('SessionService.startSession', () => {
     };
 
     const setTournamentMeta = jest.fn().mockResolvedValue(undefined);
-    const saveInitialTableSnapshots = jest.fn(async () => {
-      if (opts.redisFails) throw new Error('테이블 상태 저장에 실패했습니다: table-1');
+    const stored = 'snapshot' in opts ? opts.snapshot : { players: [], buttonUser: 0 };
+    // `mutateSnapshot`의 계약만 흉내 낸다 — 읽은 상태를 `fn`에 넘기고, `fn`이
+    // 돌려준 것이 저장된 상태다. `null`을 돌려주면 쓰지 않고 읽은 것을 준다.
+    // 락 자체가 실제로 도는지는 통합 계층이 본다(스냅샷 읽기·쓰기가 한 락 안에
+    // 있는지는 목으로 증명되지 않는다).
+    const mutateSnapshot = jest.fn(async (_tableId: string, fn: any) => {
+      if (opts.redisError) throw opts.redisError;
+      return (await fn(stored)) ?? stored;
     });
-    const redis = {
-      getSnapShot: jest.fn().mockResolvedValue(
-        'snapshot' in opts ? opts.snapshot : { players: [], buttonUser: 0 },
-      ),
-      setTournamentMeta,
-      saveInitialTableSnapshots,
-    };
+    const redis = { setTournamentMeta, mutateSnapshot };
 
     const service = new SessionService(
       prisma as any, redis as any, {} as any, { emit: jest.fn() } as any,
     );
-    return { service, prisma, update, tableUpdate, setTournamentMeta, saveInitialTableSnapshots };
+    return { service, prisma, update, tableUpdate, setTournamentMeta, mutateSnapshot };
   };
 
   /**
@@ -471,10 +471,49 @@ describe('SessionService.startSession', () => {
   it('Redis 저장이 실패하면 DB 커밋이 일어나지 않는다', async () => {
     // 순서의 요점. Redis는 아직 아무도 보지 않는 상태라 실패해도 되돌릴 것이
     // 없다. 커밋이 뒤에 있어야 이 성질이 성립한다.
-    const { service, prisma, update } = setup({ redisFails: true });
+    //
+    // **실패가 조용히 성공처럼 보이지 않는다**도 여기서 지켜진다. 예전 경로
+    // (`saveInitialTableSnapshots`)는 `pipeline.exec()`을 썼는데 그것은 명령이
+    // 실패해도 던지지 않아서, 결과 배열을 직접 읽어 던져 주는 코드가 따로
+    // 필요했다. 지금은 `mutateSnapshot` 한 번에 스냅샷 하나라 실패가 그대로
+    // 거절된 프로미스로 올라온다.
+    //
+    // 목이 던지는 것은 **그 경로에서 실제로 나올 수 있는 것**이어야 한다.
+    // ioredis가 끊긴 커넥션에 명령을 보낼 때 내는 문구를 쓴다 — 지워진
+    // 메서드의 문구를 계속 던지면 아무 데도 없는 문자열을 검증하게 된다.
+    const { service, prisma, update } = setup({
+      redisError: new Error('Connection is closed.'),
+    });
 
-    await expect(service.startSession('t1', OWNER_ID)).rejects.toThrow(/저장에 실패/);
+    // 인프라 오류는 **그대로** 올라간다. 아래 락 실패처럼 409로 번역하면
+    // 진짜 장애가 "잠시 후 다시"로 위장된다.
+    await expect(service.startSession('t1', OWNER_ID)).rejects.toThrow(/Connection is closed/);
+    await expect(service.startSession('t1', OWNER_ID)).rejects.not.toBeInstanceOf(
+      ConflictException,
+    );
 
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  /**
+   * T61이 새로 연 실패 모드. 준비가 테이블 락을 잡게 되면서 `withTableLock`의
+   * 5초 대기가 시작 경로에 들어왔다.
+   *
+   * 도달 경로가 실재한다 — `releaseSeats`는 `SELECT ... FOR UPDATE` 대기 때문에
+   * 5초를 넘길 수 있다고 `domain.md`가 명시적으로 감수한 자리라, 좌석 해제 중에
+   * 상점이 시작을 누르면 이 갈래다. 그대로 두면 500에 "락 획득 실패"가 나가는데,
+   * **상점 콘솔에 "락"은 없는 말이다**(`domain.md`의 「상점도 손님이다」).
+   */
+  it('락을 못 잡으면 상점이 할 수 있는 일로 바꿔 던진다', async () => {
+    const { service, prisma, update } = setup({
+      redisError: new Error('테이블 table-1 락 획득 실패'),
+    });
+
+    await expect(service.startSession('t1', OWNER_ID)).rejects.toThrow(ConflictException);
+    await expect(service.startSession('t1', OWNER_ID)).rejects.toThrow(/잠시 후 다시 시작/);
+
+    // 다시 누르는 것이 곧 재시도인 상황이므로 아무것도 커밋되지 않아야 한다.
     expect(prisma.$transaction).not.toHaveBeenCalled();
     expect(update).not.toHaveBeenCalled();
   });
@@ -483,14 +522,22 @@ describe('SessionService.startSession', () => {
     // 웹이 읽는 것은 DB다. 참가자에게 "시작했다"가 보이는 시점이 실제 게임
     // 상태가 존재하는 시점보다 앞서면 안 된다.
     const order: string[] = [];
-    const { service, prisma, setTournamentMeta, saveInitialTableSnapshots } = setup();
+    const { service, prisma, setTournamentMeta, mutateSnapshot } = setup();
     setTournamentMeta.mockImplementation(async () => { order.push('meta'); });
-    saveInitialTableSnapshots.mockImplementation(async () => { order.push('snapshots'); });
+    mutateSnapshot.mockImplementation(async (_tableId: string, fn: any) => {
+      order.push('snapshots');
+      const stored = { players: [], buttonUser: 0 };
+      return (await fn(stored)) ?? stored;
+    });
     prisma.$transaction.mockImplementation(async () => { order.push('commit'); });
 
     await service.startSession('t1', OWNER_ID);
 
-    expect(order).toEqual(['meta', 'snapshots', 'commit']);
+    // **지키는 것은 "Redis 준비 둘이 DB 커밋보다 먼저"다.** 메타와 스냅샷의
+    // 앞뒤는 그 성질이 아니라 별개의 규칙이다 — 메타가 스냅샷 뒤인 이유는
+    // `initializeGame`의 `setTournamentMeta` 자리 주석에 있다(거부되는 시작은
+    // 메타를 남기지 않는다).
+    expect(order).toEqual(['snapshots', 'meta', 'commit']);
   });
 
   it('Redis 블라인드 기준 시각과 DB의 startedAt이 같다', async () => {
@@ -559,9 +606,8 @@ describe('SessionService 시작 최소 인원', () => {
       ),
     };
     const redis = {
-      getSnapShot: jest.fn(),
       setTournamentMeta: jest.fn().mockResolvedValue(undefined),
-      saveInitialTableSnapshots: jest.fn().mockResolvedValue(undefined),
+      mutateSnapshot: jest.fn().mockResolvedValue(null),
     };
     return new SessionService(
       prisma as any, redis as any, {} as any, { emit: jest.fn() } as any,

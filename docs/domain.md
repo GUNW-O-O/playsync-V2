@@ -433,6 +433,11 @@ await this.redis.mutateSnapshot(tableId, async (state) => {
 **스냅샷을 쓰는 길은 둘뿐이고, 그 밖에는 컴파일이 안 된다**(T42). 실제 쓰기
 (`writeSnapshot`)가 private이라 밖에서 부를 수 없다.
 
+> **T42가 선언한 것이 사실이 된 것은 T61부터다.** 그때까지
+> `saveInitialTableSnapshots`가 락 없이 `pipeline.set`을 하는 **세 번째 경로**로
+> 남아 있었다. 이름에도 `reason` 인자에도 그 사실이 안 적혀 있어서, 규약을 읽고
+> 코드를 보면 없는 것처럼 보였다. 지금은 시작 준비도 `mutateSnapshot`을 지나간다.
+
 | 길 | 언제 |
 |---|---|
 | `mutateSnapshot` | 그 외 전부. 락·읽기·쓰기를 이쪽이 소유한다 |
@@ -466,6 +471,26 @@ await this.redis.mutateSnapshot(tableId, async (state) => {
 | `boot-recovery` | `recovery.service.ts` — 재구성은 `rebuildTable`, 빈 테이블은 `recoverTournament` | `app.listen()` 이전이라 경합 상대가 없다 |
 | `table-created` | `session.service.ts`의 `createSession` · `createTable` | 테이블이 방금 생겨 아직 아무도 모른다 |
 
+**만료는 `SET`에 접어 넣는다. 쪼개지 마라.** `writeSnapshot`이
+`set(key, value, 'EX', 86400)` 한 명령을 쓰는 이유는 두 왕복 사이의 실패 창을
+없애려는 것만이 아니다. **`SET`은 기존 TTL을 지운다** — 그래서 `expire`를
+빠뜨린 쓰기 경로가 하나라도 있으면 그 경로가 지나갈 때마다 이미 붙어 있던 만료가
+조용히 벗겨진다. 실제로 그랬다(T61의 `saveInitialTableSnapshots`).
+
+**거부되는 시작은 Redis 대회 메타를 남기지 않는다.** `initializeGame`의
+`setTournamentMeta`가 스냅샷 준비와 `missing` 검사 **뒤에** 있는 이유다. 위로
+올려도 락 밖인 것은 같지만 — 락은 각 `mutateSnapshot` 안에서 열리고 닫힌다 —
+얻는 것 없이 누출만 생긴다.
+
+`blindField`의 **존재 자체가 "대회가 시작했다"의 대용으로 읽히기 때문이다.**
+착석의 `syncActivePlayer`도 시작 전에 `tournament:{id}:info`를 만들지만
+`blindField`는 쓰지 않아서, 그 필드의 유무가 판별식으로 서 있다. 읽는 자리가 둘.
+
+| 자리 | 메타가 새면 |
+|---|---|
+| `DealerService.startPreFlop` | 대회 상태 검사가 `checkAndSyncBlindLevel`의 결과 하나뿐이다. **`PENDING`·`startedAt`이 null인 대회에서 핸드가 돈다.** `cancelSession`은 `startedAt`으로만 막으므로 칩이 움직인 뒤에도 전액 환불 취소가 통과한다 |
+| `PlaysyncService.getDashboardInfo` | 전광판이 거부된 시각을 기준으로 블라인드를 세고, 1초 폴링이 `checkAndSyncBlindLevel`을 밀어 **시작하지도 않은 대회의 레벨이 스스로 올라간다** |
+
 좌석 비트맵은 애초에 이 규약 밖이다 — 읽고 고쳐 쓰는 것이 아니라 Redis 원자
 연산이다(`redis.service.ts`의 `UPDATE_SEAT_BIT` · `UPDATE_SEAT_BITS_MANY`).
 복구의 비트맵 되세우기(`recoverTournament`·`rebuildTable`의 `rebuildSeatBitmap`)도 같다.
@@ -491,6 +516,13 @@ await this.redis.mutateSnapshot(tableId, async (state) => {
 점유자를 고쳐 쓴다) (2) 해제는 착석 러시가 아니라 쉬는 시간에 일어난다는 것이다.
 근거 주석 전문은 `releaseSeats`의 docblock. **막은 것이 아니라 감수한 것**이라고
 적혀 있으니, 여기를 건드릴 때 "이미 안전하다"고 읽지 마라.
+
+**T61 이후 그 대기가 시작 경로와 만난다.** 준비(`initializeGame`)도 테이블 락을
+잡게 됐으므로, 좌석 해제가 도는 중에 상점이 시작을 누르면 `withTableLock`의 5초
+대기에 걸린다. 그 실패는 `Error('… 락 획득 실패')`라 그대로 두면 500에 인프라
+언어로 나가므로, `initializeGame`이 **그것만 골라** 409로 번역한다
+(`isTableLockTimeout`. 다른 예외는 그대로 올린다 — 뭉뚱그리면 진짜 장애가
+"잠시 후 다시"로 위장된다).
 
 레디스 락이 좌석의 **DB 쓰기까지 직렬화하지는 않는다** — 입장이 락을 건드리지
 않고 `TablePlayer`를 INSERT하기 때문이다. 그래서 해제 쪽이 `FOR UPDATE`로 부모

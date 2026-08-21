@@ -99,18 +99,23 @@ npm run assets         # 촬영본을 자르고 합쳐 img/ 로 (ffmpeg-static)
 타입 에러 0건, 테스트 전부 통과가 정상이다. CI(`.github/workflows/ci.yml`)가
 타입 체크 · 테스트 · 빌드를 돌린다.
 
-현재 기준선 (T59 · T68 완료 시점):
+현재 기준선 (T67 · T61 완료 시점):
 
 ```
 contract       62  (4 suites)
-백엔드 단위   256  (26 suites)
-프론트 단위   133  (27 files)
-통합          472  (33 suites)
+백엔드 단위   255  (25 suites)
+프론트 단위   163  (30 files)
+통합          476  (33 suites)
 e2e            13  (4 files, regression 프로젝트)
 타입 에러       0
 ```
 
-e2e를 뺀 넷은 T59가 머지되면 `main`이 될 브랜치에서 실제로 돌린 값이다. e2e는
+백엔드 단위가 256에서 줄어든 것은 T61이 `saveInitialTableSnapshots`를 지우면서
+그 스펙 한 벌이 함께 사라졌기 때문이다. **성질은 남아 있다** —
+`session.service.spec.ts`의 「Redis 저장이 실패하면 DB 커밋이 일어나지 않는다」가
+계속 지킨다.
+
+e2e를 뺀 넷은 T61이 머지되면 `main`이 될 브랜치에서 실제로 돌린 값이다. e2e는
 **검증되지 않았다** — 데모 장면 3~5가 T73에 막혀 있다.
 
 `tsc`가 이미 지운 파일의 에러를 계속 보고하면 `.tsbuildinfo`가 낡은 것이다.

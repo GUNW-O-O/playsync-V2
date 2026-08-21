@@ -54,8 +54,8 @@ contract       62  (4 suites)   전부 통과
 | T70 | 콘솔 좌석 선택이 새로 그린 판을 따라간다 | 엉뚱한 사람이 좌석에서 빠진다 | 중간 | T64 | **완료 (#65)** |
 | T68 | 레이즈 입력이 낼 수 있는 금액과 어긋난다 | 합법적인 레이즈 불가 / 조용한 올인 | 중간 | T58 | **완료 (#70)** |
 | T59 | 동시 파산의 등수와 상금 | 상금이 두 번 나가고 대회가 안 닫힌다 | 치명 | T60 | **완료 (#71)** |
-| T67 | 좌석 태블릿이 실패를 삼킨다 | 참가자가 모르는 채로 탈락한다 | 높음 | T70 | 대기 |
-| T61 | 시작 준비가 락 없이 스냅샷을 덮어쓴다 | 방금 앉은 사람이 게임에서 사라진다 | 치명 | T64 | 대기 |
+| T67 | 좌석 태블릿이 실패를 삼킨다 | 참가자가 모르는 채로 탈락한다 | 높음 | T70 | **완료 (#73)** |
+| T61 | 시작 준비가 락 없이 스냅샷을 덮어쓴다 | 방금 앉은 사람이 게임에서 사라진다 | 치명 | T64 | **완료 (#74)** |
 | T62 | 체크포인트 재시도가 던지면 테이블이 갇힌다 | 어떤 조작으로도 다음 핸드로 못 간다 | 높음 | T59 | 대기 |
 | T63 | 휴식 레벨이 등록을 영구히 닫는다 | 리바인이 예정보다 일찍 죽는다 | 높음 | T64 | 대기 |
 | T71 | 계약·스키마의 드리프트 | 아직 증상 없음. 다음 필드에서 터진다 | 낮음 | T64 | 대기 |
@@ -64,14 +64,16 @@ contract       62  (4 suites)   전부 통과
 | T72 | 목업 결제와 실패 경로 | 부하가 거절을 한 번도 안 밟았다 | 중간 | T66 | 대기 |
 | T73 | 데모 e2e가 소켓 연결 전에 딜러 버튼을 누른다 | `npm run demo` 장면 3~5를 아무도 검증 못 한다 | 중간 | — | 대기 |
 | T74 | 예외 필터가 하나도 없다 | raw Prisma·postgres 오류가 그대로 500으로 나간다 | 중간 | — | 대기 |
+| T75 | 부하 무대가 시나리오대로 돌지 않는다 | 정원과 병목을 틀린 무대에서 쟀다 | 중간 | — | 대기 |
+| T76 | 1코어에서 체감 지연만 1초로 뛴다 | 사용자 불편선을 믿을 수 없다 | 중간 | T75 | 대기 |
 
 아래 **잔여 목록**은 티켓을 따로 세우지 않은 것들이다. 가까운 티켓에 묻어 간다.
 
 ## 무엇을 기다리는가
 
 **파일이 아니라 함수로 갈랐다.** `redis.service.ts`를 넷이 만지지만 T60은
-`eliminatedPlayer`·`seatPlayer`·`joinPlayer`, T61은 `saveInitialTableSnapshots`·
-`mutateSnapshot` 계열, T63은 `checkAndSyncBlindLevel`, T64는 `recalculateAvgStack`이라
+`eliminatedPlayer`·`seatPlayer`·`joinPlayer`, T61은 `mutateSnapshot`·
+`writeSnapshot` 계열(지워진 `saveInitialTableSnapshots` 포함), T63은 `checkAndSyncBlindLevel`, T64는 `recalculateAvgStack`이라
 서로 안 닿는다. 파일 이름만 보고 직렬화하면 넷을 한 줄로 세우게 된다.
 
 | 기다림 | 왜 |
@@ -85,6 +87,7 @@ contract       62  (4 suites)   전부 통과
 | T65 → T62 · T71 | `playsync.service`(T62)와 `ws.gateway`(T71)를 둘 다 만진다 |
 | T69 → T62 · T71 | 탈출구가 실제로 열려 있어야 하고(T62), 타입은 T71이 연다 |
 | T72 → T66 | 충전 라우트가 `payment.controller.ts`에 붙는데 T66이 같은 파일의 가드를 정리한다. **포인트를 늘리는 라우트를 가드가 정리되기 전 컨트롤러에 붙이지 않는다** |
+| T76 → T75 | 같은 실행에서 잰 값이다. 무대가 의도대로 돌기 전에는 1초의 원인을 후보에서 못 지운다 |
 
 **T71을 T69보다 앞에 두는 이유.** `contract`의 `TableStateSchema`에 `dbSyncStatus`가
 **이미 있다.** T71 9-2로 프론트가 손 복사본을 버리고 contract를 import하면 T69의 타입
@@ -719,6 +722,28 @@ updateRebuyData(null);   // 무조건
 
 ## T61 — 시작 준비가 락 없이 스냅샷을 덮어쓴다
 
+> **완료 (2026-08-21, #74).** `saveInitialTableSnapshots`를 삭제하고 시작 준비도
+> `mutateSnapshot`을 지나가게 했다. `saveSnapshotUnlocked`의 `reason` 유니온에
+> 항목을 더하는 쪽은 고르지 않았다 — 그 유니온의 전제는 "경합할 상대가 없다"인데
+> 시작 순간에는 `claimSeat`이 실제로 경합한다.
+>
+> **곁가지로 옮겼던 `setTournamentMeta`를 리뷰가 반려했다.** 근거("락 안으로
+> 들어가면 착석이 막힌다")가 성립하지 않았고 — 락은 각 `mutateSnapshot` 안에서
+> 열리고 닫힌다 — 대가로 거부된 시작이 Redis 메타를 남겼다. `blindField`의 유무가
+> `DealerService.startPreFlop`과 `PlaysyncService.getDashboardInfo`에서 "시작했다"의
+> 판별식이라, **시작 안 한 대회에서 핸드가 돌고 전광판 시계가 올라간다.**
+> 거부 검사 뒤로 되돌렸고, 그 규칙을 `domain.md`에 적었다.
+>
+> **첫 판의 재현 테스트는 락을 증명하지 못했다.** 이음매가 제품 코드의 문장
+> 순서라 `mutateSnapshot`을 `getSnapShot` + `saveSnapshotUnlocked`로 바꿔도
+> 초록이었다 — 「통과한 테스트를 믿지 않는다」의 "검증 대상에 닿지도 못했다"다.
+> 락 홀더로만 순서를 잡고 점유자 생존과 `buttonUser` 생존을 **동시에** 단언하도록
+> 다시 짰다.
+>
+> **덤으로 만료가 닫혔다.** 옛 `saveInitialTableSnapshots`가 `expire`를 안 불렀고
+> `SET`은 기존 TTL을 지우므로, **대회 시작이 착석 테이블 스냅샷의 24시간 만료를
+> 통째로 벗기고 있었다.** 회귀 테스트로 못 박고 쓰기를 한 명령으로 접었다.
+
 **등급**: 치명 · **범위**: `store/session/session.service.ts`, `redis/redis.service.ts` · **프론트 영향**: 없음
 
 ### 문제
@@ -1063,6 +1088,109 @@ T64에서 범위 밖으로 재정했다 — 입력 검증 티켓이 응답 규�
 
 ---
 
+## T75 — 부하 무대가 시나리오대로 돌지 않는다
+
+**등급**: 중간 · **범위**: `load/lib/table.js`, `load/scenarios/ramp.js` · **프론트 영향**: 없음
+
+제품 결함이 아니라 **측정기의 결함**이다. 그래서 더 급하다 — 여기가 틀리면
+`results/`에 적은 정원과 병목이 전부 틀린 무대에서 잰 값이 된다.
+
+### 75-1. 가입 비율이 지켜지지 않는다
+
+`seatPlayers`의 `NEW_USER_RATIO` 주석이 무대의 전제를 적어 뒀다. 실제 홀덤펍에서
+대회 직전에 몰리는 것은 **로그인**이고, 가입은 몇 주에 걸쳐 흩어진다. 그래서
+계정은 시드가 풀로 만들고 봇은 10%만 실행 중에 가입한다.
+
+[2026-08-21 실측](./results/2026-08-21-load-12k.md)이 그 전제를 깼다.
+
+| | 의도 | 실측 |
+|---|---|---|
+| 좌석 | 12,420 (1,380테이블 × 9) | 같음 |
+| 가입 | 약 1,240 (10%) | **12,600** |
+| 로그인 | 약 12,420 | 14,092 |
+
+**가입이 좌석보다 많다.** 착석까지 못 간 반복까지 세어도, 사실상 모든 좌석이
+가입을 탔다는 뜻이다.
+
+산술로 갈래 하나는 지워진다. `fresh` 판정은
+`Math.random() < NEW_USER_RATIO || index >= (accountPool || 0)`이고
+`index = (poolBase || 0) + seat`인데, 호출부(`ramp.js`의 `table`)가
+`poolBase: index * SEAT_COUNT`를 넘기므로 최대값이 `1379 × 9 + 8 = 12,419`다.
+풀 12,600보다 **작다.** 두 번째 갈래로는 설명되지 않는다 — 그러니 의심할 자리는
+첫 갈래이거나, `manifest.accountPool`이 VU까지 그 값으로 도달하지 않는 것이다.
+
+**대가가 크다.** 사람마다 bcrypt가 `hash` + `compare` 두 번 돌아 착석 비용이
+실제의 두 배가 된다. 그 두 배가 정원 수치에 그대로 섞였고, 같은 문서의 bcrypt
+비중 계산(1,548 CPU초)이 이 값 위에 서 있다.
+
+### 75-2. 아무도 파산하지 않는다
+
+같은 실행에서 22분 동안 핸드 4,177개 — **테이블당 3개**다. 그래서
+`rebuys_accepted`가 0이고 탈락·사이드팟·리바인 갈래가 통째로 안 돌았다.
+
+무대 설계는 그 반대를 의도했다. `backlog.md`의 B11이 "인원을 **무한 리바인**으로
+유지했다(콜만 하는 봇으로는 아무도 안 터져 리바인·탈락·사이드팟 경로가 통째로
+안 돈다)"고 적는다. 리바인은 붙었는데 **터지는 데까지 못 간다** — 라이브 생각
+시간에서 3핸드로는 스택이 갈리지 않는다.
+
+따라서 지금까지 잰 정원은 **소켓과 액션 브로드캐스트의 정원**이지 대회 전
+구간의 정원이 아니다. `eliminatePlayer`·`splitBustedRanks`·사이드팟 정산이 부하
+아래에서 어떻게 구는지는 **한 번도 재지 않았다.**
+
+`LOAD_BURN_*`은 답이 아니다. 그것은 VU를 충분히 못 띄우는 기계에서 연산량을
+억지로 만드는 대체 수단이라 부하 모양을 왜곡한다. 스택·블라인드 쪽에서 갈리게
+하는 편이 무대에 정직하다.
+
+### 할 일
+
+둘 다 **요약 줄이 이미 카운터를 찍고 있는데 사람이 대조하지 않아서** 세 번의
+실행을 지나쳤다. 고치는 김에 요약이 **기대치와 실측을 나란히** 찍게 한다 —
+`가입 12600/로그인 14092`가 아니라 어긋났다는 사실이 줄에 보여야 한다.
+
+### 기존 테스트가 왜 못 잡나
+
+부하 하네스에는 테스트가 없다. 검증은 실행 요약을 사람이 읽는 것뿐이다.
+
+---
+
+## T76 — 1코어에서 체감 지연만 1초로 뛴다
+
+**등급**: 중간 · **범위**: 미확정(후보 셋) · **프론트 영향**: 없음
+
+[2026-08-21 실측](./results/2026-08-21-load-12k.md)의 마지막 관찰이다. 12,420명이
+물린 고원에서 코어를 1로 떨궜더니 k6가 사용자 불편선에서 중단했다.
+
+```
+aborted: 내 액션 p95가 1000ms를 6번 연속 넘었다 (테이블 1380개, 최근 30건 p95 1061ms)
+lag 중앙 2.34ms 최대 103.51ms · CPU 51.6% · rss 449MB
+```
+
+**서버가 포화된 것이 아니다.** 이벤트 루프 지연 중앙이 2.34ms이고 CPU는 절반이
+논다. 그런데 왕복은 1초다. 그 사이 어딘가가 설명되지 않는다.
+
+후보 셋이고 **결론이 서로 정반대**라 그냥 둘 수 없다.
+
+| 후보 | 맞다면 |
+|---|---|
+| 타임아웃 잡 몰림 (자리비움 5,610 · 지각 3,657) | **제품 결함.** 1코어 배포에서 사람이 실제로 1초를 기다린다 |
+| 무응답창 75가 지표를 부풀린다 (`load/README.md`의 기존 실측 기록) | **측정 결함.** 죽은 소켓 몇 개가 p95를 끌어올렸고 정원을 낮게 적은 것이다 |
+| k6 쪽 경로 (10코어 측정기가 1코어 서버를 상대한다) | **측정 결함.** 위와 같다 |
+
+중단선(내 액션 p95 1초)은 **사용자 불편선**이라 무대 전체가 이 값을 신뢰하고
+서 있다. 갈라 보기 전에는 1코어 배포 판단을 못 한다.
+
+### 할 일
+
+무응답창에 걸린 왕복을 지표에서 갈라내는 것이 가장 싸다 — 그것만으로 후보 둘이
+지워지거나 하나가 확정된다. 남으면 백엔드 타임아웃 잡 쪽을 본다.
+
+### 기존 테스트가 왜 못 잡나
+
+T75와 같다. 그리고 이 증상은 **1코어 + 만 명 규모에서만** 나타나므로 단위·통합
+계층이 닿는 자리가 아니다.
+
+---
+
 ## 잔여 목록
 
 티켓을 따로 세우지 않는다. 괄호 안 티켓에 묻어 간다.
@@ -1072,15 +1200,16 @@ T64에서 범위 밖으로 재정했다 — 입력 검증 티켓이 응답 규�
 | `TableEngine.handleRaise` | 최소 레이즈에 못 미치는 올인이 `currentBet`을 올리고 `resetChecked()`를 돌린다. 실제 포커에서 **미달 올인은 베팅을 다시 열지 않는다** — 이미 콜한 사람의 체크가 풀려 한 바퀴를 더 돈다. `betAmount <= previousBet`만 보고 최소 레이즈 폭은 안 본다 | 아무 티켓 |
 | `TableEngine.handleRaise`의 상한 | `Math.min(needed, player.stack)`이 **선언한 금액과 실제 낸 금액이 다른 것**을 조용히 통과시킨다. T68이 화면을 고쳐 정상 경로는 안 밟지만 **경계에서 닫힌 것은 아니다** — 화면이 아닌 클라이언트가 `amount`를 직접 보내면 깎인 올인이 된다(`threat-model.md`상 참가자 단말은 신뢰 경계 밖). 칩 총량은 안 깨진다 | 아무 티켓 |
 | `ActionTimer` | 서버가 만든 `actionDeadline`을 태블릿 시계와 직접 비교한다. `DisplayClient`는 같은 이유로 `blindField.serverTime`으로 오프셋을 보정하는데 여기엔 없다 — 시계가 뒤처진 태블릿은 게이지가 남은 채 자동 폴드된다. 초기 렌더 100ms 동안 "0초 남음"이 뜨는 것도 같은 함수 | 아무 티켓 |
-| `WaitingClient.submit` · `DealerWaitingClient.submit` | 제출 버튼이 `otp.length === 0`만 본다. `OTP_LENGTH`(8 / 6)와 대조하지 않아 짧은 코드가 백엔드까지 왕복한다 | T67 |
-| `WaitingClient.poll` · `DisplayClient.poll` · `selectTournament` | `try`/`catch`가 없다. 네트워크 블립마다 처리되지 않은 프라미스 거부가 난다. 폴링 쪽은 다음 주기에 낫지만 `selectTournament`는 테이블 목록이 낡은 채 아무 안내도 안 뜬다. 같은 모양이던 `ConsoleClient.run`은 T70이 가져갔다 | T67 |
-| `auth/action.ts`의 `handleLogin` · `handleRegister` | `res.ok` 확인 **전에** `await res.json()`. 리포의 다른 액션 파일은 전부 `.catch(() => null)` + `failureMessage`를 쓴다. 프록시 502나 rate-limit HTML이 오면 서버 액션이 던지고 빈 에러 바운더리가 뜬다 | T67 |
+| `WaitingClient.submit` · `DealerWaitingClient.submit` | 제출 버튼이 `otp.length === 0`만 본다. `OTP_LENGTH`(8 / 6)와 대조하지 않아 짧은 코드가 백엔드까지 왕복한다 | 완료 (#73) |
+| `WaitingClient.poll` · `DisplayClient.poll` · `selectTournament` | `try`/`catch`가 없다. 네트워크 블립마다 처리되지 않은 프라미스 거부가 난다. 폴링 쪽은 다음 주기에 낫지만 `selectTournament`는 테이블 목록이 낡은 채 아무 안내도 안 뜬다. 같은 모양이던 `ConsoleClient.run`은 T70이 가져갔다 | 완료 (#73) |
+| `auth/action.ts`의 `handleLogin` · `handleRegister` | `res.ok` 확인 **전에** `await res.json()`. 리포의 다른 액션 파일은 전부 `.catch(() => null)` + `failureMessage`를 쓴다. 프록시 502나 rate-limit HTML이 오면 서버 액션이 던지고 빈 에러 바운더리가 뜬다 | 완료 (#73) |
 | `EntryController` · `PaymentController` | 둘이 같은 `@Controller('tournaments')`를 쓴다. 겹치는 패턴은 `GET /tournaments/stores/:storeId`(Payment)와 `GET /tournaments/:id/seats`(Entry)이고, 지금 맞게 도는 이유는 `app.module.ts`의 `imports`에서 `PaymentModule`이 앞이기 때문이다. **순서가 바뀌면 깨지는데 아무 테스트도 안 운다** — 같은 베이스를 쓴다는 사실이 어디에도 표시돼 있지 않았다. T66이 회귀 테스트로 못 박았다 | 완료 (#63) |
 | `CreateTournamentDto` | `startStack` · `entryFee` · `rebuyUntil`에 `@Max`가 없다. class-validator의 `@IsInt()`는 `2^31`을 넘는 안전 정수를 통과시키는데 Prisma `Int`는 postgres `integer`다. 22003이 예외 필터 없이 **500**으로 나가고, `totalBuyinAmount` 쪽은 **대회 도중에** 터진다 | T64 |
 | `WsIdentity.role` | 타입이 Prisma `Role`인데 좌석 티켓은 `SEAT_ROLE = 'PLAYER'`를 싣는다. 그 값은 enum에 없다(`req: any`라 타입 체커가 못 잡는다). 게이트웨이가 `role === Role.DEALER`만 보므로 지금은 동작하지만, 티켓 신원의 타입이 실제로 흐르는 값과 다르다 | T71 |
 | `WaitingClient`의 좌석 도식 | `seatStatus.map`이 `SEAT_POSITIONS[i]`를 인덱싱한다. 비트맵이 9칸보다 길면 `.left`에서 던진다. 지금은 어디서나 9칸 | 아무 티켓 |
 | `middleware.ts`의 `config.matcher` | 마지막 세그먼트에 점이 있는 경로를 통째로 건너뛴다(`[^/]+\.[a-zA-Z0-9]+$`). 지금 그런 라우트 파라미터가 없어 악용 불가지만, slug나 닉네임이 URL에 들어오는 날 가드가 꺼진다. T66은 범위 밖으로 뒀다 — 그런 파라미터를 처음 들이는 쪽이 함께 본다 | 아무 티켓 |
 | `backend/.env.example`의 `DATABASE_URL` | 사용자가 `user`인데 `backend/docker-compose.yml`은 `POSTGRES_USER: root`다. 예제대로 `.env`를 만들면 개발 DB에 못 붙는다. 한 글자다 | 아무 티켓 |
+| `EntryService.enterSeat`의 통합 스펙 | `다른 좌석에 동시에 앉으면 서로를 지우지 않는다`가 **6회 중 1회** `테이블 상태를 복구하는 중입니다`로 실패한다(T61 작업 중 관측. `main` 기준선 4회는 전부 초록이었다). `claimSeat`이 `_count`를 락 밖에서 읽고 커밋과 스냅샷 쓰기 사이에 다른 요청이 끼는 창은 **주석이 이미 감수한다고 적어 둔 것**이라, 제품 결함인지 스펙이 그 창을 좁게 잡은 것인지가 갈리지 않았다. **6분의 1은 넘길 빈도가 아니다** | 아무 티켓 |
 | `UpdateTournamentDto` | `isRegistrationOpen`이 없다. `forbidNonWhitelisted: true`라 그 키를 보내면 400이고, `checkAndSyncBlindLevel`은 단조로 닫기만 한다 — **등록 마감을 사람이 되돌릴 API가 지금 없다** | T63 |
 
 ---

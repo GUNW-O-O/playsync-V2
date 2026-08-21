@@ -37,6 +37,21 @@ function minPlayersToStart(): number {
   return Number(process.env.MIN_PLAYERS_TO_START ?? 6);
 }
 
+/**
+ * `RedisService.withTableLock`이 락을 못 잡고 던진 것인가.
+ *
+ * 그쪽은 전용 타입 없이 문구로만 구별되는 `Error`를 던진다. 전용 타입으로
+ * 바꾸면 그 변화가 `withTableLock`의 **모든** 호출자에 퍼지므로, 판별을
+ * 여기서 문구로 한다. 두 자리가 한 쌍이라는 것을 여기 적어 둔다 —
+ * `grep '락 획득 실패'`가 둘을 함께 낸다.
+ *
+ * 이것으로 거르는 이유는 그 실패가 **500에 인프라 언어**로 나가기 때문이다.
+ * 상점 콘솔에 "락"은 없는 말이다(`domain.md`의 「상점도 손님이다」).
+ */
+function isTableLockTimeout(e: unknown): boolean {
+  return e instanceof Error && e.message.includes('락 획득 실패');
+}
+
 @Injectable()
 export class SessionService {
   constructor(
@@ -538,21 +553,66 @@ export class SessionService {
 
     const seatedTables = game.tables.filter(t => t.tablePlayers.length > 0);
 
-    // 사람이 앉은 테이블에 스냅샷이 없으면 **거부한다.** 예전에는 `return null`로
-    // 조용히 빼고 진행했다 — 그 테이블만 상태 없이 시작되고, DB에는 사람이
-    // 앉아 있는데 딜러는 첫 액션에서 '테이블 상태를 찾을 수 없습니다'를 이유도
-    // 모른 채 본다. 게다가 전부 빠져도 대회는 시작됐다.
-    const tableStates = await Promise.all(
-      seatedTables.map(async t => {
-        const randomCnt = Math.floor(Math.random() * t.tablePlayers.length);
-        const btnIdx = t.tablePlayers[randomCnt].seatPosition;
+    /*
+      **읽기와 쓰기가 같은 락 안에 있어야 한다**(T61). 예전에는 `getSnapShot`으로
+      락 밖에서 읽고, `buttonUser`를 대입하고, 메타 왕복을 한 번 더 한 뒤
+      `saveInitialTableSnapshots`가 `pipeline.set`으로 락 밖에서 썼다. 전형적인
+      read-modify-write인데 중간에 왕복이 하나 더 껴서 창이 넓었다.
 
-        const initialState = await this.redis.getSnapShot(t.id);
-        if (!initialState) return { tableId: t.id, state: null };
-        initialState.buttonUser = btnIdx;
-        return { tableId: t.id, state: initialState };
-      }),
-    );
+      그 창에 `EntryService.claimSeat`(락을 정상적으로 잡는다)이 끼면, DB 좌석
+      행·좌석 비트맵·`activePlayers`는 새로 앉은 사람을 아는데 **게임 스냅샷에서만
+      그가 지워진다.** 딜러가 그를 포함해 딜할 수 없고, `releaseSeats`의 스냅샷
+      점유자 대조가 통과하지 않아 상점도 그를 뗄 수 없다. 부팅 복구도 스냅샷이
+      "있으므로" 손대지 않는다. **대회 시작 순간이 착석이 가장 몰리는 시각**이라
+      창이 가장 넓을 때 열려 있었다.
+
+      버튼 추첨은 DB의 좌석 행에서 그대로 뽑는다. 버튼은 앉아 있는 사람 중
+      아무나면 되므로 락 안의 스냅샷과 한 칸 어긋나도 무해하다 — 지켜야 하는
+      것은 "덮어쓰지 않는다"뿐이다.
+
+      사람이 앉은 테이블에 스냅샷이 없으면 **거부한다.** 예전에는 `return null`로
+      조용히 빼고 진행했다 — 그 테이블만 상태 없이 시작되고, DB에는 사람이
+      앉아 있는데 딜러는 첫 액션에서 '테이블 상태를 찾을 수 없습니다'를 이유도
+      모른 채 본다. 게다가 전부 빠져도 대회는 시작됐다.
+
+      **판정이 락 안으로 들어와 부분 쓰기가 생긴다** — 앞 테이블은 `buttonUser`가
+      써지고 뒤 테이블에서 던진다. 감수한 것이다. 실패하면 대회는 `PENDING`으로
+      남고 **시작 버튼을 다시 누르는 것이 곧 재시도**이며, 준비 단계는 메타도
+      스냅샷도 전부 덮어쓰기라 몇 번을 돌려도 같은 결과다(`startSession`의
+      주석이 그 근거를 든다).
+    */
+    let tableStates: { tableId: string; state: TableState | null }[];
+    try {
+      tableStates = await Promise.all(
+        seatedTables.map(async t => {
+          const randomCnt = Math.floor(Math.random() * t.tablePlayers.length);
+          const btnIdx = t.tablePlayers[randomCnt].seatPosition;
+
+          const state = await this.redis.mutateSnapshot(t.id, async (snapshot) => {
+            if (!snapshot) return null; // 없으면 쓰지 않고 나간다. 아래에서 거부한다
+            snapshot.buttonUser = btnIdx;
+            return snapshot;
+          });
+          return { tableId: t.id, state };
+        }),
+      );
+    } catch (e) {
+      // 락 획득 실패**만** 고른다. 나머지(Redis 장애 등)는 그대로 올라가야
+      // 한다 — 여기서 뭉뚱그리면 진짜 장애가 "잠시 후 다시"로 위장된다.
+      //
+      // 이 실패는 이 티켓이 새로 연 경로다. 준비가 테이블 락을 잡게 되면서
+      // `withTableLock`의 5초 대기가 시작 경로에 들어왔다. 실제로 닿는다 —
+      // `releaseSeats`는 `FOR UPDATE` 대기 때문에 5초를 넘길 수 있다고
+      // `domain.md`가 명시적으로 감수한 자리라, 좌석 해제 중에 상점이 시작을
+      // 누르면 이 갈래다.
+      //
+      // 그대로 두면 500에 "락 획득 실패"가 나간다. 상점이 할 수 있는 일로
+      // 바꾼다 — 다시 누르는 것이 곧 재시도인 상황이므로 409가 맞다.
+      if (!isTableLockTimeout(e)) throw e;
+      throw new ConflictException(
+        '지금 다른 조작이 처리 중입니다. 잠시 후 다시 시작해 주세요.',
+      );
+    }
 
     const missing = tableStates.filter(t => t.state === null).map(t => t.tableId);
     if (missing.length > 0) {
@@ -561,15 +621,39 @@ export class SessionService {
       );
     }
 
+    /*
+      **거부되는 시작은 메타를 남기지 않는다.** 그래서 이 왕복이 위 거부 검사
+      뒤에 있다. 위로 올리면 락 밖이라는 점은 그대로지만 — 락은 각
+      `mutateSnapshot` 안에서 열리고 닫히므로 그 밖의 문장은 앞이든 뒤든 락
+      밖이다 — 얻는 것 없이 누출만 생긴다.
+
+      **`blindField`의 존재가 "대회가 시작했다"의 대용으로 읽히기 때문이다.**
+      착석의 `syncActivePlayer`도 시작 전에 `tournament:{id}:info`를 만들지만
+      `blindField`는 쓰지 않아서, 그 필드의 유무가 판별식으로 서 있다.
+
+      - `DealerService.startPreFlop`이 대회 상태를 보는 검사는
+        `checkAndSyncBlindLevel`의 결과 하나뿐이다. 메타가 새면 그 문이 열려
+        `PENDING` · `startedAt`이 null인 대회에서 실제로 핸드가 돈다. 그리고
+        `cancelSession`은 `startedAt`으로만 막으므로, 칩이 움직인 뒤에도 전액
+        환불 취소가 통과한다. 거부는 대회 단위인데 스냅샷은 테이블 단위라
+        위 `missing`이 이것을 대신 막아 주지도 못한다 — 스냅샷이 멀쩡한 형제
+        테이블의 딜러는 그대로 통과한다.
+      - `PlaysyncService.getDashboardInfo`는 새어 나온 `blindField.startedAt`을
+        전광판에 그리고, 그 폴링이 `checkAndSyncBlindLevel`을 밀어 **시작하지도
+        않은 대회의 블라인드 시계가 스스로 올라간다.**
+    */
     await this.redis.setTournamentMeta(id, dashboard, blindField);
-    await this.redis.saveInitialTableSnapshots(
-      tableStates as { tableId: string; state: TableState }[],
-    );
 
     // 뽑은 버튼을 호출자에게 넘긴다. 여기서 DB에 쓰지 않는 이유는 이 메서드가
     // "아직 시작이 아니다"라는 계약을 갖기 때문이다 — 커밋은 startSession의
     // 트랜잭션 하나뿐이어야 실패 시 PENDING으로 남아 재시도가 성립한다.
-    const ready = tableStates as { tableId: string; state: TableState }[];
+    //
+    // 넘기는 것은 **락 안에서 실제로 저장된 상태**다(`mutateSnapshot`의 반환값).
+    // 락 밖에서 만든 사본을 넘기면 `startSession` 끝의 `game.state.updated`가
+    // 저장된 것과 다른 판을 내보낸다 — 방금 앉은 사람이 화면에서만 사라진다.
+    const ready = tableStates.filter(
+      (t): t is { tableId: string; state: TableState } => t.state !== null,
+    );
     const buttons = ready.map(t => ({ tableId: t.tableId, buttonUser: t.state.buttonUser }));
 
     return { startedAt, buttons, tableStates: ready };
