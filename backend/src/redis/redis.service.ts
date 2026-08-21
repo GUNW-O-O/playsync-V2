@@ -337,10 +337,35 @@ export class RedisService {
     const [totalBuyin, active] = await this.redis.hmget(key, 'totalBuyinAmount', 'activePlayer');
 
     const totalChips = (parseInt(totalBuyin || '0') / entryFee) * startStack;
-    const activeNum = parseInt(active || '1');
+    // 필드가 없으면 0이다. 예전에는 '1'이었는데, 그러면 바로 아래 `activeNum > 0`
+    // 가드가 무력해지고 avgStack이 "전체 칩 총량"으로 튄다.
+    const activeNum = parseInt(active || '0');
 
     const newAvg = activeNum > 0 ? Math.floor(totalChips / activeNum) : 0;
     await this.redis.hset(key, 'avgStack', newAvg);
+  }
+
+  /**
+   * 인원수를 DB 값으로 맞춘다. **대입이다.**
+   *
+   * 호출부는 DB 트랜잭션이 돌려준 `Tournament.activePlayers`를 그대로 넘긴다.
+   * 상대 증감(`hincrby`)이 아닌 이유는 짝을 구조로 만들기 위해서다 — 두 번
+   * 불러도 같고, 한 번 놓쳐도 다음 인원 변화가 값을 통째로 다시 써서
+   * 드리프트를 지운다. **DB가 진실이고 이 값은 전광판용 파생 표시다**
+   * (`eliminatePlayer`가 돈에 적용하는 규칙과 같다).
+   *
+   * 평균 스택도 다시 계산한다. 분모가 이 인원이므로, 대입만 하고 두면
+   * 전광판의 평균이 한 박자 늦는다.
+   */
+  async syncActivePlayer(
+    tournamentId: string,
+    activePlayers: number,
+    startStack: number,
+    entryFee: number,
+  ) {
+    const key = this.getInfoKey(tournamentId);
+    await this.redis.hset(key, 'activePlayer', activePlayers);
+    await this.recalculateAvgStack(tournamentId, startStack, entryFee);
   }
 
   async getTournamentDashboard(id: string): Promise<Dashboard | null> {
