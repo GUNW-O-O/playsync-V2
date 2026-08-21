@@ -51,7 +51,7 @@ contract       62  (4 suites)   전부 통과
 | T58 | 앤티가 사이드팟에 담기지 않고 화면에도 없다 | 칩이 증발하고 참가자가 모른다 | 치명 | T64 | **완료 (#62)** |
 | T60 | 인원수가 DB와 Redis에서 갈라진다 | 최후 1인 판정과 등수가 통째로 틀어진다 | 치명 | T64 | 대기 |
 | T66 | 가드 없는 읽기 경로 | 남의 대회·상점이 그대로 나간다 | 높음 | T64 | **완료 (#63)** |
-| T70 | 콘솔 좌석 선택이 새로 그린 판을 따라간다 | 엉뚱한 사람이 좌석에서 빠진다 | 중간 | T64 | 대기 |
+| T70 | 콘솔 좌석 선택이 새로 그린 판을 따라간다 | 엉뚱한 사람이 좌석에서 빠진다 | 중간 | T64 | 완료 (PR 대기) |
 | T68 | 레이즈 입력이 낼 수 있는 금액과 어긋난다 | 합법적인 레이즈 불가 / 조용한 올인 | 중간 | T58 | 대기 |
 | T59 | 동시 파산의 등수와 상금 | 상금이 두 번 나가고 대회가 안 닫힌다 | 치명 | T60 | 대기 |
 | T67 | 좌석 태블릿이 실패를 삼킨다 | 참가자가 모르는 채로 탈락한다 | 높음 | T70 | 대기 |
@@ -509,6 +509,11 @@ const selectedSeats = [...selected]
 
 선택을 `seatIndex`가 아니라 `{ seatIndex, userId }`로 들고 있게 한다. 그러면 주인이
 바뀐 자리는 서버가 409로 거절하고, 그것이 원래 설계된 동작이다.
+
+잔여 목록의 `ConsoleClient.run` `try`/`catch`를 함께 묻는다. 이 결함의 무대를
+만드는 것이 `run`의 `router.refresh()`고, 고친 뒤 서버가 내는 409를 상점에
+보여 주는 것도 `run`이다. 나머지 셋(`WaitingClient.poll` ·
+`DisplayClient.poll` · `selectTournament`)은 T67에 남는다.
 
 ---
 
@@ -1015,7 +1020,7 @@ T64에서 범위 밖으로 재정했다 — 입력 검증 티켓이 응답 규�
 | `RedisService.recalculateAvgStack` | `parseInt(active \|\| '1')`. `activePlayer` 필드가 없을 때 분모가 0이 아니라 **1**이라, 바로 아래 `activeNum > 0` 가드가 무력해지고 `avgStack`이 "전체 칩 총량"으로 튄다 | T60 |
 | `ActionTimer` | 서버가 만든 `actionDeadline`을 태블릿 시계와 직접 비교한다. `DisplayClient`는 같은 이유로 `blindField.serverTime`으로 오프셋을 보정하는데 여기엔 없다 — 시계가 뒤처진 태블릿은 게이지가 남은 채 자동 폴드된다. 초기 렌더 100ms 동안 "0초 남음"이 뜨는 것도 같은 함수 | T68 |
 | `WaitingClient.submit` · `DealerWaitingClient.submit` | 제출 버튼이 `otp.length === 0`만 본다. `OTP_LENGTH`(8 / 6)와 대조하지 않아 짧은 코드가 백엔드까지 왕복한다 | T67 |
-| `WaitingClient.poll` · `DisplayClient.poll` · `selectTournament` · `ConsoleClient.run` | `try`/`catch`가 없다. 네트워크 블립마다 처리되지 않은 프라미스 거부가 난다. 폴링 쪽은 다음 주기에 낫지만 `selectTournament`는 테이블 목록이 낡은 채 아무 안내도 안 뜬다 | T67 · T70 |
+| `WaitingClient.poll` · `DisplayClient.poll` · `selectTournament` | `try`/`catch`가 없다. 네트워크 블립마다 처리되지 않은 프라미스 거부가 난다. 폴링 쪽은 다음 주기에 낫지만 `selectTournament`는 테이블 목록이 낡은 채 아무 안내도 안 뜬다. 같은 모양이던 `ConsoleClient.run`은 T70이 가져갔다 | T67 |
 | `auth/action.ts`의 `handleLogin` · `handleRegister` | `res.ok` 확인 **전에** `await res.json()`. 리포의 다른 액션 파일은 전부 `.catch(() => null)` + `failureMessage`를 쓴다. 프록시 502나 rate-limit HTML이 오면 서버 액션이 던지고 빈 에러 바운더리가 뜬다 | T67 |
 | `UserService.findByUUID` | `await`가 빠져 `if (!user) throw`가 도달 불가한 죽은 분기다. **오동작은 없다** — `async` 반환값이 thenable을 풀어 주고 호출부 둘(`paymentPoint` · `joinSession`)이 각자 null을 막는다. 정리 대상 | 아무 티켓 |
 | `EntryController` · `PaymentController` | 둘이 같은 `@Controller('tournaments')`를 쓴다. 겹치는 패턴은 `GET /tournaments/stores/:storeId`(Payment)와 `GET /tournaments/:id/seats`(Entry)이고, 지금 맞게 도는 이유는 `app.module.ts`의 `imports`에서 `PaymentModule`이 앞이기 때문이다. **순서가 바뀌면 깨지는데 아무 테스트도 안 운다** — 같은 베이스를 쓴다는 사실이 어디에도 표시돼 있지 않았다. T66이 회귀 테스트로 못 박았다 | 완료 (#63) |
