@@ -1,3 +1,4 @@
+import { NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { Queue } from 'bullmq';
@@ -108,6 +109,16 @@ describe('PaymentService — 참가 OTP 발급', () => {
       SELECT "playerOtp" FROM "TournamentParticipation" WHERE "userId" = 'u1'
     `;
     expect(row.playerOtp).toMatch(/^\d{8}$/);
+  });
+
+  /**
+   * 없는 유저를 거르는 자리는 `UserService.findByUUID` 하나다. 예전에는
+   * 여기서도 한 번 더 막았는데, `findByUUID`의 `await`가 빠져 있어 그
+   * 검사가 실제로 일하는 유일한 것이었다. `await`를 채우면 이 자리의
+   * 검사는 도달 불가가 되므로 지웠고, 그래서 응답이 409가 아니라 404다.
+   */
+  it('없는 유저로 참가하면 404로 거절한다', async () => {
+    await expect(service.joinSession(dto, 'no-such-user')).rejects.toThrow(NotFoundException);
   });
 
   it('참가자마다 다른 값이다', async () => {

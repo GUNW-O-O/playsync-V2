@@ -1,11 +1,11 @@
-import { UnauthorizedException } from '@nestjs/common';
+import { NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { UserService } from './user.service';
 import { applyTestEnv } from '../../test/helpers/test-env';
 import { truncateAll } from '../../test/helpers/prisma';
 
 /**
- * 마이페이지 참여 목록 조회.
+ * 유저 조회 경로. 마이페이지 참여 목록과 uuid 단건 조회.
  *
  * `createTestPrisma()`가 아니라 진짜 `PrismaService`를 그대로 띄운다. 검증
  * 대상인 "다른 조회 경로에는 playerOtp가 실리지 않는다"는 클라이언트 수준
@@ -13,7 +13,7 @@ import { truncateAll } from '../../test/helpers/prisma';
  * 안에만 있다. 여기서 설정을 복제해 별도 클라이언트를 만들면 그 파일의
  * 줄을 지워도 이 테스트는 계속 초록일 것이다 — 검증 자체가 가짜가 된다.
  */
-describe('UserService.getMyParticipations', () => {
+describe('UserService', () => {
   let prisma: PrismaService;
   let service: UserService;
 
@@ -141,6 +141,22 @@ describe('UserService.getMyParticipations', () => {
       await expect(
         service.getMyParticipations(undefined as unknown as string),
       ).rejects.toThrow(UnauthorizedException);
+    });
+  });
+
+  /**
+   * `findUnique`는 행이 없으면 `null`을 준다. 이 검사가 도달 가능해야
+   * 호출부가 각자 null을 막지 않아도 된다 — 없는 유저를 거르는 자리를
+   * 여기 하나로 모은 근거다(`PaymentService.joinSession` · `UserService.paymentPoint`).
+   */
+  describe('findByUUID', () => {
+    it('없는 uuid면 던진다', async () => {
+      await expect(service.findByUUID('no-such-user')).rejects.toThrow(NotFoundException);
+    });
+
+    it('있는 유저는 그대로 준다', async () => {
+      const user = await service.findByUUID('u1');
+      expect(user.nickname).toBe('u1');
     });
   });
 });

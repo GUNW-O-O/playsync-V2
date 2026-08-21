@@ -11,8 +11,17 @@ export class UserService {
     return this.prisma.user.findUnique({ where: { nickname } });
   }
 
+  /**
+   * uuid 단건 조회. **없는 유저를 거르는 유일한 자리다.**
+   *
+   * 예전에는 `await`가 빠져 있어 `if (!user)`가 도달 불가였고(Promise는 항상
+   * truthy다), 실제로 막는 것은 호출부 둘이 각자 들고 있던 null 검사였다.
+   * `await`를 채우면서 그 둘을 지웠다 — 검사가 둘이면 한쪽만 고쳐지는 날이
+   * 온다. 호출부(`UserService.paymentPoint` · `PaymentService.joinSession`)는
+   * 이 함수가 던진다는 것에 기댄다.
+   */
   async findByUUID(id: string) {
-    const user = this.prisma.user.findUnique({
+    const user = await this.prisma.user.findUnique({
       where: { id }
     });
     if (!user) {
@@ -22,8 +31,7 @@ export class UserService {
   }
 
   async paymentPoint(tx: any, userId: string, tournamentId: string, sessionName: string, amount: number) {
-    const user = await this.findByUUID(userId);
-    if (!user) throw new NotFoundException('유저를 찾을 수 없습니다');
+    await this.findByUUID(userId);
 
     await tx.user.update({
       where: { id: userId },
