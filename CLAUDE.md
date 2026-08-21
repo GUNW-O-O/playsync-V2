@@ -99,24 +99,23 @@ npm run assets         # 촬영본을 자르고 합쳐 img/ 로 (ffmpeg-static)
 타입 에러 0건, 테스트 전부 통과가 정상이다. CI(`.github/workflows/ci.yml`)가
 타입 체크 · 테스트 · 빌드를 돌린다.
 
-현재 기준선 (T67 · T61 완료 시점):
+현재 기준선 (T62 완료 시점):
 
 ```
 contract       62  (4 suites)
-백엔드 단위   255  (25 suites)
+백엔드 단위   259  (26 suites)
 프론트 단위   163  (30 files)
-통합          476  (33 suites)
+통합          478  (33 suites)
 e2e            13  (4 files, regression 프로젝트)
 타입 에러       0
 ```
 
-백엔드 단위가 256에서 줄어든 것은 T61이 `saveInitialTableSnapshots`를 지우면서
-그 스펙 한 벌이 함께 사라졌기 때문이다. **성질은 남아 있다** —
-`session.service.spec.ts`의 「Redis 저장이 실패하면 DB 커밋이 일어나지 않는다」가
-계속 지킨다.
-
-e2e를 뺀 넷은 T61이 머지되면 `main`이 될 브랜치에서 실제로 돌린 값이다. e2e는
+e2e를 뺀 넷은 T62가 머지되면 `main`이 될 브랜치에서 실제로 돌린 값이다. e2e는
 **검증되지 않았다** — 데모 장면 3~5가 T73에 막혀 있다.
+
+**통합 478은 한 건이 플레이키인 채로 센 값이다.** `EntryService.enterSeat`의
+「다른 좌석에 동시에 앉으면 서로를 지우지 않는다」가 6회 중 1회 실패한다
+(`tickets-audit.md`의 잔여 목록). 전체 실행이 빨간불이면 이 스펙인지 먼저 본다.
 
 `tsc`가 이미 지운 파일의 에러를 계속 보고하면 `.tsbuildinfo`가 낡은 것이다.
 `incremental: true`라서 생기는 일이니 `backend/dist`를 지우고 다시 돌린다.

@@ -71,6 +71,15 @@ WAITING
   밖에서 기다린다. 그동안 다음 핸드가 시작되지 않는 것은 `startPreFlop`이
   `WAITING`만 받기 때문이다(근거 주석: `DealerService.resolveWinners`와
   `PlaysyncService.checkpointTableToDb`).
+- **나올 길의 문지기도 페이즈다 — 표시가 아니다.** `DealerService.retryCheckpoint`
+  는 `phase === HAND_END`만 본다. `dbSyncStatus`는 `mutateSnapshot` →
+  `withTableLock`으로만 쓰이므로 **Redis가 힘들면 남길 수 없는 값**이고, 그
+  순간이 정확히 재시도가 필요한 순간이다. 표시를 조건에 두면 표시를 못 남긴
+  실패가 막다른 골목이 된다. 표시는 화면에 알리는 용도지 자격 판정이 아니다.
+- **전이는 락 안에서 페이즈를 다시 보고 결정한다.** 체크포인트가 락 밖에서 수
+  초를 돌기 때문에, 문지기를 통과한 시점의 페이즈가 전이 시점에도 같다는 보장이
+  없다. `DealerService.finishHand`가 `HAND_END`가 아니면 아무것도 쓰지 않는
+  이유다 — 그러지 않으면 `initTable`이 살아 있는 판의 `pot`과 베팅을 0으로 민다.
 - **블라인드는 핸드 시작 시점에 확정된다.** 딜링 도중 레벨이 오르면 이미 깔린
   블라인드와 어긋난다.
 
