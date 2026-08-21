@@ -195,9 +195,6 @@ export class PaymentService {
   // OTP를 받는 순간에 한다.
   async joinSession(dto: PayMentDto, userId: string) {
     const user = await this.user.findByUUID(userId);
-    if (!user) {
-      throw new ConflictException('잘못된 유저 ID 입니다.');
-    }
     const session = await this.prismaService.tournament.findUnique({
       where: { id: dto.tournamentId },
     });
