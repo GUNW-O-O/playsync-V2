@@ -92,6 +92,9 @@ export class DealerService {
       );
     }
 
+    /** 승격이 있었으면 갱신 후 인원. 없었으면 `null`이라 대입도 건너뛴다. */
+    let activePlayersAfter: number | null = null;
+
     const issued = await this.prisma.$transaction(async (tx) => {
       // dto.tableId가 이 대회 소속인지 상태와 무관하게 먼저 확인한다. 이전에는
       // ONGOING일 때만 조회해서, 그 밖의 상태(PENDING·SYNCING)에서는 다른
@@ -123,10 +126,12 @@ export class DealerService {
           data: { status: 'PLAYING' }
         });
         if (promoted.count > 0) {
-          await tx.tournament.update({
+          const updated = await tx.tournament.update({
             where: { id: dto.tournamentId },
             data: { activePlayers: { increment: promoted.count } },
+            select: { activePlayers: true },
           });
+          activePlayersAfter = updated.activePlayers;
         }
       }
       const accessToken = {
@@ -149,6 +154,15 @@ export class DealerService {
     // 카운터는 **토큰이 실제로 나간 뒤에** 지운다. OTP는 맞았지만 tableId가 남의
     // 것이라 위에서 403이 나가는 요청까지 리셋해 줄 이유가 없다.
     await this.otpAttempts.clear(dto.tournamentId);
+
+    // 전광판이 읽는 인원도 DB 값으로 맞춘다(T60). 승격이 DB만 올리면 이 경로로
+    // 올라간 사람이 전광판과 최후 1인 판정에서 영영 빠진다. 실패 경로에서
+    // 부르지 않는 것은 위 `clear`와 같은 이유다 — 토큰이 나간 뒤가 맞는 자리다.
+    if (activePlayersAfter !== null) {
+      await this.redis.syncActivePlayer(
+        dto.tournamentId, activePlayersAfter, tournament.startStack, tournament.entryFee,
+      );
+    }
 
     return issued;
   }

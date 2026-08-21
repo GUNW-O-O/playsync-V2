@@ -686,6 +686,83 @@ describe('EntryService.enterSeat', () => {
     const bitmap = await redis.hget(`tournament:${TOURNAMENT}:seat`, `table:${TABLE}`);
     expect(bitmap![5]).toBe('1');
   });
+
+  /**
+   * 인원 카운터(T60).
+   *
+   * 인원수는 DB `Tournament.activePlayers`가 진실이고 Redis `activePlayer`는
+   * 전광판용 파생 표시다. 착석은 **둘이 갈라진 채로도** 다음 한 번이 값을
+   * 통째로 다시 써서 드리프트를 지워야 한다 — 그래서 두 테스트 다 **일부러
+   * 갈라 놓고 시작한다.**
+   */
+  describe('인원 카운터', () => {
+    const infoKey = `tournament:${TOURNAMENT}:info`;
+
+    async function activePlayersInDb(): Promise<number> {
+      const row = await prisma.tournament.findUniqueOrThrow({ where: { id: TOURNAMENT } });
+      return row.activePlayers;
+    }
+
+    async function activePlayerInRedis(): Promise<number> {
+      return Number(await redis.hget(infoKey, 'activePlayer'));
+    }
+
+    // 아래 첫 테스트가 `redisService`에 거는 spy는 이 서비스 인스턴스가
+    // describe 전체에서 공유되므로 되돌리지 않으면 뒤로 샌다.
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('스냅샷 쓰기가 던져도 다음 착석이 카운터를 되찾는다', async () => {
+      // 4-2. 커밋 뒤 `mutateSnapshot`이 던지면 뒤의 네 줄이 통째로 스킵되고,
+      // 같은 OTP로 다시 와도 `promoted`가 0이라 상대 증감으로는 영영 안 낫는다.
+      await participate('u1', '00000001');
+      await participate('u2', '00000002');
+      await participate('u3', '00000003');
+
+      // 스냅샷을 먼저 세운다. 좌석 행만 있고 스냅샷이 없으면 뒤따르는 착석이
+      // `shouldBlockEmptySnapshot`에 걸려 409가 되고, 검증 대상에 닿지 못한다.
+      await service.enterSeat(TOURNAMENT, { otp: '00000001', tableId: TABLE, seatIndex: 0 });
+
+      jest
+        .spyOn(redisService, 'mutateSnapshot')
+        .mockRejectedValueOnce(new Error('락 실패'));
+      await expect(
+        service.enterSeat(TOURNAMENT, { otp: '00000002', tableId: TABLE, seatIndex: 1 }),
+      ).rejects.toThrow();
+
+      // 여기서 DB는 2인데 Redis는 1이다. 다음 착석 한 번이 그 차이를 지운다.
+      await service.enterSeat(TOURNAMENT, { otp: '00000003', tableId: TABLE, seatIndex: 2 });
+
+      expect(`redis ${await activePlayerInRedis()} / db ${await activePlayersInDb()}`)
+        .toBe('redis 3 / db 3');
+    });
+
+    it('재입장은 인원을 두 번 세지 않고, 어긋난 카운터도 고친다', async () => {
+      await participate('u1', '00000001');
+      await service.enterSeat(TOURNAMENT, { otp: '00000001', tableId: TABLE, seatIndex: 0 });
+
+      // 상점이 좌석을 뗀 상태 — 좌석 행이 사라지고 참가는 RELEASED다.
+      // 그 둘이 해제의 정의다(`store/session/session.service.ts`의 좌석 해제).
+      await prisma.tablePlayer.deleteMany({ where: { tournamentId: TOURNAMENT, userId: 'u1' } });
+      await prisma.tournamentParticipation.update({
+        where: { tournamentId_userId: { tournamentId: TOURNAMENT, userId: 'u1' } },
+        data: { status: PlayerStatus.RELEASED },
+      });
+      const released = (await snapshot())!;
+      released.players[0] = null;
+      await redisService.saveSnapshotUnlocked(TABLE, released, 'table-created');
+
+      // 그 사이 누가 카운터를 어긋뜨렸다. 재입장은 DB를 올리지 않으므로,
+      // 상대 증감이면 이 9가 그대로 남는다.
+      await redis.hset(infoKey, 'activePlayer', 9);
+
+      await service.enterSeat(TOURNAMENT, { otp: '00000001', tableId: TABLE, seatIndex: 2 });
+
+      expect(`redis ${await activePlayerInRedis()} / db ${await activePlayersInDb()}`)
+        .toBe('redis 1 / db 1');
+    });
+  });
 });
 
 // 위 `describe('EntryService.enterSeat', ...)`와는 별개의 최상위 describe다.
