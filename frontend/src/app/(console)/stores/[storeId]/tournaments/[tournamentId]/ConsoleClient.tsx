@@ -53,6 +53,14 @@ function dealerOtpKey(tournamentId: string) {
   return `playsync:dealer-otp:${tournamentId}`;
 }
 
+/**
+ * 서버 액션이 **던졌을 때**의 문구. 백엔드가 준 실패 문구는 서버 액션이
+ * `{ error }`로 실어 오므로(`action.ts`의 `failureMessage`) 그것을 그대로
+ * 띄우고, 여기 오는 것은 응답 자체가 없었던 경우다 — 원인을 모르니 다시
+ * 해 보라는 것 말고 할 말이 없다.
+ */
+const NETWORK_ERROR = '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.';
+
 const STATUS_LABEL: Record<string, string> = {
   PENDING: '시작 전',
   ONGOING: '진행 중',
@@ -105,7 +113,21 @@ export default function ConsoleClient({
 }) {
   const router = useRouter();
   const [activeTableId, setActiveTableId] = useState<string | null>(tables[0]?.id ?? null);
-  const [selected, setSelected] = useState<Set<number>>(new Set());
+  /*
+    선택은 좌석 번호가 아니라 **체크한 순간의 사람**이다.
+
+    이 화면은 조작마다 `router.refresh()`로 다시 그려지고(`run`), 그 사이 그
+    자리 사람이 탈락하고 다른 사람이 참가 OTP로 앉을 수 있다 — T28이 핸드
+    도중 착석을 허용해서 창이 항상 열려 있다. 좌석 번호만 들고 있다가 보낼
+    때 지금의 `occupantBySeat`에서 `userId`를 다시 뽑으면 **체크한 적 없는
+    사람이 떨어진다.**
+
+    `ReleaseSeatItem`이 `seatIndex`와 함께 `userId`를 요구하는 이유가 정확히
+    그 낡은 화면을 서버가 거절하게 하려는 것이다(`session.service.ts`의
+    `releaseSeats` 검사 1·2). 체크한 순간의 `userId`를 그대로 들고 가야 주인이
+    바뀐 자리가 409로 걸린다 — **거절이 사고가 아니라 설계다.**
+  */
+  const [selected, setSelected] = useState<Map<number, SeatOccupant>>(new Map());
   // 좌석 조회 실패(`seatError`)는 조작 결과(`message`)와 별개 슬롯이다.
   // `useState(seatError)`는 마운트 시점의 초깃값으로만 쓰이고, 이후
   // `router.refresh()`가 새 `seatError`를 내려도 리렌더는 이 state를 다시
@@ -136,53 +158,81 @@ export default function ConsoleClient({
   const activeTable = tables.find((t) => t.id === activeTableId) ?? tables[0] ?? null;
   const occupants = seatOccupants.find((t) => t.tableId === activeTable?.id)?.players ?? [];
   const occupantBySeat = new Map(occupants.map((p) => [p.seatIndex, p]));
-  const selectedSeats = [...selected]
-    .map((i) => occupantBySeat.get(i))
-    .filter((p): p is SeatOccupant => p !== undefined);
+  // 판을 다시 그려도 이 목록은 움직이지 않는다 — 체크한 순간에 담아 둔 것을
+  // 그대로 꺼낸다(`selected` 주석).
+  const selectedSeats = [...selected.values()];
 
   function toggleSeat(seatIndex: number) {
-    if (!occupantBySeat.has(seatIndex)) return; // 빈 자리는 뗄 사람이 없다.
+    const occupant = occupantBySeat.get(seatIndex);
     setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(seatIndex)) next.delete(seatIndex);
-      else next.add(seatIndex);
+      const next = new Map(prev);
+      // 체크를 푸는 것은 지금 누가 앉아 있든 된다. 판이 바뀌어 자리가 비어도
+      // 체크는 남으므로(그래야 서버가 거절한다) 푸는 길이 닫히면 상점은
+      // 화면을 통째로 새로 고치기 전에는 그 체크를 못 뗀다.
+      if (next.has(seatIndex)) {
+        next.delete(seatIndex);
+        return next;
+      }
+      if (!occupant) return prev; // 빈 자리는 새로 체크할 사람이 없다.
+      next.set(seatIndex, occupant);
       return next;
     });
   }
 
   function selectTable(id: string) {
     setActiveTableId(id);
-    setSelected(new Set());
+    setSelected(new Map());
   }
 
   /**
    * 조작 성공 뒤 화면을 새로 고친다. `router.refresh()`는 서버 컴포넌트
    * (`page.tsx`)의 네 조회를 다시 돌려 이 컴포넌트를 최신 props로
    * 다시 그린다 — 조작마다 각자 낙관적으로 상태를 흉내 내지 않는다.
+   *
+   * **던지는 것과 실패 응답은 다른 길이다.** 서버 액션들은 백엔드가 준
+   * 실패를 `{ error }`로 돌려주지만(`action.ts`의 `failureMessage`),
+   * 프록시가 끊기거나 네트워크가 튀면 `fetch` 자체가 거부돼 여기서 던진다.
+   * 잡지 않으면 처리되지 않은 프라미스 거부 하나만 남고 화면에는 아무
+   * 안내도 뜨지 않는다 — 상점은 눌렀는데 아무 일도 안 일어난 것으로 본다.
    */
   function run(action: () => Promise<ActionResult>, onSuccess?: () => void) {
     startTransition(async () => {
-      const result = await action();
-      if ('error' in result) {
-        setMessage(result.error);
-        return;
+      try {
+        const result = await action();
+        if ('error' in result) {
+          setMessage(result.error);
+          return;
+        }
+        setMessage(null);
+        onSuccess?.();
+        router.refresh();
+      } catch {
+        setMessage(NETWORK_ERROR);
       }
-      setMessage(null);
-      onSuccess?.();
-      router.refresh();
     });
   }
 
+  /**
+   * `run`을 거치지 않는 유일한 조작이다 — 성공 결과에서 `dealerOtp`를 꺼내
+   * 화면과 `sessionStorage`에 실어야 해서 `ActionResult`만 받는 `run`의
+   * 모양에 안 맞는다. 그래서 **던졌을 때의 처리도 여기 따로 필요하다**
+   * (`run`의 주석과 같은 이유). 한 파일에 같은 결함이 두 벌 있으면 한쪽만
+   * 고쳐지는 날이 온다.
+   */
   function handleReissue() {
     startTransition(async () => {
-      const result = await reissueDealerOtp(tournamentId);
-      if ('error' in result) {
-        setMessage(result.error);
-        return;
+      try {
+        const result = await reissueDealerOtp(tournamentId);
+        if ('error' in result) {
+          setMessage(result.error);
+          return;
+        }
+        setMessage(null);
+        setDealerOtp(result.dealerOtp);
+        window.sessionStorage.setItem(dealerOtpKey(tournamentId), result.dealerOtp);
+      } catch {
+        setMessage(NETWORK_ERROR);
       }
-      setMessage(null);
-      setDealerOtp(result.dealerOtp);
-      window.sessionStorage.setItem(dealerOtpKey(tournamentId), result.dealerOtp);
     });
   }
 
@@ -334,7 +384,9 @@ export default function ConsoleClient({
                       key={seatIndex}
                       type="button"
                       data-testid={`console-seat-${seatIndex}`}
-                      disabled={!occupant}
+                      // 체크가 남아 있으면 자리가 비어도 눌린다 — 푸는 길이다
+                      // (`toggleSeat`).
+                      disabled={!occupant && !isSelected}
                       onClick={() => toggleSeat(seatIndex)}
                       /*
                         찬 자리와 빈 자리가 **둘 다 흰 바탕에 #e0e0e0 테두리**라
@@ -344,10 +396,10 @@ export default function ConsoleClient({
                         번호만 남긴다.
                       */
                       className={
-                        !occupant
-                          ? 'absolute w-[74px] -translate-x-1/2 -translate-y-1/2 border border-dashed border-[var(--hairline)] bg-transparent px-1.5 py-1 text-center text-[10.5px] leading-[1.3] text-[var(--ink-subtle)]'
-                          : isSelected
-                            ? 'absolute w-[74px] -translate-x-1/2 -translate-y-1/2 border-2 border-[var(--blue)] bg-[var(--canvas)] px-1.5 py-1 text-center text-[10.5px] leading-[1.3] shadow-[0_0_0_3px_rgba(15,98,254,0.22)]'
+                        isSelected
+                          ? 'absolute w-[74px] -translate-x-1/2 -translate-y-1/2 border-2 border-[var(--blue)] bg-[var(--canvas)] px-1.5 py-1 text-center text-[10.5px] leading-[1.3] shadow-[0_0_0_3px_rgba(15,98,254,0.22)]'
+                          : !occupant
+                            ? 'absolute w-[74px] -translate-x-1/2 -translate-y-1/2 border border-dashed border-[var(--hairline)] bg-transparent px-1.5 py-1 text-center text-[10.5px] leading-[1.3] text-[var(--ink-subtle)]'
                             : 'absolute w-[74px] -translate-x-1/2 -translate-y-1/2 border-2 border-[var(--hairline-strong)] bg-[var(--surface)] px-1.5 py-1 text-center text-[10.5px] font-semibold leading-[1.3] text-[var(--ink)]'
                       }
                       style={{ left: pos.left, top: pos.top }}
@@ -399,7 +451,7 @@ export default function ConsoleClient({
                         activeTable.id,
                         selectedSeats.map((p) => ({ seatIndex: p.seatIndex, userId: p.userId })),
                       ),
-                    () => setSelected(new Set()),
+                    () => setSelected(new Map()),
                   )
                 }
                 className="w-full bg-[var(--blue)] py-3 text-sm text-white disabled:opacity-40"
