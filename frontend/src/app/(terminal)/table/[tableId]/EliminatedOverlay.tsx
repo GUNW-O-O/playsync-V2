@@ -25,9 +25,22 @@ const COUNTDOWN_SECONDS = 7;
 export default function EliminatedOverlay({ storeId }: { storeId?: string }) {
   const router = useRouter();
   const [secondsLeft, setSecondsLeft] = useState(COUNTDOWN_SECONDS);
-  const waitingUrl = `/table?store=${storeId ?? ''}`;
+  /*
+    **갈 곳을 모르면 가지 않는다.**
+
+    `storeId`는 `page.tsx`의 `getTableContext`가 대회 조회로 구하는 값이고,
+    그 조회가 실패하거나 스냅샷에 `tournamentId`가 없으면 `undefined`가 온다.
+    그때 `/table?store=`로 보내면 대기 화면이 **"주소에 상점이 없습니다."**를
+    띄운다(`(terminal)/table/page.tsx`) — 태블릿이 스스로 막다른 곳에 서고,
+    거기서 돌아올 조작이 화면에 없다. 다음 손님이 앉을 자리다.
+
+    머무는 편이 낫다. 화면에는 여전히 "이 자리에서 나왔습니다"가 떠 있어
+    참가자는 할 일을 알고, 태블릿은 직원이 새로고침하면 낫는다.
+  */
+  const waitingUrl = storeId ? `/table?store=${storeId}` : null;
 
   useEffect(() => {
+    if (!waitingUrl) return;
     if (secondsLeft <= 0) {
       router.push(waitingUrl);
       return;
@@ -35,7 +48,7 @@ export default function EliminatedOverlay({ storeId }: { storeId?: string }) {
     const timer = setTimeout(() => setSecondsLeft((s) => s - 1), 1000);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [secondsLeft]);
+  }, [secondsLeft, waitingUrl]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-tb-bg/90 p-6">
@@ -48,21 +61,33 @@ export default function EliminatedOverlay({ storeId }: { storeId?: string }) {
           순위·상금과 참가 OTP는 <strong className="text-tb-ink">폰에서 확인</strong>하세요.
         </p>
 
-        <div className="mt-4 h-1 bg-tb-line">
-          <div
-            className="h-full bg-tb-act transition-[width] duration-1000 ease-linear"
-            style={{ width: `${(secondsLeft / COUNTDOWN_SECONDS) * 100}%` }}
-          />
-        </div>
-        <div className="mt-2 text-xs text-tb-sub">{secondsLeft}초 뒤 대기 화면으로 돌아갑니다</div>
+        {waitingUrl ? (
+          <>
+            <div className="mt-4 h-1 bg-tb-line">
+              <div
+                className="h-full bg-tb-act transition-[width] duration-1000 ease-linear"
+                style={{ width: `${(secondsLeft / COUNTDOWN_SECONDS) * 100}%` }}
+              />
+            </div>
+            <div className="mt-2 text-xs text-tb-sub">
+              {secondsLeft}초 뒤 대기 화면으로 돌아갑니다
+            </div>
 
-        <button
-          type="button"
-          onClick={() => router.push(waitingUrl)}
-          className="mt-5 w-full border border-tb-line py-2.5 text-sm text-tb-muted"
-        >
-          지금 돌아가기
-        </button>
+            <button
+              type="button"
+              onClick={() => router.push(waitingUrl)}
+              className="mt-5 w-full border border-tb-line py-2.5 text-sm text-tb-muted"
+            >
+              지금 돌아가기
+            </button>
+          </>
+        ) : (
+          // 돌아갈 주소를 못 구했다. 참가자에게 "기다리면 넘어간다"고 적을
+          // 수 없고, 이 화면을 치우는 것은 이제 사람의 일이다.
+          <div className="mt-4 text-xs text-tb-sub">
+            다음 참가자를 위해 운영자에게 알려주세요.
+          </div>
+        )}
       </div>
     </div>
   );

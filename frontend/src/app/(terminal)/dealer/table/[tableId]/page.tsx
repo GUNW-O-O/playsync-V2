@@ -1,5 +1,8 @@
 import { cookies } from 'next/headers';
 import DealerGameClient from './DealerGameClient';
+import { TableState } from '@/app/types/game';
+
+type InitialGameData = { tableState: TableState; seatIndex: number };
 
 /**
  * `GET /playsync/:tableId`(`playsync.controller.ts`의 `joinTable`)는
@@ -7,8 +10,14 @@ import DealerGameClient from './DealerGameClient';
  * `id`로 내보내고 `userId`는 채우지 않으므로(`jwt.strategy.ts` DEALER 분기),
  * 서비스가 받는 `userId`는 `undefined`고 `joinTable`이 `seatIndex: -1`을
  * 돌려준다 — 딜러는 애초에 좌석이 없으므로 그 값을 화면에서 쓰지 않는다.
+ *
+ * **실패는 `null`이다.** 좌석 화면과 같은 판정이고 같은 이유다
+ * (`(terminal)/table/[tableId]/page.tsx`의 `getInitialGameData`) — 예외
+ * 본문이 truthy라 아래 삼항이 항상 성공 분기를 탔고, `tableState`가
+ * `undefined`인 채 빈 펠트가 그려졌다. 딜러 화면에서는 그 상태로 "핸드
+ * 시작"이 눌리지 않아 **테이블 하나가 통째로 멈춘다.**
  */
-async function getInitialGameData(tableId: string) {
+async function getInitialGameData(tableId: string): Promise<InitialGameData | null> {
   const cookieStore = await cookies();
   const token = cookieStore.get('dealerToken')?.value;
 
@@ -19,7 +28,18 @@ async function getInitialGameData(tableId: string) {
     headers: { Authorization: `Bearer ${token}` },
     cache: 'no-store',
   });
-  return res.json();
+
+  if (!res.ok) {
+    console.error(`테이블 상태를 불러오지 못했습니다. (${res.status})`);
+    return null;
+  }
+
+  const body = (await res.json().catch(() => null)) as InitialGameData | null;
+  if (!body?.tableState) {
+    console.error('테이블 상태 응답에 tableState가 없습니다.');
+    return null;
+  }
+  return body;
 }
 
 /**
@@ -65,7 +85,12 @@ export default async function DealerGamePage({ params }: { params: Promise<{ tab
           tableOrder={tableOrder}
         />
       ) : (
-        <p>아직 게임이 시작되지 않았습니다.</p>
+        // 이 자리에 오는 것은 이제 실패뿐이다(위 `getInitialGameData`).
+        // 딜러 OTP를 다시 넣어야 하는 경우(토큰 만료)가 여기 섞이므로
+        // "아직 시작되지 않았다"고 적으면 딜러가 기다린다.
+        <p className="p-8 text-tb-ink">
+          테이블 정보를 불러오지 못했습니다. 화면을 새로고침하거나 운영자에게 알려주세요.
+        </p>
       )}
     </main>
   );
