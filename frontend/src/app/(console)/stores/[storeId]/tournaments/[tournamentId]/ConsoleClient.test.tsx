@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import ConsoleClient, { type TournamentMeta } from './ConsoleClient';
+import ConsoleClient, { type SeatOccupant, type TournamentMeta } from './ConsoleClient';
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }),
@@ -73,5 +73,106 @@ describe('ConsoleClient — 딜러 OTP', () => {
     const shown = screen.getAllByTestId('dealer-otp');
     expect(shown[shown.length - 1]).toHaveTextContent('920576');
     expect(reissue).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * 선택은 **체크한 순간의 사람**을 들고 있어야 한다.
+ *
+ * 이 화면은 조작마다 `router.refresh()`로 서버 컴포넌트를 다시 돌린다
+ * (`ConsoleClient`의 `run`). 그 사이 체크해 둔 자리에서 사람이 탈락하고
+ * 다른 사람이 참가 OTP로 앉을 수 있다 — T28이 핸드 도중 착석을 허용해서
+ * 창이 항상 열려 있다. 선택이 좌석 번호만 들고 있으면 새로 그린 판에서
+ * `userId`를 다시 뽑게 되고, `ReleaseSeatItem`이 `userId`를 요구하는 이유
+ * (낡은 화면을 서버가 409로 거절하는 것)가 통째로 무력해진다.
+ */
+describe('ConsoleClient — 좌석 선택', () => {
+  const SEAT_A: SeatOccupant = { seatIndex: 3, userId: 'u1', nickname: 'A' };
+  const SEAT_B: SeatOccupant = { seatIndex: 3, userId: 'u2', nickname: 'B' };
+
+  function renderSeats(
+    players: SeatOccupant[],
+    overrides: {
+      releaseSeats?: (
+        tournamentId: string,
+        tableId: string,
+        seats: { seatIndex: number; userId: string }[],
+      ) => Promise<{ ok: true } | { error: string }>;
+      openTable?: (tournamentId: string) => Promise<{ ok: true } | { error: string }>;
+    } = {},
+  ) {
+    const releaseSeats = vi.fn(overrides.releaseSeats ?? (async () => ({ ok: true as const })));
+    const openTable = vi.fn(overrides.openTable ?? (async () => ({ ok: true as const })));
+    const view = (seats: SeatOccupant[]) => (
+      <ConsoleClient
+        storeId="store-1"
+        tournamentId="trn-1"
+        tournament={TOURNAMENT}
+        dashboard={null}
+        tables={[{ id: 'tbl-1', tableOrder: 1 }]}
+        seatOccupants={[{ tableId: 'tbl-1', tableOrder: 1, players: seats }]}
+        seatError={null}
+        startTournament={vi.fn(async () => ({ ok: true as const }))}
+        openTable={openTable}
+        closeTable={vi.fn(async () => ({ ok: true as const }))}
+        releaseSeats={releaseSeats}
+        reissueDealerOtp={vi.fn(async () => ({ ok: true as const, dealerOtp: '920576' }))}
+      />
+    );
+    const { rerender } = render(view(players));
+    return { releaseSeats, openTable, redraw: (next: SeatOccupant[]) => rerender(view(next)) };
+  }
+
+  it('판이 새로 그려져 주인이 바뀌어도 체크한 사람의 userId를 보낸다', async () => {
+    const { releaseSeats, redraw } = renderSeats([SEAT_A]);
+
+    await userEvent.click(screen.getByTestId('console-seat-3'));
+    redraw([SEAT_B]); // A가 탈락하고 B가 같은 자리에 앉았다.
+
+    // 고른 목록은 여전히 체크한 사람을 말한다.
+    expect(screen.getByText('4번 · A')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: '고른 자리 해제' }));
+
+    // 서버가 409로 거절하는 것이 설계된 동작이다(`releaseSeats`의 검사 1·2).
+    // 화면이 id를 판과 함께 갱신해 버리면 그 가드가 항상 통과하고 B가 떨어진다.
+    expect(releaseSeats).toHaveBeenCalledWith('trn-1', 'tbl-1', [{ seatIndex: 3, userId: 'u1' }]);
+  });
+
+  /**
+   * 선택이 판을 따라가지 않게 되면 **빈 자리에 체크가 남는다.** 빈 자리
+   * 버튼은 뗄 사람이 없어 눌리지 않으므로, 그 상태로 잠가 두면 상점은
+   * 화면을 통째로 새로 고치기 전에는 그 체크를 풀 수 없다.
+   */
+  it('사람이 사라진 자리도 체크가 남고, 그 체크를 풀 수 있다', async () => {
+    const { redraw } = renderSeats([SEAT_A]);
+
+    await userEvent.click(screen.getByTestId('console-seat-3'));
+    redraw([]); // 그 사이 자리가 비었다.
+
+    expect(screen.getByText('4번 · A')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('console-seat-3'));
+    expect(screen.getByText('해제할 자리를 누르세요.')).toBeInTheDocument();
+  });
+
+  /**
+   * 서버 액션이 던지는 것은 실패 응답과 다른 길이다 — 프록시가 끊기거나
+   * 네트워크가 튀면 `fetch`가 거부되고 `run`의 `await`가 그대로 던진다.
+   * `try`가 없으면 처리되지 않은 프라미스 거부만 남고 **화면에는 아무
+   * 안내도 뜨지 않는다.**
+   */
+  it('조작이 던져도 안내가 뜬다', async () => {
+    renderSeats([], {
+      openTable: async () => {
+        throw new TypeError('fetch failed');
+      },
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: '테이블 추가' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+    );
   });
 });
