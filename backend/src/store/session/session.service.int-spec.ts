@@ -1592,17 +1592,19 @@ describe('SessionService.startSession — 버튼 좌석 영속화', () => {
  * 없다. **대회 시작 순간이 착석이 가장 몰리는 시각**이라 창이 가장 넓을 때
  * 열려 있다.
  *
- * **레이스를 확률에 맡기지 않는다.** 순서를 락과 이음매 하나로 고정한다.
+ * **레이스를 확률에 맡기지 않고, 제품 코드의 문장 순서에도 기대지 않는다.**
+ * 순서를 락 하나로만 고정한다.
  *
- * 1. 홀더가 `mutateSnapshot`으로 그 테이블의 락을 잡은 채 머문다.
- * 2. 그 상태에서 `startSession`을 부른다.
- * 3. `setTournamentMeta`를 이음매로 쓴다 — 준비 경로가 반드시 지나는 자리다.
- *    거기서 홀더를 놓아 u9를 쓰게 하고, 그 쓰기와 락 해제가 끝난 뒤에 이어간다.
- * 4. 이어서 두 번째 홀더가 락을 잡고 잠깐 머문다. 고친 코드는 여기서 **기다려야**
- *    한다 — 기다리지 않으면 낡은 스냅샷을 밀어 넣고, 기다리다 실패하면
- *    '락 획득 실패'로 터진다.
+ * 1. 홀더가 `mutateSnapshot`으로 그 테이블 락을 잡는다. 콜백은 **락을 잡은
+ *    시점에 읽은 상태 위에** u9를 얹어 두고, 테스트가 풀어 줄 때까지 기다린
+ *    뒤 그것을 반환한다 — 반환하는 순간 저장되고 락이 풀린다.
+ * 2. 락이 잡힌 것을 확인한 뒤 `startSession`을 **동시에** 띄운다.
+ * 3. 200ms 뒤에 홀더를 풀고, 그다음 `startSession`을 기다린다.
  *
- * 고치기 전이면 1의 읽기가 이미 끝나 있어 3 뒤의 쓰기가 u9를 지운다.
+ * 예전 판은 이음매를 `setTournamentMeta`의 **위치**에 두었다. 그러면
+ * `mutateSnapshot`을 `getSnapShot` + `saveSnapshotUnlocked`로 바꿔도 초록이라
+ * 검증 대상인 락에 닿지 못했다 — CLAUDE.md의 "다른 계층이 이미 막고 있어서
+ * 검증 대상에 닿지도 못했다"다.
  */
 describe('SessionService.startSession — 시작 준비와 착석의 경합', () => {
   let prisma: PrismaClient;
@@ -1654,16 +1656,20 @@ describe('SessionService.startSession — 시작 준비와 착석의 경합', ()
     }
 
     // 착석이 세워 둔 초기 상태. 실제로는 테이블 생성이 빈 스냅샷을 세우고
-    // 입장이 점유자를 채운다.
+    // 입장이 점유자를 채운다 — 여기서 `table-created`를 쓰는 이유다.
+    //
+    // `buttonUser`를 좌석이 아닌 8로 둔다. 아직 추첨 전이라는 뜻이고, 좌석은
+    // 0·1(·5)뿐이라 **무엇이 뽑히든 8과 다르다** — "버튼이 사라졌다"가 우연한
+    // 일치로 가려지지 않게 하는 장치다.
     await redisService.saveSnapshotUnlocked(tableId, {
       phase: GamePhase.WAITING,
       players: [seatedPlayer('u1', 0), seatedPlayer('u2', 1), ...Array(7).fill(null)],
-      pot: 0, currentBet: 0, buttonUser: 0, currentTurnSeatIndex: -1,
+      pot: 0, currentBet: 0, buttonUser: 8, currentTurnSeatIndex: -1,
       sidePots: [], ante: 0, tournamentId, smallBlind: 100,
     }, 'table-created');
   });
 
-  it('락을 잡은 착석이 쓴 점유자를 시작 준비가 지우지 않는다', async () => {
+  it('락을 잡은 착석과 겹쳐도 점유자와 버튼이 함께 남는다', async () => {
     // u9의 DB 쪽은 `claimSeat`이 락 밖에서 커밋하는 부분이다.
     await prisma.user.create({ data: { id: 'u9', nickname: 'u9', password: 'x' } });
     await prisma.tournamentParticipation.create({
@@ -1681,67 +1687,80 @@ describe('SessionService.startSession — 시작 준비와 착석의 경합', ()
     let releaseHolder!: () => void;
     const held = new Promise<void>((r) => { releaseHolder = r; });
 
-    // 홀더 = 락을 정상적으로 잡는 착석. 스냅샷 쪽 쓰기가 이 안에서 일어난다.
+    // 홀더 = 락을 정상적으로 잡는 착석. **읽은 것은 락을 잡은 시점의 상태다** —
+    // 기다린 뒤에 다시 읽지 않는다. 그래서 락 없는 준비가 그사이에 쓴 것은
+    // 이 반환으로 덮인다.
     const holder = redisService.mutateSnapshot(tableId, async (state) => {
+      const next = { ...state!, players: [...state!.players] };
+      next.players[5] = seatedPlayer('u9', 5);
       holderGotLock();
       await held;
-      expect(`홀더가 읽은 스냅샷 ${state ? '있음' : '없음'}`).toBe('홀더가 읽은 스냅샷 있음');
-      state!.players[5] = seatedPlayer('u9', 5);
-      return state!;
+      return next;
     });
     await gotLock;
 
-    // 두 번째 홀더. 시작 준비가 락을 실제로 기다리는지 보려고 둔다.
-    let secondGotLock!: () => void;
-    const secondLocked = new Promise<void>((r) => { secondGotLock = r; });
-    let second: Promise<unknown> | undefined;
+    // 락이 잡힌 채로 시작을 띄운다. await하지 않는다 — 고친 코드는 여기서
+    // 락을 기다린다(TTL 5초 안에 반드시 푼다).
+    process.env.MIN_PLAYERS_TO_START = '0';
+    const starting = sessionService.startSession(tournamentId, ownerId);
 
-    const realSetMeta = redisService.setTournamentMeta.bind(redisService);
-    const metaSpy = jest
-      .spyOn(redisService, 'setTournamentMeta')
-      .mockImplementation(async (...args: Parameters<RedisService['setTournamentMeta']>) => {
-        releaseHolder();
-        await holder; // u9 쓰기와 락 해제가 끝난 시점
-        second = redisService.mutateSnapshot(tableId, async () => {
-          secondGotLock();
-          await new Promise((r) => setTimeout(r, 200));
-          return null; // 아무것도 쓰지 않는다. 락만 잡고 있는다
-        });
-        await secondLocked;
-        return realSetMeta(...args);
-      });
+    await new Promise((r) => setTimeout(r, 200));
+    releaseHolder();
+    await holder;
+    try {
+      await starting;
+    } finally {
+      delete process.env.MIN_PLAYERS_TO_START;
+    }
+
+    const snapshot = await redisService.getSnapShot(tableId);
+    const table = await prisma.table.findUniqueOrThrow({
+      where: { id: tableId }, select: { buttonUser: true },
+    });
+    const occupants = (snapshot?.players ?? [])
+      .map((p, i) => (p ? `${i}:${p.id}` : null))
+      .filter((v): v is string => v !== null);
+
+    // **단언 둘이 서로를 가리지 않는다.** 락이 없으면 시작이 t≈0에 u9 없는
+    // 스냅샷을 읽어 바로 쓰고, 200ms 뒤 홀더가 자기 사본으로 덮는다 — u9는
+    // 살아남지만 버튼이 8(추첨 전 값)로 되돌아간다. 락이 있으면 시작이
+    // 기다렸다가 u9가 든 스냅샷을 읽어 버튼만 얹으므로 둘 다 남는다.
+    //
+    // 뽑힌 값은 난수라 상수로 박지 않고 DB에 남은 것과 맞춘다. 그 값이 좌석
+    // 셋 중 하나인지도 함께 본다 — 8이 양쪽에 들어와 단언이 비는 것을 막는다.
+    const drawn = table.buttonUser;
+    const onSeat = [0, 1, 5].includes(drawn ?? -1) ? '예' : '아니오';
+    expect(`점유자 ${occupants.join(' ')} / 버튼 ${snapshot?.buttonUser} / 좌석에 뽑혔나 ${onSeat}`)
+      .toBe(`점유자 0:u1 1:u2 5:u9 / 버튼 ${drawn} / 좌석에 뽑혔나 예`);
+  });
+
+  it('시작이 스냅샷의 만료를 벗기지 않는다', async () => {
+    // 지워진 `saveInitialTableSnapshots`는 `pipeline.set`만 하고 `expire`를
+    // 부르지 않았다. Redis의 `SET`은 **기존 TTL을 지우므로**, 대회 시작이
+    // 착석 테이블 스냅샷의 24시간 만료를 통째로 벗기고 있었다 — 그 뒤로 그
+    // 키들은 만료가 없는 채로 남는다.
+    //
+    // 지금은 `writeSnapshot` 하나가 `SET ... EX`로 쓴다. 그 성질을 시작
+    // 경로에서 못 박는다(`-1`은 "만료 없음"이다).
+    // 만료가 붙어 있는 상태에서 출발한다. 그래야 뒤의 단언이 **시작 경로가
+    // 벗겼는가**만 가리킨다.
+    await redis.expire(`table:state:${tableId}`, 86400);
+    expect(await redis.ttl(`table:state:${tableId}`)).toBeGreaterThan(0);
 
     process.env.MIN_PLAYERS_TO_START = '0';
     try {
       await sessionService.startSession(tournamentId, ownerId);
     } finally {
       delete process.env.MIN_PLAYERS_TO_START;
-      metaSpy.mockRestore();
     }
-    await second;
 
-    const snapshot = await redisService.getSnapShot(tableId);
-    const occupants = (snapshot?.players ?? [])
-      .map((p, i) => (p ? `${i}:${p.id}` : null))
-      .filter((v): v is string => v !== null);
-
-    // DB 좌석 행과 스냅샷 점유자가 어긋나면 딜러도 상점도 그를 다룰 수 없다.
-    expect(`점유자 ${occupants.join(' ')}`).toBe('점유자 0:u1 1:u2 5:u9');
+    expect(await redis.ttl(`table:state:${tableId}`)).toBeGreaterThan(0);
   });
 
   it('시작 준비가 저장한 버튼이 DB·스냅샷·브로드캐스트에서 같다', async () => {
     // `initializeGame`이 호출자에게 넘기는 `tableStates`는 **락 안에서 실제로
     // 저장된 상태**여야 한다. 락 밖에서 만든 사본을 넘기면 브로드캐스트가
     // 저장된 것과 다른 판을 내보낸다.
-    //
-    // 뽑기 전 값을 좌석이 아닌 8로 밀어 둔다. 좌석은 0·1뿐이라 무엇이 뽑히든
-    // 8과 다르고, 그래야 "낡은 사본을 넘겼다"가 우연히 같은 값으로 가려지지
-    // 않는다.
-    await redisService.mutateSnapshot(tableId, async (s) => {
-      s!.buttonUser = 8;
-      return s!;
-    });
-
     const emitted: { tableId?: string; state?: { buttonUser?: number } }[] = [];
     const emitter = new EventEmitter2();
     emitter.emit = ((event: string, payload: unknown) => {
@@ -1767,7 +1786,10 @@ describe('SessionService.startSession — 시작 준비와 착석의 경합', ()
       .toBe(`DB ${table.buttonUser} / 스냅샷 ${table.buttonUser} / 알림 ${table.buttonUser}`);
   });
 
-  it('스냅샷이 없는 테이블은 락 안에서도 같은 예외로 거부한다', async () => {
+  it('스냅샷이 없으면 같은 예외로 거부하고 대회 메타를 남기지 않는다', async () => {
+    // 메타를 남기면 안 되는 이유는 `initializeGame`의 `setTournamentMeta` 자리
+    // 주석에 있다 — `blindField`의 존재가 `DealerService.startPreFlop`과
+    // `PlaysyncService.getDashboardInfo`에서 "시작했다"의 대용으로 읽힌다.
     await redis.del(`table:state:${tableId}`);
 
     process.env.MIN_PLAYERS_TO_START = '0';
@@ -1781,8 +1803,9 @@ describe('SessionService.startSession — 시작 준비와 착석의 경합', ()
     const tournament = await prisma.tournament.findUniqueOrThrow({
       where: { id: tournamentId }, select: { status: true, startedAt: true },
     });
-    expect(`상태 ${tournament.status} / 시작시각 ${tournament.startedAt}`)
-      .toBe('상태 PENDING / 시작시각 null');
+    const blindField = await redis.hget(`tournament:${tournamentId}:info`, 'blindField');
+    expect(`상태 ${tournament.status} / 시작시각 ${tournament.startedAt} / 메타 ${blindField ? '남음' : '없음'}`)
+      .toBe('상태 PENDING / 시작시각 null / 메타 없음');
   });
 });
 
