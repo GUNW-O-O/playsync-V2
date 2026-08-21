@@ -49,7 +49,7 @@ contract       62  (4 suites)   전부 통과
 |---|---|---|---|---|---|
 | T64 | 대회 입력이 검증을 지나가지 않는다 | 포인트가 찍히고 전광판이 멎는다 | 높음 | — | **완료 (#60)** |
 | T58 | 앤티가 사이드팟에 담기지 않고 화면에도 없다 | 칩이 증발하고 참가자가 모른다 | 치명 | T64 | **완료 (#62)** |
-| T60 | 인원수가 DB와 Redis에서 갈라진다 | 최후 1인 판정과 등수가 통째로 틀어진다 | 치명 | T64 | 대기 |
+| T60 | 인원수가 DB와 Redis에서 갈라진다 | 최후 1인 판정과 등수가 통째로 틀어진다 | 치명 | T64 | **완료** |
 | T66 | 가드 없는 읽기 경로 | 남의 대회·상점이 그대로 나간다 | 높음 | T64 | **완료 (#63)** |
 | T70 | 콘솔 좌석 선택이 새로 그린 판을 따라간다 | 엉뚱한 사람이 좌석에서 빠진다 | 중간 | T64 | 대기 |
 | T68 | 레이즈 입력이 낼 수 있는 금액과 어긋난다 | 합법적인 레이즈 불가 / 조용한 올인 | 중간 | T58 | 대기 |
@@ -339,6 +339,19 @@ grep -rn "ante" frontend/src  →  테스트 파일 다섯과 타입 선언 둘.
 ## T60 — 인원수가 DB와 Redis에서 갈라진다
 
 **등급**: 치명 · **범위**: `dealer/dealer.service.ts`, `entry/entry.service.ts`, `redis/redis.service.ts`, `prisma/seed.ts` · **프론트 영향**: 없음
+
+> **완료.** 짝을 구조로 만드는 대신 **한쪽을 파생으로 내렸다** — DB
+> `Tournament.activePlayers`가 진실이고 Redis `activePlayer`는
+> `RedisService.syncActivePlayer`가 **대입**하는 전광판용 표시다. 상대 증감
+> 경로(`seatPlayer`·`eliminatedPlayer`)는 지웠다. 판정 둘(최후 1인, 탈락 등수)도
+> DB 트랜잭션으로 옮겼고, `RecoveryService.recoverTournament`가 info 키의 유무와
+> 무관하게 한 번 대입해 **짝을 빠뜨린 새 경로가 생겨도 다음 재기동에서 사라진다.**
+> 설계와 근거는 `docs/superpowers/specs/2026-08-21-t60-active-count-design.md`.
+>
+> **남긴 것: 킥으로 마지막 한 명이 남는 경우.** `tournamentFinished`를 부르는
+> 자리가 `eliminatePlayer` 하나뿐이라 KICK 경로에는 대회를 닫을 길이 없다.
+> 규칙으로 막기로 했다 — `backlog.md`의 「파이널 테이블부터의 딜러 개입 제한」.
+> **그 규칙이 서기 전까지 이 구멍은 남는다.**
 
 인원수는 **두 곳**에 있다 — DB `Tournament.activePlayers`와 Redis 해시의
 `activePlayer`. 최후 1인 판정과 탈락 등수는 **Redis 쪽**을 본다
@@ -1012,7 +1025,6 @@ T64에서 범위 밖으로 재정했다 — 입력 검증 티켓이 응답 규�
 
 | 자리 | 무엇 | 묻어갈 곳 |
 |---|---|---|
-| `RedisService.recalculateAvgStack` | `parseInt(active \|\| '1')`. `activePlayer` 필드가 없을 때 분모가 0이 아니라 **1**이라, 바로 아래 `activeNum > 0` 가드가 무력해지고 `avgStack`이 "전체 칩 총량"으로 튄다 | T60 |
 | `ActionTimer` | 서버가 만든 `actionDeadline`을 태블릿 시계와 직접 비교한다. `DisplayClient`는 같은 이유로 `blindField.serverTime`으로 오프셋을 보정하는데 여기엔 없다 — 시계가 뒤처진 태블릿은 게이지가 남은 채 자동 폴드된다. 초기 렌더 100ms 동안 "0초 남음"이 뜨는 것도 같은 함수 | T68 |
 | `WaitingClient.submit` · `DealerWaitingClient.submit` | 제출 버튼이 `otp.length === 0`만 본다. `OTP_LENGTH`(8 / 6)와 대조하지 않아 짧은 코드가 백엔드까지 왕복한다 | T67 |
 | `WaitingClient.poll` · `DisplayClient.poll` · `selectTournament` · `ConsoleClient.run` | `try`/`catch`가 없다. 네트워크 블립마다 처리되지 않은 프라미스 거부가 난다. 폴링 쪽은 다음 주기에 낫지만 `selectTournament`는 테이블 목록이 낡은 채 아무 안내도 안 뜬다 | T67 · T70 |

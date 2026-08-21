@@ -154,9 +154,21 @@ export class RecoveryService implements OnApplicationBootstrap {
         // 게이트가 "기준점은 그대로"를 전제하기 때문이다.
         await this.redis.checkAndSyncBlindLevel(tournamentId, { force: true });
       }
+
+      // 인원수는 **다운타임과 무관하게** 맞춘다(T60). 다운타임이 0이어도
+      // 카운터는 어긋나 있을 수 있다 — 짝을 빠뜨린 경로는 재기동과 관계없이
+      // 값을 벌려 놓는다.
+      //
+      // **이것이 최후의 그물이다.** 대입이라(`syncActivePlayer`) 여기서 다시
+      // 써도 잃는 정보가 없고, 그래서 짝을 빠뜨린 새 경로가 생겨도 그 대회의
+      // 다음 재기동에서 사라진다.
+      await this.redis.syncActivePlayer(
+        tournamentId, t.activePlayers, t.startStack, t.entryFee,
+      );
     } else {
       // 메타를 통째로 잃었다. DB로 다시 세운다. 기준점은 대회가 실제로
-      // 시작한 시각에 누적 정지를 더한 값이다.
+      // 시작한 시각에 누적 정지를 더한 값이다. `buildTournamentMeta`가 DB
+      // `activePlayers`를 이미 싣고 있으므로 여기서 따로 맞출 것이 없다.
       if (!t.startedAt) throw new Error('ONGOING인데 startedAt이 없다');
       const { dashboard, blindField } = buildTournamentMeta(
         t,

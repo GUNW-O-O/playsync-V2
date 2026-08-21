@@ -121,6 +121,24 @@ describe('상금 지급', () => {
     };
   }
 
+  /**
+   * 남은 인원을 DB에 세운다.
+   *
+   * 등수는 T60 이후 **DB `Tournament.activePlayers`**에서 온다 — 예전에는
+   * `eliminatePlayer`에 넘긴 `Dashboard.activePlayer`(Redis 캐시)였고,
+   * 등수가 상금을 정하므로 그 입력이 화면용 파생값인 것 자체가 위험했다.
+   * 그래서 "n위로 탈락한다"를 만들려면 여기를 세워야 한다.
+   *
+   * 순서대로 탈락시키는 테스트(`지급 총액은 풀과 정확히 같다`)는 부를 필요가
+   * 없다 — 그쪽은 DB가 4 → 3 → 2로 스스로 내려간다.
+   */
+  async function remaining(count: number) {
+    await prisma.tournament.update({
+      where: { id: TOURNAMENT },
+      data: { activePlayers: count },
+    });
+  }
+
   async function prizeOf(userId: string) {
     const row = await prisma.tournamentParticipation.findFirstOrThrow({
       where: { tournamentId: TOURNAMENT, userId },
@@ -172,6 +190,8 @@ describe('상금 지급', () => {
 
   it('상금권 안에서 탈락하면 그 등수의 몫을 받는다', async () => {
     // 3위 = 풀의 20%. 상수 1000이 아니라 40000 × 0.2 = 8000이다.
+    await remaining(3);
+
     await playsync.eliminatePlayer(
       TOURNAMENT, TABLE, [makePlayer('carol', 2)], dashboard(3),
     );
@@ -205,6 +225,7 @@ describe('상금 지급', () => {
       data: { totalBuyinAmount: { increment: ENTRY_FEE * 2 } },
     });
     const pool = INITIAL_POOL + ENTRY_FEE * 2;
+    await remaining(3);
 
     await playsync.eliminatePlayer(
       TOURNAMENT, TABLE, [makePlayer('carol', 2)], dashboard(3),
@@ -285,6 +306,7 @@ describe('상금 지급', () => {
 
     it('상금만큼 포인트가 오른다', async () => {
       const before = await pointsOf('carol');
+      await remaining(3);
 
       await playsync.eliminatePlayer(
         TOURNAMENT, TABLE, [makePlayer('carol', 2)], dashboard(3),
@@ -296,6 +318,8 @@ describe('상금 지급', () => {
     it('PRIZE 거래 내역이 남는다', async () => {
       // 잔고만 올리면 왜 올랐는지 설명할 근거가 없다. 참가비(BUY_IN)와
       // 리바인(REBUY)은 이미 내역을 남긴다.
+      await remaining(3);
+
       await playsync.eliminatePlayer(
         TOURNAMENT, TABLE, [makePlayer('carol', 2)], dashboard(3),
       );
@@ -337,6 +361,7 @@ describe('상금 지급', () => {
       // 카운터가 두 번 줄어드는 것과 달리 돈은 되돌릴 근거가 없다.
       const before = await pointsOf('carol');
       const broke = [makePlayer('carol', 2)];
+      await remaining(3);
 
       await playsync.eliminatePlayer(TOURNAMENT, TABLE, broke, dashboard(3));
       await playsync.eliminatePlayer(TOURNAMENT, TABLE, broke, dashboard(3));
@@ -372,6 +397,7 @@ describe('상금 지급', () => {
     // 재시도가 붙는 순간 중복 도착은 정상 경로다(N-7). 카운터와 달리 상금은
     // 돈이라, 두 번 들어가면 되돌릴 근거가 없다.
     const broke = [makePlayer('carol', 2)];
+    await remaining(3);
 
     await playsync.eliminatePlayer(TOURNAMENT, TABLE, broke, dashboard(3));
     await playsync.eliminatePlayer(TOURNAMENT, TABLE, broke, dashboard(3));

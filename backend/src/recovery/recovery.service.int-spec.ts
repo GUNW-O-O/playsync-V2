@@ -216,6 +216,51 @@ describe('RecoveryService', () => {
     expect(after - before).toBeLessThan(75_000);
   });
 
+  /**
+   * 인원 카운터의 최후의 그물(T60).
+   *
+   * 복구는 `getTournamentBlind`가 `null`일 때 — 즉 info 키를 **통째로 잃었을
+   * 때만** — `buildTournamentMeta`로 메타를 다시 세운다. Redis가 살아 있고
+   * 카운터만 어긋난 경우는 그 분기에 들어가지 않아 영영 안 나았다.
+   *
+   * 카운터가 대입이 된 지금(`RedisService.syncActivePlayer`), 복구가 분기와
+   * 무관하게 한 번 대입하면 짝을 빠뜨린 새 경로가 생겨도 그 대회의 다음
+   * 재기동에서 사라진다.
+   */
+  describe('인원 카운터를 항상 맞춘다', () => {
+    /** 메타를 세워 두고(info 키가 살아 있는 상태) DB 인원을 3으로 만든다. */
+    async function seedWithMeta() {
+      const { tournamentId } = await seedOngoingTournament();
+      await prisma.tournament.update({
+        where: { id: tournamentId },
+        data: { activePlayers: 3 },
+      });
+      // 첫 복구는 blindField가 없어 `buildTournamentMeta`로 메타를 세운다.
+      await recovery.recoverAll();
+      return { tournamentId, infoKey: `tournament:${tournamentId}:info` };
+    }
+
+    it('info 키가 살아 있어도 어긋난 인원을 DB로 맞춘다', async () => {
+      const { infoKey } = await seedWithMeta();
+      await redis.hset(infoKey, 'activePlayer', 9);
+      await setHeartbeatAgo(60_000);
+
+      await recovery.recoverAll();
+
+      expect(Number(await redis.hget(infoKey, 'activePlayer'))).toBe(3);
+    });
+
+    it('다운타임이 0이어도 맞춘다', async () => {
+      // 위 첫 복구가 하트비트를 찍었으므로 이번 호출의 다운타임은 사실상 0이다.
+      const { infoKey } = await seedWithMeta();
+      await redis.hset(infoKey, 'activePlayer', 9);
+
+      await recovery.recoverAll();
+
+      expect(Number(await redis.hget(infoKey, 'activePlayer'))).toBe(3);
+    });
+  });
+
   it('blindField가 없으면 startedAt + pausedMs로 새로 세운다', async () => {
     const { tournamentId } = await seedOngoingTournament({ startedAtMsAgo: 100_000 });
     await setHeartbeatAgo(40_000);
