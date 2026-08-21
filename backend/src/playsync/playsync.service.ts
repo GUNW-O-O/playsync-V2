@@ -346,15 +346,20 @@ export class PlaysyncService {
     if (players.length === 0) return;
     const playerIds = players.map(p => p.id);
     const result = await this.prisma.$transaction(async (tx) => {
-      const eliminatedRank = tournamentInfo.activePlayer;
-
       // 풀과 분배율은 DB에서 읽는다. Redis 대시보드에도 totalBuyinAmount가
       // 있지만 그건 화면용 파생값이고, **돈의 진실은 DB다.** 리바인으로
       // 풀이 커지는 것도 여기에 반영돼 있다.
-      const { totalBuyinAmount, prizePayouts } = await tx.tournament.findUniqueOrThrow({
+      //
+      // 인원수도 같은 규칙을 따른다(T60). 예전에는 등수가
+      // `tournamentInfo.activePlayer` — 즉 Redis 대시보드 — 에서 왔는데,
+      // **등수가 상금을 정하므로**(`prizeFor`) 화면용 파생값에서 오는 것
+      // 자체가 위험했다. 시드의 이중 계상이 "첫 탈락이 14위라 상금이 한 푼도
+      // 안 나간다"로 나타난 경로가 이것이다.
+      const { activePlayers, totalBuyinAmount, prizePayouts } = await tx.tournament.findUniqueOrThrow({
         where: { id: tournamentId },
-        select: { totalBuyinAmount: true, prizePayouts: true },
+        select: { activePlayers: true, totalBuyinAmount: true, prizePayouts: true },
       });
+      const eliminatedRank = activePlayers;
       const prize = prizeFor(totalBuyinAmount, prizePayouts, eliminatedRank);
 
       // 상태 전환·포인트·거래 내역이 한 곳에서 함께 일어난다. 기록만 되고
@@ -378,19 +383,29 @@ export class PlaysyncService {
           userId: { in: playerIds }
         }
       });
+      let remaining = activePlayers;
       if (changed.count > 0) {
-        await tx.tournament.update({
+        const updated = await tx.tournament.update({
           where: { id: tournamentId },
-          data: { activePlayers: { decrement: changed.count } }
+          data: { activePlayers: { decrement: changed.count } },
+          select: { activePlayers: true },
         });
+        remaining = updated.activePlayers;
       }
-      return { eliCount: changed.count }
+      return { eliCount: changed.count, remaining }
     });
 
-    // 중복 도착이면 여기서 끝난다. Redis 카운터도 건드리지 않는다.
-    if (result.eliCount === 0) return;
+    // 카운터는 **조기 반환보다 앞에서** 맞춘다(T60). 중복 도착은 정상 경로이고,
+    // 대입이라 그때가 오히려 어긋난 값을 지우는 기회다.
+    await this.redis.syncActivePlayer(
+      tournamentId,
+      result.remaining,
+      tournamentInfo.startStack,
+      tournamentInfo.entryFee,
+    );
 
-    const activePlayerCount = await this.redis.eliminatedPlayer(tournamentId, tournamentInfo.startStack, tournamentInfo.entryFee, result.eliCount);
+    // 중복 도착이면 여기서 끝난다. 좌석 비트맵과 userContext는 첫 번째가 이미 지웠다.
+    if (result.eliCount === 0) return;
 
     // 화살표 본문이 블록인데 `return`이 없어 `map`이 `undefined[]`를 만들었다.
     // `Promise.all([undefined, undefined])`는 즉시 resolve되므로, `await`가
@@ -407,7 +422,8 @@ export class PlaysyncService {
       ])
     );
 
-    if (activePlayerCount <= 1) {
+    // 최후 1인 판정도 DB가 돌려준 값으로 한다(T60). Redis는 전광판 전용이다.
+    if (result.remaining <= 1) {
       await this.tournamentFinished(tournamentId)
     }
   }

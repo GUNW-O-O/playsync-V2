@@ -201,6 +201,13 @@ describe('탈락 처리 멱등성', () => {
     await redis.set(stateKey, JSON.stringify(makeState()));
   });
 
+  // `Redis 정리 실패가 조용히 묻히지 않는다`가 `redisService`에 거는 spy는
+  // 되돌리지 않으면 **뒤따르는 모든 테스트로 샌다** — 실제로 뒤에 붙인
+  // 세 테스트가 전부 `redis down`으로 죽었다.
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
   describe('eliminatePlayer', () => {
     it('같은 유저의 탈락이 두 번 도착해도 카운터는 한 번만 준다', async () => {
       const broke = [makePlayer('carol', 2, 0)];
@@ -232,6 +239,45 @@ describe('탈락 처리 멱등성', () => {
       await expect(
         playsync.eliminatePlayer(TOURNAMENT, TABLE, broke, dashboard()),
       ).rejects.toThrow();
+    });
+
+    /**
+     * 아래 셋은 **DB와 Redis를 일부러 갈라 놓고 시작한다**(T60). 둘이 일치하는
+     * 입력만 먹이면 "어느 쪽을 읽는가"가 증명되지 않는다 — T29에서 물린 함정이
+     * 정확히 그것이었다.
+     */
+    it('등수를 Redis 대시보드가 아니라 DB에서 읽는다', async () => {
+      // 대시보드는 3을 들고 있는데 DB는 2다(`dashboard()`의 activePlayer는 3).
+      // 대시보드를 읽으면 3위, DB를 읽으면 2위다.
+      await prisma.tournament.update({
+        where: { id: TOURNAMENT },
+        data: { activePlayers: 2 },
+      });
+
+      await playsync.eliminatePlayer(TOURNAMENT, TABLE, [makePlayer('carol', 2, 0)], dashboard());
+
+      const row = await prisma.tournamentParticipation.findUniqueOrThrow({
+        where: { tournamentId_userId: { tournamentId: TOURNAMENT, userId: 'carol' } },
+      });
+      expect(row.finalPlace).toBe(2);
+    });
+
+    it('Redis 카운터를 DB 값으로 맞춘다 — 갈라져 있어도', async () => {
+      await redis.hset(infoKey, 'activePlayer', 9);
+
+      await playsync.eliminatePlayer(TOURNAMENT, TABLE, [makePlayer('carol', 2, 0)], dashboard());
+
+      expect(`redis ${await activePlayerInRedis()} / db ${await activePlayersInDb()}`)
+        .toBe('redis 2 / db 2');
+    });
+
+    it('중복 도착도 어긋난 카운터를 고친다', async () => {
+      await playsync.eliminatePlayer(TOURNAMENT, TABLE, [makePlayer('carol', 2, 0)], dashboard());
+      await redis.hset(infoKey, 'activePlayer', 9); // 그 사이 누가 어긋뜨렸다
+
+      await playsync.eliminatePlayer(TOURNAMENT, TABLE, [makePlayer('carol', 2, 0)], dashboard());
+
+      expect(await activePlayerInRedis()).toBe(2);
     });
   });
 
