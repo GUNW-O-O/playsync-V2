@@ -212,16 +212,27 @@ export default function ConsoleClient({
     });
   }
 
+  /**
+   * `run`을 거치지 않는 유일한 조작이다 — 성공 결과에서 `dealerOtp`를 꺼내
+   * 화면과 `sessionStorage`에 실어야 해서 `ActionResult`만 받는 `run`의
+   * 모양에 안 맞는다. 그래서 **던졌을 때의 처리도 여기 따로 필요하다**
+   * (`run`의 주석과 같은 이유). 한 파일에 같은 결함이 두 벌 있으면 한쪽만
+   * 고쳐지는 날이 온다.
+   */
   function handleReissue() {
     startTransition(async () => {
-      const result = await reissueDealerOtp(tournamentId);
-      if ('error' in result) {
-        setMessage(result.error);
-        return;
+      try {
+        const result = await reissueDealerOtp(tournamentId);
+        if ('error' in result) {
+          setMessage(result.error);
+          return;
+        }
+        setMessage(null);
+        setDealerOtp(result.dealerOtp);
+        window.sessionStorage.setItem(dealerOtpKey(tournamentId), result.dealerOtp);
+      } catch {
+        setMessage(NETWORK_ERROR);
       }
-      setMessage(null);
-      setDealerOtp(result.dealerOtp);
-      window.sessionStorage.setItem(dealerOtpKey(tournamentId), result.dealerOtp);
     });
   }
 

@@ -42,6 +42,18 @@ describe('ConsoleClient — 딜러 OTP', () => {
     sessionStorage.clear();
   });
 
+  // `run`과 달리 이쪽은 자기 startTransition을 돌린다. 같은 결함이 한 파일에
+  // 두 벌 있으면 한쪽만 고쳐지는 날이 온다.
+  it('재발급이 던져도 안내가 뜬다', async () => {
+    renderConsole(vi.fn(async () => { throw new TypeError('fetch failed'); }));
+
+    await userEvent.click(screen.getByRole('button', { name: '재발급' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+    );
+  });
+
   it('재발급하면 화면에 뜬다', async () => {
     renderConsole();
 
