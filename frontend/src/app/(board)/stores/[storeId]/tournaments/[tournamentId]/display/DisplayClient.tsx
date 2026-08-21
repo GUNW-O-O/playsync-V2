@@ -48,13 +48,31 @@ export default function DisplayClient({ tournamentId }: { tournamentId: string }
     async function poll() {
       const requestId = ++requestIdRef.current;
 
-      const res = await apiFetch(`/api/playsync/dashboard/${tournamentId}`);
+      // 요청 자체가 거부되는 경우(네트워크 단절)를 감싼다. `setInterval`이
+      // 부르는 async 함수라 이 거부를 받아 줄 곳이 아무 데도 없고, 잡지
+      // 않으면 Wi-Fi가 흔들리는 동안 처리되지 않은 프라미스 거부가 주기마다
+      // 쌓인다. 전광판은 하루 종일 켜 두는 화면이다.
+      //
+      // **화면에 안내를 띄우지 않는다.** 다음 주기가 낫게 하는 종류라,
+      // 1초마다 뜨는 배너가 오히려 방해다 — 값이 못 오는 동안은 직전
+      // 화면에 머문다(깨진 본문·파싱 실패와 같은 처리).
+      let res: Response;
+      try {
+        res = await apiFetch(`/api/playsync/dashboard/${tournamentId}`);
+      } catch {
+        return;
+      }
       if (cancelled || requestIdRef.current !== requestId || !res.ok) return;
 
       // Nest가 컨트롤러에서 null을 반환하면 response.send()가 본문을 비운
       // 200을 내보낸다 — res.json()은 그 자리에서 파싱 에러로 던진다. 그래서
       // 텍스트를 먼저 보고 빈 본문과 깨진 본문을 갈라낸다.
-      const text = await res.text();
+      let text: string;
+      try {
+        text = await res.text();
+      } catch {
+        return; // 본문을 읽는 도중 끊긴 것도 같은 사건이다.
+      }
       if (cancelled || requestIdRef.current !== requestId) return;
 
       if (text.length === 0) {

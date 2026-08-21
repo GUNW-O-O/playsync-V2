@@ -7,6 +7,26 @@ import { cookieMaxAgeFromToken } from '@/lib/token-cookie';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
 
+/**
+ * 실패 응답에서 안내 문구를 꺼낸다. `dealer/action.ts` ·
+ * `(terminal)/table/action.ts`의 `failureMessage`와 같은 모양이다.
+ *
+ * NestJS 예외 필터의 본문은 `{ statusCode, message, error }`이고 `message`는
+ * 예외에서 온 문자열이거나 ValidationPipe에서 온 문자열 배열이다. **본문이
+ * JSON이 아닌 경우가 이 함수가 있는 이유다** — 프록시가 끊은 502나
+ * rate-limit가 돌려주는 HTML이 오면 호출자의 `.catch(() => null)`이 `null`을
+ * 넘기고, 여기서 기본 문구로 떨어진다. 예전에는 `res.ok`를 보기 **전에**
+ * `res.json()`을 해서 그 자리에서 던졌고, 서버 액션이 던지면 화면에는 빈
+ * 에러 바운더리가 뜬다 — 로그인 화면이 통째로 사라진다.
+ */
+function failureMessage(body: unknown, fallback: string): string {
+  const message = (body as { message?: unknown } | null)?.message;
+
+  if (typeof message === 'string' && message.length > 0) return message;
+  if (Array.isArray(message) && message.length > 0) return message.join(' ');
+  return fallback;
+}
+
 // [회원가입 Action]
 export async function handleRegister(formData: FormData) {
   const password = formData.get('password');
@@ -19,8 +39,8 @@ export async function handleRegister(formData: FormData) {
   });
 
   if (!res.ok) {
-    const error = await res.json();
-    return { error: error.message || '회원가입에 실패했습니다.' };
+    const body = await res.json().catch(() => null);
+    return { error: failureMessage(body, '회원가입에 실패했습니다.') };
   }
 
   redirect('/login');
@@ -38,10 +58,17 @@ export async function handleLogin(formData: FormData) {
     body: JSON.stringify({ nickname, password }),
   });
 
-  const data = await res.json();
+  // **`res.ok`를 먼저 본다.** 파싱은 그다음이다 — 순서가 뒤집혀 있으면
+  // JSON이 아닌 실패 응답에서 이 액션이 던진다(위 `failureMessage`).
+  const data = await res.json().catch(() => null);
 
   if (!res.ok) {
-    return { error: data.message || '아이디 또는 비밀번호가 틀렸습니다.' };
+    return { error: failureMessage(data, '아이디 또는 비밀번호가 틀렸습니다.') };
+  }
+  if (!data) {
+    // 200인데 본문을 못 읽었다. 아래에서 `data.accessToken`이 던지느니
+    // 같은 문구로 돌려보낸다 — 참가자에게는 로그인이 안 된 것이 전부다.
+    return { error: '로그인에 실패했습니다. 잠시 후 다시 시도해 주세요.' };
   }
 
   // 데이터 구조가 { accessToken: '...' } 라고 가정
