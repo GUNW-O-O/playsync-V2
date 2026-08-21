@@ -538,19 +538,56 @@ export class SessionService {
 
     const seatedTables = game.tables.filter(t => t.tablePlayers.length > 0);
 
-    // 사람이 앉은 테이블에 스냅샷이 없으면 **거부한다.** 예전에는 `return null`로
-    // 조용히 빼고 진행했다 — 그 테이블만 상태 없이 시작되고, DB에는 사람이
-    // 앉아 있는데 딜러는 첫 액션에서 '테이블 상태를 찾을 수 없습니다'를 이유도
-    // 모른 채 본다. 게다가 전부 빠져도 대회는 시작됐다.
+    // 대회 메타가 먼저다. 아래 스냅샷 준비는 테이블 락을 잡으므로, 이 왕복이
+    // 락 안으로 들어가면 그 테이블의 착석과 딜러 액션이 그동안 함께 막힌다 —
+    // 대회 단위 값이라 테이블 락으로 지킬 것도 아니다(`checkAndSyncBlindLevel`이
+    // 락을 걸지 않는 이유와 같다).
+    //
+    // 아래에서 거부하면 이 메타는 쓰인 채로 남는다. 무해하다 — 돈이 걸린
+    // 문지기(참가비 결제·등록 마감)는 Redis를 보지 않고 DB 행으로만 판정하고
+    // (`isRegistrationOpenNow`), DB의 `startedAt`은 커밋이 없었으니 여전히
+    // null이라 사전 등록 구간 그대로다. 다시 누르면 같은 값이 덮인다.
+    await this.redis.setTournamentMeta(id, dashboard, blindField);
+
+    /*
+      **읽기와 쓰기가 같은 락 안에 있어야 한다**(T61). 예전에는 `getSnapShot`으로
+      락 밖에서 읽고, `buttonUser`를 대입하고, 메타 왕복을 한 번 더 한 뒤
+      `saveInitialTableSnapshots`가 `pipeline.set`으로 락 밖에서 썼다. 전형적인
+      read-modify-write인데 중간에 왕복이 하나 더 껴서 창이 넓었다.
+
+      그 창에 `EntryService.claimSeat`(락을 정상적으로 잡는다)이 끼면, DB 좌석
+      행·좌석 비트맵·`activePlayers`는 새로 앉은 사람을 아는데 **게임 스냅샷에서만
+      그가 지워진다.** 딜러가 그를 포함해 딜할 수 없고, `releaseSeats`의 스냅샷
+      점유자 대조가 통과하지 않아 상점도 그를 뗄 수 없다. 부팅 복구도 스냅샷이
+      "있으므로" 손대지 않는다. **대회 시작 순간이 착석이 가장 몰리는 시각**이라
+      창이 가장 넓을 때 열려 있었다.
+
+      버튼 추첨은 DB의 좌석 행에서 그대로 뽑는다. 버튼은 앉아 있는 사람 중
+      아무나면 되므로 락 안의 스냅샷과 한 칸 어긋나도 무해하다 — 지켜야 하는
+      것은 "덮어쓰지 않는다"뿐이다.
+
+      사람이 앉은 테이블에 스냅샷이 없으면 **거부한다.** 예전에는 `return null`로
+      조용히 빼고 진행했다 — 그 테이블만 상태 없이 시작되고, DB에는 사람이
+      앉아 있는데 딜러는 첫 액션에서 '테이블 상태를 찾을 수 없습니다'를 이유도
+      모른 채 본다. 게다가 전부 빠져도 대회는 시작됐다.
+
+      **판정이 락 안으로 들어와 부분 쓰기가 생긴다** — 앞 테이블은 `buttonUser`가
+      써지고 뒤 테이블에서 던진다. 감수한 것이다. 실패하면 대회는 `PENDING`으로
+      남고 **시작 버튼을 다시 누르는 것이 곧 재시도**이며, 준비 단계는 메타도
+      스냅샷도 전부 덮어쓰기라 몇 번을 돌려도 같은 결과다(`startSession`의
+      주석이 그 근거를 든다).
+    */
     const tableStates = await Promise.all(
       seatedTables.map(async t => {
         const randomCnt = Math.floor(Math.random() * t.tablePlayers.length);
         const btnIdx = t.tablePlayers[randomCnt].seatPosition;
 
-        const initialState = await this.redis.getSnapShot(t.id);
-        if (!initialState) return { tableId: t.id, state: null };
-        initialState.buttonUser = btnIdx;
-        return { tableId: t.id, state: initialState };
+        const state = await this.redis.mutateSnapshot(t.id, async (snapshot) => {
+          if (!snapshot) return null; // 없으면 쓰지 않고 나간다. 아래에서 거부한다
+          snapshot.buttonUser = btnIdx;
+          return snapshot;
+        });
+        return { tableId: t.id, state };
       }),
     );
 
@@ -561,15 +598,16 @@ export class SessionService {
       );
     }
 
-    await this.redis.setTournamentMeta(id, dashboard, blindField);
-    await this.redis.saveInitialTableSnapshots(
-      tableStates as { tableId: string; state: TableState }[],
-    );
-
     // 뽑은 버튼을 호출자에게 넘긴다. 여기서 DB에 쓰지 않는 이유는 이 메서드가
     // "아직 시작이 아니다"라는 계약을 갖기 때문이다 — 커밋은 startSession의
     // 트랜잭션 하나뿐이어야 실패 시 PENDING으로 남아 재시도가 성립한다.
-    const ready = tableStates as { tableId: string; state: TableState }[];
+    //
+    // 넘기는 것은 **락 안에서 실제로 저장된 상태**다(`mutateSnapshot`의 반환값).
+    // 락 밖에서 만든 사본을 넘기면 `startSession` 끝의 `game.state.updated`가
+    // 저장된 것과 다른 판을 내보낸다 — 방금 앉은 사람이 화면에서만 사라진다.
+    const ready = tableStates.filter(
+      (t): t is { tableId: string; state: TableState } => t.state !== null,
+    );
     const buttons = ready.map(t => ({ tableId: t.tableId, buttonUser: t.state.buttonUser }));
 
     return { startedAt, buttons, tableStates: ready };

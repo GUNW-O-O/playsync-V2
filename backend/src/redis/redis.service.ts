@@ -504,33 +504,6 @@ export class RedisService {
     return blind;
   }
 
-  // 초기 생성 파이프라인
-  async saveInitialTableSnapshots(tableStates: { tableId: string; state: TableState }[]) {
-    const pipeline = this.redis.pipeline();
-
-    tableStates.forEach(({ tableId, state }) => {
-      const key = `table:state:${tableId}`;
-      pipeline.set(key, JSON.stringify(state));
-    });
-
-    // `exec()`은 명령이 실패해도 던지지 않는다. 실패는 결과 배열의 각 원소
-    // `[err, response]`에 담겨 돌아오므로, 결과를 안 보면 모든 실패가 성공처럼
-    // 보인다 — T9의 `$transaction` 삼항과 같은 유형이다. 예전에는 이 처리가
-    // "선택 사항"이라는 주석과 함께 통째로 주석 처리돼 있었다.
-    //
-    // 여기는 토너먼트 시작 경로다. 조용히 넘어가면 그 테이블은 스냅샷 없이
-    // 시작하고, 딜러는 첫 액션에서 '테이블 상태를 찾을 수 없습니다'를 이유도
-    // 모른 채 본다. 시작이 실패한 것은 시작한 사람이 그 자리에서 알아야 한다.
-    const results = await pipeline.exec();
-    const failed = (results ?? [])
-      .map(([err], index) => (err ? tableStates[index].tableId : null))
-      .filter((tableId): tableId is string => tableId !== null);
-
-    if (failed.length > 0) {
-      throw new Error(`테이블 상태 저장에 실패했습니다: ${failed.join(', ')}`);
-    }
-  }
-
   /**
    * 스냅샷을 고치는 **유일한** 길.
    *

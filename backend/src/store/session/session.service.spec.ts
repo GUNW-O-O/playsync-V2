@@ -412,21 +412,21 @@ describe('SessionService.startSession', () => {
     };
 
     const setTournamentMeta = jest.fn().mockResolvedValue(undefined);
-    const saveInitialTableSnapshots = jest.fn(async () => {
+    const stored = 'snapshot' in opts ? opts.snapshot : { players: [], buttonUser: 0 };
+    // `mutateSnapshot`의 계약만 흉내 낸다 — 읽은 상태를 `fn`에 넘기고, `fn`이
+    // 돌려준 것이 저장된 상태다. `null`을 돌려주면 쓰지 않고 읽은 것을 준다.
+    // 락 자체가 실제로 도는지는 통합 계층이 본다(스냅샷 읽기·쓰기가 한 락 안에
+    // 있는지는 목으로 증명되지 않는다).
+    const mutateSnapshot = jest.fn(async (_tableId: string, fn: any) => {
       if (opts.redisFails) throw new Error('테이블 상태 저장에 실패했습니다: table-1');
+      return (await fn(stored)) ?? stored;
     });
-    const redis = {
-      getSnapShot: jest.fn().mockResolvedValue(
-        'snapshot' in opts ? opts.snapshot : { players: [], buttonUser: 0 },
-      ),
-      setTournamentMeta,
-      saveInitialTableSnapshots,
-    };
+    const redis = { setTournamentMeta, mutateSnapshot };
 
     const service = new SessionService(
       prisma as any, redis as any, {} as any, { emit: jest.fn() } as any,
     );
-    return { service, prisma, update, tableUpdate, setTournamentMeta, saveInitialTableSnapshots };
+    return { service, prisma, update, tableUpdate, setTournamentMeta, mutateSnapshot };
   };
 
   /**
@@ -471,6 +471,12 @@ describe('SessionService.startSession', () => {
   it('Redis 저장이 실패하면 DB 커밋이 일어나지 않는다', async () => {
     // 순서의 요점. Redis는 아직 아무도 보지 않는 상태라 실패해도 되돌릴 것이
     // 없다. 커밋이 뒤에 있어야 이 성질이 성립한다.
+    //
+    // **실패가 조용히 성공처럼 보이지 않는다**도 여기서 지켜진다. 예전 경로
+    // (`saveInitialTableSnapshots`)는 `pipeline.exec()`을 썼는데 그것은 명령이
+    // 실패해도 던지지 않아서, 결과 배열을 직접 읽어 던져 주는 코드가 따로
+    // 필요했다. 지금은 `mutateSnapshot` 한 번에 스냅샷 하나라 실패가 그대로
+    // 거절된 프로미스로 올라온다.
     const { service, prisma, update } = setup({ redisFails: true });
 
     await expect(service.startSession('t1', OWNER_ID)).rejects.toThrow(/저장에 실패/);
@@ -483,9 +489,13 @@ describe('SessionService.startSession', () => {
     // 웹이 읽는 것은 DB다. 참가자에게 "시작했다"가 보이는 시점이 실제 게임
     // 상태가 존재하는 시점보다 앞서면 안 된다.
     const order: string[] = [];
-    const { service, prisma, setTournamentMeta, saveInitialTableSnapshots } = setup();
+    const { service, prisma, setTournamentMeta, mutateSnapshot } = setup();
     setTournamentMeta.mockImplementation(async () => { order.push('meta'); });
-    saveInitialTableSnapshots.mockImplementation(async () => { order.push('snapshots'); });
+    mutateSnapshot.mockImplementation(async (_tableId: string, fn: any) => {
+      order.push('snapshots');
+      const stored = { players: [], buttonUser: 0 };
+      return (await fn(stored)) ?? stored;
+    });
     prisma.$transaction.mockImplementation(async () => { order.push('commit'); });
 
     await service.startSession('t1', OWNER_ID);
@@ -559,9 +569,8 @@ describe('SessionService 시작 최소 인원', () => {
       ),
     };
     const redis = {
-      getSnapShot: jest.fn(),
       setTournamentMeta: jest.fn().mockResolvedValue(undefined),
-      saveInitialTableSnapshots: jest.fn().mockResolvedValue(undefined),
+      mutateSnapshot: jest.fn().mockResolvedValue(null),
     };
     return new SessionService(
       prisma as any, redis as any, {} as any, { emit: jest.fn() } as any,

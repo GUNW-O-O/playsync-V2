@@ -600,22 +600,19 @@ describe('PlaysyncService.syncTableInventoryToDb — 버튼 좌석', () => {
       },
     });
 
-    await redisService.saveInitialTableSnapshots([{
-      tableId,
-      state: {
-        phase: GamePhase.HAND_END,
-        players: [
-          {
-            id: 'btn-u1', tableId, nickname: 'btn-u1', seatIndex: 0,
-            stack: 9000, bet: 0, hasFolded: false, isAllIn: false,
-            hasChecked: false, totalContributed: 0,
-          },
-          ...Array(8).fill(null),
-        ],
-        pot: 0, currentBet: 0, buttonUser: 0, currentTurnSeatIndex: -1,
-        sidePots: [], ante: 0, tournamentId, smallBlind: 100,
-      },
-    }]);
+    await redisService.saveSnapshotUnlocked(tableId, {
+      phase: GamePhase.HAND_END,
+      players: [
+        {
+          id: 'btn-u1', tableId, nickname: 'btn-u1', seatIndex: 0,
+          stack: 9000, bet: 0, hasFolded: false, isAllIn: false,
+          hasChecked: false, totalContributed: 0,
+        },
+        ...Array(8).fill(null),
+      ],
+      pot: 0, currentBet: 0, buttonUser: 0, currentTurnSeatIndex: -1,
+      sidePots: [], ante: 0, tournamentId, smallBlind: 100,
+    }, 'table-created');
   });
 
   it('핸드 종료 체크포인트가 버튼 좌석도 같은 트랜잭션에 남긴다', async () => {
