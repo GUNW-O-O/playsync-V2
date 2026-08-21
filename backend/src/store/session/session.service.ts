@@ -632,7 +632,7 @@ export class SessionService {
       `blindField`는 쓰지 않아서, 그 필드의 유무가 판별식으로 서 있다.
 
       - `DealerService.startPreFlop`이 대회 상태를 보는 검사는
-        `getTournamentBlind`의 결과 하나뿐이다. 메타가 새면 그 문이 열려
+        `checkAndSyncBlindLevel`의 결과 하나뿐이다. 메타가 새면 그 문이 열려
         `PENDING` · `startedAt`이 null인 대회에서 실제로 핸드가 돈다. 그리고
         `cancelSession`은 `startedAt`으로만 막으므로, 칩이 움직인 뒤에도 전액
         환불 취소가 통과한다. 거부는 대회 단위인데 스냅샷은 테이블 단위라
