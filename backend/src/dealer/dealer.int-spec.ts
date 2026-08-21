@@ -327,6 +327,47 @@ describe('딜러 로그인', () => {
       dealerService.loginDealer({ tournamentId: a.tournamentId, tableId: b.tableId, otp: a.otp }),
     ).rejects.toThrow(ForbiddenException);
   });
+
+  /**
+   * 인원 카운터(T60의 4-3).
+   *
+   * `loginDealer`는 **두 번째 승격 지점**이다 — 앉아 있는데 아직 `WAITING`인
+   * 사람을 `PLAYING`으로 올린다. 예전에는 DB만 올리고 Redis `activePlayer`는
+   * 그대로 둬서, 이 경로로 올라간 사람이 전광판과 최후 1인 판정에서 빠졌다.
+   *
+   * **DB와 Redis를 일부러 갈라 놓고 시작한다** — 둘이 일치하는 입력만 먹이면
+   * "맞췄다"가 증명되지 않는다.
+   */
+  it('승격이 Redis 인원에도 반영된다 — 갈라져 있어도', async () => {
+    const { tournamentId, tableId, otp } = await seedTournament({ status: 'ONGOING' });
+    const infoKey = `tournament:${tournamentId}:info`;
+
+    // 앉아 있는데 WAITING인 사람. 옛 데이터가 남긴 모양이다.
+    const user = await prisma.user.create({
+      data: { nickname: 'seated-waiting', password: 'x' },
+    });
+    await prisma.tournamentParticipation.create({
+      data: {
+        tournamentId, userId: user.id, playerOtp: '00000001',
+        status: 'WAITING', currentStack: 10000,
+      },
+    });
+    await prisma.tablePlayer.create({
+      data: { tournamentId, tableId, userId: user.id, seatPosition: 0 },
+    });
+    await prisma.tournament.update({
+      where: { id: tournamentId },
+      data: { activePlayers: 0 },
+    });
+    await redis.hset(infoKey, 'activePlayer', 9);
+
+    await dealerService.loginDealer({ tournamentId, tableId, otp });
+
+    const inDb = (await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } }))
+      .activePlayers;
+    const inRedis = Number(await redis.hget(infoKey, 'activePlayer'));
+    expect(`redis ${inRedis} / db ${inDb}`).toBe('redis 1 / db 1');
+  });
 });
 
 /**

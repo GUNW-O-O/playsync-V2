@@ -251,7 +251,11 @@ async function main() {
       where: { id: tournament.id },
       data: {
         totalPlayers: players.length,
-        activePlayers: players.length,
+        // T55 이후 이 값은 **첫 착석만** 올린다(`EntryService.claimSeat`).
+        // 참가자를 전원 WAITING으로 만들면서 여기에 인원을 써 넣으면, 그들이
+        // OTP로 앉는 순간 두 배가 된다 — 첫 탈락이 "14위"가 되어 상금이 한 푼도
+        // 안 나가고 대회를 닫을 수 없다. `seed-load.ts`는 이 필드를 건드리지 않는다.
+        activePlayers: 0,
         totalBuyinAmount: ENTRY_FEE * players.length,
       },
     });

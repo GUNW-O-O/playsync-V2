@@ -92,6 +92,9 @@ export class DealerService {
       );
     }
 
+    /** 승격이 있었으면 갱신 후 인원. 없었으면 `null`이라 대입도 건너뛴다. */
+    let activePlayersAfter: number | null = null;
+
     const issued = await this.prisma.$transaction(async (tx) => {
       // dto.tableId가 이 대회 소속인지 상태와 무관하게 먼저 확인한다. 이전에는
       // ONGOING일 때만 조회해서, 그 밖의 상태(PENDING·SYNCING)에서는 다른
@@ -123,10 +126,12 @@ export class DealerService {
           data: { status: 'PLAYING' }
         });
         if (promoted.count > 0) {
-          await tx.tournament.update({
+          const updated = await tx.tournament.update({
             where: { id: dto.tournamentId },
             data: { activePlayers: { increment: promoted.count } },
+            select: { activePlayers: true },
           });
+          activePlayersAfter = updated.activePlayers;
         }
       }
       const accessToken = {
@@ -149,6 +154,15 @@ export class DealerService {
     // 카운터는 **토큰이 실제로 나간 뒤에** 지운다. OTP는 맞았지만 tableId가 남의
     // 것이라 위에서 403이 나가는 요청까지 리셋해 줄 이유가 없다.
     await this.otpAttempts.clear(dto.tournamentId);
+
+    // 전광판이 읽는 인원도 DB 값으로 맞춘다(T60). 승격이 DB만 올리면 이 경로로
+    // 올라간 사람이 전광판과 최후 1인 판정에서 영영 빠진다. 실패 경로에서
+    // 부르지 않는 것은 위 `clear`와 같은 이유다 — 토큰이 나간 뒤가 맞는 자리다.
+    if (activePlayersAfter !== null) {
+      await this.redis.syncActivePlayer(
+        dto.tournamentId, activePlayersAfter, tournament.startStack, tournament.entryFee,
+      );
+    }
 
     return issued;
   }
@@ -262,7 +276,16 @@ export class DealerService {
   }
 
   async handleDealerAction(tournamentId: string, tableId: string, targetUserId: string, type: 'FOLD' | 'KICK') {
-    return this.redis.mutateSnapshot(tableId, async (state) => {
+    /**
+     * 킥 트랜잭션이 돌려준 값. 전광판 카운터를 맞추는 데 쓴다(T60).
+     *
+     * **`mutateSnapshot` 콜백 안에서 Redis에 쓰지 않는다.** 대입 자체는 락과
+     * 무관하지만, 콜백 안의 예외는 스냅샷 쓰기를 통째로 되돌린다 — 되돌아가지
+     * 않는 부수효과를 그 안에 섞으면 스냅샷만 과거로 돌아간 세계가 남는다.
+     */
+    let counter: { activePlayers: number; startStack: number; entryFee: number } | null = null;
+
+    const state = await this.redis.mutateSnapshot(tableId, async (state) => {
       if (!state) throw new Error(SNAPSHOT_MISSING);
       const engine = new TableEngine(state);
       const targetIdx = state.players.findIndex(p => p?.id === targetUserId);
@@ -282,7 +305,11 @@ export class DealerService {
         // 그리고 `decrement: 1`은 멱등이 아니다. 딜러가 킥을 두 번 누르면 두 번
         // 준다. 이미 탈락한 사람은 `where`에서 걸러 **실제로 바뀐 행 수만큼만**
         // 줄인다.
-        await this.prisma.$transaction(async (tx) => {
+        //
+        // 바뀐 행이 없어도 현재 값을 읽어 나간다(T60). 전광판 카운터는 대입이라
+        // 멱등을 위한 가드가 필요 없고, 중복 킥은 오히려 어긋난 값을 지우는
+        // 기회다.
+        counter = await this.prisma.$transaction(async (tx) => {
           const changed = await tx.tournamentParticipation.updateMany({
             where: {
               tournamentId,
@@ -291,18 +318,36 @@ export class DealerService {
             },
             data: { status: 'ELIMINATED' }
           });
-          if (changed.count > 0) {
-            await tx.tournament.update({
+          const select = { activePlayers: true, startStack: true, entryFee: true } as const;
+          if (changed.count === 0) {
+            return await tx.tournament.findUniqueOrThrow({
               where: { id: tournamentId },
-              data: { activePlayers: { decrement: changed.count } }
+              select,
             });
           }
+          return await tx.tournament.update({
+            where: { id: tournamentId },
+            data: { activePlayers: { decrement: changed.count } },
+            select,
+          });
         });
       }
 
       await this.playsync.scheduleTurnTimeout(tableId, state);
       return state;
     });
+
+    // 킥은 최후 1인 판정을 부르지 않는다. `tournamentFinished`를 부르는 자리는
+    // `PlaysyncService.eliminatePlayer` 하나뿐이라, 킥으로 마지막 한 명이 남으면
+    // 대회를 닫을 경로가 없다 — 그 상황("헤즈업에서 딜러가 킥한다")은 규칙으로
+    // 막는다(`docs/backlog.md`의 파이널 테이블부터의 딜러 개입 제한).
+    // **그 규칙이 서기 전까지 이 구멍은 남는다.** 여기서는 카운터만 맞춘다.
+    if (counter !== null) {
+      const { activePlayers, startStack, entryFee } = counter;
+      await this.redis.syncActivePlayer(tournamentId, activePlayers, startStack, entryFee);
+    }
+
+    return state;
   }
 
   /**

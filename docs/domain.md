@@ -192,6 +192,33 @@ t=0에 둘이 같은 것은 우연이지 불변식이 아니다. 근거 주석�
 `RELEASED` → `PLAYING`이라 0이다 — `updateMany`의 `status` 조건이 그 판정을
 지고, 바뀐 행 수가 곧 증가분이다(탈락이 줄이는 방식과 같다).
 
+### DB가 진실이고 Redis는 파생 표시다
+
+인원수는 두 곳에 보인다. **DB `Tournament.activePlayers`가 진실**이고, Redis
+해시(`tournament:{id}:info`)의 `activePlayer`는 전광판이 `hgetall` 한 번으로
+읽으려고 두는 사본이다. 돈에 이미 같은 규칙이 서 있다 — `eliminatePlayer`가
+풀과 분배율을 DB에서 읽는 이유와 같다.
+
+**Redis 쪽은 `RedisService.syncActivePlayer` 하나로만 움직이고, 그것은
+대입이다.** 상대 증감(`hincrby`)이 아닌 이유는 짝을 구조로 만들기 위해서다 —
+증감은 한 번 어긋나면 이후 모든 증감이 틀어진 값 위에 얹혀 **영영 어긋난다.**
+대입은 두 번 불러도 같고, 한 번 놓쳐도 다음 인원 변화가 값을 통째로 다시 쓴다.
+그래서 `RedisService`에 `activePlayer`를 `hincrby`하는 메서드는 없다.
+
+**판정 둘은 DB에서 온다** — 최후 1인(`eliminatePlayer`의 `remaining <= 1`)과
+탈락 등수(`eliminatedRank`)다. 둘 다 트랜잭션이 돌려준 `activePlayers`를 본다.
+등수가 상금을 정하므로(`prizeFor`) 화면용 사본에서 오면 시드 하나가 틀어져도
+상금이 통째로 안 나간다.
+
+**`RecoveryService.recoverTournament`가 최후의 그물이다.** info 키의 유무와
+다운타임에 관계없이 카운터를 DB 값으로 한 번 대입한다. 짝을 빠뜨린 새 경로가
+생겨도 그 대회의 다음 재기동에서 사라진다.
+
+**킥으로 마지막 한 명이 남으면 대회를 닫을 경로가 없다.** `tournamentFinished`를
+부르는 자리는 `eliminatePlayer` 하나뿐이고, KICK 경로에는 그 판정이 없다.
+카운터는 맞지만 우승 상금은 안 나간다 — 규칙으로 막기로 한 구멍이다
+(`backlog.md`의 「파이널 테이블부터의 딜러 개입 제한」).
+
 ## 탈락과 킥은 다르다
 
 플레이어가 물리적으로 그 자리에 앉아 있어서 생기는 구분이다.

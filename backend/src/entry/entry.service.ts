@@ -177,7 +177,7 @@ export class EntryService {
       select: {
         id: true,
         // `startStack`·`entryFee`는 착석 뒤 평균 스택을 다시 계산할 때 쓴다
-        // (`RedisService.seatPlayer`). 여기서 함께 읽어 왕복을 늘리지 않는다.
+        // (`RedisService.syncActivePlayer`). 여기서 함께 읽어 왕복을 늘리지 않는다.
         tournament: { select: { status: true, startStack: true, entryFee: true } },
         _count: { select: { tablePlayers: true } },
       },
@@ -201,12 +201,9 @@ export class EntryService {
       throw new ConflictException('테이블 상태를 복구하는 중입니다. 잠시 후 다시 시도해 주세요.');
     }
 
-    /** 이번 착석으로 `WAITING`에서 올라간 사람 수. 재입장이면 0이다. */
-    let promoted = 0;
-
     if (!who.alreadySeated) {
       try {
-        promoted = await this.prisma.$transaction(async (tx) => {
+        await this.prisma.$transaction(async (tx) => {
           await tx.tablePlayer.create({
             data: {
               tournamentId,
@@ -217,8 +214,9 @@ export class EntryService {
             },
           });
 
-          // **인원수가 오르는 유일한 자리다**(T55). 결제가 아니라 첫 착석이
-          // 올린다 — 끝내 안 온 사람은 세지 않아야 최후 1인 판정이 걸린다.
+          // **인원수는 결제가 아니라 첫 착석이 올린다**(T55) — 끝내 안 온
+          // 사람은 세지 않아야 최후 1인 판정이 걸린다. 승격 지점이 하나 더
+          // 있다(`DealerService.loginDealer`의 옛 데이터 보정).
           //
           // `update`가 아니라 `WAITING` 조건을 건 `updateMany`인 이유는
           // **몇 명이 실제로 올라갔는지**가 카운터의 입력이기 때문이다.
@@ -241,7 +239,6 @@ export class EntryService {
               data: { status: PlayerStatus.PLAYING },
             });
           }
-          return changed.count;
         });
       } catch (e) {
         // 어떤 제약이 걸렸는지로 메시지를 가른다. 드라이버 어댑터
@@ -358,7 +355,7 @@ export class EntryService {
       return null;
     });
 
-    // 전광판이 읽는 카운터를 DB와 맞춘다(T55).
+    // 전광판이 읽는 카운터를 DB와 맞춘다(T60).
     //
     // **스냅샷을 쓴 뒤여야 한다.** DB 커밋과 스냅샷 쓰기 사이에 이 왕복을
     // 끼우면 "좌석 행은 있는데 스냅샷이 없다"는 창이 그만큼 넓어지고, 그
@@ -366,10 +363,20 @@ export class EntryService {
     // 사람이 복구 중이라는 409를 받는다. 실제로 그렇게 만들었다가 동시 착석
     // 스펙이 빨개졌다.
     //
-    // 이쪽이 실패하면 DB와 Redis가 어긋나지만, 재기동 복구가 DB의
-    // `activePlayers`로 메타를 다시 세우므로(`buildTournamentMeta`) 낫는다.
-    await this.redis.seatPlayer(
-      tournamentId, promoted, table.tournament.startStack, table.tournament.entryFee,
+    // **커밋 이후의 값을 다시 읽는다.** 트랜잭션 반환값을 쓰지 않는 이유는
+    // 분기가 셋이기 때문이다 — 첫 착석(증가) · 재입장(변화 없음) · 이미 앉아
+    // 있음(트랜잭션 자체를 건너뜀). 한 번의 왕복으로 셋을 같은 코드가 덮는다.
+    //
+    // **대입이라 이 줄을 놓쳐도 영구 결함이 아니다**(`syncActivePlayer`).
+    // 다음 인원 변화 한 번이 값을 통째로 다시 쓰고, 재기동 복구도 같은 일을
+    // 한다(`RecoveryService.recoverTournament`). 예전에는 상대 증감이라
+    // 여기서 한 번 끊기면 같은 OTP로 다시 와도 낫지 않았다.
+    const { activePlayers } = await this.prisma.tournament.findUniqueOrThrow({
+      where: { id: tournamentId },
+      select: { activePlayers: true },
+    });
+    await this.redis.syncActivePlayer(
+      tournamentId, activePlayers, table.tournament.startStack, table.tournament.entryFee,
     );
 
     await this.redis.setUserContext(

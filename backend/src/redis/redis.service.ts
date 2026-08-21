@@ -337,10 +337,35 @@ export class RedisService {
     const [totalBuyin, active] = await this.redis.hmget(key, 'totalBuyinAmount', 'activePlayer');
 
     const totalChips = (parseInt(totalBuyin || '0') / entryFee) * startStack;
-    const activeNum = parseInt(active || '1');
+    // 필드가 없으면 0이다. 예전에는 '1'이었는데, 그러면 바로 아래 `activeNum > 0`
+    // 가드가 무력해지고 avgStack이 "전체 칩 총량"으로 튄다.
+    const activeNum = parseInt(active || '0');
 
     const newAvg = activeNum > 0 ? Math.floor(totalChips / activeNum) : 0;
     await this.redis.hset(key, 'avgStack', newAvg);
+  }
+
+  /**
+   * 인원수를 DB 값으로 맞춘다. **대입이다.**
+   *
+   * 호출부는 DB 트랜잭션이 돌려준 `Tournament.activePlayers`를 그대로 넘긴다.
+   * 상대 증감(`hincrby`)이 아닌 이유는 짝을 구조로 만들기 위해서다 — 두 번
+   * 불러도 같고, 한 번 놓쳐도 다음 인원 변화가 값을 통째로 다시 써서
+   * 드리프트를 지운다. **DB가 진실이고 이 값은 전광판용 파생 표시다**
+   * (`eliminatePlayer`가 돈에 적용하는 규칙과 같다).
+   *
+   * 평균 스택도 다시 계산한다. 분모가 이 인원이므로, 대입만 하고 두면
+   * 전광판의 평균이 한 박자 늦는다.
+   */
+  async syncActivePlayer(
+    tournamentId: string,
+    activePlayers: number,
+    startStack: number,
+    entryFee: number,
+  ) {
+    const key = this.getInfoKey(tournamentId);
+    await this.redis.hset(key, 'activePlayer', activePlayers);
+    await this.recalculateAvgStack(tournamentId, startStack, entryFee);
   }
 
   async getTournamentDashboard(id: string): Promise<Dashboard | null> {
@@ -356,12 +381,11 @@ export class RedisService {
   // 필드에 JSON을 통째로 넣어서 hincrby도 못 하고 getFullTournamentInfo도
   // 읽지 못했다. 프로덕션 호출자는 없었고 테스트만 쓰고 있었으므로 제거했다.
 
-  async eliminatedPlayer(tournamentId: string, startStack: number, entryFee: number, playerCount: number) {
-    const key = this.getInfoKey(tournamentId);
-    const activePlayer = await this.redis.hincrby(key, 'activePlayer', -playerCount);
-    await this.recalculateAvgStack(tournamentId, startStack, entryFee);
-    return activePlayer;
-  }
+  // `activePlayer`를 상대 증감(`hincrby`)으로 움직이던 `seatPlayer`·
+  // `eliminatedPlayer`는 지웠다(T60). 남겨 두면 새 호출부가 그쪽을 고를 수
+  // 있고, 그러면 "DB가 진실이고 Redis는 파생 표시다"가 문서로만 남는다 —
+  // 검사가 둘이면 한쪽만 고쳐지는 날이 온다는 것과 같은 문제다.
+  // 대체는 `syncActivePlayer` 하나다.
 
   async rebuyPlayer(tournamentId: string, entryFee: number, startStack: number) {
     const key = this.getInfoKey(tournamentId);
@@ -375,7 +399,7 @@ export class RedisService {
    *
    * 예전에는 `activePlayer`도 여기서 올렸다. 그러면 결제만 하고 안 온 사람이
    * 전광판 인원과 최후 1인 판정에 영원히 남는다 — 인원은 착석이 올린다
-   * (`seatPlayer`). 근거는 `store/session/player-status.ts`.
+   * (`EntryService.claimSeat`). 근거는 `store/session/player-status.ts`.
    */
   async joinPlayer(tournamentId: string, entryFee: number) {
     const key = this.getInfoKey(tournamentId);
@@ -383,23 +407,6 @@ export class RedisService {
       .hincrby(key, 'totalPlayer', 1)
       .hincrby(key, 'totalBuyinAmount', entryFee)
       .exec();
-  }
-
-  /**
-   * 첫 착석. **DB의 `activePlayers` 증가와 짝이다**(T55).
-   *
-   * 호출자가 "실제로 `WAITING`에서 올라간 행 수"를 세어 넘긴다. 재착석
-   * (`RELEASED` → `PLAYING`)은 0이라 여기 오지 않는다 — 그 사람은 이미 세고
-   * 있었다.
-   *
-   * 평균 스택도 다시 계산한다. 분모가 이 인원이므로, 올리기만 하고 두면
-   * 전광판의 평균이 한 박자 늦는다.
-   */
-  async seatPlayer(tournamentId: string, count: number, startStack: number, entryFee: number) {
-    if (count <= 0) return;
-    const key = this.getInfoKey(tournamentId);
-    await this.redis.hincrby(key, 'activePlayer', count);
-    await this.recalculateAvgStack(tournamentId, startStack, entryFee);
   }
 
   async getTournamentBlind(id: string): Promise<BlindField | null> {

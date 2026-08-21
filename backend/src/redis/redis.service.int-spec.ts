@@ -630,3 +630,123 @@ describe('RedisService.checkAndSyncBlindLevel — 등록 마감', () => {
     expect(await redis.hget(infoKey, 'isRegistrationOpen')).toBe('1');
   });
 });
+
+/**
+ * 인원수 대입(T60).
+ *
+ * 인원수는 DB `Tournament.activePlayers`가 진실이고 Redis `activePlayer`는
+ * 전광판용 파생 표시다. 상대 증감(`hincrby`)이면 한 번 어긋난 값이 영영
+ * 어긋나므로, 대입으로 바꿔 **중복 도착과 재기동이 드리프트를 지우게** 만든다.
+ *
+ * 진짜 Redis로 검증한다 — 검증 대상이 "갈라진 값을 통째로 덮는가"라
+ * mock으로 바꾸면 그 성질이 사라진다.
+ */
+describe('RedisService.syncActivePlayer', () => {
+  let redis: Redis;
+  let service: RedisService;
+
+  const TOURNAMENT = 'sync-active-1';
+  const infoKey = `tournament:${TOURNAMENT}:info`;
+
+  beforeAll(() => {
+    redis = createTestRedis();
+    service = new RedisService(redis);
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+  });
+
+  beforeEach(async () => {
+    await flushTestRedis(redis);
+  });
+
+  it('상대 증감이 아니라 대입이다 — 어긋난 값을 통째로 덮는다', async () => {
+    // 실제로 갈라진 상태를 만든다. hincrby는 이 9를 고치지 못한다.
+    await redis.hset(infoKey, 'activePlayer', 9, 'totalBuyinAmount', 30000);
+
+    await service.syncActivePlayer(TOURNAMENT, 3, 10000, 1000);
+
+    expect(Number(await redis.hget(infoKey, 'activePlayer'))).toBe(3);
+  });
+
+  it('두 번 불러도 같다', async () => {
+    await redis.hset(infoKey, 'activePlayer', 9);
+
+    await service.syncActivePlayer(TOURNAMENT, 3, 10000, 1000);
+    await service.syncActivePlayer(TOURNAMENT, 3, 10000, 1000);
+
+    expect(Number(await redis.hget(infoKey, 'activePlayer'))).toBe(3);
+  });
+
+  it('평균 스택의 분모를 새 인원으로 다시 계산한다', async () => {
+    // recalculateAvgStack: totalChips = (totalBuyinAmount / entryFee) * startStack
+    //                      avgStack   = floor(totalChips / activePlayer)
+    // 3000 / 1000 * 10000 = 30000. 분모 3이면 10000, 2면 15000이라 서로 다르다.
+    await redis.hset(infoKey, 'totalBuyinAmount', 3000, 'activePlayer', 3);
+
+    await service.syncActivePlayer(TOURNAMENT, 2, 10000, 1000);
+
+    expect(Number(await redis.hget(infoKey, 'avgStack'))).toBe(15000);
+  });
+
+  it('인원이 0이면 평균도 0이다', async () => {
+    await redis.hset(infoKey, 'totalBuyinAmount', 3000);
+
+    await service.syncActivePlayer(TOURNAMENT, 0, 10000, 1000);
+
+    expect(Number(await redis.hget(infoKey, 'avgStack'))).toBe(0);
+  });
+});
+
+/**
+ * `recalculateAvgStack`의 분모 기본값(T60의 잔여 목록).
+ *
+ * 예전에는 `parseInt(active || '1')`이라, `activePlayer` 필드가 **없을 때**
+ * 분모가 0이 아니라 1이 되어 바로 아래 `activeNum > 0` 가드가 무력해지고
+ * `avgStack`이 "전체 칩 총량"으로 튀었다.
+ *
+ * `syncActivePlayer`로는 이 자리를 못 덮는다 — 그쪽은 인원을 **언제나
+ * 대입**하므로 필드가 항상 존재하고, 0을 넘겨도 `parseInt('0')`이라 기본값에
+ * 닿지 않는다. 필드를 건드리지 않고 평균만 다시 계산하는 `rebuyPlayer`가
+ * 기본값이 실제로 드러나는 경로다.
+ */
+describe('RedisService.rebuyPlayer — 평균 스택의 분모', () => {
+  let redis: Redis;
+  let service: RedisService;
+
+  const TOURNAMENT = 'avg-denominator-1';
+  const infoKey = `tournament:${TOURNAMENT}:info`;
+
+  beforeAll(() => {
+    redis = createTestRedis();
+    service = new RedisService(redis);
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+  });
+
+  beforeEach(async () => {
+    await flushTestRedis(redis);
+  });
+
+  it('activePlayer 필드가 없으면 평균은 0이다 — 분모 기본값이 1이면 칩 총량이 그대로 나온다', async () => {
+    // 바이인 2000 + 리바인 1000 = 3000 → totalChips = 3000 / 1000 * 10000 = 30000.
+    // 분모 기본값이 '1'이면 여기서 30000이 나온다.
+    await redis.hset(infoKey, 'totalBuyinAmount', 2000);
+
+    await service.rebuyPlayer(TOURNAMENT, 1000, 10000);
+
+    expect(Number(await redis.hget(infoKey, 'avgStack'))).toBe(0);
+  });
+
+  it('인원이 있으면 그 인원으로 나눈다', async () => {
+    // 분모 기본값을 0으로 바꾼 것이 "언제나 0"이 되지 않았음을 함께 고정한다.
+    await redis.hset(infoKey, 'totalBuyinAmount', 2000, 'activePlayer', 2);
+
+    await service.rebuyPlayer(TOURNAMENT, 1000, 10000);
+
+    expect(Number(await redis.hget(infoKey, 'avgStack'))).toBe(15000);
+  });
+});
