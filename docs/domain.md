@@ -173,7 +173,7 @@ t=0에 둘이 같은 것은 우연이지 불변식이 아니다. 근거 주석�
 
 `Tournament.activePlayers`가 세는 것은 **지금 대회에 살아 있는 사람**이다.
 결제한 사람 수는 `totalPlayers`가, 걷은 돈은 `totalBuyinAmount`가 따로 든다 —
-두 축을 한 카운터에 섞으면 노쇼 한 명이 최후 1인 판정(`activePlayerCount <= 1`)을
+두 축을 한 카운터에 섞으면 노쇼 한 명이 최후 1인 판정(`eliminatePlayer`의 `remaining <= 1`)을
 영원히 막는다(T55).
 
 그래서 판정에 쓰는 상태 집합을 `store/session/player-status.ts` 한 곳에 둔다.
