@@ -5,10 +5,21 @@ import { http, HttpResponse } from 'msw';
 import { server } from '@/mocks/server';
 import type { TableState } from '@/app/types/game';
 
-// Felt·SeatActionPanel은 각자 다른 렌더링 폭을 가진 컴포넌트다. 이 파일이
-// 검증하려는 건 WS 티켓 처리와 탈락 판정뿐이므로 자식은 렌더만 되면 그만이다.
+// Felt는 렌더링 폭이 넓은 컴포넌트다. 이 파일이 검증하려는 건 WS 배선과
+// 탈락 판정, 그리고 실패가 화면에 닿는가뿐이라 렌더만 되면 그만이다.
 vi.mock('@/component/felt/Felt', () => ({ default: () => null }));
-vi.mock('./SeatActionPanel', () => ({ default: () => null }));
+
+// 패널의 버튼 조건(차례·최소 레이즈)은 `SeatActionPanel.test.tsx`가 본다.
+// 여기서 필요한 것은 **액션을 보내는 경로를 누를 손잡이** 하나뿐이라,
+// `onAction`을 그대로 부르는 버튼으로 세운다 — 조건까지 흉내 내면 이 파일이
+// 그 규칙을 두 벌째 지게 된다.
+vi.mock('./SeatActionPanel', () => ({
+  default: ({ onAction }: { onAction: (action: unknown) => void }) => (
+    <button type="button" onClick={() => onAction({ action: 'CALL' })}>
+      테스트 액션
+    </button>
+  ),
+}));
 
 const push = vi.fn();
 vi.mock('next/navigation', () => ({
@@ -25,6 +36,10 @@ const SeatGameClient = (await import('./SeatGameClient')).default;
  */
 class FakeSocket {
   static OPEN = 1;
+  // 행사장 Wi-Fi가 끊긴 좌석 태블릿을 세우는 데 쓴다. 컴포넌트가 보는 것은
+  // `readyState === WebSocket.OPEN`이라, 전역 스텁의 상수와 인스턴스의
+  // `readyState`가 같은 숫자 체계여야 한다.
+  static CLOSED = 3;
   static instances: FakeSocket[] = [];
 
   readyState = FakeSocket.OPEN;
@@ -193,6 +208,124 @@ describe('SeatGameClient', () => {
       socket.emitServerEvent('REBUY_PROMPT', { deadline: Date.now() + 30_000 });
       socket.emitServerEvent('renderGame', { ...BASE_STATE, players: Array(9).fill(null) });
       expect(screen.queryByText(/폰에서 확인/)).not.toBeInTheDocument();
+    });
+  });
+
+  /**
+   * T67-1. `ws.gateway.ts`의 `handlePlayerAction`은 거절마다
+   * `{ event: 'error', data }`를 **누른 사람에게만** 돌려준다. 그 프레임을
+   * 안 읽으면 참가자는 눌렀는데 아무 일도 안 일어난 화면을 본다 — 상태가
+   * 그대로인 거절은 화면에 다른 변화가 없어서 먹은 줄 안다.
+   */
+  describe('거절 프레임', () => {
+    it('서버가 error 프레임을 보내면 그 문구가 화면에 뜬다', async () => {
+      const { socket } = await renderWithSocket();
+
+      socket.emitServerEvent('error', '당신의 차례가 아닙니다.');
+
+      expect(await screen.findByText('당신의 차례가 아닙니다.')).toBeInTheDocument();
+    });
+
+    it('문구가 문자열이 아니면 기본 안내로 떨어진다', async () => {
+      const { socket } = await renderWithSocket();
+
+      socket.emitServerEvent('error', { message: '객체로 왔다' });
+
+      expect(await screen.findByText('요청이 거절되었습니다.')).toBeInTheDocument();
+    });
+
+    it('확인을 눌러야 사라진다', async () => {
+      const { socket } = await renderWithSocket();
+      socket.emitServerEvent('error', '당신의 차례가 아닙니다.');
+      await screen.findByText('당신의 차례가 아닙니다.');
+
+      await userEvent.click(screen.getByRole('button', { name: '확인' }));
+
+      expect(screen.queryByText('당신의 차례가 아닙니다.')).not.toBeInTheDocument();
+    });
+
+    /**
+     * 딜러 화면(`DealerGameClient`)은 `renderGame`이 오면 거절 문구를
+     * 지운다. 좌석 화면에서 같은 짓을 하면 **남이 액션을 하는 순간** 내
+     * 거절 사유가 사라진다 — `renderGame`은 테이블 전원에게 가는
+     * 브로드캐스트고, 거절은 나에게만 온 ack다. 이 테스트가 그 비대칭을
+     * 못 박는다.
+     */
+    it('남의 액션으로 renderGame이 와도 거절 사유가 지워지지 않는다', async () => {
+      const { socket } = await renderWithSocket();
+      socket.emitServerEvent('error', '당신의 차례가 아닙니다.');
+      await screen.findByText('당신의 차례가 아닙니다.');
+
+      socket.emitServerEvent('renderGame', { ...BASE_STATE, pot: 300 });
+
+      expect(screen.getByText('당신의 차례가 아닙니다.')).toBeInTheDocument();
+    });
+
+    it('소켓이 닫혀 있으면 액션이 전달되지 않았다는 것을 알린다', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const { socket } = await renderWithSocket();
+      socket.readyState = FakeSocket.CLOSED;
+
+      await userEvent.click(screen.getByRole('button', { name: '테스트 액션' }));
+
+      expect(await screen.findByText(/전달되지 못했습니다/)).toBeInTheDocument();
+      expect(socket.sent).toHaveLength(0);
+      errorSpy.mockRestore();
+    });
+  });
+
+  /**
+   * T67-2. 소켓이 닫혀 있어도 팝업이 닫혔다. 참가자는 **수락된 것처럼 보이는
+   * 화면**을 보고, 서버는 15초 마감을 거절로 처리한다
+   * (`playsync.service.ts`의 `waitForRebuyResponse`) — 성공 화면을 본 채
+   * 탈락한다.
+   */
+  describe('리바인 응답 — 소켓이 닫혀 있을 때', () => {
+    async function promptWithClosedSocket() {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const { socket } = await renderWithSocket();
+      socket.emitServerEvent('REBUY_PROMPT', { deadline: Date.now() + 30_000, entryFee: 50_000 });
+      await screen.findByRole('button', { name: '리바인' });
+      socket.readyState = FakeSocket.CLOSED;
+      return { socket, errorSpy };
+    }
+
+    it('리바인을 눌러도 팝업이 닫히지 않고 실패가 보인다', async () => {
+      const { socket, errorSpy } = await promptWithClosedSocket();
+
+      await userEvent.click(screen.getByRole('button', { name: '리바인' }));
+
+      expect(await screen.findByText(/전달되지 못했습니다/)).toBeInTheDocument();
+      // 팝업이 그대로 있어야 다시 누를 수 있다.
+      expect(screen.getByRole('button', { name: '리바인' })).toBeInTheDocument();
+      expect(socket.sent).toHaveLength(0);
+      errorSpy.mockRestore();
+    });
+
+    it('거절을 눌러도 탈락 화면으로 넘어가지 않는다', async () => {
+      const { errorSpy } = await promptWithClosedSocket();
+
+      await userEvent.click(screen.getByRole('button', { name: '거절' }));
+
+      // 서버가 못 받은 거절로 탈락 화면을 그리면, 되돌릴 길이 화면에 없다.
+      expect(screen.queryByText(/폰에서 확인/)).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: '리바인' })).toBeInTheDocument();
+      errorSpy.mockRestore();
+    });
+
+    it('소켓이 다시 열리면 리바인이 나가고 팝업이 닫힌다', async () => {
+      const { socket, errorSpy } = await promptWithClosedSocket();
+      await userEvent.click(screen.getByRole('button', { name: '리바인' }));
+      await screen.findByText(/전달되지 못했습니다/);
+
+      socket.readyState = FakeSocket.OPEN;
+      await userEvent.click(screen.getByRole('button', { name: '리바인' }));
+
+      await waitFor(() =>
+        expect(screen.queryByRole('button', { name: '리바인' })).not.toBeInTheDocument(),
+      );
+      expect(socket.sent).toEqual([{ event: 'REBUY_RESPONSE', data: { accept: true } }]);
+      errorSpy.mockRestore();
     });
   });
 });

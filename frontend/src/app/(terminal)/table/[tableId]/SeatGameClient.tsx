@@ -14,6 +14,16 @@ import EliminatedOverlay from './EliminatedOverlay';
 // 이 컴포넌트에 들어오지 않는 구조를 다시 설계하지 않는다.
 const DEFAULT_CONNECTION_ERROR = '연결이 끊어졌습니다. 화면을 새로고침하거나 운영자에게 알려주세요.';
 
+/** 서버가 `error` 프레임에 문자열을 안 실어 줬을 때의 최후 안내. */
+const DEFAULT_ACTION_ERROR = '요청이 거절되었습니다.';
+
+/**
+ * 보내려 했는데 소켓이 열려 있지 않았을 때. **서버가 거절한 것이 아니라
+ * 애초에 닿지 않은 것**이라 문구가 다르다 — 거절은 이유가 있고, 이쪽은
+ * 다시 눌러 보라는 것 말고 할 말이 없다.
+ */
+const NOT_SENT_ERROR = '연결이 끊어져 전달되지 못했습니다. 잠시 후 다시 눌러 주세요.';
+
 /** 좌석 화면 상단 바 · 사이드 패널에 쓰는 페이즈 한글 이름. */
 const PHASE_LABEL: Record<number, string> = {
   0: '대기',
@@ -62,9 +72,23 @@ export default function SeatGameClient({
   const [rebuyData, setRebuyData] = useState<RebuyPrompt | null>(null);
   const rebuyDataRef = useRef<RebuyPrompt | null>(null);
   const [eliminated, setEliminated] = useState(false);
-  // 딜러 클릭이 게임 진행의 트리거인 시스템에서 "화면은 멀쩡해 보이는데
-  // 아무것도 안 움직이는" 상태가 가장 나쁜 실패 모드다.
+  /*
+    실패가 갈래 둘이고, 참가자가 할 수 있는 일이 다르다.
+
+    - `connectionError` — **저절로 낫는 것.** 참가자가 지울 수 있는 것이
+      아니라 위쪽 띠로 남긴다. 화면을 덮으면 다시 붙은 뒤에도 가린다.
+    - `actionError` — **읽고 지워야 하는 것.** 눌렀는데 안 먹은 사건이라
+      확인을 받아야 다음 조작으로 넘어간다. 딜러 화면
+      (`DealerGameClient`)이 거절 모달과 연결 끊김 배너를 가른 것과 같은
+      자리다.
+
+    좌석 화면에는 셋째가 있다 — 리바인 실패(`rebuyError`)다. 팝업 위에
+    모달을 또 얹으면 정작 다시 눌러야 할 버튼을 가리므로, 그 실패는
+    `RebuyOverlay` **안에** 그린다.
+  */
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [rebuyError, setRebuyError] = useState<string | null>(null);
 
   function updateRebuyData(next: RebuyPrompt | null) {
     rebuyDataRef.current = next;
@@ -111,7 +135,17 @@ export default function SeatGameClient({
               setEliminated(true);
             }
           } else if (serverEvent === 'REBUY_PROMPT') {
+            setRebuyError(null);
             updateRebuyData(data);
+          } else if (serverEvent === 'error') {
+            // 거절은 브로드캐스트가 아니라 **누른 사람에게만** 오는 ack다
+            // (`ws.gateway.ts`의 `handlePlayerAction`). 안 읽으면 참가자는
+            // 눌렀는데 아무 변화도 없는 화면을 보고 먹은 줄 안다.
+            //
+            // **`renderGame`으로 지우지 않는다.** 딜러 화면은 그렇게 하지만
+            // (`DealerGameClient`), 좌석 화면에서 `renderGame`은 남이 액션할
+            // 때마다 오는 브로드캐스트라 — 내 거절 사유가 1초도 못 버틴다.
+            setActionError(typeof data === 'string' && data ? data : DEFAULT_ACTION_ERROR);
           }
         };
 
@@ -143,21 +177,42 @@ export default function SeatGameClient({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tableId, seatIndex]);
 
-  function sendPlayerAction(action: PlayerAction) {
-    if (socketRef.current?.readyState === WebSocket.OPEN) {
-      // token과 tableId는 싣지 않는다. 서버는 둘 다 읽지 않는다 — 핸드셰이크에서
-      // 이미 검증해 소켓에 박아 두었다. 인바운드 스키마(.strict())가 모르는
-      // 키로 거부한다.
-      socketRef.current.send(JSON.stringify({ event: 'PLAYER_ACTION', data: action }));
-    } else {
+  /**
+   * 소켓이 열려 있으면 보내고 `true`, 아니면 아무것도 안 보내고 `false`.
+   *
+   * **보냈는가를 호출자가 알아야 한다.** 예전에는 두 자리 다 `else`에서
+   * `console.error` 한 줄만 남기고 화면은 성공한 것처럼 넘어갔다 — 참가자는
+   * 콘솔을 볼 수 없다.
+   */
+  function trySend(event: string, data: unknown): boolean {
+    if (socketRef.current?.readyState !== WebSocket.OPEN) {
       console.error('웹소켓 연결이 열려있지 않습니다.');
+      return false;
+    }
+    socketRef.current.send(JSON.stringify({ event, data }));
+    return true;
+  }
+
+  function sendPlayerAction(action: PlayerAction) {
+    // token과 tableId는 싣지 않는다. 서버는 둘 다 읽지 않는다 — 핸드셰이크에서
+    // 이미 검증해 소켓에 박아 두었다. 인바운드 스키마(.strict())가 모르는
+    // 키로 거부한다.
+    if (!trySend('PLAYER_ACTION', action)) {
+      setActionError(NOT_SENT_ERROR);
     }
   }
 
   function handleRebuyResponse(accept: boolean) {
-    if (socketRef.current?.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify({ event: 'REBUY_RESPONSE', data: { accept } }));
+    // **못 보냈으면 팝업을 닫지 않는다.** 닫으면 화면은 수락된 것처럼
+    // 보이는데 서버는 15초 마감을 거절로 처리한다
+    // (`playsync.service.ts`의 `waitForRebuyResponse`) — 참가자가 성공
+    // 화면을 본 채 탈락한다. 거절도 같다: 서버가 못 받은 거절로 탈락
+    // 화면을 그리면 되돌릴 길이 화면에 없다.
+    if (!trySend('REBUY_RESPONSE', { accept })) {
+      setRebuyError(NOT_SENT_ERROR);
+      return;
     }
+    setRebuyError(null);
     updateRebuyData(null);
     // 탈락 판정 (a): 리바인 거절을 보낸 직후. 서버 응답을 기다리지 않는다 —
     // 거절은 이미 확정된 의사고, 잃는 것은 화면 전환 타이밍뿐이다.
@@ -252,7 +307,43 @@ export default function SeatGameClient({
         <SeatActionPanel state={gameState} mySeatIndex={mySeatIndex} onAction={sendPlayerAction} />
       </div>
 
-      {rebuyData && <RebuyOverlay rebuyData={rebuyData} onRespond={handleRebuyResponse} />}
+      {/*
+        **거절은 참가자가 읽고 지워야 한다.** 위쪽 띠로 걸어 두면 펠트를
+        보는 눈이 지나친다 — 상태가 그대로인 거절(차례가 아니다, 최소
+        레이즈에 못 미친다)은 화면에 다른 변화가 없어서, 못 보면 먹은 줄
+        알고 그대로 시간이 흘러 자동 폴드된다. 연결 끊김(위 배너)은 반대로
+        참가자가 지울 수 있는 것이 아니라 배너로 남긴다.
+
+        리바인 팝업이 떠 있는 동안은 그리지 않는다 — 그 실패는 팝업 안에
+        그리고(`rebuyError`), 여기 모달이 겹치면 다시 눌러야 할 버튼을 가린다.
+      */}
+      {actionError && !rebuyData && (
+        <div
+          data-testid="seat-action-error"
+          role="alertdialog"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-tb-bg/90 p-6"
+        >
+          <div className="w-full max-w-[430px] border border-err bg-tb-panel p-6">
+            <p className="text-xs tracking-[0.14em] text-err">이 요청은 처리되지 않았습니다</p>
+            <div className="mb-1.5 mt-2 text-xl font-light leading-snug text-tb-ink">
+              {actionError}
+            </div>
+            <div className="mt-5 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setActionError(null)}
+                className="border border-tb-act bg-tb-act px-5 py-2.5 text-sm font-semibold text-[#06201a]"
+              >
+                확인
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {rebuyData && (
+        <RebuyOverlay rebuyData={rebuyData} error={rebuyError} onRespond={handleRebuyResponse} />
+      )}
       {eliminated && <EliminatedOverlay storeId={storeId} />}
     </div>
   );
