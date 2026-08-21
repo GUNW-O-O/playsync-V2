@@ -584,10 +584,19 @@ export class RedisService {
    * 실제 쓰기. `mutateSnapshot`(락 안)과 `saveSnapshotUnlocked`(명시된 예외)
    * 둘만 부른다 — 밖에서 부를 수 없어야 "스냅샷을 쓰는 길은 둘뿐"이 문서가
    * 아니라 타입으로 선다.
+   *
+   * **만료를 `SET`에 접어 넣는다. 쪼개지 마라.** 예전에는 `set` 다음에
+   * `expire`를 따로 불렀는데, 두 왕복 사이에서 실패하면 **만료 없는 키가
+   * 남는다.** 한 명령이면 그 창이 없다.
+   *
+   * 쪼개면 안 되는 진짜 이유는 `SET`의 성질이다 — **`SET`은 기존 TTL을
+   * 지운다.** 그래서 `expire`를 빠뜨린 쓰기 경로가 하나라도 있으면 그 경로가
+   * 지나갈 때마다 이미 붙어 있던 만료가 조용히 벗겨진다. 실제로 그랬다:
+   * 지워진 `saveInitialTableSnapshots`가 `pipeline.set`만 해서, **대회 시작이
+   * 착석 테이블 스냅샷의 24시간 만료를 통째로 벗기고 있었다**(T61).
    */
   private async writeSnapshot(tableId: string, table: TableState) {
-    await this.redis.set(`table:state:${tableId}`, JSON.stringify(table));
-    await this.redis.expire(`table:state:${tableId}`, 86400);
+    await this.redis.set(`table:state:${tableId}`, JSON.stringify(table), 'EX', 86400);
   }
 
   // Table 가져오기

@@ -393,7 +393,7 @@ describe('SessionService.startSession', () => {
     tables,
   });
 
-  const setup = (opts: { tables?: unknown[]; snapshot?: unknown; redisFails?: boolean } = {}) => {
+  const setup = (opts: { tables?: unknown[]; snapshot?: unknown; redisError?: Error } = {}) => {
     const tables = opts.tables ?? [{ id: 'table-1', tablePlayers: [{ seatPosition: 0 }] }];
 
     const update = jest.fn().mockResolvedValue({});
@@ -418,7 +418,7 @@ describe('SessionService.startSession', () => {
     // 락 자체가 실제로 도는지는 통합 계층이 본다(스냅샷 읽기·쓰기가 한 락 안에
     // 있는지는 목으로 증명되지 않는다).
     const mutateSnapshot = jest.fn(async (_tableId: string, fn: any) => {
-      if (opts.redisFails) throw new Error('테이블 상태 저장에 실패했습니다: table-1');
+      if (opts.redisError) throw opts.redisError;
       return (await fn(stored)) ?? stored;
     });
     const redis = { setTournamentMeta, mutateSnapshot };
@@ -477,10 +477,43 @@ describe('SessionService.startSession', () => {
     // 실패해도 던지지 않아서, 결과 배열을 직접 읽어 던져 주는 코드가 따로
     // 필요했다. 지금은 `mutateSnapshot` 한 번에 스냅샷 하나라 실패가 그대로
     // 거절된 프로미스로 올라온다.
-    const { service, prisma, update } = setup({ redisFails: true });
+    //
+    // 목이 던지는 것은 **그 경로에서 실제로 나올 수 있는 것**이어야 한다.
+    // ioredis가 끊긴 커넥션에 명령을 보낼 때 내는 문구를 쓴다 — 지워진
+    // 메서드의 문구를 계속 던지면 아무 데도 없는 문자열을 검증하게 된다.
+    const { service, prisma, update } = setup({
+      redisError: new Error('Connection is closed.'),
+    });
 
-    await expect(service.startSession('t1', OWNER_ID)).rejects.toThrow(/저장에 실패/);
+    // 인프라 오류는 **그대로** 올라간다. 아래 락 실패처럼 409로 번역하면
+    // 진짜 장애가 "잠시 후 다시"로 위장된다.
+    await expect(service.startSession('t1', OWNER_ID)).rejects.toThrow(/Connection is closed/);
+    await expect(service.startSession('t1', OWNER_ID)).rejects.not.toBeInstanceOf(
+      ConflictException,
+    );
 
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  /**
+   * T61이 새로 연 실패 모드. 준비가 테이블 락을 잡게 되면서 `withTableLock`의
+   * 5초 대기가 시작 경로에 들어왔다.
+   *
+   * 도달 경로가 실재한다 — `releaseSeats`는 `SELECT ... FOR UPDATE` 대기 때문에
+   * 5초를 넘길 수 있다고 `domain.md`가 명시적으로 감수한 자리라, 좌석 해제 중에
+   * 상점이 시작을 누르면 이 갈래다. 그대로 두면 500에 "락 획득 실패"가 나가는데,
+   * **상점 콘솔에 "락"은 없는 말이다**(`domain.md`의 「상점도 손님이다」).
+   */
+  it('락을 못 잡으면 상점이 할 수 있는 일로 바꿔 던진다', async () => {
+    const { service, prisma, update } = setup({
+      redisError: new Error('테이블 table-1 락 획득 실패'),
+    });
+
+    await expect(service.startSession('t1', OWNER_ID)).rejects.toThrow(ConflictException);
+    await expect(service.startSession('t1', OWNER_ID)).rejects.toThrow(/잠시 후 다시 시작/);
+
+    // 다시 누르는 것이 곧 재시도인 상황이므로 아무것도 커밋되지 않아야 한다.
     expect(prisma.$transaction).not.toHaveBeenCalled();
     expect(update).not.toHaveBeenCalled();
   });
@@ -500,7 +533,11 @@ describe('SessionService.startSession', () => {
 
     await service.startSession('t1', OWNER_ID);
 
-    expect(order).toEqual(['meta', 'snapshots', 'commit']);
+    // **지키는 것은 "Redis 준비 둘이 DB 커밋보다 먼저"다.** 메타와 스냅샷의
+    // 앞뒤는 그 성질이 아니라 별개의 규칙이다 — 메타가 스냅샷 뒤인 이유는
+    // `initializeGame`의 `setTournamentMeta` 자리 주석에 있다(거부되는 시작은
+    // 메타를 남기지 않는다).
+    expect(order).toEqual(['snapshots', 'meta', 'commit']);
   });
 
   it('Redis 블라인드 기준 시각과 DB의 startedAt이 같다', async () => {
