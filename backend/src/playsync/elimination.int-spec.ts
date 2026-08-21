@@ -298,5 +298,27 @@ describe('탈락 처리 멱등성', () => {
       });
       expect(row.status).toBe('ELIMINATED');
     });
+
+    /**
+     * 4-1. 킥은 DB만 깎고 Redis는 그대로 뒀다. 자가 치유 경로도 없다 —
+     * `TableEngine.act`의 `DEALER_KICK`은 스택을 남기므로 `resolveWinners`의
+     * `stack <= 0` 필터에 영원히 안 걸리고, 나중에 실제로 파산해도
+     * `awardPrize`가 0행을 돌려줘 `eliCount === 0`에서 조기 반환한다.
+     */
+    it('킥이 Redis 인원도 깎는다', async () => {
+      await dealer.handleDealerAction(TOURNAMENT, TABLE, 'carol', 'KICK');
+
+      expect(`redis ${await activePlayerInRedis()} / db ${await activePlayersInDb()}`)
+        .toBe('redis 2 / db 2');
+    });
+
+    it('두 번 킥해도 Redis 인원은 한 번만 준다 — 그 사이 어긋났어도', async () => {
+      await dealer.handleDealerAction(TOURNAMENT, TABLE, 'carol', 'KICK');
+      await redis.hset(infoKey, 'activePlayer', 9); // 그 사이 누가 어긋뜨렸다
+
+      await dealer.handleDealerAction(TOURNAMENT, TABLE, 'carol', 'KICK');
+
+      expect(await activePlayerInRedis()).toBe(2);
+    });
   });
 });

@@ -276,7 +276,16 @@ export class DealerService {
   }
 
   async handleDealerAction(tournamentId: string, tableId: string, targetUserId: string, type: 'FOLD' | 'KICK') {
-    return this.redis.mutateSnapshot(tableId, async (state) => {
+    /**
+     * 킥 트랜잭션이 돌려준 값. 전광판 카운터를 맞추는 데 쓴다(T60).
+     *
+     * **`mutateSnapshot` 콜백 안에서 Redis에 쓰지 않는다.** 대입 자체는 락과
+     * 무관하지만, 콜백 안의 예외는 스냅샷 쓰기를 통째로 되돌린다 — 되돌아가지
+     * 않는 부수효과를 그 안에 섞으면 스냅샷만 과거로 돌아간 세계가 남는다.
+     */
+    let counter: { activePlayers: number; startStack: number; entryFee: number } | null = null;
+
+    const state = await this.redis.mutateSnapshot(tableId, async (state) => {
       if (!state) throw new Error(SNAPSHOT_MISSING);
       const engine = new TableEngine(state);
       const targetIdx = state.players.findIndex(p => p?.id === targetUserId);
@@ -296,7 +305,11 @@ export class DealerService {
         // 그리고 `decrement: 1`은 멱등이 아니다. 딜러가 킥을 두 번 누르면 두 번
         // 준다. 이미 탈락한 사람은 `where`에서 걸러 **실제로 바뀐 행 수만큼만**
         // 줄인다.
-        await this.prisma.$transaction(async (tx) => {
+        //
+        // 바뀐 행이 없어도 현재 값을 읽어 나간다(T60). 전광판 카운터는 대입이라
+        // 멱등을 위한 가드가 필요 없고, 중복 킥은 오히려 어긋난 값을 지우는
+        // 기회다.
+        counter = await this.prisma.$transaction(async (tx) => {
           const changed = await tx.tournamentParticipation.updateMany({
             where: {
               tournamentId,
@@ -305,18 +318,36 @@ export class DealerService {
             },
             data: { status: 'ELIMINATED' }
           });
-          if (changed.count > 0) {
-            await tx.tournament.update({
+          const select = { activePlayers: true, startStack: true, entryFee: true } as const;
+          if (changed.count === 0) {
+            return await tx.tournament.findUniqueOrThrow({
               where: { id: tournamentId },
-              data: { activePlayers: { decrement: changed.count } }
+              select,
             });
           }
+          return await tx.tournament.update({
+            where: { id: tournamentId },
+            data: { activePlayers: { decrement: changed.count } },
+            select,
+          });
         });
       }
 
       await this.playsync.scheduleTurnTimeout(tableId, state);
       return state;
     });
+
+    // 킥은 최후 1인 판정을 부르지 않는다. `tournamentFinished`를 부르는 자리는
+    // `PlaysyncService.eliminatePlayer` 하나뿐이라, 킥으로 마지막 한 명이 남으면
+    // 대회를 닫을 경로가 없다 — 그 상황("헤즈업에서 딜러가 킥한다")은 규칙으로
+    // 막는다(`docs/backlog.md`의 파이널 테이블부터의 딜러 개입 제한).
+    // **그 규칙이 서기 전까지 이 구멍은 남는다.** 여기서는 카운터만 맞춘다.
+    if (counter !== null) {
+      const { activePlayers, startStack, entryFee } = counter;
+      await this.redis.syncActivePlayer(tournamentId, activePlayers, startStack, entryFee);
+    }
+
+    return state;
   }
 
   /**
