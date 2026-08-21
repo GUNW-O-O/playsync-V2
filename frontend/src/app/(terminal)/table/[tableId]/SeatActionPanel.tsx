@@ -24,20 +24,53 @@ export default function SeatActionPanel({
 }) {
   const myPlayer = state && mySeatIndex !== null ? (state.players[mySeatIndex] ?? null) : null;
   const bigBlind = (state?.smallBlind ?? 0) * 2;
-  const [raiseVal, setRaiseVal] = useState(Math.min(bigBlind, myPlayer?.stack ?? 0));
 
-  // 내 차례가 되면 레이즈 슬라이더를 최소 레이즈로 되돌린다. 이전 핸드에서
-  // 남은 값을 그대로 보여주면 실수로 그 금액을 그대로 쏠 수 있다. 이펙트
-  // 대신 렌더 중 조정한다(React 문서가 권하는 "prop이 바뀌면 state를
-  // 조정하는" 패턴) — 이펙트로 하면 커밋이 한 번 더 생기고, 그 사이
-  // 프레임에 되돌리기 전 값이 잠깐 보인다.
-  const turnKey = `${state?.currentTurnSeatIndex ?? -1}:${state?.phase ?? -1}`;
-  const [lastTurnKey, setLastTurnKey] = useState(turnKey);
-  if (turnKey !== lastTurnKey) {
-    setLastTurnKey(turnKey);
-    if (state && mySeatIndex !== null && state.currentTurnSeatIndex === mySeatIndex) {
-      setRaiseVal(Math.min(state.currentBet + bigBlind, myPlayer?.stack ?? 0));
-    }
+  // `amount`는 총 베팅액이다 — `table-engine.ts`의 `handleRaise`가
+  // `betAmount - player.bet`을 빼서 실제로 낼 칩을 구한다. 그래서 낼 수 있는
+  // 최대 총액은 `stack`이 아니라 **`stack + bet`**이다.
+  //
+  // 이 값을 한 곳에서만 계산하는 것이 요점이다. 예전에는 슬라이더 `max`와
+  // 올인 버튼은 `stack + bet`을, 차례 초기화는 `stack`을 썼고, 그래서
+  // 블라인드를 이미 깐 사람이 낼 수 있는 최소 레이즈를 못 냈다(T68).
+  const maxTotal = myPlayer ? myPlayer.stack + myPlayer.bet : 0;
+  const minRaiseTotal = (state?.currentBet ?? 0) + bigBlind;
+  /**
+   * 레이즈할 여력이 되는가. `goingToAllIn`("콜하면 다 들어가나")과 다른
+   * 질문이다 — 콜이 다 들어가지 않아도 최소 레이즈에 못 미칠 수 있다.
+   * 거짓이면 슬라이더와 레이즈 버튼을 감춘다(콜과 올인은 남는다). 그래야
+   * 낼 수 없는 금액이 화면에서 사라지고, 슬라이더의 `min > max`도 생기지
+   * 않는다 — `min > max`인 상황이 바로 "레이즈 못 하는 상황"이다.
+   */
+  const canRaiseAtAll = state !== null && myPlayer !== null && maxTotal >= minRaiseTotal;
+
+  // 초기값은 자리만 잡는다. 이 값의 주인은 아래의 "지금 내 차례인가" 판정
+  // 하나뿐이고, 슬라이더와 레이즈 버튼은 내 차례에만 그려지므로 여기 0이
+  // 화면에 닿는 경우가 없다 — 내 차례면 렌더 중에 이미 세워진 뒤다.
+  const [raiseVal, setRaiseVal] = useState(0);
+
+  // 내 차례면 레이즈 슬라이더를 최소 레이즈로 세운다. 이전 핸드에서 남은
+  // 값을 그대로 보여주면 실수로 그 금액을 그대로 쏠 수 있다. 이펙트 대신
+  // 렌더 중 조정한다(React 문서가 권하는 "prop이 바뀌면 state를 조정하는"
+  // 패턴) — 이펙트로 하면 커밋이 한 번 더 생기고, 그 사이 프레임에 세우기
+  // 전 값이 잠깐 보인다.
+  //
+  // 판정은 "차례가 바뀌었나"가 아니라 **"지금 내 차례인가"**다. 차례 변화만
+  // 보면 시드값이 곧 현재 차례라, 내 차례 도중에 새로고침·재접속으로
+  // 마운트된 경우 한 번도 돌지 않는다 — `raiseVal`이 슬라이더 `min`보다
+  // 작은 채 남아 슬라이더를 건드리기 전까지 레이즈가 불가능했다(T68).
+  const myTurnKey =
+    state && mySeatIndex !== null && state.currentTurnSeatIndex === mySeatIndex
+      ? `${state.currentTurnSeatIndex}:${state.phase}`
+      : null;
+
+  // 차례가 나를 떠나면 키를 `null`로 되돌린다. 한 페이즈 안에서도 상대의
+  // 레이즈를 거쳐 차례가 다시 오는데, 키가 `${좌석}:${페이즈}`라 그냥 두면
+  // 같은 값이어서 다시 서지 않는다 — 올라간 `currentBet` 아래에 옛 값이
+  // 남아 둘째와 같은 증상이 된다.
+  const [seededTurnKey, setSeededTurnKey] = useState<string | null>(null);
+  if (myTurnKey !== seededTurnKey) {
+    setSeededTurnKey(myTurnKey);
+    if (myTurnKey !== null) setRaiseVal(Math.min(minRaiseTotal, maxTotal));
   }
 
   /**
@@ -62,21 +95,20 @@ export default function SeatActionPanel({
   const needsToCall = state && myPlayer ? state.currentBet - myPlayer.bet : 0;
   const canCheck = needsToCall <= 0;
   const goingToAllIn = myPlayer ? needsToCall >= myPlayer.stack : false;
-  const canRaise = state ? raiseVal >= state.currentBet + bigBlind : false;
+  const canRaise = canRaiseAtAll && raiseVal >= minRaiseTotal && raiseVal <= maxTotal;
 
   return (
     <div className="flex flex-col gap-2.5">
-      {/* 슬라이더 자리. 콜만 해도 다 들어가는 상황에는 조절할 것이 없다. */}
+      {/* 슬라이더 자리. 콜만 해도 다 들어가거나 레이즈할 여력이 없으면
+          조절할 것이 없다. 자리는 그대로 두고 내용만 비운다. */}
       <div data-testid="action-slider-slot" className="h-7">
-        {myTurn && !goingToAllIn && state && myPlayer && (
+        {myTurn && !goingToAllIn && canRaiseAtAll && state && myPlayer && (
           <div className="flex h-7 items-center gap-3 border border-tb-line bg-tb-panel px-3 font-mono text-[11px] text-tb-muted">
             <input
               type="range"
-              min={state.currentBet + bigBlind}
-              // `amount`는 총 베팅액이다(`table-engine.ts`의 `handleRaise`가
-              // `betAmount - player.bet`을 뺀다) — 낼 수 있는 최대 총액은
-              // `stack`이 아니라 `stack + bet`이다(올인 버튼과 같은 값).
-              max={Math.max(myPlayer.stack + myPlayer.bet, state.currentBet + bigBlind)}
+              min={minRaiseTotal}
+              // `canRaiseAtAll`이 참일 때만 그리므로 `min <= max`가 보장된다.
+              max={maxTotal}
               step={bigBlind || 1}
               value={raiseVal}
               onChange={(e) => setRaiseVal(Number(e.target.value))}
@@ -129,20 +161,24 @@ export default function SeatActionPanel({
                     콜 {Math.min(needsToCall, myPlayer.stack).toLocaleString()}
                   </button>
                 )}
-                <button
-                  type="button"
-                  disabled={!canRaise}
-                  onClick={() => onAction({ action: PlayerActionType.RAISE, amount: raiseVal })}
-                  className="h-14 flex-1 border border-tb-act bg-tb-act text-sm font-semibold text-[#06201a] disabled:opacity-30"
-                >
-                  레이즈 {raiseVal.toLocaleString()}
-                </button>
+                {/* 레이즈할 여력이 없으면 아예 두지 않는다. 비활성 버튼으로
+                    남기면 낼 수 없는 금액이 계속 적혀 있다. */}
+                {canRaiseAtAll && (
+                  <button
+                    type="button"
+                    disabled={!canRaise}
+                    onClick={() => onAction({ action: PlayerActionType.RAISE, amount: raiseVal })}
+                    className="h-14 flex-1 border border-tb-act bg-tb-act text-sm font-semibold text-[#06201a] disabled:opacity-30"
+                  >
+                    레이즈 {raiseVal.toLocaleString()}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() =>
                     onAction({
                       action: PlayerActionType.RAISE,
-                      amount: myPlayer.stack + myPlayer.bet,
+                      amount: maxTotal,
                     })
                   }
                   className="h-14 flex-1 border border-tb-line text-sm text-tb-ink"
