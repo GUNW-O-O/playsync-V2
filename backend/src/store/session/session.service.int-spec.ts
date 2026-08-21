@@ -1441,8 +1441,8 @@ describe('SessionService.releaseSeats', () => {
 /**
  * T31 — 시작 트랜잭션이 첫 버튼 추첨 결과를 DB에 남기는지.
  *
- * `initializeGame`이 테이블마다 버튼을 랜덤으로 뽑지만(session.service.ts:468)
- * 예전에는 그 값이 Redis 스냅샷에만 있었다. 첫 핸드가 끝나기 전에 서버가
+ * `initializeGame`이 테이블마다 버튼을 랜덤으로 뽑지만 예전에는 그 값이
+ * Redis 스냅샷에만 있었다. 첫 핸드가 끝나기 전에 서버가
  * 죽으면 재구성이 읽을 버튼이 DB 어디에도 없었다. `startSession`의 트랜잭션이
  * `Table.buttonUser`를 같은 트랜잭션으로 쓰는지 확인한다.
  */
@@ -1492,22 +1492,19 @@ describe('SessionService.startSession — 버튼 좌석 영속화', () => {
       });
     }
 
-    // initializeGame은 착석한 테이블에 스냅샷이 이미 있어야 시작을 허용한다
-    // (스냅샷 없는 테이블은 거부 — session.service.ts:478). 실제로는 입장이
-    // 첫 착석에서 만드는 초기 상태다.
-    await redisService.saveInitialTableSnapshots([{
-      tableId,
-      state: {
-        phase: GamePhase.WAITING,
-        players: [
-          { id: 'u1', tableId, nickname: 'u1', seatIndex: 0, stack: 30000, bet: 0, hasFolded: false, isAllIn: false, hasChecked: false, totalContributed: 0 },
-          { id: 'u2', tableId, nickname: 'u2', seatIndex: 1, stack: 30000, bet: 0, hasFolded: false, isAllIn: false, hasChecked: false, totalContributed: 0 },
-          ...Array(7).fill(null),
-        ],
-        pot: 0, currentBet: 0, buttonUser: 0, currentTurnSeatIndex: -1,
-        sidePots: [], ante: 0, tournamentId, smallBlind: 100,
-      },
-    }]);
+    // `initializeGame`은 착석한 테이블에 스냅샷이 이미 있어야 시작을 허용한다
+    // (스냅샷 없는 테이블은 거부한다). 실제로는 테이블 생성이 빈 스냅샷을
+    // 세우고 입장이 점유자를 채운다 — 여기서 `table-created`를 쓰는 이유다.
+    await redisService.saveSnapshotUnlocked(tableId, {
+      phase: GamePhase.WAITING,
+      players: [
+        { id: 'u1', tableId, nickname: 'u1', seatIndex: 0, stack: 30000, bet: 0, hasFolded: false, isAllIn: false, hasChecked: false, totalContributed: 0 },
+        { id: 'u2', tableId, nickname: 'u2', seatIndex: 1, stack: 30000, bet: 0, hasFolded: false, isAllIn: false, hasChecked: false, totalContributed: 0 },
+        ...Array(7).fill(null),
+      ],
+      pot: 0, currentBet: 0, buttonUser: 0, currentTurnSeatIndex: -1,
+      sidePots: [], ante: 0, tournamentId, smallBlind: 100,
+    }, 'table-created');
   });
 
   it('시작하면 그 테이블 화면들에 뽑은 버튼이 실린 스냅샷이 간다', async () => {
@@ -1580,6 +1577,212 @@ describe('SessionService.startSession — 버튼 좌석 영속화', () => {
       select: { status: true },
     });
     expect(tournament.status).toBe(TournamentStatus.PENDING);
+  });
+});
+
+/**
+ * T61 — 시작 준비가 락을 잡은 착석을 덮어쓰지 않는지.
+ *
+ * 예전에는 `initializeGame`이 `getSnapShot`(락 없음) → `buttonUser` 대입 →
+ * 메타 왕복 → `pipeline.set`(락 없음)을 했다. 전형적인 read-modify-write인데
+ * 중간에 Redis 왕복이 하나 더 껴서 창이 넓다. 그 창에 `claimSeat`(락을
+ * 정상적으로 잡는다)이 끼면 DB 좌석 행·비트맵·`activePlayers`는 새로 앉은
+ * 사람을 아는데 **게임 스냅샷에서만 그가 지워진다.** 딜러가 그를 포함해 딜할
+ * 수 없고, `releaseSeats`의 스냅샷 점유자 대조가 통과하지 않아 상점도 뗄 수
+ * 없다. **대회 시작 순간이 착석이 가장 몰리는 시각**이라 창이 가장 넓을 때
+ * 열려 있다.
+ *
+ * **레이스를 확률에 맡기지 않는다.** 순서를 락과 이음매 하나로 고정한다.
+ *
+ * 1. 홀더가 `mutateSnapshot`으로 그 테이블의 락을 잡은 채 머문다.
+ * 2. 그 상태에서 `startSession`을 부른다.
+ * 3. `setTournamentMeta`를 이음매로 쓴다 — 준비 경로가 반드시 지나는 자리다.
+ *    거기서 홀더를 놓아 u9를 쓰게 하고, 그 쓰기와 락 해제가 끝난 뒤에 이어간다.
+ * 4. 이어서 두 번째 홀더가 락을 잡고 잠깐 머문다. 고친 코드는 여기서 **기다려야**
+ *    한다 — 기다리지 않으면 낡은 스냅샷을 밀어 넣고, 기다리다 실패하면
+ *    '락 획득 실패'로 터진다.
+ *
+ * 고치기 전이면 1의 읽기가 이미 끝나 있어 3 뒤의 쓰기가 u9를 지운다.
+ */
+describe('SessionService.startSession — 시작 준비와 착석의 경합', () => {
+  let prisma: PrismaClient;
+  let redis: Redis;
+  let redisService: RedisService;
+  let sessionService: SessionService;
+  let tournamentId: string;
+  let tableId: string;
+  let ownerId: string;
+
+  beforeAll(() => {
+    prisma = createTestPrisma();
+    redis = createTestRedis();
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+    await closeTestPrisma(prisma);
+  });
+
+  const seatedPlayer = (id: string, seatIndex: number) => ({
+    id, tableId, nickname: id, seatIndex,
+    stack: 30000, bet: 0, hasFolded: false, isAllIn: false,
+    hasChecked: false, totalContributed: 0,
+  });
+
+  beforeEach(async () => {
+    await truncateAll(prisma);
+    await flushTestRedis(redis);
+
+    redisService = new RedisService(redis);
+    sessionService = new SessionService(
+      prisma as unknown as PrismaService, redisService, new OtpAttempts(redis), new EventEmitter2(),
+    );
+
+    ({ ownerId, tournamentId, tableId } = await seedTournamentWithTable(prisma));
+
+    for (const [userId, seatIndex] of [['u1', 0], ['u2', 1]] as [string, number][]) {
+      await prisma.user.create({ data: { id: userId, nickname: userId, password: 'x' } });
+      await prisma.tournamentParticipation.create({
+        data: {
+          userId, tournamentId, playerOtp: `otp${seatIndex}0000`,
+          status: 'PLAYING', currentStack: 30000,
+        },
+      });
+      await prisma.tablePlayer.create({
+        data: { tournamentId, tableId, userId, nickname: userId, seatPosition: seatIndex },
+      });
+    }
+
+    // 착석이 세워 둔 초기 상태. 실제로는 테이블 생성이 빈 스냅샷을 세우고
+    // 입장이 점유자를 채운다.
+    await redisService.saveSnapshotUnlocked(tableId, {
+      phase: GamePhase.WAITING,
+      players: [seatedPlayer('u1', 0), seatedPlayer('u2', 1), ...Array(7).fill(null)],
+      pot: 0, currentBet: 0, buttonUser: 0, currentTurnSeatIndex: -1,
+      sidePots: [], ante: 0, tournamentId, smallBlind: 100,
+    }, 'table-created');
+  });
+
+  it('락을 잡은 착석이 쓴 점유자를 시작 준비가 지우지 않는다', async () => {
+    // u9의 DB 쪽은 `claimSeat`이 락 밖에서 커밋하는 부분이다.
+    await prisma.user.create({ data: { id: 'u9', nickname: 'u9', password: 'x' } });
+    await prisma.tournamentParticipation.create({
+      data: {
+        userId: 'u9', tournamentId, playerOtp: 'otp90000',
+        status: 'PLAYING', currentStack: 30000,
+      },
+    });
+    await prisma.tablePlayer.create({
+      data: { tournamentId, tableId, userId: 'u9', nickname: 'u9', seatPosition: 5 },
+    });
+
+    let holderGotLock!: () => void;
+    const gotLock = new Promise<void>((r) => { holderGotLock = r; });
+    let releaseHolder!: () => void;
+    const held = new Promise<void>((r) => { releaseHolder = r; });
+
+    // 홀더 = 락을 정상적으로 잡는 착석. 스냅샷 쪽 쓰기가 이 안에서 일어난다.
+    const holder = redisService.mutateSnapshot(tableId, async (state) => {
+      holderGotLock();
+      await held;
+      expect(`홀더가 읽은 스냅샷 ${state ? '있음' : '없음'}`).toBe('홀더가 읽은 스냅샷 있음');
+      state!.players[5] = seatedPlayer('u9', 5);
+      return state!;
+    });
+    await gotLock;
+
+    // 두 번째 홀더. 시작 준비가 락을 실제로 기다리는지 보려고 둔다.
+    let secondGotLock!: () => void;
+    const secondLocked = new Promise<void>((r) => { secondGotLock = r; });
+    let second: Promise<unknown> | undefined;
+
+    const realSetMeta = redisService.setTournamentMeta.bind(redisService);
+    const metaSpy = jest
+      .spyOn(redisService, 'setTournamentMeta')
+      .mockImplementation(async (...args: Parameters<RedisService['setTournamentMeta']>) => {
+        releaseHolder();
+        await holder; // u9 쓰기와 락 해제가 끝난 시점
+        second = redisService.mutateSnapshot(tableId, async () => {
+          secondGotLock();
+          await new Promise((r) => setTimeout(r, 200));
+          return null; // 아무것도 쓰지 않는다. 락만 잡고 있는다
+        });
+        await secondLocked;
+        return realSetMeta(...args);
+      });
+
+    process.env.MIN_PLAYERS_TO_START = '0';
+    try {
+      await sessionService.startSession(tournamentId, ownerId);
+    } finally {
+      delete process.env.MIN_PLAYERS_TO_START;
+      metaSpy.mockRestore();
+    }
+    await second;
+
+    const snapshot = await redisService.getSnapShot(tableId);
+    const occupants = (snapshot?.players ?? [])
+      .map((p, i) => (p ? `${i}:${p.id}` : null))
+      .filter((v): v is string => v !== null);
+
+    // DB 좌석 행과 스냅샷 점유자가 어긋나면 딜러도 상점도 그를 다룰 수 없다.
+    expect(`점유자 ${occupants.join(' ')}`).toBe('점유자 0:u1 1:u2 5:u9');
+  });
+
+  it('시작 준비가 저장한 버튼이 DB·스냅샷·브로드캐스트에서 같다', async () => {
+    // `initializeGame`이 호출자에게 넘기는 `tableStates`는 **락 안에서 실제로
+    // 저장된 상태**여야 한다. 락 밖에서 만든 사본을 넘기면 브로드캐스트가
+    // 저장된 것과 다른 판을 내보낸다.
+    //
+    // 뽑기 전 값을 좌석이 아닌 8로 밀어 둔다. 좌석은 0·1뿐이라 무엇이 뽑히든
+    // 8과 다르고, 그래야 "낡은 사본을 넘겼다"가 우연히 같은 값으로 가려지지
+    // 않는다.
+    await redisService.mutateSnapshot(tableId, async (s) => {
+      s!.buttonUser = 8;
+      return s!;
+    });
+
+    const emitted: { tableId?: string; state?: { buttonUser?: number } }[] = [];
+    const emitter = new EventEmitter2();
+    emitter.emit = ((event: string, payload: unknown) => {
+      if (event === 'game.state.updated') emitted.push(payload as never);
+      return true;
+    }) as typeof emitter.emit;
+    const service = new SessionService(
+      prisma as unknown as PrismaService, redisService, new OtpAttempts(redis), emitter,
+    );
+
+    process.env.MIN_PLAYERS_TO_START = '0';
+    try {
+      await service.startSession(tournamentId, ownerId);
+    } finally {
+      delete process.env.MIN_PLAYERS_TO_START;
+    }
+
+    const snapshot = await redisService.getSnapShot(tableId);
+    const table = await prisma.table.findUniqueOrThrow({
+      where: { id: tableId }, select: { buttonUser: true },
+    });
+    expect(`DB ${table.buttonUser} / 스냅샷 ${snapshot?.buttonUser} / 알림 ${emitted[0]?.state?.buttonUser}`)
+      .toBe(`DB ${table.buttonUser} / 스냅샷 ${table.buttonUser} / 알림 ${table.buttonUser}`);
+  });
+
+  it('스냅샷이 없는 테이블은 락 안에서도 같은 예외로 거부한다', async () => {
+    await redis.del(`table:state:${tableId}`);
+
+    process.env.MIN_PLAYERS_TO_START = '0';
+    try {
+      await expect(sessionService.startSession(tournamentId, ownerId))
+        .rejects.toThrow(/테이블 상태가 준비되지 않아 시작할 수 없습니다/);
+    } finally {
+      delete process.env.MIN_PLAYERS_TO_START;
+    }
+
+    const tournament = await prisma.tournament.findUniqueOrThrow({
+      where: { id: tournamentId }, select: { status: true, startedAt: true },
+    });
+    expect(`상태 ${tournament.status} / 시작시각 ${tournament.startedAt}`)
+      .toBe('상태 PENDING / 시작시각 null');
   });
 });
 
