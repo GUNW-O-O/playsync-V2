@@ -1,21 +1,18 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
-import { GamePhase, type TableState } from '@/app/types/game';
+import { GamePhase, type TableState } from '@playsync/contract';
 import Felt from './Felt';
 
 function tablePlayer(seatIndex: number, nickname: string) {
   return {
     id: `u-${seatIndex}`,
-    tableId: 'tbl-1',
     nickname,
     seatIndex,
     stack: 5000,
     bet: 0,
     hasFolded: false,
     isAllIn: false,
-    // 백엔드는 이 값을 채우지 않는다. 스냅샷이 들고 있는 것은 `buttonUser`
-    // 하나뿐이라, 화면이 이 필드를 믿으면 버튼이 영영 안 그려진다.
-    button: false,
+    hasChecked: false,
     totalContributed: 0,
   };
 }

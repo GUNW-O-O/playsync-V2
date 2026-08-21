@@ -99,7 +99,7 @@ describe('상금 지급', () => {
     });
     const session = await prisma.dealerSession.create({ data: { tournamentId: TOURNAMENT } });
     await prisma.table.create({
-      data: { id: TABLE, tournamentId: TOURNAMENT, dealerId: session.id },
+      data: { id: TABLE, tournamentId: TOURNAMENT, dealerId: session.id, tableOrder: 1 },
     });
 
     for (const [i, nickname] of USERS.entries()) {
@@ -550,7 +550,7 @@ describe('상금 지급', () => {
         where: { tournamentId: TOURNAMENT },
       });
       await prisma.table.create({
-        data: { id: TABLE2, tournamentId: TOURNAMENT, dealerId: session.id },
+        data: { id: TABLE2, tournamentId: TOURNAMENT, dealerId: session.id, tableOrder: 2 },
       });
       await prisma.tablePlayer.updateMany({
         where: { tournamentId: TOURNAMENT, userId },

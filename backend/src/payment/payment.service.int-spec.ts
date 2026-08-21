@@ -58,7 +58,7 @@ describe('PaymentService — 참가 OTP 발급', () => {
       },
     });
     const session = await prisma.dealerSession.create({ data: { tournamentId: TOURNAMENT } });
-    await prisma.table.create({ data: { id: TABLE, tournamentId: TOURNAMENT, dealerId: session.id } });
+    await prisma.table.create({ data: { id: TABLE, tournamentId: TOURNAMENT, dealerId: session.id, tableOrder: 1 } });
 
     for (const id of ['u1', 'u2']) {
       await prisma.user.create({ data: { id, nickname: id, password: 'x', points: 100000 } });

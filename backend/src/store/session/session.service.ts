@@ -17,7 +17,7 @@ import { parsePayouts, PrizePayout } from 'src/playsync/prize';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { buildTournamentMeta } from './tournament-meta';
-import { isClosedTournament } from './tournament-status';
+import { NOT_CLOSED_TOURNAMENT_FILTER, isClosedTournament } from './tournament-status';
 
 /**
  * 대회를 시작할 수 있는 최소 인원.
@@ -96,9 +96,7 @@ export class SessionService {
     return await this.prismaService.tournament.findUnique({
       where: {
         id: tournamentId,
-        status: {
-          in: [TournamentStatus.ONGOING, TournamentStatus.PENDING],
-        }
+        status: NOT_CLOSED_TOURNAMENT_FILTER,
       },
       select: {
         id: true,

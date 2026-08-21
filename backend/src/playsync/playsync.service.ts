@@ -12,6 +12,7 @@ import { LIVE_PLAYER_STATUSES } from 'src/store/session/player-status';
 import { RedisService } from 'src/redis/redis.service';
 import { retryAsync } from 'src/common/retry';
 import { awardPrize, prizeFor, splitBustedRanks } from './prize';
+import { SEAT_ROLE } from 'src/auth/seat-role';
 
 /** 한 턴에 주어지는 시간. 잡의 delay와 state.actionDeadline이 같은 값을 써야 한다. */
 const TURN_TIMEOUT_MS = 30000;
@@ -56,7 +57,10 @@ export class PlaysyncService {
    * 본다.
    */
   async assertTableAccess(
-    identity: { sub: string; role: Role; tableId?: string },
+    // `role`이 `Role`만이 아닌 이유는 `WsIdentity`와 같다(T71) — 좌석 토큰은
+    // enum 밖의 `SEAT_ROLE`을 싣는다. 딜러가 아닌 값은 전부 아래 좌석 대조로
+    // 내려가므로 판정은 그대로다.
+    identity: { sub: string; role: Role | typeof SEAT_ROLE; tableId?: string },
     tableId: string,
   ): Promise<void> {
     if (identity.role === Role.DEALER) {

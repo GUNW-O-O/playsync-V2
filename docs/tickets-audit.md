@@ -58,7 +58,7 @@ contract       62  (4 suites)   전부 통과
 | T61 | 시작 준비가 락 없이 스냅샷을 덮어쓴다 | 방금 앉은 사람이 게임에서 사라진다 | 치명 | T64 | **완료 (#74)** |
 | T62 | 체크포인트 재시도가 던지면 테이블이 갇힌다 | 어떤 조작으로도 다음 핸드로 못 간다 | 높음 | T59 | **완료 (#75)** |
 | T63 | 휴식 레벨이 등록을 영구히 닫는다 | 리바인이 예정보다 일찍 죽는다 | 높음 | T64 | 대기 |
-| T71 | 계약·스키마의 드리프트 | 아직 증상 없음. 다음 필드에서 터진다 | 낮음 | T64 | 대기 |
+| T71 | 계약·스키마의 드리프트 | 아직 증상 없음. 다음 필드에서 터진다 | 낮음 | T64 | **완료 (#76)** |
 | T65 | 비턴 액션이 현재 턴의 타이머를 리셋한다 | 제한시간을 무한히 늘릴 수 있다 | 높음 | T62 · T71 | 대기 |
 | T69 | 체크포인트 실패의 탈출구가 화면에 없다 | 멈춘 테이블에서 나올 길이 없다 | 중간 | T62 · T71 | 대기 |
 | T72 | 목업 결제와 실패 경로 | 부하가 거절을 한 번도 안 밟았다 | 중간 | T66 | 대기 |
@@ -1205,7 +1205,7 @@ T75와 같다. 그리고 이 증상은 **1코어 + 만 명 규모에서만** 나
 | `auth/action.ts`의 `handleLogin` · `handleRegister` | `res.ok` 확인 **전에** `await res.json()`. 리포의 다른 액션 파일은 전부 `.catch(() => null)` + `failureMessage`를 쓴다. 프록시 502나 rate-limit HTML이 오면 서버 액션이 던지고 빈 에러 바운더리가 뜬다 | 완료 (#73) |
 | `EntryController` · `PaymentController` | 둘이 같은 `@Controller('tournaments')`를 쓴다. 겹치는 패턴은 `GET /tournaments/stores/:storeId`(Payment)와 `GET /tournaments/:id/seats`(Entry)이고, 지금 맞게 도는 이유는 `app.module.ts`의 `imports`에서 `PaymentModule`이 앞이기 때문이다. **순서가 바뀌면 깨지는데 아무 테스트도 안 운다** — 같은 베이스를 쓴다는 사실이 어디에도 표시돼 있지 않았다. T66이 회귀 테스트로 못 박았다 | 완료 (#63) |
 | `CreateTournamentDto` | `startStack` · `entryFee` · `rebuyUntil`에 `@Max`가 없다. class-validator의 `@IsInt()`는 `2^31`을 넘는 안전 정수를 통과시키는데 Prisma `Int`는 postgres `integer`다. 22003이 예외 필터 없이 **500**으로 나가고, `totalBuyinAmount` 쪽은 **대회 도중에** 터진다 | T64 |
-| `WsIdentity.role` | 타입이 Prisma `Role`인데 좌석 티켓은 `SEAT_ROLE = 'PLAYER'`를 싣는다. 그 값은 enum에 없다(`req: any`라 타입 체커가 못 잡는다). 게이트웨이가 `role === Role.DEALER`만 보므로 지금은 동작하지만, 티켓 신원의 타입이 실제로 흐르는 값과 다르다 | T71 |
+| `WsIdentity.role` | 타입이 Prisma `Role`인데 좌석 티켓은 `SEAT_ROLE = 'PLAYER'`를 싣는다. 그 값은 enum에 없다(`req: any`라 타입 체커가 못 잡는다). 게이트웨이가 `role === Role.DEALER`만 보므로 지금은 동작하지만, 티켓 신원의 타입이 실제로 흐르는 값과 다르다 | 완료 (#76) |
 | `WaitingClient`의 좌석 도식 | `seatStatus.map`이 `SEAT_POSITIONS[i]`를 인덱싱한다. 비트맵이 9칸보다 길면 `.left`에서 던진다. 지금은 어디서나 9칸 | 아무 티켓 |
 | `middleware.ts`의 `config.matcher` | 마지막 세그먼트에 점이 있는 경로를 통째로 건너뛴다(`[^/]+\.[a-zA-Z0-9]+$`). 지금 그런 라우트 파라미터가 없어 악용 불가지만, slug나 닉네임이 URL에 들어오는 날 가드가 꺼진다. T66은 범위 밖으로 뒀다 — 그런 파라미터를 처음 들이는 쪽이 함께 본다 | 아무 티켓 |
 | `backend/.env.example`의 `DATABASE_URL` | 사용자가 `user`인데 `backend/docker-compose.yml`은 `POSTGRES_USER: root`다. 예제대로 `.env`를 만들면 개발 DB에 못 붙는다. 한 글자다 | 아무 티켓 |

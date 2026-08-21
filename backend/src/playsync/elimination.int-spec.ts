@@ -120,7 +120,7 @@ describe('탈락 처리 멱등성', () => {
       data: { tournamentId: TOURNAMENT },
     });
     await prisma.table.create({
-      data: { id: TABLE, tournamentId: TOURNAMENT, dealerId: session.id },
+      data: { id: TABLE, tournamentId: TOURNAMENT, dealerId: session.id, tableOrder: 1 },
     });
 
     for (const [i, nickname] of USERS.entries()) {

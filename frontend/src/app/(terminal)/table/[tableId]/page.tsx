@@ -1,6 +1,6 @@
 import { cookies } from 'next/headers';
 import SeatGameClient from './SeatGameClient';
-import { TableState } from '@/app/types/game';
+import { TableState } from '@playsync/contract';
 
 type InitialGameData = { tableState: TableState; seatIndex: number };
 

@@ -1,20 +1,19 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { PlayerActionType } from '@playsync/contract';
-import { GamePhase, type TableState } from '@/app/types/game';
+import { GamePhase, type TableState } from '@playsync/contract';
 import SeatActionPanel from './SeatActionPanel';
 
 function tablePlayer(overrides: Partial<NonNullable<TableState['players'][number]>> = {}) {
   return {
     id: 'u-1',
-    tableId: 'tbl-1',
     nickname: '박하윤',
     seatIndex: 0,
     stack: 5000,
     bet: 0,
     hasFolded: false,
     isAllIn: false,
-    button: false,
+    hasChecked: false,
     totalContributed: 0,
     ...overrides,
   };

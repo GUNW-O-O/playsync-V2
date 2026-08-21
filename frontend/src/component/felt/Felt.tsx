@@ -1,6 +1,6 @@
 'use client';
 
-import { TableState } from '@/app/types/game';
+import { TableState } from '@playsync/contract';
 import { seatOrder, type FeltOrientation } from './seatOrder';
 
 /** 페이즈가 곧 깔린 카드 장수다. 무늬는 서버에 없고 앞으로도 없다. */
@@ -166,10 +166,11 @@ export default function Felt({
                 <span className="block text-center font-mono text-sm">{seatIndex + 1}</span>
               )}
               {/*
-                버튼은 **`state.buttonUser`에서 나온다.** 스냅샷의
-                `player.button`은 백엔드가 채우지 않는 필드라(엔진은
-                `buttonUser` 하나만 옮긴다) 그걸 믿으면 버튼이 어느 자리에도
-                안 붙는다 — 촬영본에 한 번도 안 나왔던 이유다.
+                버튼은 **`state.buttonUser`에서 나온다.** 엔진이 옮기는 것이
+                그 하나뿐이다. 예전에는 손으로 복사한 프론트 타입에
+                `player.button`이 있었고, 그걸 믿으면 버튼이 어느 자리에도 안
+                붙었다 — 촬영본에 한 번도 안 나왔던 이유다. 지금은 타입이
+                `@playsync/contract`에서 오므로 그 필드가 존재하지 않는다(T71).
               */}
               {player && state?.buttonUser === seatIndex && (
                 <span

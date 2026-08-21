@@ -3,7 +3,7 @@ import { act, render, waitFor, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/mocks/server';
-import type { TableState } from '@/app/types/game';
+import type { TableState } from '@playsync/contract';
 
 // Felt는 렌더링 폭이 넓은 컴포넌트다. 이 파일이 검증하려는 건 WS 배선과
 // 탈락 판정, 그리고 실패가 화면에 닿는가뿐이라 렌더만 되면 그만이다.
@@ -80,14 +80,13 @@ const BASE_STATE: TableState = {
     null,
     {
       id: 'u-1',
-      tableId: 'tbl-1',
       nickname: '나',
       seatIndex: 3,
       stack: 5000,
       bet: 0,
       hasFolded: false,
       isAllIn: false,
-      button: false,
+      hasChecked: false,
       totalContributed: 0,
     },
     null,

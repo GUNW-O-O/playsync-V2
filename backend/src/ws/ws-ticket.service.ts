@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { Role } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import Redis from 'ioredis';
+import { SEAT_ROLE } from 'src/auth/seat-role';
 
 export const TICKET_TTL_SECONDS = 30;
 
@@ -11,9 +12,22 @@ export const TICKET_TTL_SECONDS = 30;
  * 게이트웨이가 실제로 읽는 값 그대로다. 여기에 없는 것은 게이트웨이도 모른다 —
  * 티켓 소비가 곧 인증이므로, 이 타입이 WS 경계의 신원 정의다.
  */
+/**
+ * 티켓이 들고 다니는 신원.
+ *
+ * `role`이 Prisma `Role`만이 아닌 이유(T71 9-3의 잔여 목록): 좌석 태블릿의
+ * 토큰은 `Role` enum 밖의 `SEAT_ROLE`(`'PLAYER'`)을 싣고,
+ * `ws-ticket.controller.ts`의 `issue`가 그것을 그대로 넘긴다. 예전에는 타입이
+ * `Role`이었는데 그 컨트롤러가 `req: any`라 타입 체커가 못 잡았다 — **선언과
+ * 실제로 흐르는 값이 달랐다.**
+ *
+ * enum 밖에 두는 것 자체가 권한 경계다(`auth/seat-role.ts`). 그래서 여기서도
+ * `Role`에 합치지 않고 유니온으로 둔다 — 합치는 순간 좌석 토큰이 `@Roles(...)`
+ * 목록과 맞을 수 있는 값이 된다.
+ */
 export type WsIdentity = {
   sub: string;
-  role: Role;
+  role: Role | typeof SEAT_ROLE;
   tournamentId?: string;
   tableId?: string;
 };

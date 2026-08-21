@@ -3,8 +3,8 @@ import { PlayerStatus } from '@prisma/client';
 /**
  * 참가자 상태를 묶어서 판정한다. `tournament-status.ts`와 같은 이유로 한
  * 곳에 모은다 — **상태를 나열해서 고르는 코드가 흩어지면, 상태가 하나 늘 때
- * 조용히 빠진다.** 이 리포는 `SYNCING`으로 한 번, 그리고 여기 `RELEASED`로
- * 또 한 번 그 자리에 섰다.
+ * 조용히 빠진다.** 이 리포는 대회 상태 `SYNCING`으로 한 번(T71에서 그 값을
+ * 지웠다), 그리고 여기 `RELEASED`로 또 한 번 그 자리에 섰다.
  */
 
 /**
