@@ -21,9 +21,16 @@ export type RebuyPrompt = {
  */
 export default function RebuyOverlay({
   rebuyData,
+  error,
   onRespond,
 }: {
   rebuyData: RebuyPrompt;
+  /**
+   * 응답이 서버까지 가지 못했을 때의 문구(`SeatGameClient`의 `rebuyError`).
+   * 팝업 **안에** 그린다 — 위에 모달을 얹으면 다시 눌러야 할 버튼을
+   * 가리고, 이 실패의 유일한 해결이 "다시 누른다"이다.
+   */
+  error?: string | null;
   onRespond: (accept: boolean) => void;
 }) {
   return (
@@ -43,6 +50,12 @@ export default function RebuyOverlay({
             <span className="text-tb-sub">보유 {rebuyData.userPoints.points.toLocaleString()}</span>
           )}
         </div>
+
+        {error && (
+          <p role="alert" data-testid="rebuy-error" className="mt-3 border border-err px-3 py-2 text-sm text-err">
+            {error}
+          </p>
+        )}
 
         <div className="mt-3">
           <ActionTimer key={rebuyData.deadline} deadline={rebuyData.deadline} />

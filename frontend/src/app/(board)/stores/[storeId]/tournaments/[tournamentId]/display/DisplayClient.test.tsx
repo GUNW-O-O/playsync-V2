@@ -115,4 +115,38 @@ describe('DisplayClient', () => {
     await screen.findByText('350,000');
     expect(screen.queryByTestId('ante-badge')).not.toBeInTheDocument();
   });
+
+  /**
+   * T67 잔여. `poll`에 `try`/`catch`가 없어서 네트워크가 튈 때마다 처리되지
+   * 않은 프라미스 거부가 샜다. 전광판은 하루 종일 켜 두는 화면이고 폴링이
+   * 1초 주기라, 행사장 Wi-Fi가 흔들리는 동안 그만큼 쌓인다.
+   *
+   * 화면에 안내를 띄우지는 않는다 — 다음 주기가 낫게 하는 종류다. 그래서
+   * 볼 수 있는 것이 "거부가 새어 나가지 않는가" 하나뿐이고, 그것을 본다.
+   */
+  it('폴링이 네트워크 실패로 거부돼도 처리되지 않은 거부가 새어 나가지 않는다', async () => {
+    const leaked: unknown[] = [];
+    const onUnhandled = (reason: unknown) => leaked.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.reject(new Error('offline'))),
+    );
+    vi.useFakeTimers();
+
+    render(<DisplayClient tournamentId="t1" />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_MS * 2);
+    });
+
+    // 거부가 "처리되지 않았다"는 판정은 마이크로태스크 큐가 빈 뒤에
+    // 내려간다. 진짜 타이머로 한 틱을 돌려 그 판정을 받는다.
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    process.off('unhandledRejection', onUnhandled);
+    expect(leaked).toEqual([]);
+  });
 });

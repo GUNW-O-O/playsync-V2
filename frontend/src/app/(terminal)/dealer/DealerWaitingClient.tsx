@@ -10,6 +10,12 @@ import { apiFetch } from '@/lib/api';
  * `OTP_LENGTH`)와 다르다 — 딜러 OTP와 참가 OTP는 서로 다른 발급 경로다. */
 const OTP_LENGTH = 6;
 
+/**
+ * 조회가 **던졌을 때**의 문구. `WaitingClient`·`ConsoleClient`의 같은 이름
+ * 상수와 같은 문구다 — 원인을 모르니 다시 해 보라는 것 말고 할 말이 없다.
+ */
+const NETWORK_ERROR = '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.';
+
 type Tournament = { id: string; name: string; status: string };
 type Table = { id: string; tableOrder: number };
 type AuthenticateDealerResult = { ok: true } | { error: string };
@@ -64,9 +70,19 @@ export default function DealerWaitingClient({
 
     const requestId = ++tournamentRequestRef.current;
 
-    const session = await apiFetch(`/api/dealer/${id}`, { cache: 'no-store' }).then((r) =>
-      r.ok ? r.json() : null,
-    );
+    // 실패 응답은 위에서 `null`로 접지만 프록시가 끊기면 `fetch` 자체가
+    // 거부돼 이 함수가 던진다. 잡지 않으면 처리되지 않은 프라미스 거부만
+    // 남고, 화면은 **앞 대회의 테이블 목록을 그대로 든다** — 딜러가 없는
+    // 테이블에 인증을 시도하게 된다(`WaitingClient.selectTournament`와 같다).
+    let session: { tables?: Table[] } | null;
+    try {
+      session = await apiFetch(`/api/dealer/${id}`, { cache: 'no-store' }).then((r) =>
+        r.ok ? r.json() : null,
+      );
+    } catch {
+      if (tournamentRequestRef.current === requestId) setError(NETWORK_ERROR);
+      return;
+    }
 
     // 그 사이 다른 대회를 또 골랐다면 이 응답은 낡았다 — 버린다.
     if (tournamentRequestRef.current !== requestId) return;
@@ -90,6 +106,11 @@ export default function DealerWaitingClient({
   }
 
   async function submit() {
+    // 길이까지 본다. `otp.length === 0`만 보던 때는 한 자리만 눌러도
+    // 백엔드까지 왕복해 실패로 돌아왔고, 딜러 인증에는 시도 횟수 제한이
+    // 걸려 있다(`dealer/otp-attempts.ts`의 `MAX_ATTEMPTS`) — 헛왕복이 그
+    // 한도를 먹는다.
+    if (otp.length !== OTP_LENGTH) return;
     if (!tableId || !tournamentId || submitting) return;
     setSubmitting(true);
     setError(null);
@@ -195,7 +216,7 @@ export default function DealerWaitingClient({
           <button
             type="button"
             onClick={submit}
-            disabled={!tableId || otp.length === 0 || submitting}
+            disabled={!tableId || otp.length !== OTP_LENGTH || submitting}
             className="rounded border border-tb-act bg-tb-act py-2.5 text-sm font-bold text-[#06201a] disabled:opacity-40"
           >
             {selectedTable ? `${selectedTable.tableOrder}번 테이블 인증` : '인증'}

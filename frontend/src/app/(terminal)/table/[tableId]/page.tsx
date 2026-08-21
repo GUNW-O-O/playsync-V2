@@ -1,7 +1,23 @@
 import { cookies } from 'next/headers';
 import SeatGameClient from './SeatGameClient';
+import { TableState } from '@/app/types/game';
 
-async function getInitialGameData(tableId: string) {
+type InitialGameData = { tableState: TableState; seatIndex: number };
+
+/**
+ * 첫 화면에 그릴 스냅샷. **실패는 `null`이다.**
+ *
+ * 예전에는 `res.ok`를 안 보고 `res.json()`을 그대로 돌려줬다. NestJS 예외
+ * 본문(`{ statusCode, message }`)은 truthy라 아래 `initialData ? … : …`가
+ * 401(좌석 토큰 만료)·500(스냅샷 유실)에도 성공 분기를 탔고,
+ * `initialData.tableState`가 `undefined`인 채 빈 펠트가 그려져 **영원히 안
+ * 움직였다.** 폴백 문구는 본문이 리터럴 `null`이어야만 나오는 죽은 코드였다.
+ *
+ * `tableState`까지 보는 것은 프록시가 만들어 내는 빈 200을 위한 그물이다 —
+ * `PlaysyncService.joinTable`은 스냅샷이 없으면 던지므로 정상 경로에 그런
+ * 본문이 없지만, 없으면 그 결과가 401·500과 똑같이 빈 펠트다.
+ */
+async function getInitialGameData(tableId: string): Promise<InitialGameData | null> {
   const cookieStore = await cookies();
   const token = cookieStore.get('dealerToken')?.value || cookieStore.get('accessToken')?.value;
 
@@ -12,7 +28,18 @@ async function getInitialGameData(tableId: string) {
     headers: { 'Authorization': `Bearer ${token}` },
     cache: 'no-store'
   });
-  return res.json();
+
+  if (!res.ok) {
+    console.error(`테이블 상태를 불러오지 못했습니다. (${res.status})`);
+    return null;
+  }
+
+  const body = (await res.json().catch(() => null)) as InitialGameData | null;
+  if (!body?.tableState) {
+    console.error('테이블 상태 응답에 tableState가 없습니다.');
+    return null;
+  }
+  return body;
 }
 
 /**
@@ -73,7 +100,12 @@ export default async function GamePage({ params }: { params: Promise<{ tableId: 
           tableOrder={tableOrder}
         />
       ) : (
-        <p>아직 게임이 시작되지 않았습니다.</p>
+        // 이 자리에 오는 것은 이제 실패뿐이다(위 `getInitialGameData`).
+        // "아직 게임이 시작되지 않았습니다"는 거짓이 된다 — 앉은 사람이
+        // 기다리면 낫는 줄 알고 계속 앉아 있는다.
+        <p className="p-8 text-tb-ink">
+          테이블 정보를 불러오지 못했습니다. 화면을 새로고침하거나 운영자에게 알려주세요.
+        </p>
       )}
     </main>
   );
