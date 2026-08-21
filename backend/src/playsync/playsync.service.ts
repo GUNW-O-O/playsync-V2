@@ -1,7 +1,7 @@
 import { InjectQueue } from '@nestjs/bullmq';
 import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { PlayerStatus, Role, TransactionType } from '@prisma/client';
+import { PlayerStatus, Prisma, Role, TransactionType } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { PlayerActionDto } from 'shared/dto/playsync.dto';
 import { Dashboard } from 'shared/types/tournamentMeta';
@@ -11,7 +11,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { LIVE_PLAYER_STATUSES } from 'src/store/session/player-status';
 import { RedisService } from 'src/redis/redis.service';
 import { retryAsync } from 'src/common/retry';
-import { awardPrize, prizeFor } from './prize';
+import { awardPrize, prizeFor, splitBustedRanks } from './prize';
 
 /** 한 턴에 주어지는 시간. 잡의 delay와 state.actionDeadline이 같은 값을 써야 한다. */
 const TURN_TIMEOUT_MS = 30000;
@@ -341,40 +341,47 @@ export class PlaysyncService {
   }
 
 
-  // 탈락
+  /**
+   * 탈락을 확정하고 등수와 상금을 매긴다.
+   *
+   * **여러 명이 한 배열로 온다.** `DealerService.resolveWinners` 3단계가
+   * `stack <= 0`인 사람을 모아 넘기고, 사이드팟이 갈리는 표준 핸드(숏스택 둘이
+   * 올인)면 흔한 배치다. 그래서 등수는 스칼라가 아니라 **구간**이다(T59).
+   */
   public async eliminatePlayer(tournamentId: string, tableId: string, players: TablePlayer[], tournamentInfo: Dashboard) {
     if (players.length === 0) return;
     const playerIds = players.map(p => p.id);
     const result = await this.prisma.$transaction(async (tx) => {
-      // 풀과 분배율은 DB에서 읽는다. Redis 대시보드에도 totalBuyinAmount가
-      // 있지만 그건 화면용 파생값이고, **돈의 진실은 DB다.** 리바인으로
-      // 풀이 커지는 것도 여기에 반영돼 있다.
+      // 1. **이번 배치가 실제로 탈락시키는 인원을 먼저 확정한다.**
       //
-      // 인원수도 같은 규칙을 따른다(T60). 예전에는 등수가
-      // `tournamentInfo.activePlayer` — 즉 Redis 대시보드 — 에서 왔는데,
-      // **등수가 상금을 정하므로**(`prizeFor`) 화면용 파생값에서 오는 것
-      // 자체가 위험했다. 시드의 이중 계상이 "첫 탈락이 14위라 상금이 한 푼도
-      // 안 나간다"로 나타난 경로가 이것이다.
-      const { activePlayers, totalBuyinAmount, prizePayouts } = await tx.tournament.findUniqueOrThrow({
-        where: { id: tournamentId },
-        select: { activePlayers: true, totalBuyinAmount: true, prizePayouts: true },
-      });
-      const eliminatedRank = activePlayers;
-      const prize = prizeFor(totalBuyinAmount, prizePayouts, eliminatedRank);
+      //    지급은 멱등이라(`awardPrize`가 이미 처리된 행을 건너뛴다) 예전에는
+      //    지급이 끝나야 그 수를 알 수 있었다. 이제는 그 수가 등수를 정하므로
+      //    지급보다 앞에 와야 한다 — 순서가 뒤집혔다.
+      //
+      //    세는 것으로 끝내지 않고 `FOR UPDATE`로 잠그는 이유: 같은 탈락이
+      //    **동시에** 두 번 도착하면 둘 다 "한 명"을 세고 둘 다 카운터를 깎는다.
+      //    예전에는 `updateMany` 하나가 잠금과 판정을 함께 해서 그 창이 없었다.
+      //    잠금을 앞으로 옮긴 것이지 새로 만든 것이 아니다.
+      const pending = await tx.$queryRaw<{ userId: string }[]>`
+        SELECT "userId" FROM "TournamentParticipation"
+        WHERE "tournamentId" = ${tournamentId}
+          AND "userId" IN (${Prisma.join(playerIds)})
+          AND "status" NOT IN ('ELIMINATED', 'AWARDED')
+        FOR UPDATE
+      `;
+      const pendingIds = new Set(pending.map(row => row.userId));
 
-      // 상태 전환·포인트·거래 내역이 한 곳에서 함께 일어난다. 기록만 되고
-      // 돈이 안 나가는 창을 만들지 않기 위해서다.
-      //
-      // 같은 탈락이 두 번 도착하는 것은 예외가 아니라 정상 경로다 — 재시도를
-      // 붙이는 순간 중복은 보장된다(at-least-once). 카운터를 `playerIds.length`가
-      // 아니라 **실제로 바뀐 행 수**로 줄이는 것이 멱등성의 전부다.
-      const changedCount = await awardPrize(
-        tx,
-        tournamentId,
-        playerIds.map(userId => ({ userId, place: eliminatedRank, amount: prize })),
-        `${eliminatedRank}위 상금`,
-      );
-      const changed = { count: changedCount };
+      // 핸드 시작 스택이 곧 `stack + totalContributed`다. 3단계 시점의 스냅샷은
+      // 아직 HAND_END라 `resetStatus`가 플래그 셋만 되돌렸고,
+      // `refundUncalledBets`는 둘을 함께 움직여 합을 보존한다. 그래서
+      // `resolveWinners`가 이 값을 따로 들고 나올 필요가 없다.
+      const busted = players
+        .filter(player => pendingIds.has(player.id))
+        .map(player => ({
+          userId: player.id,
+          seatIndex: player.seatIndex,
+          handStartStack: player.stack + player.totalContributed,
+        }));
 
       // 삭제는 원래 멱등이라 조건을 더할 필요가 없다.
       await tx.tablePlayer.deleteMany({
@@ -383,16 +390,53 @@ export class PlaysyncService {
           userId: { in: playerIds }
         }
       });
-      let remaining = activePlayers;
-      if (changed.count > 0) {
-        const updated = await tx.tournament.update({
+
+      // 중복 도착이다. 카운터는 건드리지 않고 현재 값만 들고 나간다.
+      if (busted.length === 0) {
+        const { activePlayers } = await tx.tournament.findUniqueOrThrow({
           where: { id: tournamentId },
-          data: { activePlayers: { decrement: changed.count } },
           select: { activePlayers: true },
         });
-        remaining = updated.activePlayers;
+        return { eliCount: 0, remaining: activePlayers };
       }
-      return { eliCount: changed.count, remaining }
+
+      // 2. **등수 구간을 원자적으로 받는다.** 먼저 깎고 그 반환값으로
+      //    `after+1 … after+n`을 잡는다.
+      //
+      //    교차 테이블은 스택 비교로 안 풀린다 — 다른 테이블의 파산자는 이
+      //    배열에 없다. 예전에는 읽기에 행 잠금이 없어서 두 테이블이 동시에
+      //    정산하면 둘 다 감소 전 값을 읽고 같은 등수를 매겼다. `UPDATE`가
+      //    행 잠금을 잡으므로 두 번째 트랜잭션은 첫 번째의 커밋을 기다렸다가
+      //    겹치지 않는 구간을 받는다.
+      //
+      //    풀과 분배율을 같은 문장에서 읽는다. Redis 대시보드에도
+      //    `totalBuyinAmount`가 있지만 그건 화면용 파생값이고 **돈의 진실은
+      //    DB다.** 인원수도 같은 규칙을 따른다(T60) — 등수가 상금을 정하므로
+      //    (`prizeFor`) 화면용 파생값에서 오는 것 자체가 위험했다.
+      const { activePlayers, totalBuyinAmount, prizePayouts } = await tx.tournament.update({
+        where: { id: tournamentId },
+        data: { activePlayers: { decrement: busted.length } },
+        select: { activePlayers: true, totalBuyinAmount: true, prizePayouts: true },
+      });
+
+      // 3. 핸드 시작 스택으로 등수를 가르고 공동 등수의 몫을 나눈다.
+      const awards = splitBustedRanks(
+        busted,
+        activePlayers + busted.length,
+        totalBuyinAmount,
+        prizePayouts,
+      );
+
+      // 상태 전환·포인트·거래 내역이 한 곳에서 함께 일어난다. 기록만 되고
+      // 돈이 안 나가는 창을 만들지 않기 위해서다.
+      //
+      // 등수마다 따로 부르는 것은 내역의 설명이 그 사람의 등수여야 하기
+      // 때문이다. `awardPrize`는 원래 배열을 순회하므로 쿼리 수는 같다.
+      for (const award of awards) {
+        await awardPrize(tx, tournamentId, [award], `${award.place}위 상금`);
+      }
+
+      return { eliCount: busted.length, remaining: activePlayers }
     });
 
     // 카운터는 **조기 반환보다 앞에서** 맞춘다(T60). 중복 도착은 정상 경로이고,
