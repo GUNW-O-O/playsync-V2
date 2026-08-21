@@ -83,6 +83,15 @@ services:
       REDIS_HOST: redis-test
       REDIS_PORT: 6379
       REDIS_PASSWORD: test
+      # **V8 힙 상한을 명시한다.** 노드는 cgroup 한도(512MB)를 보고 힙을
+      # 259MB로 자동 설정하는데, 소켓 12,000개 부근에서 그 상한을 먼저 넘겨
+      # `Ineffective mark-compacts near heap limit`으로 프로세스가 abort한다
+      # (실측: 1,310테이블 · rss 398MB · OOMKilled=false). 컨테이너에는 그때
+      # 114MB가 남아 있었다 — **죽인 것은 인스턴스 크기가 아니라 기본 힙**이다.
+      #
+      # rss = 힙 + 소켓/버퍼(외부)라 상한을 컨테이너 한도까지 올리면 이번에는
+      # 커널이 죽인다. 실측 외부 사용량이 약 140MB라 340으로 둔다.
+      NODE_OPTIONS: --max-old-space-size=340
       PORT: 3001
       # 부하용 고정값. 진짜 비밀이 아니고, 이미지에 굽지 않고 여기서 넣는다.
       JWT_SECRET: load-test-secret
