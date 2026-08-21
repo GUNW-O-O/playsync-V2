@@ -168,3 +168,87 @@ export function prizeFor(pool: number, payouts: unknown, place: number): number 
   if (!Array.isArray(payouts) || payouts.length === 0) return 0;
   return calculatePrizes(pool, payouts as PrizePayout[]).get(place) ?? 0;
 }
+
+/** `splitBustedRanks`가 받는 파산자 한 명. */
+export interface BustedPlayer {
+  userId: string;
+  /** 좌석 번호. 공동 등수의 나머지 한 단위가 이 값으로 갈린다. */
+  seatIndex: number;
+  /** 핸드 시작 스택. `TablePlayer`의 `stack + totalContributed`다. */
+  handStartStack: number;
+}
+
+/**
+ * 한 핸드에 함께 파산한 사람들에게 등수와 상금을 나눈다 (T59).
+ *
+ * 예전에는 등수와 금액을 **루프 밖에서 한 번** 계산해 전원에게 같은 값을
+ * 매겼다. 사이드팟이 갈리는 표준 핸드(숏스택 둘이 올인)면 흔한 배치인데,
+ * 그러면 3위 상금이 두 번 나가고 2위는 아무도 못 받는다 — `걷은 참가비 ==
+ * 나간 상금`이 영영 맞지 않아 대회를 닫을 수 없다.
+ *
+ * **가르는 기준은 핸드 시작 스택이다.** 실제 홀덤이 같은 핸드에 파산한 둘을
+ * 가르는 기준이고, 많이 들고 시작한 쪽이 높은 등수다. 그 값이 이미
+ * `TablePlayer`에 있어서(`stack + totalContributed`) 딜러 경로에 새 배선을
+ * 놓을 필요가 없다.
+ *
+ * **같은 스택이면 공동 등수**이고 그 그룹이 차지한 등수들의 상금을 합쳐
+ * 나눈다. 포커 표준이다. 나머지 한 단위는 **좌석 인덱스가 작은 쪽**이
+ * 흡수한다 — 각자 내림하면 그 원이 어디에도 속하지 않고 사라지고, 그건
+ * `calculatePrizes`가 1위에 나머지를 몰아 준 것과 같은 이유로 막아야 한다
+ * (사이드팟 증발, T15). 합계가 풀과 어긋나는 순간
+ * `SessionService.completeSession`이 영영 안 열린다.
+ *
+ * 등수를 하나의 스칼라가 아니라 **구간**으로 다루는 것이 요점이다. 그러면
+ * 배열 안에서 나눠 갖는 문제와, 두 테이블이 배열 사이에서 겹치는 문제가 한
+ * 식으로 표현된다 — 호출자는 `activePlayers`를 먼저 깎아 그 구간을 원자적으로
+ * 받아 오기만 하면 된다.
+ *
+ * @param busted 파산자. 순서는 상관없다 — 스택이 정한다
+ * @param lastPlace 이번 배치가 가져가는 **가장 낮은** 등수(`after + n`)
+ */
+export function splitBustedRanks(
+  busted: BustedPlayer[],
+  lastPlace: number,
+  pool: number,
+  payouts: unknown,
+): { userId: string; place: number; amount: number }[] {
+  // 가장 높은 등수는 구간의 앞이다. 스택이 큰 사람이 이 자리를 받는다.
+  const firstPlace = lastPlace - busted.length + 1;
+
+  // 스택 내림차순. 같은 스택끼리는 좌석 순으로 붙여 두면 아래에서 그대로
+  // 한 그룹이 되고, 나머지를 나눌 때 다시 정렬할 필요가 없다.
+  const ordered = [...busted].sort(
+    (a, b) => b.handStartStack - a.handStartStack || a.seatIndex - b.seatIndex,
+  );
+
+  const awards: { userId: string; place: number; amount: number }[] = [];
+
+  for (let start = 0; start < ordered.length;) {
+    let end = start + 1;
+    while (
+      end < ordered.length
+      && ordered[end].handStartStack === ordered[start].handStartStack
+    ) end++;
+
+    const group = ordered.slice(start, end);
+    // 공동 등수는 그 그룹이 차지한 등수 중 **위쪽**이다.
+    const place = firstPlace + start;
+
+    let total = 0;
+    for (let p = place; p < place + group.length; p++) {
+      total += prizeFor(pool, payouts, p);
+    }
+
+    const each = Math.floor(total / group.length);
+    let rest = total - each * group.length;
+    for (const member of group) {
+      const extra = rest > 0 ? 1 : 0;
+      rest -= extra;
+      awards.push({ userId: member.userId, place, amount: each + extra });
+    }
+
+    start = end;
+  }
+
+  return awards;
+}

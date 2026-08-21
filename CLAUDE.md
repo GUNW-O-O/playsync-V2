@@ -99,18 +99,18 @@ npm run assets         # 촬영본을 자르고 합쳐 img/ 로 (ffmpeg-static)
 타입 에러 0건, 테스트 전부 통과가 정상이다. CI(`.github/workflows/ci.yml`)가
 타입 체크 · 테스트 · 빌드를 돌린다.
 
-현재 기준선 (T60 · T70 완료 시점):
+현재 기준선 (T59 · T68 완료 시점):
 
 ```
 contract       62  (4 suites)
-백엔드 단위   250  (26 suites)
-프론트 단위   129  (27 files)
-통합          467  (33 suites)
+백엔드 단위   256  (26 suites)
+프론트 단위   133  (27 files)
+통합          472  (33 suites)
 e2e            13  (4 files, regression 프로젝트)
 타입 에러       0
 ```
 
-e2e를 뺀 넷은 T60 · T70 머지 직후 `main`에서 실제로 돌린 값이다. e2e는
+e2e를 뺀 넷은 T59가 머지되면 `main`이 될 브랜치에서 실제로 돌린 값이다. e2e는
 **검증되지 않았다** — 데모 장면 3~5가 T73에 막혀 있다.
 
 `tsc`가 이미 지운 파일의 에러를 계속 보고하면 `.tsbuildinfo`가 낡은 것이다.

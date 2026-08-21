@@ -52,8 +52,8 @@ contract       62  (4 suites)   전부 통과
 | T60 | 인원수가 DB와 Redis에서 갈라진다 | 최후 1인 판정과 등수가 통째로 틀어진다 | 치명 | T64 | **완료 (#66)** |
 | T66 | 가드 없는 읽기 경로 | 남의 대회·상점이 그대로 나간다 | 높음 | T64 | **완료 (#63)** |
 | T70 | 콘솔 좌석 선택이 새로 그린 판을 따라간다 | 엉뚱한 사람이 좌석에서 빠진다 | 중간 | T64 | **완료 (#65)** |
-| T68 | 레이즈 입력이 낼 수 있는 금액과 어긋난다 | 합법적인 레이즈 불가 / 조용한 올인 | 중간 | T58 | 대기 |
-| T59 | 동시 파산의 등수와 상금 | 상금이 두 번 나가고 대회가 안 닫힌다 | 치명 | T60 | 대기 |
+| T68 | 레이즈 입력이 낼 수 있는 금액과 어긋난다 | 합법적인 레이즈 불가 / 조용한 올인 | 중간 | T58 | **완료 (#70)** |
+| T59 | 동시 파산의 등수와 상금 | 상금이 두 번 나가고 대회가 안 닫힌다 | 치명 | T60 | **완료 (#71)** |
 | T67 | 좌석 태블릿이 실패를 삼킨다 | 참가자가 모르는 채로 탈락한다 | 높음 | T70 | 대기 |
 | T61 | 시작 준비가 락 없이 스냅샷을 덮어쓴다 | 방금 앉은 사람이 게임에서 사라진다 | 치명 | T64 | 대기 |
 | T62 | 체크포인트 재시도가 던지면 테이블이 갇힌다 | 어떤 조작으로도 다음 핸드로 못 간다 | 높음 | T59 | 대기 |
@@ -78,7 +78,7 @@ contract       62  (4 suites)   전부 통과
 |---|---|
 | T58 · T60 · T66 · T70 → T64 | T64가 `session.controller`·`session.service`·`shared/dto`·`util`·`redis`·`schema.prisma`를 건드려 뒤의 거의 전부와 닿는다. 그리고 T58의 앤티 정수 보장은 `BlindLevelDto`가 **한 번도 실행되지 않았다**는 사실(6-1) 위에 있었다 |
 | T68 → T58 | 같은 `table-engine.ts`. T58은 `payAnte`·`executeBet`, T68은 `handleRaise` |
-| T59 → T60 | 카운터가 맞아야 등수가 뜻을 갖는다. `eliminatedRank`가 `tournamentInfo.activePlayer`다 |
+| T59 → T60 | 카운터가 맞아야 등수가 뜻을 갖는다. T60 이전에는 `eliminatedRank`가 `tournamentInfo.activePlayer`(Redis 캐시)였다 |
 | T61 → T64 | 같은 `session.service.ts` |
 | T62 → T59 | 같은 `playsync.service.ts` |
 | T63 · T71 → T64 | T63은 구조 검증안을 고른 경우, T71은 같은 마이그레이션 |
@@ -534,6 +534,19 @@ const selectedSeats = [...selected]
 
 **등급**: 중간 · **범위**: `(terminal)/table/[tableId]/SeatActionPanel.tsx`, `game-engine/table-engine.ts` · **프론트 영향**: 있음
 
+> **완료.** 프론트 하나로 닫혔다 — `maxTotal`(`stack + bet`)과 `minRaiseTotal`을
+> 한 번 계산해 슬라이더·초기화·올인 버튼·`canRaise`가 함께 쓴다. 초기화 판정은
+> "차례가 바뀌었나"에서 **"지금 내 차례인가"**로, UI 게이트는 `goingToAllIn`
+> ("콜하면 다 들어가나")에 `canRaiseAtAll`(`maxTotal >= minRaiseTotal`)을 더해
+> **레이즈할 여력이 없으면 슬라이더와 레이즈 버튼만 감춘다**(콜·올인은 남는다).
+> `min > max`가 구조적으로 사라져 슬라이더 `max`의 `Math.max`도 걷어냈다.
+>
+> **엔진은 안 고쳤다.** 「할 일」이 "셋째는 화면만으로 못 닫는다"고 적었지만,
+> 올인 버튼이 `stack + bet`을 보내므로 `handleRaise`의 `Math.min(needed, stack)`이
+> 정상 경로에서 아무것도 깎지 않는다. 클램프가 밟히는 것은 프론트가 낼 수 없는
+> 금액을 보낼 때뿐이고 그 경로를 닫았다. **다만 경계에서 닫힌 것은 아니다** —
+> 잔여 목록의 「`handleRaise`의 상한」.
+
 엔진의 `handleRaise`는 `amount`를 **총 베팅액**으로 읽고 `betAmount - player.bet`을
 뺀다. 그래서 낼 수 있는 최대 총액은 `stack`이 아니라 `stack + bet`이다. 슬라이더의
 `max`와 올인 버튼은 그렇게 쓰는데 **차례가 돌아올 때의 초기화만 `stack`을 쓴다.**
@@ -573,6 +586,19 @@ setRaiseVal(Math.min(state.currentBet + bigBlind, myPlayer?.stack ?? 0));
 ## T59 — 동시 파산의 등수와 상금
 
 **등급**: 치명 (돈이 두 번 나간다) · **범위**: `playsync/playsync.service.ts` · **프론트 영향**: 없음
+
+> **완료.** 등수를 스칼라가 아니라 **구간**으로 다룬다. `activePlayers`를 먼저
+> 깎아 그 반환값으로 `after+1 … after+n`을 잡으면, 배열 안에서 나눠 갖는 문제와
+> 두 테이블이 배열 사이에서 겹치는 문제가 한 식으로 닫힌다. 배치 안의 순서는
+> **핸드 시작 스택**(`stack + totalContributed`)이 정하고, 같으면 공동 등수로
+> 두 등수의 상금을 합쳐 나눈다(나머지 한 단위는 좌석 인덱스가 작은 쪽).
+> 등수·상금 분배는 순수 계산이라 `prize.ts`의 `splitBustedRanks`로 뺐다.
+>
+> **`resolveWinners`는 한 줄도 안 바뀌었다** — 아래 「결정」이 적었듯 값이 이미
+> `TablePlayer`에 있다. 대신 멱등 판정이 지급보다 앞으로 오면서 잠금도 함께
+> 앞으로 옮겼다(`SELECT … FOR UPDATE`). 예전에는 `awardPrize`의 `updateMany`
+> 하나가 잠금과 판정을 함께 해서 그 창이 없었다.
+> 설계는 `docs/superpowers/specs/2026-08-21-t59-simultaneous-bust-design.md`.
 
 ### 문제
 
@@ -1043,7 +1069,9 @@ T64에서 범위 밖으로 재정했다 — 입력 검증 티켓이 응답 규�
 
 | 자리 | 무엇 | 묻어갈 곳 |
 |---|---|---|
-| `ActionTimer` | 서버가 만든 `actionDeadline`을 태블릿 시계와 직접 비교한다. `DisplayClient`는 같은 이유로 `blindField.serverTime`으로 오프셋을 보정하는데 여기엔 없다 — 시계가 뒤처진 태블릿은 게이지가 남은 채 자동 폴드된다. 초기 렌더 100ms 동안 "0초 남음"이 뜨는 것도 같은 함수 | T68 |
+| `TableEngine.handleRaise` | 최소 레이즈에 못 미치는 올인이 `currentBet`을 올리고 `resetChecked()`를 돌린다. 실제 포커에서 **미달 올인은 베팅을 다시 열지 않는다** — 이미 콜한 사람의 체크가 풀려 한 바퀴를 더 돈다. `betAmount <= previousBet`만 보고 최소 레이즈 폭은 안 본다 | 아무 티켓 |
+| `TableEngine.handleRaise`의 상한 | `Math.min(needed, player.stack)`이 **선언한 금액과 실제 낸 금액이 다른 것**을 조용히 통과시킨다. T68이 화면을 고쳐 정상 경로는 안 밟지만 **경계에서 닫힌 것은 아니다** — 화면이 아닌 클라이언트가 `amount`를 직접 보내면 깎인 올인이 된다(`threat-model.md`상 참가자 단말은 신뢰 경계 밖). 칩 총량은 안 깨진다 | 아무 티켓 |
+| `ActionTimer` | 서버가 만든 `actionDeadline`을 태블릿 시계와 직접 비교한다. `DisplayClient`는 같은 이유로 `blindField.serverTime`으로 오프셋을 보정하는데 여기엔 없다 — 시계가 뒤처진 태블릿은 게이지가 남은 채 자동 폴드된다. 초기 렌더 100ms 동안 "0초 남음"이 뜨는 것도 같은 함수 | 아무 티켓 |
 | `WaitingClient.submit` · `DealerWaitingClient.submit` | 제출 버튼이 `otp.length === 0`만 본다. `OTP_LENGTH`(8 / 6)와 대조하지 않아 짧은 코드가 백엔드까지 왕복한다 | T67 |
 | `WaitingClient.poll` · `DisplayClient.poll` · `selectTournament` | `try`/`catch`가 없다. 네트워크 블립마다 처리되지 않은 프라미스 거부가 난다. 폴링 쪽은 다음 주기에 낫지만 `selectTournament`는 테이블 목록이 낡은 채 아무 안내도 안 뜬다. 같은 모양이던 `ConsoleClient.run`은 T70이 가져갔다 | T67 |
 | `auth/action.ts`의 `handleLogin` · `handleRegister` | `res.ok` 확인 **전에** `await res.json()`. 리포의 다른 액션 파일은 전부 `.catch(() => null)` + `failureMessage`를 쓴다. 프록시 502나 rate-limit HTML이 오면 서버 액션이 던지고 빈 에러 바운더리가 뜬다 | T67 |
