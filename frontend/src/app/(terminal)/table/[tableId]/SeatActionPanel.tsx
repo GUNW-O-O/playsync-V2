@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { PlayerAction, PlayerActionType } from '@playsync/contract';
-import { TableState } from '@/app/types/game';
+import { TableState } from '@playsync/contract';
 import ActionTimer from '@/component/ActionTimer';
 
 /** 페이즈별 문구. `PokerTable`(구)의 배열과 같은 순서, 한글만 다르다. */

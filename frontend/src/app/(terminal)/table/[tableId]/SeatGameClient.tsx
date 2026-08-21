@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { PlayerAction } from '@playsync/contract';
 import Felt from '@/component/felt/Felt';
 import { apiFetch } from '@/lib/api';
-import { TableState } from '@/app/types/game';
+import { TableState } from '@playsync/contract';
 import SeatActionPanel from './SeatActionPanel';
 import RebuyOverlay, { type RebuyPrompt } from './RebuyOverlay';
 import EliminatedOverlay from './EliminatedOverlay';

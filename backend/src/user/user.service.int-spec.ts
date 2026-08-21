@@ -105,17 +105,13 @@ describe('UserService', () => {
       expect(row.playerOtp).toBeNull();
     });
 
-    // 규칙은 "FINISHED만 뺀다"이지 "PENDING·ONGOING만 보여준다"가 아니다.
-    // SYNCING(테이블 이동/밸런싱 대기)은 참가자가 새 테이블에 재입장하려면
-    // 바로 이 OTP가 필요한 순간이라, 다른 진행 중 상태와 마찬가지로 담겨야 한다.
-    it('테이블 이동 중(SYNCING)에도 OTP를 담는다', async () => {
-      await prisma.tournament.update({
-        where: { id: TOURNAMENT },
-        data: { status: 'SYNCING' },
-      });
-      const [row] = await service.getMyParticipations('u1');
-      expect(row.playerOtp).toMatch(/^\d{8}$/);
-    });
+    // 규칙은 "닫힌 것만 뺀다"이지 "PENDING·ONGOING만 보여준다"가 아니다.
+    //
+    // 예전에는 이 자리에 `SYNCING`으로 그 성질을 지키는 검사가 있었다. T71이
+    // 그 상태값을 지우면서(대입하는 코드가 한 줄도 없었다) 검사도 함께
+    // 사라졌지만, **성질은 구조가 지킨다** — 판정이 `isClosedTournament`
+    // 하나이고, 살아 있는 상태를 나열하는 자리는 이제 없다. 나열이 남아
+    // 있던 조회 둘은 `tournament-status.spec.ts`가 여집합인지 확인한다.
 
     // omit 회귀. 이 검사가 없으면 새 조회 경로가 하나 늘 때마다
     // 참가자 전원의 평문 OTP가 조용히 새는 길이 생긴다.

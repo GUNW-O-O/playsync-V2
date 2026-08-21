@@ -2158,7 +2158,7 @@ describe('SessionService.cancelSession', () => {
  *
  * `user.service.ts`의 `getMyParticipations` 주석이 이 함정을 이미 적어 뒀다 —
  * "상태를 나열해서 살아있는 것만 고르면, 나중에 상태가 하나 늘 때 조용히
- * 빠진다". `SYNCING`이 실제로 그랬다.
+ * 빠진다". 대회 상태 `SYNCING`이 실제로 그랬다(T71에서 지운 값이다).
  *
  * T49가 `CANCELLED`를 더하면서 같은 일이 여덟 곳에 한꺼번에 생겼다. 그래서
  * 판정을 `isClosedTournament` 하나로 모았고, 이 스위트는 **취소된 대회가

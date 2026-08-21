@@ -3,7 +3,7 @@ import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/mocks/server';
-import { GamePhase, type TableState } from '@/app/types/game';
+import { GamePhase, type TableState } from '@playsync/contract';
 
 const DealerGameClient = (await import('./DealerGameClient')).default;
 
@@ -47,14 +47,13 @@ class FakeSocket {
 function tablePlayer(overrides: Partial<NonNullable<TableState['players'][number]>> = {}) {
   return {
     id: 'u-3',
-    tableId: 'tbl-1',
     nickname: 'player-3',
     seatIndex: 3,
     stack: 5000,
     bet: 0,
     hasFolded: false,
     isAllIn: false,
-    button: false,
+    hasChecked: false,
     totalContributed: 0,
     ...overrides,
   };

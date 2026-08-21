@@ -1,5 +1,5 @@
 import { ConflictException, Injectable, Logger } from '@nestjs/common';
-import { PlayerStatus, TournamentStatus } from '@prisma/client';
+import { PlayerStatus } from '@prisma/client';
 import { PayMentDto } from 'shared/dto/payment.dto';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { isRegistrationOpenNow } from 'src/store/session/registration';
@@ -7,7 +7,7 @@ import { RedisService } from 'src/redis/redis.service';
 import { SessionService } from 'src/store/session/session.service';
 import { UserService } from 'src/user/user.service';
 import * as playerOtp from './player-otp';
-import { isClosedTournament } from 'src/store/session/tournament-status';
+import { NOT_CLOSED_TOURNAMENT_FILTER, isClosedTournament } from 'src/store/session/tournament-status';
 
 /**
  * 등록 마감 판정이 **읽는 것만** 받는다.
@@ -57,9 +57,7 @@ export class PaymentService {
     return await this.prismaService.tournament.findMany({
       where: {
         storeId: storeId,
-        status: {
-          in: [TournamentStatus.ONGOING, TournamentStatus.PENDING],
-        }
+        status: NOT_CLOSED_TOURNAMENT_FILTER,
       },
       // 참가자용 조회다. 해시라도 응답에 실으면 안 된다.
       orderBy: {

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { DealerAction } from '@playsync/contract';
 import Felt from '@/component/felt/Felt';
 import { apiFetch } from '@/lib/api';
-import { GamePhase, TableState } from '@/app/types/game';
+import { GamePhase, TableState } from '@playsync/contract';
 import WinnerOverlay, { type WinnerCandidate } from './WinnerOverlay';
 
 // 서버·소켓이 문구를 안 줄 때의 최후 안내. WS 배선(티켓 요청·정리·배너)은

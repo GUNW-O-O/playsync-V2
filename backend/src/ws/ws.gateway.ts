@@ -2,7 +2,14 @@ import { Logger } from '@nestjs/common';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { ConnectedSocket, MessageBody, OnGatewayConnection, OnGatewayDisconnect, SubscribeMessage, WebSocketGateway } from '@nestjs/websockets';
 import { Role } from '@prisma/client';
-import { DealerAction, DealerActionSchema, PlayerActionSchema, RebuyResponseSchema } from '@playsync/contract';
+import {
+  DealerAction,
+  DealerActionSchema,
+  PlayerActionSchema,
+  RebuyResponseSchema,
+  TableStateSchema,
+  TableState as WireTableState,
+} from '@playsync/contract';
 import { DealerService } from 'src/dealer/dealer.service';
 import { TableState } from 'src/game-engine/types';
 import { PlaysyncService } from 'src/playsync/playsync.service';
@@ -171,7 +178,8 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         // 접속자 본인에게만 보낸다. 남이 접속했다고 테이블 전원이 같은 상태를
         // 다시 받을 이유가 없다.
         const state = await this.redis.getSnapShot(tableId);
-        client.send(JSON.stringify({ event: 'renderGame', data: state }));
+        const wire = this.toWireState(state);
+        if (wire) client.send(JSON.stringify({ event: 'renderGame', data: wire }));
       }
 
     } catch (err) {
@@ -230,6 +238,37 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     });
   }
 
+  /**
+   * 스냅샷을 계약의 **공개형**으로 좁힌다. 어기면 `null`이다.
+   *
+   * `renderGame`으로 나가는 모든 자리가 여기를 지난다(T71 9-1). 예전에는
+   * 게이트웨이가 백엔드 `TableState`를 원시 객체로 그대로 쏴서,
+   * `table-state.ts` 머리말이 약속한 "여기 없는 필드는 조용히 제거된다"가
+   * 이 경로에서만 거짓이었다 — 실제로 `timerEpoch`(타이머 세대)와 좌석마다
+   * 반복되는 `tableId`가 참가자 단말까지 나가고 있었다.
+   *
+   * **던지지 않고 `null`을 돌려준다.** 계약 위반은 칩 정합이 깨졌다는 신호라
+   * 깨진 상태를 그리는 것보다 안 그리는 편이 낫지만, 던지면
+   * `handleGameStateUpdated`(`@OnEvent`)에서 처리되지 않은 거부가 되어
+   * 테이블이 이유 없이 멈춘다 — 나올 길 없는 정지는 T62에서 한 번 겪었다.
+   * 상태는 Redis에 남아 있으므로 다음 정상 전파가 복구한다.
+   */
+  private toWireState(state: unknown): WireTableState | null {
+    const parsed = TableStateSchema.safeParse(state);
+    if (!parsed.success) {
+      this.logger.error(`renderGame 계약 위반 — 전파하지 않는다: ${parsed.error.message}`);
+      return null;
+    }
+    return parsed.data;
+  }
+
+  /** `renderGame` 브로드캐스트의 유일한 입구. */
+  private broadcastRenderGame(tableId: string, state: unknown) {
+    const wire = this.toWireState(state);
+    if (!wire) return;
+    this.broadcastToTable(tableId, 'renderGame', wire);
+  }
+
   // 테이블 브로드캐스트 유틸리티
   private broadcastToTable(tableId: string, event: string, data: any) {
     this.broadcast(this.tableSessions.get(tableId), event, data);
@@ -281,7 +320,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const updatedState = await this.playsync.handleAction(userId, tableId, parsed.data);
 
       // 해당 테이블의 모든 인원에게 변경된 상태 브로드캐스트
-      this.broadcastToTable(tableId, 'renderGame', updatedState);
+      this.broadcastRenderGame(tableId, updatedState);
     } catch (e) {
       return { event: 'error', data: e.message };
     }
@@ -301,7 +340,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     try {
       const updatedState = await this.runDealerAction(tournamentId, tableId, action);
-      this.broadcastToTable(tableId, 'renderGame', updatedState);
+      this.broadcastRenderGame(tableId, updatedState);
     } catch (e) {
       return { event: 'error', data: e.message };
     }
@@ -344,7 +383,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   // 타임아웃 프로세서
   @OnEvent('game.state.updated')
   handleGameStateUpdated(payload: { tableId: string; state: any }) {
-    this.broadcastToTable(payload.tableId, 'renderGame', payload.state);
+    this.broadcastRenderGame(payload.tableId, payload.state);
   }
 
   @OnEvent('SEAT_LIST_UPDATED')

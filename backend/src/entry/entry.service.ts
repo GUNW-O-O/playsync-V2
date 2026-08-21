@@ -418,8 +418,8 @@ export class EntryService {
    * 착석이 항상 409를 받는다.
    *
    * **대회 상태는 `ONGOING`만 보지 않는다.** `!== FINISHED`로 넓힌다 — 좌석
-   * 행이 있는 테이블에 스냅샷이 없는 것은 PENDING이든 SYNCING이든 ONGOING
-   * 이든 똑같이 "Redis를 잃었다"는 뜻이기 때문이다. 좁게 두면 이 구멍이
+   * 행이 있는 테이블에 스냅샷이 없는 것은 PENDING이든 ONGOING이든 똑같이
+   * "Redis를 잃었다"는 뜻이기 때문이다. 좁게 두면 이 구멍이
    * 남는다: PENDING 대회에서 u1·u2가 착석해 스냅샷이 살아 있다가 Redis가
    * 죽거나(FLUSHDB) 24시간 TTL로 스냅샷만 사라지면, u3의 착석이
    * `_count.tablePlayers > 0`인데도 status가 PENDING이라 가드를 피해

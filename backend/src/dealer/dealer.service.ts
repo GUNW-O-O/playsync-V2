@@ -97,7 +97,7 @@ export class DealerService {
 
     const issued = await this.prisma.$transaction(async (tx) => {
       // dto.tableId가 이 대회 소속인지 상태와 무관하게 먼저 확인한다. 이전에는
-      // ONGOING일 때만 조회해서, 그 밖의 상태(PENDING·SYNCING)에서는 다른
+      // ONGOING일 때만 조회해서, 그 밖의 상태(PENDING 등)에서는 다른
       // 대회의 테이블 id를 그대로 서명해 버렸다 — 위협모델 관찰 5.
       const table = await tx.table.findUnique({
         where: { tournamentId_id: { tournamentId: dto.tournamentId, id: dto.tableId } },

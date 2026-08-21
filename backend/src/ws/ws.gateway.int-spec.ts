@@ -4,6 +4,7 @@ import { Queue } from 'bullmq';
 import Redis from 'ioredis';
 import { WsGateway } from './ws.gateway';
 import { WsTicketService } from './ws-ticket.service';
+import { SEAT_ROLE } from 'src/auth/seat-role';
 import { RedisService } from 'src/redis/redis.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { DealerService } from 'src/dealer/dealer.service';
@@ -94,6 +95,18 @@ describe('WsGateway 인바운드 경계', () => {
 
   async function playerTicket(userId: string) {
     return tickets.issue({ sub: userId, role: Role.USER });
+  }
+
+  /**
+   * 좌석 태블릿이 실제로 받는 티켓.
+   *
+   * `ws-ticket.controller.ts`의 `issue`가 `req.user.role`을 그대로 싣는데,
+   * 좌석 토큰의 그 값은 Prisma `Role`이 아니라 `SEAT_ROLE`(`'PLAYER'`)이다.
+   * 위 `playerTicket`은 `Role.USER`를 써 왔으므로 **프로덕션이 진짜로 싣는
+   * 값을 한 번도 태워 보지 않았다**(T71 잔여 목록).
+   */
+  async function seatTicket(userId: string) {
+    return tickets.issue({ sub: userId, role: SEAT_ROLE });
   }
 
   async function dealerTicket(tableId: string) {
@@ -574,6 +587,92 @@ describe('WsGateway 인바운드 경계', () => {
       const sent = JSON.parse(player.send.mock.calls[0][0]);
       expect(sent.event).toBe('renderGame');
       expect(sent.data).not.toBeUndefined();
+    });
+  });
+
+  /**
+   * 아웃바운드 그물(T71 9-1).
+   *
+   * `table-state.ts`의 머리말은 "백엔드 `TableState`에 필드를 추가해도 여기
+   * 없으면 조용히 제거된다"고 적는데, `TableStateSchema`의 프로덕션 사용처가
+   * 0건이라 그 문장이 `renderGame` 경로에서 거짓이었다. 여기서 사실로 만든다.
+   */
+  describe('좌석 토큰의 역할', () => {
+    it('좌석 티켓으로 자기 테이블에 붙는다', async () => {
+      const client = await connect(await seatTicket('alice'));
+
+      expect(client.close).not.toHaveBeenCalled();
+    });
+
+    it('좌석 티켓은 딜러 명령을 보낼 수 없다', async () => {
+      // `SEAT_ROLE`은 `Role` enum 밖의 값이라 어떤 역할 검사와도 맞지 않는다
+      // (`auth/seat-role.ts`). 게이트웨이도 같아야 한다.
+      const client = await connect(await seatTicket('alice'));
+
+      const result = await gateway.handleDealerAction(client, { action: 'START_PRE_FLOP' });
+
+      expect(result).toEqual({ event: 'error', data: '딜러만 가능한 액션입니다.' });
+    });
+  });
+
+  describe('아웃바운드 봉투', () => {
+    /** 브로드캐스트로 실제로 나간 `renderGame`의 data. */
+    function sentState(client: { send: jest.Mock }) {
+      const payload = JSON.parse(client.send.mock.calls[0][0]);
+      expect(payload.event).toBe('renderGame');
+      return payload.data;
+    }
+
+    it('내부 필드 timerEpoch를 실어 보내지 않는다', async () => {
+      // 타이머 세대는 잡의 폐기 판정에만 쓰는 서버 내부값이다. 참가자 단말이
+      // 알 이유가 없고, 계약에도 없다.
+      const player = await connect(await playerTicket('alice'));
+      jest.clearAllMocks();
+
+      gateway.handleGameStateUpdated({
+        tableId: TABLE,
+        state: { ...makeState(), timerEpoch: 7 },
+      });
+
+      expect(Object.keys(sentState(player))).not.toContain('timerEpoch');
+    });
+
+    it('좌석마다 반복되는 tableId를 실어 보내지 않는다', async () => {
+      // 스냅샷 자체가 이미 그 테이블이다(`TablePlayerSchema`의 근거 주석).
+      const player = await connect(await playerTicket('alice'));
+      jest.clearAllMocks();
+
+      gateway.handleGameStateUpdated({ tableId: TABLE, state: makeState() });
+
+      const seated = sentState(player).players.filter((p: unknown) => p !== null);
+      expect(seated.map((p: { tableId?: string }) => p.tableId)).toEqual([undefined, undefined]);
+    });
+
+    it('접속 직후 보내는 스냅샷도 같은 그물을 지난다', async () => {
+      // 여기만 브로드캐스트가 아니라 본인에게 직접 보낸다. 경로가 달라도
+      // 나가는 봉투는 같아야 한다.
+      await redis.set(
+        `table:state:${TABLE}`,
+        JSON.stringify({ ...makeState(), timerEpoch: 7 }),
+      );
+
+      const player = await connect(await playerTicket('alice'));
+
+      expect(Object.keys(sentState(player))).not.toContain('timerEpoch');
+    });
+
+    it('계약을 어기는 상태는 전파하지 않고 던지지도 않는다', async () => {
+      // 음수 스택은 칩 정합이 깨졌다는 신호다. 깨진 상태를 태블릿에 그리는
+      // 것보다 그리지 않는 편이 낫고, 던지면 `@OnEvent` 핸들러에서 처리되지
+      // 않은 거부가 되어 테이블이 이유 없이 멈춘다.
+      const player = await connect(await playerTicket('alice'));
+      jest.clearAllMocks();
+
+      const broken = makeState();
+      broken.players[0]!.stack = -1;
+
+      expect(() => gateway.handleGameStateUpdated({ tableId: TABLE, state: broken })).not.toThrow();
+      expect(player.send).not.toHaveBeenCalled();
     });
   });
 
