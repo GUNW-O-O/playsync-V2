@@ -6,11 +6,19 @@ import { apiFetch } from '@/lib/api';
 
 /** 백엔드 `PLAYER_OTP_LENGTH`(`backend/src/payment/player-otp.ts`)와 같은 값.
  * contract 패키지에 없다 — 참가 OTP 발급은 백엔드 전용 흐름이라 프론트가
- * 공유할 이유가 없고, 여기서는 입력을 더 받지 않게 막는 용도일 뿐이다. */
+ * 공유할 이유가 없고, 여기서는 입력을 더 받지 않게 막고 **덜 채운 것을
+ * 보내지 않게** 하는 용도다. */
 const OTP_LENGTH = 8;
 
 /** 좌석 현황을 다시 읽는 주기. */
 const SEAT_POLL_INTERVAL_MS = 5000;
+
+/**
+ * 조회가 **던졌을 때**의 문구. 백엔드가 준 실패는 응답으로 오지만,
+ * 프록시가 끊기면 `fetch` 자체가 거부된다 — 원인을 모르니 다시 해 보라는
+ * 것 말고 할 말이 없다. `ConsoleClient`의 같은 이름 상수와 같은 문구다(T70).
+ */
+const NETWORK_ERROR = '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.';
 
 /**
  * 좌석 도식의 자리 좌표. 와이어프레임(`frontend/wireframes/2026-08-02-screens.html`)
@@ -91,12 +99,24 @@ export default function WaitingClient({
 
     const requestId = ++tournamentRequestRef.current;
 
-    const [session, nextSeatMap] = await Promise.all([
-      apiFetch(`/api/dealer/${id}`, { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)),
-      apiFetch(`/api/tournaments/${id}/seats`, { cache: 'no-store' }).then((r) =>
-        r.ok ? r.json() : [],
-      ),
-    ]);
+    // **던지는 것과 실패 응답은 다른 길이다.** 실패 응답은 위에서 `null`·`[]`로
+    // 접어 두지만, 프록시가 끊기면 `fetch` 자체가 거부돼 이 함수가 던진다.
+    // 잡지 않으면 처리되지 않은 프라미스 거부 하나만 남고, 화면은 **앞 대회의
+    // 테이블 목록을 그대로 든 채** 아무 안내도 안 띄운다 — 앉을 사람이 없어진
+    // 자리를 고르고 있는다(`ConsoleClient.run`과 같은 결함, T70).
+    let session: { tables?: Table[] } | null;
+    let nextSeatMap: SeatMapEntry[];
+    try {
+      [session, nextSeatMap] = await Promise.all([
+        apiFetch(`/api/dealer/${id}`, { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)),
+        apiFetch(`/api/tournaments/${id}/seats`, { cache: 'no-store' }).then((r) =>
+          r.ok ? r.json() : [],
+        ),
+      ]);
+    } catch {
+      if (tournamentRequestRef.current === requestId) setError(NETWORK_ERROR);
+      return;
+    }
 
     // 그 사이 다른 대회를 또 골랐다면 이 응답은 낡았다 — 버린다.
     if (tournamentRequestRef.current !== requestId) return;
@@ -122,9 +142,17 @@ export default function WaitingClient({
     let cancelled = false;
 
     async function poll() {
-      const res = await apiFetch(`/api/tournaments/${tournamentId}/seats`, { cache: 'no-store' });
-      if (!cancelled && res.ok) {
-        setSeatMap(await res.json());
+      // 이 폴링은 화면에 안내를 띄우지 않는다 — **다음 주기에 낫는** 것이라
+      // 5초마다 뜨는 배너가 오히려 방해다. 다만 잡기는 해야 한다:
+      // `setInterval`이 부르는 async 함수라 거부를 받을 곳이 아무 데도
+      // 없고, 네트워크가 튈 때마다 처리되지 않은 프라미스 거부가 샌다.
+      try {
+        const res = await apiFetch(`/api/tournaments/${tournamentId}/seats`, { cache: 'no-store' });
+        if (!cancelled && res.ok) {
+          setSeatMap(await res.json());
+        }
+      } catch {
+        // 다음 주기가 다시 읽는다. 좌석 도식은 직전 값에 머문다.
       }
     }
 
@@ -159,6 +187,9 @@ export default function WaitingClient({
   }
 
   async function submit() {
+    // 길이까지 본다. `otp.length === 0`만 보던 때는 한 자리만 눌러도
+    // 백엔드까지 왕복해 실패로 돌아왔다 — 태블릿에서 오타는 흔하다.
+    if (otp.length !== OTP_LENGTH) return;
     if (seatIndex === null || !tableId || !tournamentId || submitting) return;
     setSubmitting(true);
     setError(null);
@@ -309,7 +340,7 @@ export default function WaitingClient({
           <button
             type="button"
             onClick={submit}
-            disabled={seatIndex === null || otp.length === 0 || submitting}
+            disabled={seatIndex === null || otp.length !== OTP_LENGTH || submitting}
             className="rounded border border-tb-act bg-tb-act py-2.5 text-sm font-bold text-[#06201a] disabled:opacity-40"
           >
             {selectedTable && seatIndex !== null
