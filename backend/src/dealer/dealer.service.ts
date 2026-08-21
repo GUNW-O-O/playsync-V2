@@ -9,7 +9,7 @@ import { tokenTtl } from 'src/auth/token-ttl';
 import { verifyDealerOtp } from 'src/dealer/dealer-otp';
 import { OtpAttempts } from 'src/dealer/otp-attempts';
 import { TableEngine } from 'src/game-engine/table-engine';
-import { ActionType, GamePhase, TablePlayer } from 'src/game-engine/types';
+import { ActionType, GamePhase, TablePlayer, TableState } from 'src/game-engine/types';
 import { PlaysyncService } from 'src/playsync/playsync.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
@@ -446,11 +446,22 @@ export class DealerService {
    *
    * 멈추는 것 자체는 올바른 동작이므로 되돌리는 기능이 아니다. 막다른 골목을
    * 없애는 기능이다.
+   *
+   * **문지기는 페이즈뿐이다**(T62). 예전에는 `dbSyncStatus === 'FAILED'`도
+   * 요구했는데, 그 표시는 `markDbSyncStatus` → `mutateSnapshot` →
+   * `withTableLock`이라 **Redis가 힘들면 남길 수 없다.** 표시를 조건에 두면
+   * 표시를 못 남긴 실패가 바로 그 순간 나올 길을 닫는다 — 없애려던 막다른
+   * 골목을 조건 자체가 만들고 있었다.
+   *
+   * 표시 없이 통과시켜도 안전한 이유는 `HAND_END`가 진짜 문지기라서다. 이
+   * 페이즈에서는 `startPreFlop`도 `act()`도 거절하고, 체크포인트는 같은 값을
+   * 다시 쓰는 것이라 겹쳐도 장부가 어긋나지 않는다. 실제 전이는 `finishHand`가
+   * 락 안에서 페이즈를 다시 보고 결정한다.
    */
   async retryCheckpoint(tableId: string) {
     const state = await this.redis.getSnapShot(tableId);
     if (!state) throw new Error('테이블을 찾을 수 없습니다.');
-    if (state.phase !== GamePhase.HAND_END || state.dbSyncStatus !== 'FAILED') {
+    if (state.phase !== GamePhase.HAND_END) {
       throw new Error('재시도할 체크포인트가 없습니다.');
     }
 
@@ -463,15 +474,28 @@ export class DealerService {
     return this.finishHand(tableId);
   }
 
-  /** 체크포인트가 찍힌 뒤에만 부른다. 원천이 Redis로 넘어가는 지점. */
-  private finishHand(tableId: string) {
-    return this.redis.mutateSnapshot(tableId, async (state) => {
+  /**
+   * 체크포인트가 찍힌 뒤에만 부른다. 원천이 Redis로 넘어가는 지점.
+   *
+   * **락 안에서 페이즈를 다시 본다**(T62). 부르는 쪽이 페이즈를 확인한 뒤
+   * 체크포인트가 **락 밖에서** 수 초를 돌기 때문에, 그사이 다른 경로가 다음
+   * 핸드를 시작했을 수 있다. 그 상태에서 `initTable`을 돌리면 살아 있는 판의
+   * `pot`과 베팅을 0으로 밀어 칩이 사라진다 — 카드가 실물이라 되돌릴 근거가
+   * 테이블 위에 없다. 이미 넘어간 뒤라면 할 일이 없으므로 그대로 둔다.
+   */
+  private async finishHand(tableId: string): Promise<TableState> {
+    const next = await this.redis.mutateSnapshot(tableId, async (state) => {
       if (!state) throw new Error(SNAPSHOT_MISSING);
+      // null은 "쓰지 않는다"다. 현재 스냅샷이 그대로 돌아간다.
+      if (state.phase !== GamePhase.HAND_END) return null;
 
       delete state.dbSyncStatus;
       await new TableEngine(state).initTable();
       return state;
     });
+    // 위에서 없으면 던졌으므로 여기 null이 올 수 없다. 타입만 좁힌다.
+    if (!next) throw new Error(SNAPSHOT_MISSING);
+    return next;
   }
 
 }

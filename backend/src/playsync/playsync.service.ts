@@ -318,7 +318,18 @@ export class PlaysyncService {
     );
 
     if (!result.ok) {
-      await this.markDbSyncStatus(tableId, 'FAILED');
+      // 표시를 남기지 못해도 실패는 실패다. `markDbSyncStatus`는
+      // `mutateSnapshot` → `withTableLock`이라 Redis가 힘들면 던지는데, 그것을
+      // 그대로 올리면 호출자는 `false` 대신 예외를 받는다. 그러면 테이블이
+      // HAND_END에 남고 표시도 없어 나올 길이 닫힌다.
+      //
+      // **표시가 없어도 갇히지 않는다** — `retryCheckpoint`의 문지기는 페이즈만
+      // 본다. 여기서 삼키는 것은 화면의 빨간 표시뿐이다.
+      try {
+        await this.markDbSyncStatus(tableId, 'FAILED');
+      } catch (error) {
+        this.logger.error(`[체크포인트] 테이블 ${tableId} 실패 표시를 남기지 못했다`, error);
+      }
       return false;
     }
     return true;

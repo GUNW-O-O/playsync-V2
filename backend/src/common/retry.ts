@@ -63,8 +63,25 @@ export async function retryAsync<T>(
 
     const ceiling = Math.min(maxMs, baseMs * 2 ** attempt);
     const delayMs = random() * ceiling;
-    await onRetry?.(attempt + 1, delayMs);
-    await sleep(delayMs);
+
+    // 알림과 대기는 재시도가 아니다. 여기서 던진 것을 그대로 올리면 위의
+    // "결과를 값으로 돌려준다"가 이 경로에서만 거짓이 되고, 호출자는 실패를
+    // 상태로 바꿀 기회를 잃는다. `onRetry`가 Redis 락을 잡는 경우가 실제로
+    // 있다(`checkpointTableToDb`) — DB가 흔들려 재시도에 들어간 상황이면
+    // Redis도 함께 힘들다.
+    //
+    // **둘을 한 try로 묶지 않는다.** 알림이 던진 순간 대기까지 건너뛰면
+    // 백오프가 사라져, 위에서 지터로 막으려 한 동기화된 파도를 스스로 만든다.
+    try {
+      await onRetry?.(attempt + 1, delayMs);
+    } catch {
+      // 알림의 실패는 재시도의 실패가 아니다.
+    }
+    try {
+      await sleep(delayMs);
+    } catch {
+      // 기다리지 못했더라도 다음 시도는 해 본다.
+    }
   }
 
   return { ok: false, error: lastError };

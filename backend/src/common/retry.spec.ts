@@ -95,4 +95,41 @@ describe('retryAsync', () => {
     expect(onRetry).toHaveBeenNthCalledWith(1, 1, 100);
     expect(onRetry).toHaveBeenNthCalledWith(2, 2, 200);
   });
+  // T62. 머리말의 "throw하지 않고 결과를 값으로 돌려준다"가 `fn` 밖에서는
+  // 거짓이었다. `checkpointTableToDb`의 onRetry는 Redis 락을 잡으므로 DB가
+  // 흔들리는 그 순간에 함께 던질 수 있고, 그러면 호출자는 `false`가 아니라
+  // 예외를 받아 실패 표시를 남기지 못한 채 테이블이 갇혔다.
+  it('onRetry가 던져도 예외가 새지 않는다', async () => {
+    const { sleep } = recorder();
+    const fn = jest.fn().mockRejectedValue(new Error('x'));
+    const onRetry = jest.fn().mockRejectedValue(new Error('락 획득 실패'));
+
+    const result = await retryAsync(fn, { attempts: 3, baseMs: 100, sleep, onRetry });
+
+    expect(result.ok).toBe(false);
+    expect(fn).toHaveBeenCalledTimes(3);
+  });
+
+  it('onRetry가 던져도 백오프는 유지된다', async () => {
+    // 알림과 대기를 한 try로 묶으면 알림이 던진 순간 대기가 통째로 사라진다.
+    // 그러면 장애 중에 간격 없이 재시도해서, 이 파일이 지터로 막으려 한
+    // 동기화된 파도를 스스로 만든다.
+    const { delays, sleep } = recorder();
+    const fn = jest.fn().mockRejectedValue(new Error('x'));
+    const onRetry = jest.fn().mockRejectedValue(new Error('락 획득 실패'));
+
+    await retryAsync(fn, { attempts: 3, baseMs: 100, sleep, random: () => 1, onRetry });
+
+    expect(delays).toEqual([100, 200]);
+  });
+
+  it('sleep이 던져도 예외가 새지 않는다', async () => {
+    const fn = jest.fn().mockRejectedValue(new Error('x'));
+    const sleep = jest.fn().mockRejectedValue(new Error('타이머 실패'));
+
+    const result = await retryAsync(fn, { attempts: 3, baseMs: 100, sleep });
+
+    expect(result.ok).toBe(false);
+    expect(fn).toHaveBeenCalledTimes(3);
+  });
 });
