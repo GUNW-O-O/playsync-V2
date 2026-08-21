@@ -465,6 +465,57 @@ describe('DealerService 동시성', () => {
       expect(state.dbSyncStatus).toBeUndefined();
     });
 
+    it('표시를 남기지 못한 실패도 다시 시도할 수 있다', async () => {
+      // T62. 문지기가 `dbSyncStatus === 'FAILED'`를 요구하면, **표시를 못 남긴
+      // 실패**가 막다른 골목이 된다. 표시는 `mutateSnapshot` → `withTableLock`
+      // 이라 Redis가 힘들면 남길 수 없고, 그 상황이 정확히 나올 길이 필요한
+      // 상황이다. 페이즈가 문지기여야 한다.
+      await redis.set(stateKey, JSON.stringify(makeState({
+        phase: GamePhase.HAND_END,
+        currentTurnSeatIndex: -1,
+        pot: 0,
+        currentBet: 0,
+      })));
+      jest.spyOn(playsync, 'syncTableInventoryToDb').mockResolvedValue(true);
+
+      await dealer.retryCheckpoint(TABLE);
+
+      const state: TableState = JSON.parse((await redis.get(stateKey))!);
+      expect(state.phase).toBe(GamePhase.WAITING);
+    });
+
+    it('그 사이 다음 핸드가 시작됐으면 진행 중인 판을 지우지 않는다', async () => {
+      // 문지기 검사와 실제 전이 사이에서 체크포인트가 **락 밖으로** 수 초 돈다.
+      // 그 창에서 다음 핸드가 시작되면 `initTable`이 pot과 베팅을 0으로 밀어
+      // 살아 있는 판의 칩을 없앤다. 전이 직전에 락 안에서 페이즈를 다시 봐야 한다.
+      await redis.set(stateKey, JSON.stringify(makeState({
+        phase: GamePhase.HAND_END,
+        currentTurnSeatIndex: -1,
+        pot: 0,
+        currentBet: 0,
+        dbSyncStatus: 'FAILED',
+      })));
+
+      // 체크포인트가 도는 동안 다른 경로가 다음 핸드를 시작한 상황.
+      jest.spyOn(playsync, 'syncTableInventoryToDb').mockImplementation(async () => {
+        await redis.set(stateKey, JSON.stringify(makeState({
+          phase: GamePhase.PRE_FLOP,
+          pot: 1000,
+          players: [
+            makePlayer('alice', 0, { stack: 9500, bet: 500, totalContributed: 500 }),
+            makePlayer('bob', 1, { stack: 9500, bet: 500, totalContributed: 500 }),
+            makePlayer('carol', 2),
+          ],
+        })));
+        return true;
+      });
+
+      await dealer.retryCheckpoint(TABLE);
+
+      const state: TableState = JSON.parse((await redis.get(stateKey))!);
+      expect(`${state.phase} pot=${state.pot}`).toBe(`${GamePhase.PRE_FLOP} pot=1000`);
+    });
+
     it('리바인으로 살아난 플레이어는 탈락시키지 않는다', async () => {
       // 3단계가 1단계의 낡은 객체를 그대로 쓰면, 대기 중 반영된 리바인 스택이
       // 보이지 않아 살아난 사람을 탈락 처리한다. 스냅샷을 다시 읽어야 한다.
