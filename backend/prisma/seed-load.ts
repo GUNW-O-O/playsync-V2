@@ -76,6 +76,7 @@ const DEALER_OTP = '123456';
  * 부하 모양이 달라진다. 측정 중에 변수를 하나 줄인다.
  */
 const BLIND_STRUCTURE = [{ lv: 1, sb: 100, ante: false, duration: 600 }];
+const BIG_BLIND = BLIND_STRUCTURE[0].sb * 2;
 
 /**
  * 등록이 자동으로 닫히는 레벨 번호(`lv`) — **분이 아니다.** `isRegistrationOpenAtLevel`
@@ -90,7 +91,23 @@ const BLIND_STRUCTURE = [{ lv: 1, sb: 100, ante: false, duration: 600 }];
  */
 const REBUY_UNTIL = 99;
 
-const START_STACK = 100_000;
+/**
+ * 시작 스택. **빅블라인드의 배수로 정한다.**
+ *
+ * 100,000이었다. 블라인드가 sb 100(BB 200)이라 **500BB**다 — 22분 실행에서
+ * 테이블당 핸드가 3개뿐이라(라이브 생각 시간) 그 스택으로는 아무도 안 터진다.
+ * 2026-08-21 실측이 그랬다: `rebuys_accepted` 0, 탈락·사이드팟·리바인 갈래가
+ * 통째로 안 돌았다. 그러면 잰 것은 **소켓과 액션 브로드캐스트의 정원**이지
+ * 대회 전 구간의 정원이 아니다.
+ *
+ * `LOAD_BURN_*`으로 연산량을 지어내지 않는다 — 그건 부하 모양을 왜곡한다.
+ * 스택 쪽에서 갈리게 하는 편이 무대에 정직하다.
+ *
+ * 10BB면 몇 핸드 안에 올인이 나고, 터진 자리는 리바인이 즉시 채운다
+ * (B11의 "인원을 무한 리바인으로 유지한다"). 규모 축은 그대로고 장부 경로만
+ * 열린다.
+ */
+const START_STACK_BB = Number(process.env.LOAD_START_STACK_BB ?? 10);
 
 /**
  * 세울 상점(= 대회) 수. **램프 A의 x축이다.**
@@ -136,7 +153,24 @@ const INITIAL_TABLES = Number(process.env.LOAD_TABLES ?? 1);
  * 닉네임은 `p0000` 형식이다 — 3~10자 제한(`CreateUserDto`) 안에 들어가고
  * 봇이 인덱스만으로 만들 수 있어야 한다.
  */
-const ACCOUNT_POOL = Number(process.env.LOAD_ACCOUNT_POOL ?? 600);
+/**
+ * **풀 크기는 램프 상한을 따라간다.** 손으로 맞추던 값이었고, 실제로 어긋났다.
+ *
+ * 600은 `LOAD_MAX_TABLES` 기본값 66(594석)에 맞춘 값인데, 2026-08-21 실측은
+ * 상한을 1,380테이블로 올려 놓고 풀은 그대로 뒀다. 그러면 `seatPlayers`의
+ * `index >= accountPool`이 사실상 모든 좌석에서 참이 되어 **전원이 가입을
+ * 탄다** — 사람마다 bcrypt가 `hash` + `compare` 두 번 돌아 착석 비용이 실제의
+ * 두 배가 되고, 그 두 배가 정원 수치에 그대로 섞였다.
+ *
+ * 두 설정이 서로를 모르던 것이 원인이라 여기서 묶는다. `LOAD_MAX_TABLES`를
+ * 올리면 풀도 함께 커진다. 명시적으로 주면 그 값이 이긴다 — 풀 부족 자체를
+ * 재려는 실행도 있을 수 있다.
+ */
+const MAX_TABLES = Number(process.env.LOAD_MAX_TABLES ?? 66);
+const SEATS_PER_TABLE = 9;
+const ACCOUNT_POOL = Number(
+  process.env.LOAD_ACCOUNT_POOL ?? MAX_TABLES * SEATS_PER_TABLE,
+);
 const ACCOUNT_PREFIX = 'p';
 
 /**
@@ -246,7 +280,7 @@ async function main() {
           // 0이 아니다 — 머리말 참고. 분모로 쓰이는 값이라 0이면
           // `recalculateAvgStack`이 NaN을 만든다.
           entryFee: ENTRY_FEE_MIN,
-          startStack: START_STACK,
+          startStack: START_STACK_BB * BIG_BLIND,
           rebuyUntil: REBUY_UNTIL,
           itmCount: 1,
           prizePayouts: [{ place: 1, percent: 100 }],
@@ -281,10 +315,10 @@ async function main() {
       ownerNickname: OWNER_NICKNAME,
       password: LOAD_PASSWORD,
       dealerOtp: DEALER_OTP,
-      startStack: START_STACK,
+      startStack: START_STACK_BB * BIG_BLIND,
       // 봇의 레이즈 단위. 블라인드 구조의 sb를 두 배 한 값이고, 레벨이
       // 하나뿐이라 실행 내내 고정이다.
-      bigBlind: BLIND_STRUCTURE[0].sb * 2,
+      bigBlind: BIG_BLIND,
       accountPrefix: ACCOUNT_PREFIX,
       accountPool: ACCOUNT_POOL,
       tournaments,
@@ -295,7 +329,20 @@ async function main() {
     console.log('부하 시드 완료');
     console.log(`  상점·대회  ${tournaments.length}개`);
     console.log(`  테이블     대회마다 ${INITIAL_TABLES}개 (나머지는 램프가 연다)`);
-    console.log(`  계정 풀    ${ACCOUNT_POOL}개 (${ACCOUNT_PREFIX}0000 ~)`);
+    console.log(
+      `  계정 풀    ${ACCOUNT_POOL}개 (${ACCOUNT_PREFIX}0000 ~)` +
+        ` — 램프 상한 ${MAX_TABLES}테이블 × ${SEATS_PER_TABLE}석 = ${MAX_TABLES * SEATS_PER_TABLE}석`,
+    );
+    if (ACCOUNT_POOL < MAX_TABLES * SEATS_PER_TABLE) {
+      // 풀이 모자라면 램프가 조용히 전원 가입으로 넘어간다. 그 실행의 착석
+      // 비용은 실제의 두 배이고, 정원 수치가 그 위에 서게 된다.
+      console.log(
+        `  ⚠ 풀이 좌석보다 작다 — 모자란 ${MAX_TABLES * SEATS_PER_TABLE - ACCOUNT_POOL}석은` +
+          ' 실행 중 가입으로 채워진다(bcrypt 두 배). 의도한 것이 아니면' +
+          ' LOAD_ACCOUNT_POOL을 비우거나 좌석 수에 맞춰라.',
+      );
+    }
+    console.log(`  시작 스택  ${START_STACK_BB}BB (${START_STACK_BB * BIG_BLIND}) · BB ${BIG_BLIND}`);
     console.log(`  딜러 OTP   ${DEALER_OTP}`);
     console.log(`  매니페스트 ${MANIFEST_PATH}`);
   } finally {
