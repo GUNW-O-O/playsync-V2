@@ -1,4 +1,8 @@
-import { isRegistrationOpenAtLevel, isRegistrationOpenNow } from './registration';
+import {
+  currentRegistrationLevel,
+  isRegistrationOpenAtLevel,
+  isRegistrationOpenNow,
+} from './registration';
 
 /**
  * 마감 규칙 그 자체. 인프라가 없어도 되는 순수 함수라 단위 계층이다.
@@ -32,6 +36,69 @@ describe('isRegistrationOpenAtLevel', () => {
   });
 });
 
+/**
+ * **휴식은 레벨이 아니다.** 구조에서 휴식 구간은 `lv === 99`인 원소인데,
+ * 마감 판정은 같은 `lv`를 숫자로 비교한다 — 휴식에 들어가는 순간 어떤
+ * 정상값에서도 `99 < rebuyUntil`이 거짓이라 등록이 닫히고, 그 마감은 단조라
+ * **되돌아오지 않는다**(T63).
+ *
+ * 규정상 5레벨까지 리바인 가능한 대회에서 3레벨에 파산한 사람이 리바인 없이
+ * 탈락한다 — `resolveWinners`가 `isRegistrationOpen`을 보고 팝업 자체를 안
+ * 띄우기 때문이다.
+ *
+ * 판정에 쓰는 레벨을 여기서 만든다. 호출자마다 "휴식이면 직전 것"을 각자
+ * 적으면 검사가 셋이 되고, 그중 하나만 고쳐지는 날이 온다.
+ */
+describe('currentRegistrationLevel', () => {
+  const withBreak = [
+    { lv: 1, sb: 100, ante: false, duration: 1 },
+    { lv: 2, sb: 200, ante: false, duration: 1 },
+    { lv: 99, sb: 200, ante: false, duration: 1 },
+    { lv: 3, sb: 300, ante: false, duration: 1 },
+  ];
+
+  it('보통 레벨에서는 그 레벨이다', () => {
+    expect(currentRegistrationLevel(withBreak, 1)).toBe(2);
+  });
+
+  it('휴식 중이면 직전 실제 레벨이다', () => {
+    // 이 한 줄이 T63이다. 지금은 99가 나와 등록이 영구히 닫힌다.
+    expect(currentRegistrationLevel(withBreak, 2)).toBe(2);
+  });
+
+  it('휴식이 끝나면 다시 그다음 레벨이다', () => {
+    expect(currentRegistrationLevel(withBreak, 3)).toBe(3);
+  });
+
+  it('휴식이 연달아 있어도 실제 레벨까지 거슬러 간다', () => {
+    const twoBreaks = [
+      { lv: 1, sb: 100, ante: false, duration: 1 },
+      { lv: 99, sb: 100, ante: false, duration: 1 },
+      { lv: 99, sb: 100, ante: false, duration: 1 },
+    ];
+
+    expect(currentRegistrationLevel(twoBreaks, 2)).toBe(1);
+  });
+
+  it('구조가 휴식으로 시작하면 0이다', () => {
+    // 지나온 레벨이 없다. 0은 어떤 `rebuyUntil`보다도 작아 등록이 열려 있다 —
+    // 아직 아무 레벨도 지나지 않았으니 그것이 맞다.
+    const leadingBreak = [
+      { lv: 99, sb: 100, ante: false, duration: 1 },
+      { lv: 1, sb: 100, ante: false, duration: 1 },
+    ];
+
+    expect(currentRegistrationLevel(leadingBreak, 0)).toBe(0);
+  });
+
+  it('인덱스가 구조 밖이면 마지막 실제 레벨로 접는다', () => {
+    // 0을 주면 **등록이 영영 열린다** — 0은 어떤 `rebuyUntil`보다 작다.
+    // 돈이 걸린 문지기라 모르는 값은 닫히는 쪽으로 접는 편이 맞고,
+    // `getCurrentBlindLevel`도 경과가 구조를 넘으면 마지막으로 클램프한다.
+    expect(currentRegistrationLevel(withBreak, 99)).toBe(3);
+  });
+});
+
 describe('isRegistrationOpenNow', () => {
   /** 레벨 하나가 1분. `lv` 값이 `rebuyUntil`과 비교되는 값이다. */
   const structure = [
@@ -55,6 +122,28 @@ describe('isRegistrationOpenNow', () => {
       ...over,
     };
   }
+
+  it('휴식 중에도 마감되지 않는다', () => {
+    // 구조: 1분씩 [lv1][lv2][휴식][lv3], rebuyUntil 3.
+    // 150초 경과면 휴식 구간이다. 휴식의 `lv`(99)로 재면 즉시 마감이고,
+    // 그 마감은 단조라 되돌아오지 않는다.
+    const withBreak = [
+      { lv: 1, sb: 100, ante: false, duration: 1 },
+      { lv: 2, sb: 200, ante: false, duration: 1 },
+      { lv: 99, sb: 200, ante: false, duration: 1 },
+      { lv: 3, sb: 300, ante: false, duration: 1 },
+    ];
+
+    expect(
+      isRegistrationOpenNow({
+        isRegistrationOpen: true,
+        rebuyUntil: 3,
+        startedAt: new Date(Date.now() - 150_000),
+        pausedMs: 0,
+        blindStructure: { structure: withBreak },
+      }),
+    ).toBe(true);
+  });
 
   it('경과 시간으로 레벨을 구해 판정한다', () => {
     // 90초 경과 → 레벨 2. rebuyUntil 2면 마감이다.
