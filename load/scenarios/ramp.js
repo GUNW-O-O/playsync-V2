@@ -147,6 +147,29 @@ export function setup() {
   // 재실행하면 `POST /auth/join`이 400으로 거절한다. 네 글자로 자른다 —
   // 닉네임은 3~10자이고 뒤에 VU와 좌석이 붙는다.
   const runId = Math.random().toString(36).slice(2, 6);
+
+  /*
+    **무대의 전제를 실행 앞에서 대조한다.**
+
+    풀이 좌석보다 작으면 `seatPlayers`가 조용히 전원 가입으로 넘어간다. 사람마다
+    bcrypt가 `hash` + `compare` 두 번 돌아 착석 비용이 실제의 두 배가 되고, 그
+    두 배가 정원 수치에 그대로 섞인다 — 2026-08-21 실측이 그렇게 나왔고, 요약을
+    읽는 사람이 셋 연속으로 지나쳤다.
+
+    던지지 않고 적기만 한다. 풀 부족 자체를 재려는 실행도 있을 수 있고, 그때
+    실행이 죽으면 곤란하다. 대신 요약 줄이 끝에서 같은 것을 다시 말한다
+    (`summary.js`의 `signupLine`).
+  */
+  const seatsNeeded = MAX_TABLES * SEAT_COUNT;
+  const pool = manifest.accountPool || 0;
+  if (pool < seatsNeeded) {
+    console.warn(
+      `[무대] 계정 풀 ${pool} < 좌석 ${seatsNeeded} — 모자란 ${seatsNeeded - pool}석은` +
+        ' 실행 중 가입으로 채워진다. bcrypt가 두 번 돌아 착석 비용이 두 배다.' +
+        ' 의도한 것이 아니면 LOAD_MAX_TABLES에 맞춰 다시 시드해라.',
+    );
+  }
+
   return { runId, startedAt: Date.now(), endAt: Date.now() + TOTAL_S * 1000 };
 }
 

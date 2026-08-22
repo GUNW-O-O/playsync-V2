@@ -61,6 +61,32 @@ function round(v) {
 }
 
 /**
+ * 가입·로그인을 **기대치와 나란히** 찍는다.
+ *
+ * `가입 12600/로그인 14092`는 그 자체로는 아무 말도 하지 않는다. 무대의
+ * 전제는 "가입은 좌석의 10%"인데, 그 전제가 깨진 실행 셋을 사람이 그냥
+ * 지나쳤다(2026-08-21). 어긋났다는 사실이 **줄에 보여야** 한다.
+ *
+ * 기대치의 분모는 앉힌 좌석 수(`seats_taken`)다. 풀이 모자라 가입으로 넘어간
+ * 좌석은 따로 세므로(`pool_misses`), 어긋남의 원인까지 줄에 남는다.
+ */
+function signupLine(summary) {
+  const seats = summary.seatsTaken;
+  if (!seats) return `가입 ${summary.signups}/로그인 ${summary.logins}`;
+
+  const expected = Math.round(seats * summary.newUserRatio);
+  // 표본이 작으면 비율은 원래 흔들린다. 두 배까지는 무대가 깨진 것이 아니다.
+  const off = summary.signups > Math.max(expected * 2, expected + 5);
+  const mark = off ? ' ⚠' : '';
+  const why = summary.poolMisses ? ` 풀부족 ${summary.poolMisses}` : '';
+
+  return (
+    `가입 ${summary.signups}/기대 ${expected}${why}${mark}` +
+    ` · 로그인 ${summary.logins}/기대 ${seats}`
+  );
+}
+
+/**
  * 사람이 읽을 한 줄. 램프에서는 단계마다 이 줄이 하나씩 쌓인다.
  *
  * **`resolutionMs`를 빼서 보여주지 않는다.** 원값을 그대로 두고 바닥값을 같이
@@ -78,7 +104,7 @@ export function oneLine(label, summary) {
     `자리비움 ${summary.absentActions}`,
     `지각 ${summary.lateActions}`,
     `무응답창 ${summary.staleWindows}`,
-    `가입 ${summary.signups}/로그인 ${summary.logins}`,
+    signupLine(summary),
     `레이즈 ${summary.raises}/폴드 ${summary.folds}/리바인 ${summary.rebuysAccepted}`,
     `테이블409 ${summary.tableCreateConflicts}`,
     summary.server
@@ -105,6 +131,11 @@ export function buildSummary(data, name) {
     staleWindows: counter(data, 'stale_windows'),
     signups: counter(data, 'signups'),
     logins: counter(data, 'logins'),
+    seatsTaken: counter(data, 'seats_taken'),
+    poolMisses: counter(data, 'pool_misses'),
+    // 기대치를 만든 값도 함께 남긴다 — 결과 파일만 보고도 무대의 전제를
+    // 다시 세울 수 있어야 한다.
+    newUserRatio: Number(__ENV.LOAD_NEW_USER_RATIO || 0.1),
     raises: counter(data, 'raises'),
     folds: counter(data, 'folds'),
     rebuysAccepted: counter(data, 'rebuys_accepted'),

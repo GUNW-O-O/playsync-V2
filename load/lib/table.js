@@ -180,6 +180,21 @@ const NEW_USER_RATIO = Number(__ENV.LOAD_NEW_USER_RATIO || 0.1);
 /** 실행 중 가입한 수와 로그인 수. 비율이 의도대로 나왔는지 결과에서 본다. */
 export const signups = new Counter('signups');
 export const logins = new Counter('logins');
+/**
+ * 앉히려고 시도한 좌석 수. **기대치의 분모다.**
+ *
+ * 이것이 없으면 `가입 12600`이 많은 값인지 알 수 없다. 요약이 기대치와
+ * 나란히 찍으려면 "몇 명을 앉혔나"가 지표로 있어야 한다.
+ */
+export const seatsTaken = new Counter('seats_taken');
+/**
+ * **풀이 모자라 가입으로 넘어간 좌석 수.**
+ *
+ * `signups`만으로는 의도한 10%인지 풀 부족인지 갈리지 않는다. 2026-08-21
+ * 실측이 정확히 그 자리에서 뒤집혔다 — 상한을 1,380테이블로 올리고 풀은 600에
+ * 둔 실행이 전원 가입으로 돌았고, 요약 줄은 그 사실을 말하지 않았다.
+ */
+export const poolMisses = new Counter('pool_misses');
 
 /**
  * 합법 액션 중에서 어떻게 고르나. **부하의 모양을 정하는 두 번째 값이다.**
@@ -268,9 +283,16 @@ export function seatPlayers({
   const players = [];
   for (let seat = 0; seat < seatCount; seat++) {
     const index = (poolBase || 0) + seat;
+    seatsTaken.add(1);
     // 풀이 모자라면 신규로 넘긴다 — 램프가 풀보다 커지면 조용히 겹치는 대신
-    // 새로 만든다. 그 사실은 `signups` 카운터에 남는다.
-    const fresh = Math.random() < NEW_USER_RATIO || index >= (accountPool || 0);
+    // 새로 만든다.
+    //
+    // **둘을 갈라 센다.** 예전에는 둘 다 `signups`에만 남아서, 비율대로 난
+    // 가입인지 풀이 모자라 난 가입인지 결과만 보고는 알 수 없었다.
+    const outOfPool = index >= (accountPool || 0);
+    const plannedFresh = Math.random() < NEW_USER_RATIO;
+    if (outOfPool) poolMisses.add(1);
+    const fresh = plannedFresh || outOfPool;
 
     let nickname;
     if (fresh) {
