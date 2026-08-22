@@ -248,7 +248,16 @@ describe('시나리오 — 블라인드 상승과 상금 지급', () => {
 
         const me = state.players[h.seatOf(state, id)]!;
         const target = Math.min(me.stack + me.bet, 500);
-        const action = target > state.currentBet ? ActionType.RAISE : ActionType.CALL;
+        // **레이즈는 규칙에 맞을 때만 건다.** 엔진이 노리밋 홀덤의 최소 레이즈
+        // 폭을 지키므로(`handleRaise`), 폭이 모자라면 레이즈가 아니라 콜이다 —
+        // 예전에는 규칙이 없어 500짜리 소액 레이즈가 통과했다. 올인은 폭이
+        // 모자라도 허용되므로 그 경우는 그대로 건다.
+        const minRaiseSize = state.lastRaiseSize ?? state.smallBlind * 2;
+        const isAllIn = target >= me.stack + me.bet;
+        const canRaise =
+          target > state.currentBet &&
+          (isAllIn || target - state.currentBet >= minRaiseSize);
+        const action = canRaise ? ActionType.RAISE : ActionType.CALL;
         await h.playsync.handleAction(
           id, h.tableId,
           { action, ...(action === ActionType.RAISE ? { amount: target } : {}) } as never,

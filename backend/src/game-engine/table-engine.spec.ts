@@ -1362,3 +1362,153 @@ describe('T65 - act가 실제로 반영했는지 알린다', () => {
     expect(state.players[1]!.hasFolded).toBe(true);
   });
 });
+
+/**
+ * 노리밋 텍사스홀덤의 레이즈 규칙.
+ *
+ * 예전에는 `betAmount > currentBet` 하나만 봤다. 그래서 **최소 레이즈 폭이
+ * 없었고**, 풀 레이즈에 못 미치는 올인이 `resetChecked()`를 돌려 이미 콜한
+ * 사람의 체크를 풀었다 — 한 바퀴를 더 돈다.
+ *
+ * 규칙 셋을 여기서 고정한다.
+ *
+ * 1. 최소 레이즈 폭은 그 라운드의 **직전 베팅·레이즈 증분**이다. 프리플랍은
+ *    BB가 첫 베팅이라 최소 레이즈가 BB다.
+ * 2. **미달 올인은 베팅을 다시 열지 않는다.** 이미 액션한 사람은 콜/폴드만
+ *    남는다 — 다만 `currentBet`은 그 올인 금액까지 오른다(콜 금액이 그것이다).
+ * 3. 미달 올인은 **직전 레이즈 폭을 갱신하지 않는다.** 다음 최소 레이즈는
+ *    마지막 *풀* 레이즈 기준 그대로다.
+ */
+describe('TableEngine 최소 레이즈 (NLHE)', () => {
+  /** sb 100 → BB 200. 프리플랍 첫 베팅이 BB다. */
+  function preflop(stacks: number[], overrides: Partial<TableState> = {}) {
+    return makeState(
+      stacks.map((stack, i) => makePlayer(`p${i + 1}`, i, stack)),
+      { currentTurnSeatIndex: 0, currentBet: 200, smallBlind: 100, ...overrides },
+    );
+  }
+
+  it('BB에 못 미치는 레이즈 폭은 거부한다', async () => {
+    // currentBet 200에서 300으로 올리면 폭이 100이라 BB(200)에 못 미친다.
+    const state = preflop([10000, 10000]);
+
+    await expect(new TableEngine(state).act(0, ActionType.RAISE, 300)).rejects.toThrow(
+      '최소 레이즈 폭',
+    );
+    expect(state.pot).toBe(0);
+  });
+
+  it('BB만큼 올리면 통과한다', async () => {
+    const state = preflop([10000, 10000]);
+
+    await new TableEngine(state).act(0, ActionType.RAISE, 400);
+
+    expect(state.currentBet).toBe(400);
+    expect(state.lastRaiseSize).toBe(200);
+  });
+
+  it('직전 레이즈 폭보다 작은 재레이즈는 거부한다', async () => {
+    // 200 → 600(폭 400). 다음 최소 레이즈는 1000이다.
+    const state = preflop([10000, 10000, 10000]);
+    const engine = new TableEngine(state);
+
+    await engine.act(0, ActionType.RAISE, 600);
+
+    await expect(engine.act(1, ActionType.RAISE, 800)).rejects.toThrow('최소 레이즈 폭');
+  });
+
+  it('미달 올인은 이미 액션한 사람의 체크를 풀지 않는다', async () => {
+    // p1이 600으로 레이즈(폭 400), p2가 콜해 체크가 섰다. p3의 스택은 800뿐이라
+    // 올인해도 폭이 200 — 최소 400에 못 미친다. 베팅은 다시 열리지 않는다.
+    const state = preflop([10000, 10000, 800]);
+    const engine = new TableEngine(state);
+
+    await engine.act(0, ActionType.RAISE, 600);
+    await engine.act(1, ActionType.CALL);
+    expect(state.players[1]!.hasChecked).toBe(true);
+
+    await engine.act(2, ActionType.RAISE, 800);
+
+    expect(state.players[2]!.isAllIn).toBe(true);
+    // 콜 금액은 올랐다.
+    expect(state.currentBet).toBe(800);
+    // 이미 액션한 사람의 체크는 그대로다 — 한 바퀴를 더 돌지 않는다.
+    expect(state.players[0]!.hasChecked).toBe(true);
+    expect(state.players[1]!.hasChecked).toBe(true);
+  });
+
+  it('미달 올인은 직전 레이즈 폭을 갱신하지 않는다', async () => {
+    const state = preflop([10000, 10000, 800]);
+    const engine = new TableEngine(state);
+
+    await engine.act(0, ActionType.RAISE, 600); // 폭 400
+    await engine.act(1, ActionType.CALL);
+    await engine.act(2, ActionType.RAISE, 800); // 미달 올인(폭 200)
+
+    // 마지막 **풀** 레이즈 폭이 기준이다. 200으로 내려가면 안 된다.
+    expect(state.lastRaiseSize).toBe(400);
+  });
+
+  it('풀 레이즈짜리 올인은 베팅을 다시 연다', async () => {
+    // 이 단언이 없으면 "올인이면 무조건 안 연다"는 구현도 위를 통과한다.
+    const state = preflop([10000, 10000, 1000]);
+    const engine = new TableEngine(state);
+
+    await engine.act(0, ActionType.RAISE, 600); // 폭 400
+    await engine.act(1, ActionType.CALL);
+
+    await engine.act(2, ActionType.RAISE, 1000); // 폭 400 — 풀 레이즈다
+
+    expect(state.players[2]!.isAllIn).toBe(true);
+    expect(state.players[0]!.hasChecked).toBe(false);
+    expect(state.players[1]!.hasChecked).toBe(false);
+    expect(state.lastRaiseSize).toBe(400);
+  });
+
+  it('스트리트가 넘어가면 최소 레이즈가 BB로 돌아온다', async () => {
+    const state = preflop([10000, 10000]);
+    const engine = new TableEngine(state);
+
+    await engine.act(0, ActionType.RAISE, 600); // 폭 400
+    await engine.act(1, ActionType.CALL);
+
+    expect(state.phase).toBe(GamePhase.FLOP);
+    expect(state.lastRaiseSize).toBe(200);
+  });
+
+  /**
+   * 스택보다 큰 금액을 선언하면 **올인이다.** 이것이 잔여 목록의 「선언한
+   * 금액과 실제 낸 금액이 다른 것을 조용히 통과시킨다」였는데, 노리밋
+   * 홀덤에서는 그것이 올인의 정상적인 모양이다 — 낼 수 있는 만큼만 나가고
+   * 칩 총량은 보존된다. 거부하면 스택이 적은 사람이 올인을 못 한다.
+   *
+   * 위험한 쪽은 금액이 아니라 **그 올인이 베팅을 다시 여는 것**이었고,
+   * 그건 위에서 닫았다.
+   */
+  it('스택보다 큰 선언은 올인으로 접힌다', async () => {
+    // 차례를 1번에게 준다 — 비턴 액션은 엔진이 no-op으로 흘린다(T65).
+    const state = preflop([10000, 800], { currentTurnSeatIndex: 1 });
+    const before = totalChips(state);
+
+    await new TableEngine(state).act(1, ActionType.RAISE, 999999);
+
+    const p2 = state.players[1]!;
+    expect(p2.isAllIn).toBe(true);
+    expect(p2.stack).toBe(0);
+    expect(p2.bet).toBe(800);
+    expect(state.currentBet).toBe(800);
+    expect(totalChips(state)).toBe(before);
+  });
+
+  it('칩 총량은 어떤 경로에서도 보존된다', async () => {
+    const state = preflop([10000, 10000, 800]);
+    const before = totalChips(state);
+    const engine = new TableEngine(state);
+
+    await engine.act(0, ActionType.RAISE, 600);
+    await engine.act(1, ActionType.CALL);
+    await engine.act(2, ActionType.RAISE, 800);
+
+    expect(totalChips(state)).toBe(before);
+  });
+});

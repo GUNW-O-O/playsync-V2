@@ -133,6 +133,9 @@ export class TableEngine {
         }
       });
       this.state.currentBet = 0;
+      // **새 스트리트의 최소 레이즈는 BB다.** 직전 스트리트의 레이즈 폭을
+      // 들고 넘어가면 플랍에서 프리플랍의 큰 레이즈만큼을 요구하게 된다.
+      this.state.lastRaiseSize = this.state.smallBlind * 2;
       // 쇼다운에는 차례가 없다. 여기서 좌석을 배정하면 딜러가 승자를 입력하는
       // 동안 남의 화면에 카운트다운이 돈다 — T8 가드가 액션은 막지만, 잘못된
       // 상태가 태블릿으로 브로드캐스트되고 타임아웃 잡도 걸린다.
@@ -325,6 +328,24 @@ export class TableEngine {
     player.hasChecked = true;
   }
 
+  /**
+   * 레이즈. **노리밋 텍사스홀덤의 규칙 셋을 지킨다.**
+   *
+   * 1. 최소 레이즈 폭은 그 라운드의 **직전 베팅·레이즈 증분**이다
+   *    (`lastRaiseSize`). 프리플랍은 BB가 첫 베팅이라 BB에서 시작한다.
+   * 2. **풀 레이즈에 못 미치는 올인은 베팅을 다시 열지 않는다.** 이미 액션한
+   *    사람에게는 콜/폴드만 남는다 — 다만 `currentBet`은 그 올인 금액까지
+   *    오른다(콜 금액이 그것이다). 예전에는 `resetChecked()`를 무조건 돌려
+   *    이미 콜한 사람의 체크가 풀렸고, 한 바퀴를 더 돌았다.
+   * 3. 미달 올인은 **`lastRaiseSize`를 갱신하지 않는다.** 다음 최소 레이즈는
+   *    마지막 *풀* 레이즈 기준 그대로다.
+   *
+   * **스택이 모자라면 올인이다.** 선언한 금액을 다 못 내는 경우를 거부하지
+   * 않는 이유는 그것이 올인의 정상적인 모양이기 때문이다 — 낼 수 있는 만큼만
+   * 나가고 칩 총량은 보존된다(`executeBet`). 다만 그 올인이 미달이면 위 2·3이
+   * 걸린다. 최소 레이즈 검사도 올인에는 걸지 않는다. 규칙상 올인은 폭이
+   * 모자라도 허용되고, 막으면 스택이 적은 사람이 액션 자체를 못 한다.
+   */
   private handleRaise(player: TablePlayer, betAmount: number) {
     const previousBet = this.state.currentBet;
     // 엔진은 호출자를 신뢰하지 않는다. WS 경계뿐 아니라 타임아웃 프로세서와
@@ -336,15 +357,34 @@ export class TableEngine {
     if (needed <= 0) {
       throw new Error("잘못된 레이즈 금액입니다.");
     }
+
+    const minRaiseSize = this.minRaiseSize();
+    const isAllIn = needed >= player.stack;
+    if (!isAllIn && betAmount - previousBet < minRaiseSize) {
+      throw new Error(`최소 레이즈 폭은 ${minRaiseSize}입니다.`);
+    }
+
     const actualAdded = Math.min(needed, player.stack);
 
     this.executeBet(player, actualAdded);
 
     if (player.bet > previousBet) {
-      this.resetChecked();
+      // 실제로 낸 금액으로 다시 잰다. 올인으로 깎였으면 선언한 폭이 아니라
+      // 이 폭이 진실이다.
+      const raiseSize = player.bet - previousBet;
+      if (raiseSize >= minRaiseSize) {
+        this.resetChecked();
+        this.state.lastRaiseSize = raiseSize;
+      }
+      // 미달 올인이어도 콜 금액은 오른다.
       this.state.currentBet = player.bet;
     }
     player.hasChecked = true;
+  }
+
+  /** 지금 요구되는 최소 레이즈 폭. 값이 없으면 BB다(옛 스냅샷·새 스트리트). */
+  private minRaiseSize(): number {
+    return this.state.lastRaiseSize ?? this.state.smallBlind * 2;
   }
 
   // 레이즈시 모든 플레이어 checked 해제
@@ -449,6 +489,8 @@ export class TableEngine {
 
     // 4. 상태 설정
     this.state.currentBet = this.state.smallBlind * 2;
+    // 프리플랍의 첫 베팅은 BB다 — 그래서 최소 레이즈도 BB(= 2BB로 레이즈)다.
+    this.state.lastRaiseSize = this.state.smallBlind * 2;
 
     // 첫 순서는 BB 다음 사람. 헤즈업이면 BB 다음이 곧 SB(버튼)라 규칙과 맞는다.
     //
@@ -551,6 +593,7 @@ export class TableEngine {
     });
     this.state.pot = 0;
     this.state.currentBet = 0;
+    this.state.lastRaiseSize = undefined;
     this.state.sidePots = [];
     this.state.actionDeadline = undefined;
     // 리바인 대기가 끝났다는 뜻이다. 여기서만 딜러가 다음 핸드를 시작할 수 있다.

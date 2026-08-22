@@ -145,6 +145,26 @@ describe('SeatActionPanel', () => {
   });
 
   /**
+   * **최소 레이즈 폭은 BB가 아니라 직전 레이즈 폭이다**(노리밋 홀덤).
+   * 엔진이 그 규칙을 지키므로(`handleRaise`), 화면이 `currentBet + BB`로
+   * 잡으면 큰 레이즈 뒤에 불법 금액을 슬라이더에 그린다 — 사용자는 누른
+   * 뒤에야 거절을 본다.
+   */
+  it('직전 레이즈 폭이 크면 그만큼을 최소로 세운다', () => {
+    const state = baseState({
+      currentBet: 600,
+      smallBlind: 100,
+      lastRaiseSize: 400,
+      players: seats({ stack: 10000, bet: 0 }),
+    });
+
+    render(<SeatActionPanel state={state} mySeatIndex={0} onAction={vi.fn()} />);
+
+    // 600 + 400 = 1,000. BB로 잡으면 800이 되어 엔진이 거절한다.
+    expect(screen.getByRole('button', { name: '레이즈 1,000' })).toBeEnabled();
+  });
+
+  /**
    * 한 페이즈 안에서도 상대의 레이즈를 거쳐 차례가 **다시** 돌아온다. 그때도
    * 새 최소 레이즈로 다시 서야 한다 — 직전에 내가 만져 둔 값이 남으면 그것이
    * 새 `min`보다 작아, 슬라이더를 건드리기 전까지 레이즈가 막힌다(둘째와 같은

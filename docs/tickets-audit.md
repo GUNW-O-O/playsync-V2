@@ -1204,8 +1204,8 @@ T75와 같다. 그리고 이 증상은 **1코어 + 만 명 규모에서만** 나
 
 | 자리 | 무엇 | 묻어갈 곳 |
 |---|---|---|
-| `TableEngine.handleRaise` | 최소 레이즈에 못 미치는 올인이 `currentBet`을 올리고 `resetChecked()`를 돌린다. 실제 포커에서 **미달 올인은 베팅을 다시 열지 않는다** — 이미 콜한 사람의 체크가 풀려 한 바퀴를 더 돈다. `betAmount <= previousBet`만 보고 최소 레이즈 폭은 안 본다 | 아무 티켓 |
-| `TableEngine.handleRaise`의 상한 | `Math.min(needed, player.stack)`이 **선언한 금액과 실제 낸 금액이 다른 것**을 조용히 통과시킨다. T68이 화면을 고쳐 정상 경로는 안 밟지만 **경계에서 닫힌 것은 아니다** — 화면이 아닌 클라이언트가 `amount`를 직접 보내면 깎인 올인이 된다(`threat-model.md`상 참가자 단말은 신뢰 경계 밖). 칩 총량은 안 깨진다 | 아무 티켓 |
+| `TableEngine.handleRaise` | 최소 레이즈 폭이 없어 미달 올인이 `resetChecked()`를 돌렸다. 노리밋 홀덤 규칙 셋을 넣었다 — 폭은 직전 증분(`lastRaiseSize`), 미달 올인은 베팅을 안 열되 `currentBet`은 오르고, 그 올인은 폭을 갱신하지 않는다 | 완료 (#85) |
+| `TableEngine.handleRaise`의 상한 | **결함이 아니었다.** 스택보다 큰 선언이 깎여 올인이 되는 것은 노리밋 홀덤에서 올인의 정상적인 모양이고, 거부하면 스택이 적은 사람이 올인을 못 한다. 위험한 쪽은 금액이 아니라 그 올인이 베팅을 다시 여는 것이었고 위 줄이 닫았다. 뜻을 테스트로 못 박았다 | 완료 (#85) |
 | `ActionTimer` | 서버가 만든 `actionDeadline`을 태블릿 시계와 직접 비교한다. `DisplayClient`는 같은 이유로 `blindField.serverTime`으로 오프셋을 보정하는데 여기엔 없다 — 시계가 뒤처진 태블릿은 게이지가 남은 채 자동 폴드된다. 초기 렌더 100ms 동안 "0초 남음"이 뜨는 것도 같은 함수 | 아무 티켓 |
 | `WaitingClient.submit` · `DealerWaitingClient.submit` | 제출 버튼이 `otp.length === 0`만 본다. `OTP_LENGTH`(8 / 6)와 대조하지 않아 짧은 코드가 백엔드까지 왕복한다 | 완료 (#73) |
 | `WaitingClient.poll` · `DisplayClient.poll` · `selectTournament` | `try`/`catch`가 없다. 네트워크 블립마다 처리되지 않은 프라미스 거부가 난다. 폴링 쪽은 다음 주기에 낫지만 `selectTournament`는 테이블 목록이 낡은 채 아무 안내도 안 뜬다. 같은 모양이던 `ConsoleClient.run`은 T70이 가져갔다 | 완료 (#73) |
