@@ -133,15 +133,19 @@ describe('PlaysyncService.handleAction', () => {
         JSON.stringify(makeState({ currentTurnSeatIndex: 0, timerEpoch: 7 })),
       );
 
-      const state = await service.handleAction(
+      const result = await service.handleAction(
         'alice',
         TABLE,
         { action: ActionType.TIME_OUT },
         5, // 낡은 세대
       );
 
-      expect(state.players[0]!.hasFolded).toBe(false);
-      expect(state.currentTurnSeatIndex).toBe(0);
+      // 쓰지 않고 나간 경로라 호출자에게 돌려줄 변경이 없다.
+      expect(result).toBeNull();
+
+      const stored: TableState = JSON.parse((await redis.get(`table:state:${TABLE}`))!);
+      expect(stored.players[0]!.hasFolded).toBe(false);
+      expect(stored.currentTurnSeatIndex).toBe(0);
     });
 
     it('테이블 상태를 바꾸지 않는다', async () => {
@@ -156,6 +160,91 @@ describe('PlaysyncService.handleAction', () => {
     });
   });
 
+  describe('비턴 액션', () => {
+    it('현재 턴의 타임아웃 잡을 건드리지 않는다', async () => {
+      // alice가 액션을 기다리는 중이고 큐에는 alice의 타이머가 1초 뒤로 걸려
+      // 있다. 그 상태에서 bob이 자기 차례가 아닌데 CHECK를 던진다.
+      //
+      // 엔진은 비턴 액션을 no-op으로 흘리지만, 예전에는 그 뒤에 조건 없이
+      // scheduleTurnTimeout이 불렸다 — 낡은 잡을 지우고 30초짜리를 새로
+      // 등록한다. 옆자리가 30초마다 아무 액션을 던지면 현재 턴 플레이어의
+      // 제한시간이 무한히 늘어난다.
+      await redis.set(
+        `table:state:${TABLE}`,
+        JSON.stringify(makeState({ currentTurnSeatIndex: 0, timerEpoch: 7 })),
+      );
+      await queue.add(
+        'player-timeout',
+        { tableId: TABLE, userId: 'alice', timerEpoch: 7 },
+        { delay: 1000, jobId: `${TABLE}-7`, removeOnComplete: true, removeOnFail: true },
+      );
+      const before = await queue.getJob(`${TABLE}-7`);
+
+      await service.handleAction('bob', TABLE, { action: ActionType.CHECK });
+
+      const after = await queue.getJob(`${TABLE}-7`);
+      expect(after).toBeDefined();
+      expect(after?.data.userId).toBe('alice');
+      expect(after?.delay).toBe(1000);
+      expect(after?.timestamp).toBe(before?.timestamp);
+      // 30초짜리 새 잡도 생기면 안 된다.
+      expect(await queue.getJob(`${TABLE}-8`)).toBeUndefined();
+    });
+
+    it('아무것도 바뀌지 않았음을 호출자에게 알린다', async () => {
+      // 게이트웨이가 브로드캐스트를 거를 수 있어야 한다. 상태 객체만 돌려주면
+      // "바뀐 것이 없다"를 표현할 자리가 없다.
+      await redis.set(
+        `table:state:${TABLE}`,
+        JSON.stringify(makeState({ currentTurnSeatIndex: 0, timerEpoch: 7 })),
+      );
+
+      const result = await service.handleAction('bob', TABLE, { action: ActionType.CHECK });
+
+      expect(result).toBeNull();
+    });
+
+    it('timerEpoch와 actionDeadline을 올리지 않는다', async () => {
+      const deadline = Date.now() + 1000;
+      await redis.set(
+        `table:state:${TABLE}`,
+        JSON.stringify(
+          makeState({ currentTurnSeatIndex: 0, timerEpoch: 7, actionDeadline: deadline }),
+        ),
+      );
+
+      await service.handleAction('bob', TABLE, { action: ActionType.CHECK });
+
+      const stored: TableState = JSON.parse((await redis.get(`table:state:${TABLE}`))!);
+      expect(stored.timerEpoch).toBe(7);
+      expect(stored.actionDeadline).toBe(deadline);
+    });
+
+    it('마감이 지난 턴을 되살리지 않는다', async () => {
+      // 마감을 넘긴 턴은 다음 요청에서 TIME_OUT으로 정리돼야 한다. 그런데
+      // 비턴 액션도 isExpired 경로를 타 effectiveAction이 TIME_OUT이 되고,
+      // 엔진에서는 비턴이라 no-op인데 타이머만 새로 걸렸다 — 자리를 비운
+      // 사람이 옆자리 덕에 영영 시간 초과되지 않는다.
+      await redis.set(
+        `table:state:${TABLE}`,
+        JSON.stringify(
+          makeState({
+            currentTurnSeatIndex: 0,
+            timerEpoch: 7,
+            actionDeadline: Date.now() - 1000,
+          }),
+        ),
+      );
+
+      await service.handleAction('bob', TABLE, { action: ActionType.CHECK });
+
+      const stored: TableState = JSON.parse((await redis.get(`table:state:${TABLE}`))!);
+      expect(stored.timerEpoch).toBe(7);
+      expect(stored.actionDeadline).toBeLessThan(Date.now());
+      expect(stored.players[0]!.hasFolded).toBe(false);
+    });
+  });
+
   describe('마감 시각', () => {
     it('마감이 지난 뒤 도착한 액션은 TIME_OUT으로 처리한다', async () => {
       // 태블릿에서 늦게 누른 버튼이 30초를 넘겨 도착한 경우.
@@ -165,10 +254,10 @@ describe('PlaysyncService.handleAction', () => {
         JSON.stringify(makeState({ actionDeadline: Date.now() - 1000 })),
       );
 
-      const state = await service.handleAction('alice', TABLE, {
+      const state = (await service.handleAction('alice', TABLE, {
         action: ActionType.RAISE,
         amount: 1000,
-      });
+      }))!;
 
       const alice = state.players[0]!;
       expect(alice.hasFolded).toBe(true); // 콜 금액 미달이므로 폴드
@@ -179,10 +268,10 @@ describe('PlaysyncService.handleAction', () => {
     it('마감 전에 도착한 액션은 정상 처리한다', async () => {
       await redis.set(`table:state:${TABLE}`, JSON.stringify(makeState()));
 
-      const state = await service.handleAction('alice', TABLE, {
+      const state = (await service.handleAction('alice', TABLE, {
         action: ActionType.RAISE,
         amount: 1000,
-      });
+      }))!;
 
       const alice = state.players[0]!;
       expect(alice.hasFolded).toBe(false);
@@ -200,10 +289,10 @@ describe('PlaysyncService.handleAction', () => {
         JSON.stringify({ tableId: TABLE, seatIndex: 0, status: 'KICKED' }),
       );
 
-      const state = await service.handleAction('alice', TABLE, {
+      const state = (await service.handleAction('alice', TABLE, {
         action: ActionType.RAISE,
         amount: 1000,
-      });
+      }))!;
 
       const alice = state.players[0]!;
       expect(alice.hasFolded).toBe(true);

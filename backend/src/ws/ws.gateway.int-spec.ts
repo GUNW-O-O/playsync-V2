@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { JwtService } from '@nestjs/jwt';
 import { Queue } from 'bullmq';
@@ -480,6 +481,26 @@ describe('WsGateway 인바운드 경계', () => {
 
       expect(playsync.handleAction).not.toHaveBeenCalled();
       expect(result?.event).toBe('error');
+    });
+
+    it('아무것도 바뀌지 않았으면 브로드캐스트를 시도조차 않는다', async () => {
+      // 턴이 아닌 사람의 액션은 서비스가 조용히 무시하고 `null`을 돌려준다.
+      // 그때도 전파하면 봇 하나가 30초마다 던지는 액션이 테이블 전원에게 같은
+      // 스냅샷을 반복 배달하는 증폭기가 된다(T65).
+      //
+      // `send`만 보면 이 테스트는 고치기 전에도 통과한다 — `null`은 아웃바운드
+      // 스키마에서 걸려 나가지 못하기 때문이다. 그래서 **걸러졌다는 증거**인
+      // 계약 위반 로그가 없는 것까지 본다. 정상 경로라면 로그도 없어야 한다.
+      const player = await connect(await playerTicket('alice'));
+      const logged = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+      (playsync.handleAction as jest.Mock).mockResolvedValueOnce(null);
+      player.send.mockClear();
+
+      await gateway.handlePlayerAction(player, { action: 'FOLD' });
+
+      expect(player.send).not.toHaveBeenCalled();
+      expect(logged).not.toHaveBeenCalled();
+      logged.mockRestore();
     });
 
     it('딜러 토큰으로는 플레이어 액션을 보낼 수 없다', async () => {
