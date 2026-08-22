@@ -66,11 +66,12 @@ export function middleware(request: NextRequest): NextResponse {
 //
 // 목록은 `public/`에 실제로 있는 것(.svg)과 앞으로 놓을 만한 웹 자산이다. 새
 // 확장자를 놓는 사람은 여기 한 줄을 고쳐야 하고, 그 diff는 리뷰에 보인다.
-const STATIC_EXT =
-  'svg|png|jpg|jpeg|gif|webp|avif|ico|css|js|map|txt|xml|json|woff|woff2|ttf|otf|mp4|webm';
-
+//
+// **상수로 빼서 템플릿으로 조립하지 않는다.** Next는 이 객체를 컴파일 시점에
+// 정적으로 읽으므로 보간이 들어가면 빌드가 거부한다("Entry `matcher[0]` need to
+// be static strings"). 타입 체크도 단위 테스트도 통과하고 **빌드만** 잡는다.
 export const config = {
   matcher: [
-    `/((?!api(?:/|$)|_next/static|_next/image|favicon.ico|.*\\.(?:${STATIC_EXT})$).*)`,
+    '/((?!api(?:/|$)|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|avif|ico|css|js|map|txt|xml|json|woff|woff2|ttf|otf|mp4|webm)$).*)',
   ],
 };
