@@ -453,9 +453,14 @@ await this.redis.mutateSnapshot(tableId, async (state) => {
 | `saveSnapshotUnlocked(tableId, state, reason)` | 락이 필요 없다고 **선언된** 예외. `reason`이 열거형이라 새 예외는 유니온을 고쳐야 하고 그 diff가 리뷰에 보인다 |
 
 `fn`의 규약 셋. **스냅샷이 없으면 `null`을 받는다**(착석이 유실 뒤 새로 세우는
-경로). **`null`을 돌려주면 쓰지 않는다**(낡은 `TIME_OUT`처럼 건드리지 않고 나가는
-자리). **반환값은 저장한 상태, 쓰지 않았으면 읽은 상태다** — 쓰지 않고 나가는
-호출자도 브로드캐스트할 것은 받아야 한다.
+경로). **`null`을 돌려주면 쓰지 않는다**(낡은 `TIME_OUT`이나 턴이 아닌 사람의
+액션처럼 건드리지 않고 나가는 자리). **반환값은 저장한 상태, 쓰지 않았으면 읽은
+상태다** — `mutateSnapshot`은 "안 썼다"를 반환값으로 표현하지 않는다.
+
+그래서 **쓰지 않았다는 사실은 호출자가 따로 들고 나가야 한다.**
+`PlaysyncService.handleAction`은 `acted` 플래그로 그것을 세우고 `null`을 돌려준다.
+받는 쪽(`WsGateway.handlePlayerAction`)은 `null`이면 전파하지 않는다 — 안 바뀐
+스냅샷을 테이블 전원에게 다시 배달하는 것은 증폭기일 뿐이다(T65).
 
 두 가지가 여기서 나온다.
 
@@ -499,6 +504,17 @@ await this.redis.mutateSnapshot(tableId, async (state) => {
 |---|---|
 | `DealerService.startPreFlop` | 대회 상태 검사가 `checkAndSyncBlindLevel`의 결과 하나뿐이다. **`PENDING`·`startedAt`이 null인 대회에서 핸드가 돈다.** `cancelSession`은 `startedAt`으로만 막으므로 칩이 움직인 뒤에도 전액 환불 취소가 통과한다 |
 | `PlaysyncService.getDashboardInfo` | 전광판이 거부된 시각을 기준으로 블라인드를 세고, 1초 폴링이 `checkAndSyncBlindLevel`을 밀어 **시작하지도 않은 대회의 레벨이 스스로 올라간다** |
+
+**턴 판정은 엔진 하나다.** `TableEngine.act`가 턴이 아닌 사람의 액션을 예외 없이
+흘리고(딜러가 자기 차례 아닌 사람을 접는 기능이 그 위에 서 있다), **실제로
+반영했는지를 `boolean`으로 돌려준다.** 밖(서비스·게이트웨이)은 그 답을 읽을 뿐
+같은 검사를 다시 두지 않는다 — 검사가 둘이 되면 한쪽만 고쳐지는 날이 온다.
+
+이 답을 안 읽으면 무엇이 깨지나: `handleAction`이 조건 없이
+`scheduleTurnTimeout`을 부르던 시절, 착석자 아무나 30초마다 아무 액션을 던져
+**현재 턴 플레이어의 제한시간을 무한히 연장**할 수 있었고 마감을 넘긴 턴도
+되살아났다(T65). 시간 제한은 사람의 자리 비움을 처리하는 장치라, 옆자리가
+그것을 무력화하면 장치가 아니게 된다.
 
 좌석 비트맵은 애초에 이 규약 밖이다 — 읽고 고쳐 쓰는 것이 아니라 Redis 원자
 연산이다(`redis.service.ts`의 `UPDATE_SEAT_BIT` · `UPDATE_SEAT_BITS_MANY`).
