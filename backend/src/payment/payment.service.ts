@@ -265,7 +265,24 @@ export class PaymentService {
           err.meta?.target ?? err.meta?.driverAdapterError?.cause?.constraint?.fields ?? [];
         const isOtpCollision =
           err.code === 'P2002' && violatedFields.some((field) => field.includes('playerOtp'));
-        if (!isOtpCollision) throw e;
+        if (isOtpCollision) continue;
+
+        // **같은 사람이 같은 대회에 두 번 참가한 경우다.** 재시도해도 같은
+        // 결과라는 판단은 예전부터 서 있었는데 응답이 안 붙어 있어서, 원본
+        // P2002가 그대로 올라가 500이 됐다 — 화면에는 원인 없는 실패로
+        // 보인다(`failureMessage`가 꺼낼 문구가 없다). 사람이 아는 상황이라
+        // 안내가 가능하다.
+        //
+        // 전역 필터(`PrismaExceptionFilter`)도 P2002를 409로 내리지만 문구는
+        // 일반적이다("이미 있는 값입니다"). 여기서 무엇이 겹쳤는지 아는 이상
+        // 그 자리에서 말하는 편이 낫다.
+        const isDuplicateEntry =
+          err.code === 'P2002' && violatedFields.some((field) => field.includes('userId'));
+        if (isDuplicateEntry) {
+          throw new ConflictException('이미 참가한 대회입니다.');
+        }
+
+        throw e;
       }
     }
     if (!participation) {

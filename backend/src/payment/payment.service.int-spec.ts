@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { ConflictException, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { Queue } from 'bullmq';
@@ -190,7 +190,7 @@ describe('PaymentService — 참가 OTP 발급', () => {
     expect(pointTxCount).toBe(1);
   });
 
-  it('같은 사람이 두 번 참가하면 재시도하지 않고 그대로 실패한다', async () => {
+  it('같은 사람이 두 번 참가하면 409로 거절한다 — 재시도하지 않는다', async () => {
     // 인자 없는 `.rejects.toThrow()`는 아무 에러나 통과시킨다 — 충돌 판별을
     // 거꾸로 뒤집어(OTP 충돌이 아닌 것을 충돌로 오분류) 5번 재시도 끝에
     // `ConflictException('참가 OTP를 만들지 못했습니다...')`를 던지게 고장 내도
@@ -213,21 +213,17 @@ describe('PaymentService — 참가 OTP 발급', () => {
       caught = e;
     }
 
-    expect(caught).toBeInstanceOf(Prisma.PrismaClientKnownRequestError);
-    const err = caught as Prisma.PrismaClientKnownRequestError;
-    expect(err.code).toBe('P2002');
-    // ConflictException으로 포장되지 않고 Prisma 원본 에러 그대로 올라왔다는
-    // 뜻이다 — 재시도 루프를 다 돌고 나서 뜨는 '참가 OTP를 만들지 못했습니다'
-    // 메시지가 아니다.
-    expect(err.message).not.toContain('참가 OTP를 만들지 못했습니다');
+    // **문구가 있는 409여야 한다.** 예전에는 Prisma 원본 P2002가 그대로
+    // 올라가 500이 됐고, 화면은 원인 없는 실패만 보여줬다 — 사실은 사람이
+    // 아는 상황("이미 참가했다")이라 안내가 가능하다.
+    expect(caught).toBeInstanceOf(ConflictException);
+    const err = caught as ConflictException;
+    expect(err.getStatus()).toBe(409);
+    expect(err.message).toBe('이미 참가한 대회입니다.');
 
-    // 충돌 필드가 playerOtp가 아니라 (tournamentId, userId)라는 것도 확인한다
-    // — payment.service.ts의 판별 로직과 같은 자리를 본다.
-    const meta = err.meta as
-      | { target?: string[]; driverAdapterError?: { cause?: { constraint?: { fields?: string[] } } } }
-      | undefined;
-    const violatedFields = meta?.target ?? meta?.driverAdapterError?.cause?.constraint?.fields ?? [];
-    expect(violatedFields.some((f) => f.includes('playerOtp'))).toBe(false);
+    // 재시도 루프를 다 돌고 나서 뜨는 OTP 문구가 아니다 — 그쪽이면 판별이
+    // 거꾸로 뒤집힌 것이다.
+    expect(err.message).not.toContain('참가 OTP를 만들지 못했습니다');
 
     // 재시도하지 않았다 — 두 번째 참가 시도에서 generatePlayerOtp가 정확히
     // 한 번만 불렸다(재시도했다면 2회 이상이었을 것이다).

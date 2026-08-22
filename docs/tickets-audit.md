@@ -63,7 +63,7 @@ contract       62  (4 suites)   전부 통과
 | T69 | 체크포인트 실패의 탈출구가 화면에 없다 | 멈춘 테이블에서 나올 길이 없다 | 중간 | T62 · T71 | **완료 (#79)** |
 | T72 | 목업 결제와 실패 경로 | 부하가 거절을 한 번도 안 밟았다 | 중간 | T66 | 대기 |
 | T73 | 데모 e2e가 소켓 연결 전에 딜러 버튼을 누른다 | `npm run demo` 장면 3~5를 아무도 검증 못 한다 | 중간 | — | **완료 (#80)** |
-| T74 | 예외 필터가 하나도 없다 | raw Prisma·postgres 오류가 그대로 500으로 나간다 | 중간 | — | 대기 |
+| T74 | 예외 필터가 하나도 없다 | raw Prisma·postgres 오류가 그대로 500으로 나간다 | 중간 | — | **완료 (#81)** |
 | T75 | 부하 무대가 시나리오대로 돌지 않는다 | 정원과 병목을 틀린 무대에서 쟀다 | 중간 | — | 대기 |
 | T76 | 1코어에서 체감 지연만 1초로 뛴다 | 사용자 불편선을 믿을 수 없다 | 중간 | T75 | 대기 |
 
@@ -1204,7 +1204,7 @@ T75와 같다. 그리고 이 증상은 **1코어 + 만 명 규모에서만** 나
 | `WaitingClient.poll` · `DisplayClient.poll` · `selectTournament` | `try`/`catch`가 없다. 네트워크 블립마다 처리되지 않은 프라미스 거부가 난다. 폴링 쪽은 다음 주기에 낫지만 `selectTournament`는 테이블 목록이 낡은 채 아무 안내도 안 뜬다. 같은 모양이던 `ConsoleClient.run`은 T70이 가져갔다 | 완료 (#73) |
 | `auth/action.ts`의 `handleLogin` · `handleRegister` | `res.ok` 확인 **전에** `await res.json()`. 리포의 다른 액션 파일은 전부 `.catch(() => null)` + `failureMessage`를 쓴다. 프록시 502나 rate-limit HTML이 오면 서버 액션이 던지고 빈 에러 바운더리가 뜬다 | 완료 (#73) |
 | `EntryController` · `PaymentController` | 둘이 같은 `@Controller('tournaments')`를 쓴다. 겹치는 패턴은 `GET /tournaments/stores/:storeId`(Payment)와 `GET /tournaments/:id/seats`(Entry)이고, 지금 맞게 도는 이유는 `app.module.ts`의 `imports`에서 `PaymentModule`이 앞이기 때문이다. **순서가 바뀌면 깨지는데 아무 테스트도 안 운다** — 같은 베이스를 쓴다는 사실이 어디에도 표시돼 있지 않았다. T66이 회귀 테스트로 못 박았다 | 완료 (#63) |
-| `CreateTournamentDto` | `startStack` · `entryFee` · `rebuyUntil`에 `@Max`가 없다. class-validator의 `@IsInt()`는 `2^31`을 넘는 안전 정수를 통과시키는데 Prisma `Int`는 postgres `integer`다. 22003이 예외 필터 없이 **500**으로 나가고, `totalBuyinAmount` 쪽은 **대회 도중에** 터진다 | T64 |
+| `CreateTournamentDto` | `startStack` · `entryFee` · `rebuyUntil`에 `@Max`가 없다. class-validator의 `@IsInt()`는 `2^31`을 넘는 안전 정수를 통과시키는데 Prisma `Int`는 postgres `integer`다. **T74가 응답을 400으로 바꿨지만**(P2020 매핑) 경계에서 막는 것은 아니다 — `totalBuyinAmount` 쪽은 여전히 **대회 도중에** 터지고, 그때 400을 받는 것은 잘못이 없는 참가자다 | 아무 티켓 |
 | `WsIdentity.role` | 타입이 Prisma `Role`인데 좌석 티켓은 `SEAT_ROLE = 'PLAYER'`를 싣는다. 그 값은 enum에 없다(`req: any`라 타입 체커가 못 잡는다). 게이트웨이가 `role === Role.DEALER`만 보므로 지금은 동작하지만, 티켓 신원의 타입이 실제로 흐르는 값과 다르다 | 완료 (#76) |
 | `WaitingClient`의 좌석 도식 | `seatStatus.map`이 `SEAT_POSITIONS[i]`를 인덱싱한다. 비트맵이 9칸보다 길면 `.left`에서 던진다. 지금은 어디서나 9칸 | 아무 티켓 |
 | `middleware.ts`의 `config.matcher` | 마지막 세그먼트에 점이 있는 경로를 통째로 건너뛴다(`[^/]+\.[a-zA-Z0-9]+$`). 지금 그런 라우트 파라미터가 없어 악용 불가지만, slug나 닉네임이 URL에 들어오는 날 가드가 꺼진다. T66은 범위 밖으로 뒀다 — 그런 파라미터를 처음 들이는 쪽이 함께 본다 | 아무 티켓 |
