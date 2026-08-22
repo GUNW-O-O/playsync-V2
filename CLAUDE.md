@@ -104,18 +104,18 @@ npm run assets         # 촬영본을 자르고 합쳐 img/ 로 (ffmpeg-static)
 타입 에러 0건, 테스트 전부 통과가 정상이다. CI(`.github/workflows/ci.yml`)가
 타입 체크 · 테스트 · 빌드를 돌린다.
 
-현재 기준선 (T65 완료 시점):
+현재 기준선 (T69 완료 시점):
 
 ```
 contract       62  (4 suites)
 백엔드 단위   264  (27 suites)
-프론트 단위   163  (30 files)
+프론트 단위   170  (30 files)
 통합          488  (33 suites)
 e2e            13  (4 files, regression 프로젝트)
 타입 에러       0
 ```
 
-e2e를 뺀 넷은 T65가 머지되면 `main`이 될 브랜치에서 실제로 돌린 값이다. e2e는
+e2e를 뺀 넷은 T69가 머지되면 `main`이 될 브랜치에서 실제로 돌린 값이다. e2e는
 **검증되지 않았다** — 데모 장면 3~5가 T73에 막혀 있다.
 
 플레이키는 없다. `EntryService.enterSeat`의 「다른 좌석에 동시에 앉으면 서로를

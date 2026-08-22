@@ -110,6 +110,90 @@ describe('DealerGameClient', () => {
     });
   });
 
+  /**
+   * 백엔드는 체크포인트가 재시도까지 실패한 상태를 안전 상태로 두고 나올 길을
+   * 만들어 뒀다(`DealerService.retryCheckpoint`). 화면에 그 길이 없으면 딜러는
+   * `HAND_END`에서 아무 버튼도 안 켜진 테이블 앞에 남는다 — `canStartHand`가
+   * `phase === WAITING`이라서다.
+   */
+  describe('체크포인트 탈출구', () => {
+    it('저장이 실패하면 핸드 시작 자리가 저장 재시도로 바뀐다', async () => {
+      await renderWithSocket(
+        baseState({ phase: GamePhase.HAND_END, dbSyncStatus: 'FAILED' }),
+      );
+
+      expect(screen.getByRole('button', { name: '저장 재시도' })).not.toBeDisabled();
+      expect(screen.queryByRole('button', { name: '핸드 시작' })).toBeNull();
+    });
+
+    it('왜 멈췄는지 화면에 적는다', async () => {
+      await renderWithSocket(
+        baseState({ phase: GamePhase.HAND_END, dbSyncStatus: 'FAILED' }),
+      );
+
+      expect(screen.getByTestId('db-sync-status')).toHaveTextContent('저장 실패');
+    });
+
+    it('서버가 재시도 중이면 누르지 못한다', async () => {
+      // 이미 백엔드가 재시도를 돌리고 있다. 딜러가 겹쳐 누를 이유가 없다.
+      await renderWithSocket(
+        baseState({ phase: GamePhase.HAND_END, dbSyncStatus: 'RETRYING' }),
+      );
+
+      expect(screen.getByRole('button', { name: '저장 재시도' })).toBeDisabled();
+    });
+
+    it('저장이 멀쩡하면 탈출구를 띄우지 않는다', async () => {
+      // 이 단언이 없으면 "항상 재시도 버튼"인 구현도 위 셋을 통과한다.
+      await renderWithSocket(baseState({ phase: GamePhase.HAND_END }));
+
+      expect(screen.queryByRole('button', { name: '저장 재시도' })).toBeNull();
+      expect(screen.queryByTestId('db-sync-status')).toBeNull();
+      expect(screen.getByRole('button', { name: '핸드 시작' })).toBeInTheDocument();
+    });
+
+    it('누르면 RETRY_CHECKPOINT가 다른 키 없이 그대로 나간다', async () => {
+      const { socket } = await renderWithSocket(
+        baseState({ phase: GamePhase.HAND_END, dbSyncStatus: 'FAILED' }),
+      );
+
+      await userEvent.click(screen.getByRole('button', { name: '저장 재시도' }));
+
+      expect(socket.sent).toEqual([
+        { event: 'DEALER_ACTION', data: { action: 'RETRY_CHECKPOINT' } },
+      ]);
+    });
+  });
+
+  /**
+   * 킥과 폴드는 다른 조작이다. 킥은 참가를 끝내고, 폴드는 이 핸드만 포기시킨다.
+   * `DEALER_FOLD`가 계약에 있는데 화면에 컨트롤이 없었다.
+   */
+  describe('딜러 폴드', () => {
+    it('베팅 중이면 그 자리를 접을 수 있다', async () => {
+      const { socket } = await renderWithSocket(
+        baseState({ phase: GamePhase.FLOP, currentTurnSeatIndex: 3 }),
+      );
+
+      await userEvent.click(screen.getByTestId('seat-3'));
+      await userEvent.click(screen.getByTestId('confirm-fold'));
+
+      expect(socket.sent).toEqual([
+        { event: 'DEALER_ACTION', data: { action: 'DEALER_FOLD', targetUserId: 'u-3' } },
+      ]);
+    });
+
+    it('베팅 라운드가 아니면 누르지 못한다', async () => {
+      // 엔진이 베팅 페이즈가 아닌 액션을 던진다(`TableEngine.act`). 거절을
+      // 받고 나서 알 이유가 없다.
+      await renderWithSocket(baseState({ phase: GamePhase.WAITING }));
+
+      await userEvent.click(screen.getByTestId('seat-3'));
+
+      expect(screen.getByTestId('confirm-fold')).toBeDisabled();
+    });
+  });
+
   it('자리를 누르고 내보내기를 확인하면 DEALER_KICK이 토큰·tableId 없이 그대로 나간다', async () => {
     const { socket } = await renderWithSocket(baseState());
 

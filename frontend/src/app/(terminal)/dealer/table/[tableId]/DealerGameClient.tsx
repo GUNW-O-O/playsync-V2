@@ -36,8 +36,10 @@ type KickTarget = { seatIndex: number; id: string; nickname: string };
  * 핸드셰이크에서 이미 검증돼 소켓에 박혀 있고, 인바운드 스키마(.strict())가
  * 모르는 키로 거부한다.
  *
- * 좌석을 눌러 내보내는 것(`DEALER_KICK`)이 유일한 좌석 상호작용이다 — 9행짜리
- * 좌석 표 대신 펠트의 자리를 직접 누른다.
+ * 좌석 상호작용은 펠트의 자리를 직접 누르는 것 하나다 — 9행짜리 좌석 표를
+ * 쓰지 않는다. 누른 자리에 대해 할 수 있는 것이 둘이고, **둘은 다른 조작이다**:
+ * 내보내기(`DEALER_KICK`)는 참가를 끝내고, 폴드(`DEALER_FOLD`)는 이 핸드만
+ * 포기시킨다. 자리를 비운 사람이 돌아올 수 있으면 폴드다.
  */
 export default function DealerGameClient({
   tableId,
@@ -149,8 +151,18 @@ export default function DealerGameClient({
     setKickTarget(null);
   }
 
+  function confirmFold() {
+    if (!foldTarget) return;
+    sendDealerAction({ action: 'DEALER_FOLD', targetUserId: foldTarget.id });
+    setKickTarget(null);
+  }
+
   function startHand() {
     sendDealerAction({ action: 'START_PRE_FLOP' });
+  }
+
+  function retryCheckpoint() {
+    sendDealerAction({ action: 'RETRY_CHECKPOINT' });
   }
 
   function submitWinners(winnerGroups: string[][]) {
@@ -161,6 +173,28 @@ export default function DealerGameClient({
   const seatedCount = gameState?.players.filter((p) => p !== null).length ?? 0;
   const canStartHand = gameState?.phase === GamePhase.WAITING;
   const canResolveWinners = gameState?.phase === GamePhase.SHOWDOWN;
+
+  // 폴드는 베팅 라운드에서만 뜻이 있다. `TableEngine.act`가 그 밖의 페이즈를
+  // 통째로 던지므로, 거절을 받고 나서 알게 하지 않고 여기서 미리 끈다.
+  const isBettingRound =
+    gameState !== null &&
+    gameState.phase >= GamePhase.PRE_FLOP &&
+    gameState.phase <= GamePhase.RIVER;
+  const foldTarget = kickTarget;
+
+  /**
+   * **막다른 골목의 표시다.** 핸드 종료 체크포인트가 재시도까지 실패하면
+   * 백엔드는 그 자리를 안전 상태로 두고 멈춘다(`PlaysyncService`의
+   * `checkpointTableToDb`). 그때 `canStartHand`는 `phase === WAITING`이라
+   * 거짓이고, 승자 결정도 쇼다운이 아니라 거짓이다 — 화면의 버튼이 전부
+   * 꺼진다. 왜 멈췄는지와 나올 길을 여기서 그린다.
+   *
+   * `RETRYING`은 백엔드가 이미 재시도를 돌리는 중이라 겹쳐 누를 이유가 없다.
+   * 표시는 하고 버튼만 끈다 — 아무것도 안 그리면 딜러는 여전히 멈춘 이유를
+   * 모른다.
+   */
+  const dbSyncStatus = gameState?.dbSyncStatus;
+  const isCheckpointStuck = dbSyncStatus === 'RETRYING' || dbSyncStatus === 'FAILED';
 
   const winnerCandidates: WinnerCandidate[] = (gameState?.players ?? []).flatMap((p, seatIndex) =>
     p ? [{ id: p.id, nickname: p.nickname, hasFolded: p.hasFolded, seatIndex }] : [],
@@ -255,6 +289,15 @@ export default function DealerGameClient({
                 </button>
                 <button
                   type="button"
+                  data-testid="confirm-fold"
+                  disabled={!isBettingRound}
+                  onClick={confirmFold}
+                  className="flex-1 rounded border border-tb-line py-2 text-xs text-tb-ink disabled:opacity-30"
+                >
+                  폴드
+                </button>
+                <button
+                  type="button"
                   data-testid="confirm-kick"
                   onClick={confirmKick}
                   className="flex-1 rounded border border-tb-line py-2 text-xs text-tb-ink"
@@ -263,7 +306,7 @@ export default function DealerGameClient({
                 </button>
               </div>
               <p className="text-xs text-tb-sub">
-                칩은 남고, 참가 OTP로 다시 앉습니다.
+                폴드는 이 핸드만 접습니다. 내보내면 칩은 남고, 참가 OTP로 다시 앉습니다.
               </p>
             </div>
           ) : (
@@ -273,6 +316,13 @@ export default function DealerGameClient({
       </div>
 
       <div className="shrink-0 border-t border-tb-line p-3">
+        {isCheckpointStuck && (
+          <p data-testid="db-sync-status" className="mb-2 text-xs text-err">
+            {dbSyncStatus === 'FAILED'
+              ? '저장 실패 — 저장이 끝나야 다음 핸드로 갑니다.'
+              : '저장 재시도 중 — 잠시 기다려 주세요.'}
+          </p>
+        )}
         <div className="flex gap-2">
           <button
             type="button"
@@ -287,14 +337,25 @@ export default function DealerGameClient({
           >
             승자 결정
           </button>
-          <button
-            type="button"
-            disabled={!canStartHand}
-            onClick={startHand}
-            className="h-14 flex-1 border border-tb-line text-sm text-tb-ink disabled:opacity-30"
-          >
-            핸드 시작
-          </button>
+          {isCheckpointStuck ? (
+            <button
+              type="button"
+              disabled={dbSyncStatus === 'RETRYING'}
+              onClick={retryCheckpoint}
+              className="h-14 flex-1 border border-err text-sm text-tb-ink disabled:opacity-30"
+            >
+              저장 재시도
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled={!canStartHand}
+              onClick={startHand}
+              className="h-14 flex-1 border border-tb-line text-sm text-tb-ink disabled:opacity-30"
+            >
+              핸드 시작
+            </button>
+          )}
         </div>
       </div>
 
