@@ -5,7 +5,10 @@ import { calculatePrizes, PrizePayout } from "src/playsync/prize";
 import { UserInfo } from "shared/types/userInfo";
 import { getCurrentBlindLevel } from "shared/util/util";
 import { TableState } from "src/game-engine/types";
-import { isRegistrationOpenAtLevel } from "src/store/session/registration";
+import {
+  currentRegistrationLevel,
+  isRegistrationOpenAtLevel,
+} from "src/store/session/registration";
 
 @Injectable()
 export class RedisService {
@@ -305,8 +308,12 @@ export class RedisService {
     // 첫 인자로 해시 값을 그대로 넣는 것이 맞다. 그 값은 이미 "상점이 연
     // 상태 && 그때까지의 레벨"이 합쳐진 것이고, 마감은 단조라 한 번 '0'이면
     // 다시 열리지 않는다.
-    const curLv =
-      blindField.blindStructure[blindField.currentBlindLv]?.lv ?? 0;
+    // **휴식은 레벨이 아니다.** 휴식 원소의 `lv`(99)로 재면 전광판이 휴식마다
+    // "등록 마감"을 띄운다(T63). 판정에 쓸 레벨을 만드는 자리는 하나다.
+    const curLv = currentRegistrationLevel(
+      blindField.blindStructure,
+      blindField.currentBlindLv,
+    );
     const rebuyUntil = parseInt(raw.rebuyUntil || '0');
 
     return {
@@ -491,7 +498,13 @@ export class RedisService {
         serverTime: now,
       };
       await this.setTournamentBlind(tournamentId, updatedBlind);
-      const curLv = updatedBlind.blindStructure[updatedBlind.currentBlindLv].lv;
+      // 휴식 중이면 직전 실제 레벨로 판정한다. 휴식의 `lv`는 99라 어떤
+      // `rebuyUntil`보다 크고, 이 마감은 **단조라 되돌아오지 않는다** —
+      // 리바인 마감 전에 휴식이 한 번 오면 그 대회의 리바인이 거기서 죽었다(T63).
+      const curLv = currentRegistrationLevel(
+        updatedBlind.blindStructure,
+        updatedBlind.currentBlindLv,
+      );
       const regiCloseAt = await this.redis.hget(`tournament:${tournamentId}:info`, 'rebuyUntil');
       // 레벨은 startedAt과 현재 시각으로 매번 다시 계산되므로 한 번에 여러 칸
       // 뛸 수 있다(서버 재기동, 폴링 지연). 정확 일치로 보면 마감 레벨을 밟지

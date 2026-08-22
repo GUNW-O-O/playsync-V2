@@ -1,6 +1,13 @@
 import { getCurrentBlindLevel, parseBlindStructure } from 'shared/util/util';
 
 /**
+ * 휴식 구간의 센티널. `getCurrentBlindLevel`이 이 값으로 `isBreak`을 정한다.
+ * 센티널과 레벨 번호가 같은 필드에 있는 것이 T63의 뿌리인데, 계약을 바꾸면
+ * 프론트·시드·복구가 함께 움직인다 — 판정 쪽에서 건너뛰는 것으로 좁혔다.
+ */
+const BREAK_LEVEL = 99;
+
+/**
  * 등록이 지금 열려 있는지 정하는 **유일한 규칙**.
  *
  * 마감에는 두 가지가 겹쳐 있다.
@@ -19,6 +26,40 @@ import { getCurrentBlindLevel, parseBlindStructure } from 'shared/util/util';
  * 그래서 **판정을 한 곳으로 모은다.** 두 값을 합치는 식은 아래 하나뿐이고,
  * 결제·전광판·리바인이 전부 이것을 지난다.
  */
+/**
+ * 마감 판정에 쓸 **레벨 번호**를 구조에서 뽑는다.
+ *
+ * **휴식은 레벨이 아니다.** 구조에서 휴식 구간은 `lv === 99`인 원소인데
+ * (`BlindLevelSchema`가 `lv`에 상한을 안 거는 이유), 마감 판정은 같은 `lv`를
+ * 숫자로 비교한다. 그래서 휴식에 들어가는 순간 `99 < rebuyUntil`이 어떤
+ * 정상값에서도 거짓이 되고, 그 마감은 **단조라 되돌아오지 않는다**(T63).
+ * 규정상 5레벨까지 리바인 가능한 대회에서 3레벨에 파산한 사람이 리바인 없이
+ * 탈락한다 — `resolveWinners`가 `isRegistrationOpen`을 보고 팝업 자체를 안
+ * 띄우기 때문이다.
+ *
+ * 휴식 중에는 **직전 실제 레벨**로 판정한다. 휴식은 시간이 흐를 뿐 블라인드가
+ * 오르지 않는 구간이라, 그 사이의 등록 자격은 들어가기 직전과 같다.
+ *
+ * **이 계산이 호출자에 흩어지면 안 된다.** 판정하는 자리가 셋이고
+ * (`isRegistrationOpenNow` · `getDashboardInfo` · `checkAndSyncBlindLevel`의
+ * 자동 마감), 각자 "휴식이면 직전 것"을 적으면 한쪽만 고쳐지는 날이 온다 —
+ * T47이 규칙을 한 곳으로 모은 것과 같은 이유다.
+ *
+ * 지나온 실제 레벨이 없으면(구조가 휴식으로 시작, 인덱스가 범위 밖) 0이다.
+ * 0은 어떤 `rebuyUntil`보다도 작아 등록이 열린 것으로 판정된다 — 아직 아무
+ * 레벨도 지나지 않았으니 그것이 맞다.
+ */
+export function currentRegistrationLevel(
+  structure: { lv: number }[],
+  currentIndex: number,
+): number {
+  for (let i = Math.min(currentIndex, structure.length - 1); i >= 0; i--) {
+    const lv = structure[i]?.lv;
+    if (lv !== undefined && lv !== BREAK_LEVEL) return lv;
+  }
+  return 0;
+}
+
 export function isRegistrationOpenAtLevel(
   manuallyOpen: boolean,
   currentLv: number,
@@ -66,7 +107,10 @@ export function isRegistrationOpenNow(t: RegistrationSource): boolean {
   const structure = parseBlindStructure(t.blindStructure.structure);
   const blindBaseAt = t.startedAt.getTime() + t.pausedMs;
   const { currentIndex } = getCurrentBlindLevel(structure, blindBaseAt);
-  const currentLv = structure[currentIndex]?.lv ?? 0;
 
-  return isRegistrationOpenAtLevel(t.isRegistrationOpen, currentLv, t.rebuyUntil);
+  return isRegistrationOpenAtLevel(
+    t.isRegistrationOpen,
+    currentRegistrationLevel(structure, currentIndex),
+    t.rebuyUntil,
+  );
 }

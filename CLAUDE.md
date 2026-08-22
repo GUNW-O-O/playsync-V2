@@ -104,18 +104,18 @@ npm run assets         # 촬영본을 자르고 합쳐 img/ 로 (ffmpeg-static)
 타입 에러 0건, 테스트 전부 통과가 정상이다. CI(`.github/workflows/ci.yml`)가
 타입 체크 · 테스트 · 빌드를 돌린다.
 
-현재 기준선 (T74 완료 시점):
+현재 기준선 (T63 완료 시점):
 
 ```
 contract       62  (4 suites)
-백엔드 단위   272  (29 suites)
+백엔드 단위   279  (29 suites)
 프론트 단위   170  (30 files)
-통합          488  (33 suites)
+통합          490  (33 suites)
 e2e            13  (4 files, regression 프로젝트)
 타입 에러       0
 ```
 
-다섯 다 T74가 머지되면 `main`이 될 브랜치에서 실제로 돌린 값이다. **e2e도
+다섯 다 T63이 머지되면 `main`이 될 브랜치에서 실제로 돌린 값이다. **e2e도
 이제 돌려 본 값이다**(T73) — 회귀 13건이 통과했고 `npm run demo`도 장면 1~5를
 끝까지 간다. 둘 다 CI가 아니라 사람이 돌린다.
 

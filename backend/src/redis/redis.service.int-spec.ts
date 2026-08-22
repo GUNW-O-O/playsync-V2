@@ -629,6 +629,67 @@ describe('RedisService.checkAndSyncBlindLevel — 등록 마감', () => {
 
     expect(await redis.hget(infoKey, 'isRegistrationOpen')).toBe('1');
   });
+
+  /**
+   * **휴식은 레벨이 아니다**(T63). 구조에서 휴식은 `lv === 99`인 원소인데
+   * 자동 마감은 그 값을 그대로 `rebuyUntil`과 비교했다 — 휴식에 들어가는
+   * 순간 `99 >= rebuyUntil`이라 등록이 닫히고, **그 마감은 단조라 돌아오지
+   * 않는다.** 리바인 마감 전에 휴식이 한 번 오면 그 대회의 리바인은 거기서
+   * 죽는다.
+   *
+   * `prisma/seed.ts`가 휴식을 `REBUY_UNTIL` 바로 앞에 놓아 이 결함을 우회하고
+   * 있었다. 시드가 우회해야 한다는 것 자체가 규칙이 아니라 결함이라는 증거다.
+   */
+  it('휴식 중에는 등록을 닫지 않는다', async () => {
+    const withBreak = [
+      { lv: 1, sb: 100, ante: false, duration: 20 },
+      { lv: 2, sb: 200, ante: false, duration: 20 },
+      { lv: 99, sb: 200, ante: false, duration: 20 },
+      { lv: 3, sb: 300, ante: false, duration: 20 },
+    ];
+    const startedAt = Date.now() - 50 * MINUTE; // 인덱스 2 = 휴식
+    await seed(50, 4);
+    await service.setTournamentBlind(TOURNAMENT, {
+      isBreak: false,
+      startedAt,
+      currentBlindLv: 0,
+      nextLevelAt: startedAt + 20 * MINUTE,
+      serverTime: startedAt,
+      blindStructure: withBreak,
+    });
+
+    const blind = await service.checkAndSyncBlindLevel(TOURNAMENT);
+
+    expect(blind?.isBreak).toBe(true);
+    // 직전 실제 레벨은 2이고 마감 기준은 4다. 아직 열려 있어야 한다.
+    expect(await redis.hget(infoKey, 'isRegistrationOpen')).toBe('1');
+  });
+
+  it('휴식이 마감 레벨을 지난 뒤면 그대로 닫는다', async () => {
+    // 휴식 자체가 마감을 막지는 않는다. 직전 실제 레벨이 이미 기준을
+    // 넘었으면 닫는 것이 맞다 — 이 단언이 없으면 "휴식이면 무조건 열어 둔다"는
+    // 구현도 위를 통과한다.
+    const withBreak = [
+      { lv: 1, sb: 100, ante: false, duration: 20 },
+      { lv: 2, sb: 200, ante: false, duration: 20 },
+      { lv: 99, sb: 200, ante: false, duration: 20 },
+      { lv: 3, sb: 300, ante: false, duration: 20 },
+    ];
+    const startedAt = Date.now() - 50 * MINUTE; // 인덱스 2 = 휴식
+    await seed(50, 2);
+    await service.setTournamentBlind(TOURNAMENT, {
+      isBreak: false,
+      startedAt,
+      currentBlindLv: 0,
+      nextLevelAt: startedAt + 20 * MINUTE,
+      serverTime: startedAt,
+      blindStructure: withBreak,
+    });
+
+    await service.checkAndSyncBlindLevel(TOURNAMENT);
+
+    expect(await redis.hget(infoKey, 'isRegistrationOpen')).toBe('0');
+  });
 });
 
 /**

@@ -399,6 +399,18 @@ t=0에 둘이 같은 것은 우연이지 불변식이 아니다. 근거 주석�
 `rebuyUntil: 0`은 "처음부터 닫힘"이라는 뜻이다(스키마 기본값이 0이다). 리바인이
 열린 대회를 만들려면 첫 레벨보다 큰 값이어야 한다.
 
+**휴식은 레벨이 아니다.** 구조에서 휴식 구간은 `lv === 99`인 원소인데
+(`getCurrentBlindLevel`이 그 값으로 `isBreak`을 정한다), 그 99를 그대로 비교하면
+휴식에 들어가는 순간 등록이 닫히고 **단조라 되돌아오지 않는다.** 그래서 판정에
+쓰는 레벨은 `currentRegistrationLevel`이 만든다 — 휴식 중이면 **직전 실제
+레벨**이다(T63). 휴식은 시간이 흐를 뿐 블라인드가 오르지 않는 구간이라, 그
+사이의 등록 자격은 들어가기 직전과 같다.
+
+**그 계산도 한 자리에만 둔다.** 판정하는 곳이 셋이라(`isRegistrationOpenNow` ·
+`getDashboardInfo` · `checkAndSyncBlindLevel`의 자동 마감) 각자 "휴식이면 직전
+것"을 적으면 한쪽만 고쳐지는 날이 온다. 지나온 실제 레벨이 없으면 0이고,
+인덱스가 구조 밖이면 **마지막 실제 레벨로 접는다** — 모르는 값은 닫히는 쪽이다.
+
 ## 대회 입력의 경계
 
 `CreateTournamentDto`·`UpdateTournamentDto`(`shared/dto/tournament.dto.ts`)와
