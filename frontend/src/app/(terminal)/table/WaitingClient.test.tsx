@@ -28,6 +28,31 @@ describe('WaitingClient', () => {
     expect(screen.getByTestId('pick-seat-3')).not.toBeDisabled();
   });
 
+  /**
+   * 좌석 도식의 자리는 **아홉 개로 그려져 있다**(`SEAT_POSITIONS`). 비트맵이
+   * 그보다 길게 오면 `SEAT_POSITIONS[i].left`에서 던져 화면이 통째로 죽는다 —
+   * 대기 화면이라 그 순간 그 태블릿은 참가 자체를 못 한다.
+   *
+   * 좌석 수는 지금 어디서나 9지만, 그 사실이 **이 파일 어디에도 적혀 있지
+   * 않다.** 백엔드가 한 자리를 늘리는 날 화면이 죽는 것보다 아홉만 그리는
+   * 편이 낫다.
+   */
+  it('비트맵이 도식보다 길어도 죽지 않는다', async () => {
+    render(
+      <WaitingClient
+        storeId="s1"
+        tournaments={TOURNAMENTS}
+        tables={TABLES}
+        seatMap={[{ tableId: 'tb1', seatStatus: Array(12).fill(false) }]}
+        enterSeat={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('pick-seat-8')).toBeInTheDocument();
+    // 자리가 없는 인덱스는 그리지 않는다.
+    expect(screen.queryByTestId('pick-seat-9')).toBeNull();
+  });
+
   it('409를 받으면 그 문구가 화면에 뜬다', async () => {
     const enterSeat = vi.fn().mockResolvedValue({ error: '이미 다른 참가자가 앉은 좌석입니다.' });
     render(

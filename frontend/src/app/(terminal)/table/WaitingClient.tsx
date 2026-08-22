@@ -284,6 +284,14 @@ export default function WaitingClient({
               딜 러
             </div>
             {seatStatus.map((taken, i) => {
+              // **도식에 자리가 있는 인덱스만 그린다.** 비트맵이 아홉보다 길게
+              // 오면 예전에는 `SEAT_POSITIONS[i].left`에서 던져 대기 화면이
+              // 통째로 죽었다 — 그 순간 그 태블릿은 참가 자체를 못 한다.
+              // 좌석 수는 지금 어디서나 9지만 그 사실이 이 파일에 적혀 있지
+              // 않아서, 늘어나는 날 죽는 대신 아홉만 그린다.
+              const pos = SEAT_POSITIONS[i];
+              if (!pos) return null;
+
               const isPicked = seatIndex === i;
               return (
                 <button
@@ -310,7 +318,7 @@ export default function WaitingClient({
                         ? 'absolute grid h-8 w-8 -translate-x-1/2 -translate-y-1/2 place-items-center border-2 border-dashed border-[rgba(238,242,243,0.14)] bg-transparent font-mono text-sm text-tb-sub opacity-60'
                         : 'absolute grid h-8 w-8 -translate-x-1/2 -translate-y-1/2 place-items-center border-2 border-tb-muted bg-tb-panel font-mono text-sm text-tb-ink'
                   }
-                  style={{ left: SEAT_POSITIONS[i].left, top: SEAT_POSITIONS[i].top }}
+                  style={{ left: pos.left, top: pos.top }}
                 >
                   {i + 1}
                 </button>

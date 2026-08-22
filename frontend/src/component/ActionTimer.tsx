@@ -1,18 +1,51 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
-export default function ActionTimer({ deadline }: { deadline: number }) {
-  // 처음 렌더링될 때의 남은 전체 시간 (게이지 비율 계산용)
-  const [initialDiff] = useState(() => Math.max(0, deadline - Date.now()));
-  const [timeLeft, setTimeLeft] = useState(0);
-  const [progress, setProgress] = useState(100);
+/**
+ * 내 차례에 남은 시간.
+ *
+ * **서버 시각과 태블릿 시계는 다르다.** `deadline`은 서버가 만든 절대
+ * 시각인데(`PlaysyncService.scheduleTurnTimeout`), 그것을 브라우저
+ * `Date.now()`와 직접 비교하면 시계가 뒤처진 태블릿은 게이지가 남은 채
+ * 자동 폴드되고 앞선 태블릿은 이미 지난 턴을 계속 센다. 전광판
+ * (`DisplayClient`)이 같은 이유로 `serverTime`으로 오프셋을 보정한다.
+ *
+ * `serverNow`는 그 스냅샷이 서버를 떠난 시각이다. 여기서 오프셋을 한 번 재고
+ * 그 뒤로는 브라우저 시계의 **경과**만 쓴다 — 절대 시각을 믿지 않고 흐른
+ * 시간만 믿는 것이라, 태블릿 시계가 몇 분 어긋나 있어도 남은 시간은 맞는다.
+ * 없으면 보정 없이 돈다(계약 이전 서버·옛 스냅샷).
+ */
+export default function ActionTimer({
+  deadline,
+  serverNow,
+}: {
+  deadline: number;
+  /** 이 스냅샷이 서버를 떠난 시각. 없으면 브라우저 시계를 그대로 쓴다. */
+  serverNow?: number;
+}) {
+  // 마운트 시점에 한 번만 잰다. 이후 갱신은 경과로만 하므로 이 값이 흔들리지
+  // 않아야 한다.
+  const offsetRef = useRef(serverNow === undefined ? 0 : serverNow - Date.now());
+  const now = () => Date.now() + offsetRef.current;
+
+  const [initialDiff] = useState(() => Math.max(0, deadline - now()));
+
+  /**
+   * **첫 값은 렌더 중에 만든다.** 예전에는 0으로 시작해 첫 인터벌(100ms)이
+   * 돌아야 채워졌고, 그 사이 "0초 남음"이 뜬다 — 차례가 막 온 사람에게
+   * 시간이 없다고 말하는 화면이다.
+   */
+  const remainingAtMount = Math.max(0, deadline - now());
+  const [timeLeft, setTimeLeft] = useState(() => Math.ceil(remainingAtMount / 1000));
+  const [progress, setProgress] = useState(() =>
+    initialDiff > 0 ? (remainingAtMount / initialDiff) * 100 : 0,
+  );
 
   useEffect(() => {
     // 100ms마다 실행 (초 단위 숫자와 게이지를 부드럽게 갱신)
     const timer = setInterval(() => {
-      const now = Date.now();
-      const remainingMs = deadline - now;
+      const remainingMs = deadline - now();
 
       if (remainingMs <= 0) {
         setTimeLeft(0);
@@ -22,10 +55,11 @@ export default function ActionTimer({ deadline }: { deadline: number }) {
       }
 
       setTimeLeft(Math.ceil(remainingMs / 1000));
-      setProgress((remainingMs / initialDiff) * 100);
+      setProgress(initialDiff > 0 ? (remainingMs / initialDiff) * 100 : 0);
     }, 100);
 
     return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deadline, initialDiff]);
 
   // 시간에 따른 시각적 상태 (위험도 표시)

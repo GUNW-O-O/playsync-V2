@@ -119,6 +119,17 @@ export const TableStateSchema = z.object({
    * 거절을 본다. 값이 없으면 BB로 본다(옛 스냅샷).
    */
   lastRaiseSize: chips.optional(),
+  /**
+   * **이 스냅샷이 서버를 떠난 시각.** 상태가 아니라 봉투에 찍는 도장이다.
+   *
+   * `actionDeadline`은 서버가 만든 절대 시각인데, 단말이 그것을 자기
+   * `Date.now()`와 직접 비교하면 시계가 뒤처진 태블릿은 게이지가 남은 채
+   * 자동 폴드되고 앞선 태블릿은 지난 턴을 계속 센다. 전광판은 같은 이유로
+   * `blindField.serverTime`을 쓴다 — 좌석 태블릿에도 같은 재료가 필요하다.
+   *
+   * 스냅샷에는 저장하지 않는다. `WsGateway.toWireState`가 내보낼 때 찍는다.
+   */
+  serverTime: z.int().optional(),
   tournamentId: z.string().min(1),
 });
 
