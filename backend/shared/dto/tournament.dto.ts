@@ -10,8 +10,13 @@ import { GameType } from '@prisma/client';
  * 있으면 한쪽만 고쳐지는 날이 오지 않는다.
  *
  * 상한이 있는 이유는 Prisma `Int`가 postgres `integer`이기 때문이다.
- * class-validator의 `@IsInt()`는 `2^31`을 넘는 안전 정수를 통과시키고, 리포에
- * 예외 필터가 없어 22003이 그대로 500으로 나간다.
+ * class-validator의 `@IsInt()`는 `2^31`을 넘는 안전 정수를 통과시킨다.
+ *
+ * T74가 그 뒤에 그물을 하나 더 쳤다 — `PrismaExceptionFilter`가 범위 초과를
+ * 400으로 내린다(postgres `22003`은 Prisma가 `P2020`으로 감싼다). **그래도
+ * 경계는 여기다.** 필터는 이미 일어난 실패를 사람이 읽을 응답으로 바꿀 뿐이고,
+ * `totalBuyinAmount` 같은 누적값은 대회 도중에 넘치므로 그때 400을 받는 것은
+ * 잘못이 없는 참가자다.
  *
  * **`ENTRY_FEE_MAX`는 단발 값이 아니라 누적에서 역산한다.** `entryFee` 자체를
  * `Int` 상한(2,147,483,647) 아래로 막는 것만으로는 부족하다 — 실제로 터지는
