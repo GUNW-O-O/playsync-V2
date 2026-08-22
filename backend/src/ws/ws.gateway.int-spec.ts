@@ -644,6 +644,22 @@ describe('WsGateway 인바운드 경계', () => {
       return payload.data;
     }
 
+    it('보내는 순간의 서버 시각을 찍는다', async () => {
+      // 단말이 `actionDeadline`을 자기 시계와 직접 비교하면 시계가 어긋난
+      // 태블릿에서 타이머가 틀린다. 스냅샷에는 없는 값이라 **내보낼 때**
+      // 찍어야 한다.
+      const player = await connect(await playerTicket('alice'));
+      jest.clearAllMocks();
+      const before = Date.now();
+
+      gateway.handleGameStateUpdated({ tableId: TABLE, state: makeState() });
+
+      const serverTime = sentState(player).serverTime;
+      expect(typeof serverTime).toBe('number');
+      expect(serverTime).toBeGreaterThanOrEqual(before);
+      expect(serverTime).toBeLessThanOrEqual(Date.now());
+    });
+
     it('내부 필드 timerEpoch를 실어 보내지 않는다', async () => {
       // 타이머 세대는 잡의 폐기 판정에만 쓰는 서버 내부값이다. 참가자 단말이
       // 알 이유가 없고, 계약에도 없다.

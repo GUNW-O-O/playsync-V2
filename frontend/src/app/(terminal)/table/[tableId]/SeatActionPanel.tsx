@@ -199,7 +199,13 @@ export default function SeatActionPanel({
       {/* 타이머 자리. 차례가 아니면 비어 있지만 높이는 그대로다. */}
       <div data-testid="action-timer-slot" className="h-9">
         {myTurn && state?.actionDeadline && (
-          <ActionTimer key={state.actionDeadline} deadline={state.actionDeadline} />
+          <ActionTimer
+            key={state.actionDeadline}
+            deadline={state.actionDeadline}
+            // 서버가 봉투에 찍은 시각. 태블릿 시계가 어긋나 있어도 남은 시간이
+            // 맞으려면 이 값이 있어야 한다(`ws.gateway.ts`의 `toWireState`).
+            serverNow={state.serverTime}
+          />
         )}
       </div>
     </div>

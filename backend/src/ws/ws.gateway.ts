@@ -259,7 +259,13 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       this.logger.error(`renderGame 계약 위반 — 전파하지 않는다: ${parsed.error.message}`);
       return null;
     }
-    return parsed.data;
+    // **보내는 순간의 서버 시각을 찍는다.** 스냅샷에는 없는 값이다 — 저장하면
+    // 저장 시각이 되어 재접속 단말이 낡은 도장을 받는다.
+    //
+    // 단말은 이 값으로 자기 시계와의 오프셋을 재고, `actionDeadline`을 그
+    // 보정된 시각과 비교한다(`ActionTimer`). 없으면 시계가 뒤처진 태블릿은
+    // 게이지가 남은 채 자동 폴드된다.
+    return { ...parsed.data, serverTime: Date.now() };
   }
 
   /** `renderGame` 브로드캐스트의 유일한 입구. */
