@@ -111,8 +111,12 @@ async function sitDown(
   if (shotName) await shoot(page, shotName);
   await typeOtp(page, otp);
   await linger(page, 700);
+  // 좌석 액션도 소켓이 붙기 전에 누르면 조용히 사라진다. 자리에 앉는 이
+  // 지점이 그 소켓이 열리는 유일한 자리라, 여기서 한 번 기다려 둔다.
+  const connected = watchSocket(page);
   await press(page, page.getByRole('button', { name: /참가/ }));
   await page.waitForURL(`**/table/${tableId}`);
+  await connected;
   await linger(page, 1_200);
 }
 
@@ -138,8 +142,36 @@ async function enterDealer(page: Page, storeId: string, tableId: string, dealerO
   await page.goto(`/dealer?store=${storeId}`);
   await press(page, page.getByTestId(`pick-table-${tableId}`));
   await typeOtp(page, dealerOtp);
+  // 소켓은 딜러 화면에 들어간 뒤에 열린다. 그 화면으로 넘어가는 클릭보다
+  // 먼저 걸어 두지 않으면 첫 프레임을 놓친다.
+  const connected = watchSocket(page);
   await press(page, page.getByRole('button', { name: /인증/ }));
   await page.waitForURL(`**/dealer/table/${tableId}`);
+  await connected;
+}
+
+/**
+ * **소켓이 붙을 때까지 기다린다.** 누르기 전에 하는 일이다.
+ *
+ * 딜러 화면도 좌석 화면도 SSR 스냅샷으로 펠트를 먼저 그리고 WebSocket은 그
+ * 뒤에 붙는다 — **버튼이 보인다고 소켓이 붙은 것이 아니다.** 그 사이에 누른
+ * 것은 `readyState !== OPEN` 가지로 빠져 `console.error` 하나만 남기고
+ * 사라진다. 예전에는 그 뒤에 상태가 바뀌기를 기다리다 죽었다(T73).
+ *
+ * Playwright에는 소켓의 `open` 이벤트가 없다. 대신 **첫 프레임 수신**을 본다 —
+ * 게이트웨이는 테이블에 접속한 소켓에게 `renderGame`을 자기에게만 한 번
+ * 보내므로(`WsGateway.handleConnection`), 그 프레임이 도착했다는 것은 소켓이
+ * 열렸고 그 테이블 세션에 등록까지 됐다는 뜻이다. `readyState === OPEN`보다
+ * 강한 신호다.
+ *
+ * **네비게이션보다 먼저 걸어야 한다.** `waitForEvent`는 이미 지나간 이벤트를
+ * 잡지 못한다. 그래서 이 함수는 기다리지 않고 **약속을 돌려주고**, 부르는
+ * 쪽이 화면에 들어간 뒤 그것을 기다린다.
+ */
+function watchSocket(page: Page) {
+  return page
+    .waitForEvent('websocket', { timeout: 60_000 })
+    .then((ws) => ws.waitForEvent('framereceived', { timeout: 60_000 }));
 }
 
 /**
@@ -152,6 +184,12 @@ async function enterDealer(page: Page, storeId: string, tableId: string, dealerO
  * 20초를 기다리다 죽었다.
  *
  * 그래서 "눌렀다"가 아니라 **"상태가 바뀌었다"를 성공으로 삼는다.**
+ *
+ * **이제 이것은 두 번째 방어선이다.** 첫 번째는 `watchSocket`이 화면에
+ * 들어가는 자리에서 소켓이 붙기를 먼저 기다리는 것이고(T73), 그것이 이
+ * 루프가 메우던 구멍 자체를 없앤다. 재시도를 남겨 두는 이유는 소켓이 붙은
+ * 뒤에도 끊길 수 있어서다 — 실측으로 화면 진입부터 첫 프레임까지 1.3~2.0초가
+ * 걸렸다.
  */
 async function pressUntilEffective(
   page: Page,
