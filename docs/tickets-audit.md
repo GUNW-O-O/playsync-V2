@@ -1202,18 +1202,23 @@ T75와 같다. 그리고 이 증상은 **1코어 + 만 명 규모에서만** 나
 
 티켓을 따로 세우지 않는다. 괄호 안 티켓에 묻어 간다.
 
+**2026-08-22 기준으로 열린 줄이 없다**(#86까지). 지운 것이 아니라 남겨 둔다 —
+무엇이 결함이었고 어디에 묻어 갔는지가 이 표의 값이다. 그중 둘은 **결함이
+아니었다는 결론**으로 닫혔다(`handleRaise`의 상한, `CreateTournamentDto`의
+`@Max`).
+
 | 자리 | 무엇 | 묻어갈 곳 |
 |---|---|---|
 | `TableEngine.handleRaise` | 최소 레이즈 폭이 없어 미달 올인이 `resetChecked()`를 돌렸다. 노리밋 홀덤 규칙 셋을 넣었다 — 폭은 직전 증분(`lastRaiseSize`), 미달 올인은 베팅을 안 열되 `currentBet`은 오르고, 그 올인은 폭을 갱신하지 않는다 | 완료 (#85) |
 | `TableEngine.handleRaise`의 상한 | **결함이 아니었다.** 스택보다 큰 선언이 깎여 올인이 되는 것은 노리밋 홀덤에서 올인의 정상적인 모양이고, 거부하면 스택이 적은 사람이 올인을 못 한다. 위험한 쪽은 금액이 아니라 그 올인이 베팅을 다시 여는 것이었고 위 줄이 닫았다. 뜻을 테스트로 못 박았다 | 완료 (#85) |
-| `ActionTimer` | 서버가 만든 `actionDeadline`을 태블릿 시계와 직접 비교한다. `DisplayClient`는 같은 이유로 `blindField.serverTime`으로 오프셋을 보정하는데 여기엔 없다 — 시계가 뒤처진 태블릿은 게이지가 남은 채 자동 폴드된다. 초기 렌더 100ms 동안 "0초 남음"이 뜨는 것도 같은 함수 | 아무 티켓 |
+| `ActionTimer` | 서버 `actionDeadline`을 태블릿 시계와 직접 비교했다. `WsGateway.toWireState`가 보내는 순간 `serverTime`을 봉투에 찍고, 타이머는 오프셋을 한 번 잰 뒤 **경과만** 쓴다. 초기 렌더의 "0초 남음"은 첫 값을 렌더 중에 만들어 없앴다 | 완료 (#86) |
 | `WaitingClient.submit` · `DealerWaitingClient.submit` | 제출 버튼이 `otp.length === 0`만 본다. `OTP_LENGTH`(8 / 6)와 대조하지 않아 짧은 코드가 백엔드까지 왕복한다 | 완료 (#73) |
 | `WaitingClient.poll` · `DisplayClient.poll` · `selectTournament` | `try`/`catch`가 없다. 네트워크 블립마다 처리되지 않은 프라미스 거부가 난다. 폴링 쪽은 다음 주기에 낫지만 `selectTournament`는 테이블 목록이 낡은 채 아무 안내도 안 뜬다. 같은 모양이던 `ConsoleClient.run`은 T70이 가져갔다 | 완료 (#73) |
 | `auth/action.ts`의 `handleLogin` · `handleRegister` | `res.ok` 확인 **전에** `await res.json()`. 리포의 다른 액션 파일은 전부 `.catch(() => null)` + `failureMessage`를 쓴다. 프록시 502나 rate-limit HTML이 오면 서버 액션이 던지고 빈 에러 바운더리가 뜬다 | 완료 (#73) |
 | `EntryController` · `PaymentController` | 둘이 같은 `@Controller('tournaments')`를 쓴다. 겹치는 패턴은 `GET /tournaments/stores/:storeId`(Payment)와 `GET /tournaments/:id/seats`(Entry)이고, 지금 맞게 도는 이유는 `app.module.ts`의 `imports`에서 `PaymentModule`이 앞이기 때문이다. **순서가 바뀌면 깨지는데 아무 테스트도 안 운다** — 같은 베이스를 쓴다는 사실이 어디에도 표시돼 있지 않았다. T66이 회귀 테스트로 못 박았다 | 완료 (#63) |
 | `CreateTournamentDto` | `@Max`가 없다고 적혀 있었으나 **T64가 이미 걸었다** — `Create`·`Update` 양쪽에 셋 다 있고 `ENTRY_FEE_MAX`는 누적(`totalBuyinAmount`)에서 역산한 값이다. 대장이 낡았던 것이고 코드는 멀쩡하다. T74가 그 뒤에 그물을 하나 더 쳤다(범위 초과 → 400) | 완료 (#60) |
 | `WsIdentity.role` | 타입이 Prisma `Role`인데 좌석 티켓은 `SEAT_ROLE = 'PLAYER'`를 싣는다. 그 값은 enum에 없다(`req: any`라 타입 체커가 못 잡는다). 게이트웨이가 `role === Role.DEALER`만 보므로 지금은 동작하지만, 티켓 신원의 타입이 실제로 흐르는 값과 다르다 | 완료 (#76) |
-| `WaitingClient`의 좌석 도식 | `seatStatus.map`이 `SEAT_POSITIONS[i]`를 인덱싱한다. 비트맵이 9칸보다 길면 `.left`에서 던진다. 지금은 어디서나 9칸 | 아무 티켓 |
+| `WaitingClient`의 좌석 도식 | `seatStatus.map`이 `SEAT_POSITIONS[i]`를 인덱싱해, 비트맵이 9칸보다 길면 `.left`에서 던져 대기 화면이 통째로 죽었다. 자리가 있는 인덱스만 그린다 | 완료 (#86) |
 | `middleware.ts`의 `config.matcher` | 마지막 세그먼트에 점이 있는 경로를 건너뛰었다. 중첩 경로는 `[^/]+`가 슬래시를 못 넘어 지켜졌지만 **루트 바로 아래는 빠졌다**(`/my.store`). 판정을 실제 자산 확장자 목록으로 좁혔다 | 완료 (#84) |
 | `backend/.env.example`의 `DATABASE_URL` | 사용자가 `user`인데 `backend/docker-compose.yml`은 `POSTGRES_USER: root`다. 예제대로 `.env`를 만들면 개발 DB에 못 붙는다. 한 글자다 | 완료 (#84) |
 | `EntryService.enterSeat`의 통합 스펙 | `다른 좌석에 동시에 앉으면 서로를 지우지 않는다`가 `테이블 상태를 복구하는 중입니다`로 간헐 실패했다(단독 8회 중 2회, PR #77의 CI 한 번). **갈렸다 — 스펙이 프로덕션에 없는 상태에서 출발했다.** 계측으로 잡은 실패 지점은 락 밖 빠른 경로이고, 그때 `_count=1`(남이 방금 커밋한 행) · `snapshot=null`(그 남이 아직 안 씀)이었다. 그 조합은 프로덕션에서 **유실을 뜻한다** — `SessionService`의 `createSession`·`createTable`이 테이블을 만들 때 빈 스냅샷을 함께 쓰기 때문이다(T38의 「테이블이 있으면 스냅샷이 있다」). 스펙의 `seedTournament`는 `prisma.table.create`만 해서 그 불변식을 깬 채 셋을 동시에 들여보냈다. 제품은 그대로 두고 스펙이 불변식을 세우고 시작하도록 고쳤다 | 완료 (#78) |
