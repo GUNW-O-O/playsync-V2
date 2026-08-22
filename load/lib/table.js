@@ -246,12 +246,16 @@ function pickAction(state, me, bigBlind) {
 
   const r = Math.random();
   if (canRaise && r < RAISE_RATIO) {
-    // **`amount`는 목표 총 베팅액이다.** 엔진이 보는 것은
-    // `betAmount > currentBet` 하나뿐이고 최소 레이즈 규칙이 없다
-    // (`table-engine.ts:321`). 스택을 넘으면 `executeBet`이 잘라 올인이
-    // 되고, 그 자리가 사이드팟을 만든다 — 일부러 막지 않는다.
-    const step = 1 + Math.floor(Math.random() * 3); // 1~3 BB
-    const amount = state.currentBet + step * bigBlind;
+    // **`amount`는 목표 총 베팅액이다.** 스택을 넘으면 `executeBet`이 잘라
+    // 올인이 되고, 그 자리가 사이드팟을 만든다 — 일부러 막지 않는다.
+    //
+    // **최소 레이즈 폭을 지킨다.** 엔진은 노리밋 홀덤 규칙대로 직전 레이즈
+    // 폭 이상을 요구한다(`table-engine.ts`의 `handleRaise`). BB 배수로만
+    // 올리면 큰 레이즈 뒤에 거절당하고, 봇은 그것을 "먹지 않았다"로 보고
+    // 재시도하다 무대를 죽인다.
+    const minRaiseSize = state.lastRaiseSize || bigBlind;
+    const step = 1 + Math.floor(Math.random() * 3); // 최소 폭의 1~3배
+    const amount = state.currentBet + step * minRaiseSize;
     raises.add(1);
     return { action: 'RAISE', amount };
   }

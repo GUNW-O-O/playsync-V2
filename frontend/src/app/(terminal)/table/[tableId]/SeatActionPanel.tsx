@@ -33,7 +33,12 @@ export default function SeatActionPanel({
   // 올인 버튼은 `stack + bet`을, 차례 초기화는 `stack`을 썼고, 그래서
   // 블라인드를 이미 깐 사람이 낼 수 있는 최소 레이즈를 못 냈다(T68).
   const maxTotal = myPlayer ? myPlayer.stack + myPlayer.bet : 0;
-  const minRaiseTotal = (state?.currentBet ?? 0) + bigBlind;
+  // **최소 레이즈 폭은 BB가 아니라 직전 레이즈 폭이다**(노리밋 홀덤). 엔진이
+  // 그 규칙을 지키므로(`table-engine.ts`의 `handleRaise`), 여기서 BB로 잡으면
+  // 큰 레이즈 뒤에 불법 금액을 슬라이더에 그리고 사용자는 누른 뒤에야 거절을
+  // 본다. 값이 없으면 BB다 — 스트리트의 첫 베팅이거나 옛 스냅샷이다.
+  const minRaiseSize = state?.lastRaiseSize ?? bigBlind;
+  const minRaiseTotal = (state?.currentBet ?? 0) + minRaiseSize;
   /**
    * 레이즈할 여력이 되는가. `goingToAllIn`("콜하면 다 들어가나")과 다른
    * 질문이다 — 콜이 다 들어가지 않아도 최소 레이즈에 못 미칠 수 있다.

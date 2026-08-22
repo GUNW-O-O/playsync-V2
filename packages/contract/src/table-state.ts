@@ -107,6 +107,18 @@ export const TableStateSchema = z.object({
    * 전원이 알아야 하고, 재접속한 단말도 같은 것을 봐야 한다.
    */
   dbSyncStatus: z.enum(["RETRYING", "FAILED"]).optional(),
+  /**
+   * 이 라운드에서 마지막으로 있었던 **풀 레이즈의 폭**. 다음 최소 레이즈다.
+   *
+   * 노리밋 텍사스홀덤에서 레이즈는 직전 베팅·레이즈 증분 이상이어야 한다.
+   * 프리플랍은 BB가 첫 베팅이라 BB에서 시작하고, 스트리트가 넘어가면 다시
+   * BB로 돌아온다. 미달 올인은 이 값을 갱신하지 않는다.
+   *
+   * **경계를 넘어야 하는 값이다.** 화면이 최소 레이즈를 `currentBet + BB`로
+   * 잡으면 큰 레이즈 뒤에 불법 금액을 슬라이더에 그리고, 사용자는 누른 뒤에야
+   * 거절을 본다. 값이 없으면 BB로 본다(옛 스냅샷).
+   */
+  lastRaiseSize: chips.optional(),
   tournamentId: z.string().min(1),
 });
 
