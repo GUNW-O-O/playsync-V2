@@ -5,7 +5,18 @@ export class TableEngine {
   constructor(public state: TableState) { }
 
   // 플레이어 액션 처리
-  public async act(playerIndex: number, action: ActionType, raiseAmount?: number) {
+  /**
+   * 액션을 반영하고 **실제로 반영했는지**를 돌려준다.
+   *
+   * 반환이 상태 객체였을 때는 호출자가 no-op을 가려낼 수 없었다 — 턴이 아닌
+   * 사람의 액션도 같은 객체가 돌아왔기 때문이다. 그래서 `handleAction`이
+   * 조건 없이 `scheduleTurnTimeout`을 불렀고, 옆자리가 아무 액션이나 던져
+   * 현재 턴 플레이어의 제한시간을 무한히 연장할 수 있었다(T65).
+   *
+   * 턴 검사를 엔진 밖에 하나 더 두지 않는 이유: 검사가 둘이 되면 한쪽만
+   * 고쳐지는 날이 온다. 판정은 여기 하나고, 밖은 그 답을 읽을 뿐이다.
+   */
+  public async act(playerIndex: number, action: ActionType, raiseAmount?: number): Promise<boolean> {
     const player = this.state.players[playerIndex];
     if (!player) {
       throw new Error("유효하지 않은 플레이어");
@@ -29,7 +40,7 @@ export class TableEngine {
     if (isDealerAction) {
       player.hasFolded = true;
     } else if (!isPlayerTurn) {
-      return this.state;
+      return false;
     } else if (!player.hasFolded) {
       switch (action) {
         case ActionType.FOLD:
@@ -73,7 +84,7 @@ export class TableEngine {
       this.calculateSidePots();
       this.state.phase = GamePhase.SHOWDOWN;
       this.state.currentTurnSeatIndex = -1;
-      return this.state;
+      return true;
     }
 
     // 턴이 아닌 사람을 딜러가 접은 경우 턴은 그대로 둔다. 지금 액션을 기다리는
@@ -82,11 +93,11 @@ export class TableEngine {
 
     if (this.shouldGoToNextPhase(nextTurn)) {
       this.nextPhase();
-      return this.state;
+      return true;
     }
 
     this.state.currentTurnSeatIndex = nextTurn;
-    return this.state;
+    return true;
   }
 
   private shouldGoToNextPhase(nextTurn: number) {

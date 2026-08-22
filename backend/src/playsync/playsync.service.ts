@@ -102,9 +102,10 @@ export class PlaysyncService {
     dto: PlayerActionDto,
     expectedTimerEpoch?: number,
   ) {
-    // 낡은 TIME_OUT은 쓰지 않고 나간다. 그 경로를 전파에서 가르려면 "실제로
-    // 고쳤는가"가 필요하다 — 반환값만으로는 갈리지 않는다(쓰지 않고 나가도
-    // 읽은 상태가 돌아온다).
+    // 쓰지 않고 나가는 경로가 둘이다(낡은 TIME_OUT, 턴이 아닌 사람의 액션).
+    // 그 경로를 전파에서 가르려면 "실제로 고쳤는가"가 필요하다 —
+    // `mutateSnapshot`의 반환값만으로는 갈리지 않는다(쓰지 않고 나가도 읽은
+    // 상태가 돌아온다).
     let acted = false;
 
     const state = await this.redis.mutateSnapshot(tableId, async (state) => {
@@ -155,7 +156,19 @@ export class PlaysyncService {
         effectiveAction === dto.action ? dto.amount : undefined;
 
       const engine = new TableEngine(state);
-      await engine.act(playerIdx, effectiveAction, effectiveAmount);
+      const applied = await engine.act(playerIdx, effectiveAction, effectiveAmount);
+
+      // 엔진이 no-op이었으면(턴이 아닌 사람의 액션) 낡은 TIME_OUT과 **같은
+      // 길**로 나간다. `null` 하나로 넷이 한 번에 멎는다 — 스냅샷 쓰기,
+      // 타임아웃 잡 삭제·재등록, `renderGame` 브로드캐스트, `acted` emit.
+      //
+      // 예전에는 여기가 조건 없이 통과해서, 옆자리가 30초마다 아무 액션이나
+      // 던지면 현재 턴 플레이어의 제한시간이 무한히 늘어났고 마감을 넘긴
+      // 턴도 되살아났다(T65).
+      //
+      // 에러를 돌려주지는 않는다. 지금도 조용히 무시하는 동작이고, 에러로
+      // 바꾸면 그것이 엔진 밖의 두 번째 턴 검사가 된다.
+      if (!applied) return null;
 
       // 타이머 교체는 반드시 검증을 모두 통과한 뒤에 한다. 조기 반환 경로는
       // 이 함수를 부르지 않으므로 큐를 건드리지 않는다.
@@ -179,11 +192,13 @@ export class PlaysyncService {
       this.eventEmitter.emit('game.state.updated', { tableId, state });
     }
 
-    // fn이 스냅샷 없음을 던지므로 여기에 null이 올 수 없다. 낡은 TIME_OUT은
-    // **쓰지 않고** 나갈 뿐이고, 그때 `mutateSnapshot`은 읽은 상태를 돌려준다.
-    // 반환 타입이 nullable로 넓어지면 게이트웨이가 `data: null`을 브로드캐스트할
-    // 수 있게 되므로 여기서 좁힌다.
-    return state!;
+    // 아무것도 바뀌지 않았으면 `null`이다. 호출자가 전파를 걸러야 하기
+    // 때문이다 — 상태 객체만 돌려주면 "바뀐 것이 없다"를 표현할 자리가 없고,
+    // 게이트웨이는 매번 같은 스냅샷을 테이블 전원에게 다시 배달하게 된다.
+    //
+    // `mutateSnapshot`의 반환값으로는 갈리지 않는다. fn이 `null`을 돌려줘도
+    // 그쪽은 **읽은 상태**를 돌려주기 때문이다.
+    return acted ? state! : null;
   }
 
   /**

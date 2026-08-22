@@ -319,6 +319,11 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     try {
       const updatedState = await this.playsync.handleAction(userId, tableId, parsed.data);
 
+      // 아무것도 바뀌지 않았으면(턴이 아닌 사람의 액션) 전파하지 않는다.
+      // 같은 스냅샷을 테이블 전원에게 다시 배달할 뿐이고, 30초마다 아무
+      // 액션이나 던지는 클라이언트가 그대로 증폭기가 된다(T65).
+      if (!updatedState) return;
+
       // 해당 테이블의 모든 인원에게 변경된 상태 브로드캐스트
       this.broadcastRenderGame(tableId, updatedState);
     } catch (e) {

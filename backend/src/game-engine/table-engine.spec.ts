@@ -1320,3 +1320,45 @@ describe('동점 — 보드 하이와 찹', () => {
     expect(state.players[1]!.stack).toBe(0);
   });
 });
+
+describe('T65 - act가 실제로 반영했는지 알린다', () => {
+  // 호출자는 "무엇이 됐는가"를 반환 상태로 알 수 없다. 비턴 액션도 상태
+  // 객체를 그대로 돌려받기 때문이다. 그래서 타이머 재등록·전파를 멈춰야 할
+  // 자리에서 no-op을 가려내지 못했다.
+  it('턴이 아닌 사람의 액션에는 false를 돌려준다', async () => {
+    const state = makeState([makePlayer('p1', 0, 1000), makePlayer('p2', 1, 1000)], {
+      currentTurnSeatIndex: 0,
+      currentBet: 0,
+    });
+
+    const applied = await new TableEngine(state).act(1, ActionType.CHECK);
+
+    expect(applied).toBe(false);
+    expect(state.players[1]!.hasChecked).toBe(false);
+  });
+
+  it('턴인 사람의 액션에는 true를 돌려준다', async () => {
+    const state = makeState([makePlayer('p1', 0, 1000), makePlayer('p2', 1, 1000)], {
+      currentTurnSeatIndex: 0,
+      currentBet: 0,
+    });
+
+    const applied = await new TableEngine(state).act(0, ActionType.CHECK);
+
+    expect(applied).toBe(true);
+    expect(state.players[0]!.hasChecked).toBe(true);
+  });
+
+  it('딜러 액션은 대상이 턴이 아니어도 true를 돌려준다', async () => {
+    // 자리를 비운 사람을 접는 기능이라 턴과 무관하게 상태를 바꾼다.
+    const state = makeState([makePlayer('p1', 0, 1000), makePlayer('p2', 1, 1000)], {
+      currentTurnSeatIndex: 0,
+      currentBet: 0,
+    });
+
+    const applied = await new TableEngine(state).act(1, ActionType.DEALER_FOLD);
+
+    expect(applied).toBe(true);
+    expect(state.players[1]!.hasFolded).toBe(true);
+  });
+});
