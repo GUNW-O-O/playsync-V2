@@ -485,6 +485,16 @@ await this.redis.mutateSnapshot(tableId, async (state) => {
 | `boot-recovery` | `recovery.service.ts` — 재구성은 `rebuildTable`, 빈 테이블은 `recoverTournament` | `app.listen()` 이전이라 경합 상대가 없다 |
 | `table-created` | `session.service.ts`의 `createSession` · `createTable` | 테이블이 방금 생겨 아직 아무도 모른다 |
 
+**테이블이 있으면 스냅샷이 있다**(T38). 위 `table-created`가 그 불변식을 세운다.
+그래서 **「스냅샷이 없다」의 뜻이 하나로 좁아진다 — 유실이다.** 착석의 복구 가드
+(`EntryService`의 `shouldBlockEmptySnapshot`)가 이 위에 서 있다: 좌석 행은 있는데
+스냅샷이 없으면 빈 스냅샷으로 앞사람을 지우는 대신 409로 물러난다.
+
+**테스트가 테이블을 만들 때도 이 불변식을 세운다.** `prisma.table.create`만 하면
+프로덕션에 없는 출발 상태가 되고, 동시 착석이 복구 가드와 경합해 간헐적으로
+「복구하는 중입니다」를 받는다 — 실제로 `entry.service.int-spec.ts`가 그렇게
+빨갰다. 유실을 흉내 내려는 테스트만 일부러 스냅샷 없이 시작한다.
+
 **만료는 `SET`에 접어 넣는다. 쪼개지 마라.** `writeSnapshot`이
 `set(key, value, 'EX', 86400)` 한 명령을 쓰는 이유는 두 왕복 사이의 실패 창을
 없애려는 것만이 아니다. **`SET`은 기존 TTL을 지운다** — 그래서 `expire`를

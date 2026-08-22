@@ -3,7 +3,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaClient, PlayerStatus, TournamentStatus } from '@prisma/client';
 import Redis from 'ioredis';
-import { GamePhase, TableState } from 'src/game-engine/types';
+import { GamePhase, TableState, createEmptyTableState } from 'src/game-engine/types';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { closeTestPrisma, createTestPrisma, truncateAll } from '../../test/helpers/prisma';
@@ -421,6 +421,19 @@ describe('EntryService.enterSeat', () => {
   });
 
   it('다른 좌석에 동시에 앉으면 서로를 지우지 않는다', async () => {
+    // **테이블이 있으면 스냅샷이 있다**(T38). 프로덕션에서 테이블을 만드는 두
+    // 경로(`SessionService`의 `createSession`·`createTable`)가 둘 다 빈 스냅샷을
+    // `table-created`로 함께 쓴다. `seedTournament`는 `prisma.table.create`만
+    // 하므로 그 불변식을 깬 채로 시작한다 — 이 파일의 가드 테스트들은 그걸
+    // 일부러 쓰지만(Redis 유실 흉내), 이 테스트는 아니다.
+    //
+    // 그대로 두면 셋이 복구 가드와 경합한다. 먼저 커밋한 사람의 좌석 행은
+    // 보이는데 그 사람의 스냅샷 쓰기는 아직 안 끝난 순간이 있고, 그때 들어온
+    // 사람은 `_count > 0` + `snapshot === null`을 읽어 「복구하는 중입니다」
+    // 409를 받는다. 실측으로 8회 중 2회 그렇게 빨갰다. **프로덕션에 없는
+    // 출발 상태가 만든 실패**라, 여기서 불변식을 세우고 시작한다.
+    await redisService.saveSnapshotUnlocked(TABLE, createEmptyTableState(TOURNAMENT), 'table-created');
+
     for (const [i, id] of ['u1', 'u2', 'u3'].entries()) {
       await participate(id, String(i + 1).padStart(8, '0'));
     }

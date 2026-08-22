@@ -1209,7 +1209,7 @@ T75와 같다. 그리고 이 증상은 **1코어 + 만 명 규모에서만** 나
 | `WaitingClient`의 좌석 도식 | `seatStatus.map`이 `SEAT_POSITIONS[i]`를 인덱싱한다. 비트맵이 9칸보다 길면 `.left`에서 던진다. 지금은 어디서나 9칸 | 아무 티켓 |
 | `middleware.ts`의 `config.matcher` | 마지막 세그먼트에 점이 있는 경로를 통째로 건너뛴다(`[^/]+\.[a-zA-Z0-9]+$`). 지금 그런 라우트 파라미터가 없어 악용 불가지만, slug나 닉네임이 URL에 들어오는 날 가드가 꺼진다. T66은 범위 밖으로 뒀다 — 그런 파라미터를 처음 들이는 쪽이 함께 본다 | 아무 티켓 |
 | `backend/.env.example`의 `DATABASE_URL` | 사용자가 `user`인데 `backend/docker-compose.yml`은 `POSTGRES_USER: root`다. 예제대로 `.env`를 만들면 개발 DB에 못 붙는다. 한 글자다 | 아무 티켓 |
-| `EntryService.enterSeat`의 통합 스펙 | `다른 좌석에 동시에 앉으면 서로를 지우지 않는다`가 **6회 중 1회** `테이블 상태를 복구하는 중입니다`로 실패한다(T61 작업 중 관측. `main` 기준선 4회는 전부 초록이었다). `claimSeat`이 `_count`를 락 밖에서 읽고 커밋과 스냅샷 쓰기 사이에 다른 요청이 끼는 창은 **주석이 이미 감수한다고 적어 둔 것**이라, 제품 결함인지 스펙이 그 창을 좁게 잡은 것인지가 갈리지 않았다. **6분의 1은 넘길 빈도가 아니다** | 아무 티켓 |
+| `EntryService.enterSeat`의 통합 스펙 | `다른 좌석에 동시에 앉으면 서로를 지우지 않는다`가 `테이블 상태를 복구하는 중입니다`로 간헐 실패했다(단독 8회 중 2회, PR #77의 CI 한 번). **갈렸다 — 스펙이 프로덕션에 없는 상태에서 출발했다.** 계측으로 잡은 실패 지점은 락 밖 빠른 경로이고, 그때 `_count=1`(남이 방금 커밋한 행) · `snapshot=null`(그 남이 아직 안 씀)이었다. 그 조합은 프로덕션에서 **유실을 뜻한다** — `SessionService`의 `createSession`·`createTable`이 테이블을 만들 때 빈 스냅샷을 함께 쓰기 때문이다(T38의 「테이블이 있으면 스냅샷이 있다」). 스펙의 `seedTournament`는 `prisma.table.create`만 해서 그 불변식을 깬 채 셋을 동시에 들여보냈다. 제품은 그대로 두고 스펙이 불변식을 세우고 시작하도록 고쳤다 | 완료 (#78) |
 | `UpdateTournamentDto` | `isRegistrationOpen`이 없다. `forbidNonWhitelisted: true`라 그 키를 보내면 400이고, `checkAndSyncBlindLevel`은 단조로 닫기만 한다 — **등록 마감을 사람이 되돌릴 API가 지금 없다** | T63 |
 
 ---
