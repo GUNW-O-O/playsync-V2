@@ -70,6 +70,16 @@ export class SessionController {
     return { ok: true };
   }
 
+  // 중단도 돈 경로다. 취소와 문을 나누는 이유는 **규칙이 달라서**다 — 취소는
+  // 시작 전 전액 환불, 중단은 진행 중인 사람 100% · 탈락한 사람 50%이고 남은
+  // 돈은 상점 몫이다. 한 라우트에 담으면 어느 규칙이 도는지가 대회 상태에
+  // 숨어, 누르는 사람이 무엇이 일어날지 모른 채 누른다.
+  @Roles(Role.STORE_ADMIN)
+  @Post(':id/abort')
+  async abort(@Req() req, @Param('id') id: string) {
+    return await this.sessionService.abortSession(id, req.user.userId);
+  }
+
   // 재발급/내보내기는 다른 상점의 대회를 건드릴 수 없어야 한다 — 재발급은
   // 평문 OTP를 응답에 실어 돌려주므로 역할만 확인하고 지나가면 그대로
   // 남의 대회 딜러 접근권을 만들어내는 경로가 된다. 소유권 확인은
