@@ -67,6 +67,7 @@ contract       62  (4 suites)   전부 통과
 | T75 | 부하 무대가 시나리오대로 돌지 않는다 | 정원과 병목을 틀린 무대에서 쟀다 | 중간 | — | **완료 (#82)** |
 | T76 | 1코어에서 체감 지연만 1초로 뛴다 | 사용자 불편선을 믿을 수 없다 | 중간 | T75 | **완료 (#87)** |
 | T77 | 파이널 테이블에서 딜러가 킥할 수 있다 | 헤즈업 킥이면 대회를 닫을 경로가 없다 | 높음 | — | **완료 (#89 · #90)** |
+| T78 | 닫힌 대회에 쓰기가 새는 자리 넷 | 회계가 끝난 대회에 돈과 인원이 들어간다 | 높음 | — | **완료 (#91)** |
 
 아래 **잔여 목록**은 티켓을 따로 세우지 않은 것들이다. 가까운 티켓에 묻어 간다.
 
@@ -1397,6 +1398,82 @@ isRegistrationOpen === false  &&  그 대회의 table 수 === 1
 파이널 테이블이 아니다). 게이트 자체의 검증은 진짜 DB가 있는
 `elimination.int-spec.ts`가 한다 — 저 파일에 DB를 들이면 「락만 본다」는 그
 파일의 존재 이유가 흐려진다.
+
+---
+
+## T78 — 닫힌 대회에 쓰기가 새는 자리 넷
+
+**등급**: 높음 · **범위**: `playsync/playsync.service.ts`, `payment/payment.service.ts`, `dealer/dealer.service.ts`, `store/session/tournament-status.ts` · **프론트 영향**: 없음
+
+### 왜 티켓인가
+
+**전수검사가 아니라 중단 정산(②)을 설계하다 나온 스윕이다.** 「시작한 대회의
+중단」을 열려면 `cancelSession`이 `startedAt !== null`에서 멈추는 것을 걷어내야
+하는데, 그러면 **진행 중인 대회가 닫히는 일이 정상 경로가 된다.** 지금은 그
+경로가 없어서 드러나지 않았을 뿐이라, 열기 전에 먼저 닫는다.
+
+네 자리 전부 같은 모양이다 — **검사는 트랜잭션 밖, 쓰기는 안.**
+
+| 자리 | 새던 것 | 그때 막던 것 |
+|---|---|---|
+| `PlaysyncService.executeRebuyTransaction` | 참가비 차감 · `totalBuyinAmount` · `buyInCount` | **없음.** `where: { id }`뿐 |
+| `PlaysyncService.eliminatePlayer` | 상금 지급 · `activePlayers` | 참가 행 상태뿐. 대회 상태는 안 봄 |
+| `PaymentService.joinSession` | 참가비 · 참가 행 · `totalPlayers` | `isClosedTournament`가 트랜잭션 **밖** |
+| `DealerService.handleDealerAction`의 KICK | `activePlayers` · 참가 `ELIMINATED` | 없음. 파이널 테이블 게이트는 다른 조건이다 |
+
+**리바인의 창이 제일 넓다.** 사람에게 15초를 묻고 오는 길이라
+(`waitForRebuyResponse`) 묻는 동안 닫히는 것이 드물지 않다. 그리고 **돈만
+사라진다** — 참가비는 빠지는데 칩을 넣는 `mutateSnapshot`이 지워진 스냅샷을
+못 찾아 아무 일도 안 하고, 장부 검산은 그보다 앞에서 이미 통과한 뒤다.
+
+### 무엇을 했나
+
+대회 장부를 건드리는 UPDATE의 `where`에 상태를 얹었다
+(`NOT_CLOSED_TOURNAMENT_FILTER`). 규칙과 근거는 `domain.md`의
+「닫힌 대회에는 아무것도 쓰지 않는다」.
+
+**Redis 쓰기 하나를 트랜잭션 뒤로 옮겼다.** 딜러 킥의
+`setUserContext('KICKED')`가 트랜잭션 **앞**에 있었다. Redis는 되돌아가지
+않으므로, 거절된 킥이 그 자국을 남기면 킥당하지 않은 사람이 무엇을 눌러도
+폴드가 된다(`handleAction`의 `isKicked` 분기).
+
+**딜러 경로만 앞단에서도 한 번 더 막는다.** 이미 읽은 행이라 조회가 늘지
+않고, 거기서 거절해야 그 앞의 Redis 부수효과까지 안 일어난다. 경합 자체는
+트랜잭션의 `where`가 닫는다 — 앞단 검사는 안내용이다.
+
+### 안전한 것으로 확인된 자리
+
+- 복구가 안 되살린다 — `recovery.service.ts`가 `status: ONGOING`만 찾는다
+- 딜러 로그인·갱신, 좌석 입장은 `isClosedTournament`가 이미 막는다
+- 타임아웃 잡은 스스로 무해하다 — `TimeoutProcessor`가 `if (!state) return`
+
+**다만 `startPreFlop` · `handleAction` · `resolveWinners`는 가드가 아니라
+부수효과로 안전하다.** 대회 상태를 아예 안 보고, 닫는 쪽이 스냅샷을 지워
+`SNAPSHOT_MISSING`으로 죽을 뿐이라 **스냅샷 삭제 전에 락을 잡은 호출은 그대로
+지나간다.** ②가 중단을 열 때 다시 볼 자리다.
+
+### 물린 것 — 엔진이 먼저 막아서 가짜 초록이었다
+
+딜러 킥의 「늦게 도착해도 인원이 줄지 않는다」가 **가드를 통째로 지워도
+초록이었다.** 시나리오가 프리플랍을 안 열어서, 킥이 대회 상태에 닿기 전에
+엔진의 「액션할 수 있는 상태가 아닙니다」에 걸린 것이다 — `CLAUDE.md`가 적어 둔
+「다른 계층이 이미 막고 있어서 검증 대상에 닿지도 못했다」의 다섯 번째 사례다.
+
+둘을 고쳐 잡았다. **판을 열고**(`startPreFlop`) 시작하는 것과, **거절 문구까지
+단언하는 것.** 문구를 안 보면 어떤 이유로 던져도 초록이라 검사가 아무것도
+증명하지 않는다.
+
+### 경합은 늦은 도착으로 재현되지 않는다
+
+`joinSession`과 딜러 킥은 **닫힌 뒤에 부르면 앞단 검사가 잡는다.** 그래서
+트랜잭션 **한가운데**서 닫아야 하고, 그 자리를 스파이로 만들었다 —
+`UserService.paymentPoint`(결제)와 `RedisService.mutateSnapshot`(딜러). 둘 다
+**진짜를 부르되 그 앞에 시각 하나를 끼워 넣는 것**이지 콜래버레이터를 흉내
+내지 않는다.
+
+시나리오 계층에는 그 스파이를 두지 않았다(그 계층의 규칙이다). 늦은 도착만
+`scenario/closed-tournament.int-spec.ts`가 보고, 경합은 각 서비스의
+int-spec이 본다.
 
 ---
 

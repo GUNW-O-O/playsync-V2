@@ -636,3 +636,47 @@ await this.redis.mutateSnapshot(tableId, async (state) => {
 착석으로도 낫지 않는다. 그래서 복구는 **스냅샷이 살아 있어도 비트맵을 따로
 본다**(`recoverTournament`). 되세울 때의 권위는 **스냅샷**이다 — DB 좌석
 행에는 참가가 끝난 잔재가 남고, 불변식이 "좌석 비트맵 == 스냅샷"이다.
+
+### 닫힌 대회에는 아무것도 쓰지 않는다
+
+`FINISHED`·`CANCELLED`가 되면 그 대회는 **회계가 끝났다.** 닫는 쪽이 「걷은
+참가비 == 나간 상금」을 맞춰 놓고 닫으므로(`completeSession`의 게이트), 그
+뒤에 들어온 쓰기는 어느 상금으로도 나가지 않는다.
+
+**판정과 쓰기가 같은 문장이어야 한다.** 상태를 트랜잭션 **밖**에서 읽고
+안에서 쓰면 그 사이가 창이다. 네 자리가 그 모양이었다.
+
+| 자리 | 새던 것 |
+|---|---|
+| `PlaysyncService.executeRebuyTransaction` | 참가비 차감 · `totalBuyinAmount` · `buyInCount` |
+| `PlaysyncService.eliminatePlayer` | 상금 지급 · `activePlayers` |
+| `PaymentService.joinSession` | 참가비 · 참가 행 · `totalPlayers` |
+| `DealerService.handleDealerAction`의 KICK | `activePlayers` · 참가 `ELIMINATED` |
+
+막는 모양은 하나다 — 대회 장부를 건드리는 UPDATE의 `where`에 상태를 얹는다.
+
+```ts
+where: { id: tournamentId, status: NOT_CLOSED_TOURNAMENT_FILTER }
+```
+
+UPDATE가 행 잠금을 잡으므로, **닫는 쪽과 쓰는 쪽 중 하나는 반드시 상대의
+커밋을 보고 결정한다.** 걸리면 P2025가 나고 같은 트랜잭션의 나머지 쓰기가
+함께 되돌아간다. P2025의 문구는 "필요한 레코드를 찾지 못했다"라 대회가 사라진
+것처럼 읽히므로 `asClosedTournamentWrite`가 뜻을 바꿔 준다.
+
+**창이 제일 넓은 곳은 리바인이다.** 사람에게 15초를 묻고 오는 길이라
+(`waitForRebuyResponse`) 묻는 동안 닫히는 것이 드물지 않고, 막지 않으면
+**돈만 사라진다** — 참가비는 빠지는데 칩을 넣는 `mutateSnapshot`이 지워진
+스냅샷을 못 찾아 아무 일도 안 한다.
+
+**Redis 쓰기는 트랜잭션 뒤로 보낸다.** 되돌아가지 않아서다. 딜러 킥의
+`setUserContext('KICKED')`가 트랜잭션 앞에 있었는데, 거절된 킥이 그 자국을
+남기면 킥당하지 않은 사람이 무엇을 눌러도 폴드가 된다(`handleAction`의
+`isKicked` 분기). 같은 이유로 `RedisService.rebuyPlayer`의 `hincrby`는
+**없는 키를 만들므로**, 트랜잭션이 먼저 거절해야 닫으면서 지운
+`tournament:{id}:info`가 TTL 없는 쓰레기로 부활하지 않는다.
+
+**지금 안전한 자리들은 가드가 아니라 부수효과로 안전하다.** `startPreFlop` ·
+`handleAction` · `resolveWinners`는 대회 상태를 아예 안 보고, 닫는 쪽이 Redis
+스냅샷을 지워 `SNAPSHOT_MISSING`으로 죽을 뿐이다 — **스냅샷 삭제 전에 락을
+잡은 호출은 그대로 지나간다.** 여기를 건드릴 때 "이미 막혀 있다"고 읽지 마라.

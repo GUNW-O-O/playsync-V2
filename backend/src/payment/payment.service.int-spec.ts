@@ -854,3 +854,136 @@ describe('PaymentService — 목업 충전과 거절 롤백', () => {
     });
   });
 });
+
+/**
+ * **참가하는 사이에 대회가 닫힌다.**
+ *
+ * `joinSession`은 `isClosedTournament`로 먼저 거절하는데, 그 검사는 **트랜잭션
+ * 밖**이다. 검사와 커밋 사이에 상점이 대회를 닫으면(`completeSession` ·
+ * `cancelSession`) 참가비와 참가 행이 죽은 대회에 들어간다 — 그 대회는 이미
+ * 「걷은 참가비 == 나간 상금」을 맞춰 놓고 닫힌 뒤라, 늘어난 `totalBuyinAmount`는
+ * 어느 상금으로도 나가지 않는다.
+ *
+ * **늦은 도착으로는 재현되지 않는다.** 닫힌 뒤에 부르면 트랜잭션 앞의 검사가
+ * 잡는다. 그래서 트랜잭션 **한가운데**서 닫아야 하고, 그 자리를 만드는 것이
+ * `paymentPoint` 스파이다 — 콜래버레이터를 흉내 내는 것이 아니라 **진짜를
+ * 부르되 그 앞에 시각 하나를 끼워 넣는다.**
+ */
+describe('PaymentService.joinSession — 참가하는 사이에 대회가 닫히면', () => {
+  let redis: Redis;
+  let prisma: PrismaClient;
+  let redisService: RedisService;
+  let userService: UserService;
+  let service: PaymentService;
+
+  const TOURNAMENT = 'race-tournament-1';
+  const USER = 'race-joiner';
+  const ENTRY_FEE = 1000;
+  const POINTS = 50_000;
+
+  async function seedDb() {
+    const owner = await prisma.user.create({ data: { nickname: 'race-owner', password: 'x' } });
+    const store = await prisma.store.create({ data: { name: 'race-store', ownerId: owner.id } });
+    const blind = await prisma.blindStructure.create({
+      data: {
+        name: 'race-blind',
+        storeId: store.id,
+        structure: [{ lv: 1, sb: 100, ante: false, duration: 600 }],
+      },
+    });
+    await prisma.tournament.create({
+      data: {
+        id: TOURNAMENT,
+        name: '경합 대회',
+        blindId: blind.id,
+        storeId: store.id,
+        dealerOtpHash: 'unused-hash',
+        entryFee: ENTRY_FEE,
+        startStack: 10000,
+        isRegistrationOpen: true,
+      },
+    });
+    await prisma.user.create({
+      data: { id: USER, nickname: USER, password: 'x', points: POINTS },
+    });
+  }
+
+  /**
+   * 참가비가 빠진 **직후, 대회 장부를 건드리기 직전**에 대회를 닫는다.
+   *
+   * 그 순서라야 창이 재현된다 — 트랜잭션은 아직 `Tournament` 행에 손대지
+   * 않았으므로 바깥의 UPDATE가 잠금 없이 통과하고, 뒤이은 `tx.tournament.update`가
+   * 이미 닫힌 대회를 만난다.
+   */
+  function closeMidTransaction() {
+    const real = userService.paymentPoint.bind(userService);
+    jest.spyOn(userService, 'paymentPoint').mockImplementation(async (...args) => {
+      await prisma.tournament.update({
+        where: { id: TOURNAMENT },
+        data: { status: 'CANCELLED' },
+      });
+      return real(...args);
+    });
+  }
+
+  beforeAll(() => {
+    redis = createTestRedis();
+    prisma = createTestPrisma();
+    redisService = new RedisService(redis);
+    userService = new UserService(prisma as unknown as PrismaService);
+    service = new PaymentService(
+      userService,
+      {} as unknown as SessionService,
+      prisma as unknown as PrismaService,
+      redisService,
+    );
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+    await closeTestPrisma(prisma);
+  });
+
+  beforeEach(async () => {
+    await flushTestRedis(redis);
+    await truncateAll(prisma);
+    await seedDb();
+    closeMidTransaction();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('409로 막는다 — 닫힌 뒤에 부른 것과 같은 문구다', async () => {
+    await expect(
+      service.joinSession({ tournamentId: TOURNAMENT }, USER),
+    ).rejects.toThrow('이미 닫힌 세션입니다.');
+  });
+
+  it('참가비가 빠지지 않는다 — 같은 트랜잭션이라 함께 되돌아간다', async () => {
+    await expect(service.joinSession({ tournamentId: TOURNAMENT }, USER)).rejects.toThrow();
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: USER } });
+    const ledger = await prisma.pointTransaction.count({ where: { userId: USER } });
+
+    expect(`지갑 ${user.points} / 거래 ${ledger}건`).toBe(`지갑 ${POINTS} / 거래 0건`);
+  });
+
+  it('참가 행과 대회 장부가 그대로다', async () => {
+    await expect(service.joinSession({ tournamentId: TOURNAMENT }, USER)).rejects.toThrow();
+
+    const rows = await prisma.tournamentParticipation.count({ where: { tournamentId: TOURNAMENT } });
+    const t = await prisma.tournament.findUniqueOrThrow({ where: { id: TOURNAMENT } });
+
+    expect(`참가 ${rows}행 / 결제 ${t.totalPlayers}명 / 걷은 ${t.totalBuyinAmount}`)
+      .toBe('참가 0행 / 결제 0명 / 걷은 0');
+  });
+
+  /** 재시도 루프가 이것을 OTP 충돌로 오해하면 다섯 번을 헛돈다. */
+  it('재시도하지 않는다 — 마감은 단조라 결과가 같다', async () => {
+    await expect(service.joinSession({ tournamentId: TOURNAMENT }, USER)).rejects.toThrow();
+
+    expect(userService.paymentPoint).toHaveBeenCalledTimes(1);
+  });
+});

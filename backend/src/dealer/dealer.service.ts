@@ -15,7 +15,11 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { FINAL_TABLE_DEALER_BLOCKED, isFinalTable } from 'src/store/session/final-table';
 import { closeRegistration, isRegistrationOpenLive } from 'src/store/session/registration-gate';
-import { isClosedTournament } from 'src/store/session/tournament-status';
+import {
+  NOT_CLOSED_TOURNAMENT_FILTER,
+  asClosedTournamentWrite,
+  isClosedTournament,
+} from 'src/store/session/tournament-status';
 
 /**
  * 이 테이블의 Redis 스냅샷이 없다.
@@ -307,10 +311,23 @@ export class DealerService {
     const [session, tableCount] = await Promise.all([
       this.prisma.tournament.findUniqueOrThrow({
         where: { id: tournamentId },
-        select: { id: true, startedAt: true, isRegistrationOpen: true },
+        select: { id: true, status: true, startedAt: true, isRegistrationOpen: true },
       }),
       this.prisma.table.count({ where: { tournamentId } }),
     ]);
+
+    // **닫힌 대회는 조작을 받지 않는다.** 파이널 테이블 게이트는 이것을
+    // 대신하지 못한다 — 그건 등록 마감과 테이블 수를 보지 대회가 살아 있는지는
+    // 안 본다. 이미 읽은 행이라 조회가 늘지 않는다.
+    //
+    // 여기서 막는 것은 **안내를 위해서**다. 실제 경합은 아래 트랜잭션의
+    // `where`가 닫는다. 이 자리에서 거절해야 그 앞의 Redis 부수효과
+    // (`setUserContext`가 쓰는 'KICKED')까지 안 일어난다 — 그건 트랜잭션이
+    // 아니라 되돌아가지 않는다.
+    if (isClosedTournament(session.status)) {
+      throw new ForbiddenException('이미 닫힌 대회입니다.');
+    }
+
     const isRegistrationOpen = await isRegistrationOpenLive(this.prisma, this.redis, session);
     if (isFinalTable({ isRegistrationOpen, tableCount })) {
       // **읽은 김에 컬럼도 닫는다.** 안 닫으면 컬럼을 읽는 다른 자리들이
@@ -340,7 +357,6 @@ export class DealerService {
         await engine.act(targetIdx, ActionType.DEALER_FOLD);
       } else if (type === 'KICK') {
         await engine.act(targetIdx, ActionType.DEALER_KICK);
-        await this.redis.setUserContext(tournamentId, targetUserId, tableId, targetIdx, 'KICKED');
 
         // 상태 변경과 카운터 감소가 한 트랜잭션이어야 한다. 따로 두면 두 번째가
         // 실패했을 때 탈락했는데 인원수는 그대로인 상태가 남는다.
@@ -368,12 +384,21 @@ export class DealerService {
               select,
             });
           }
+          // 경합을 닫는 자리는 여기다. 위의 상태 확인과 이 UPDATE 사이에
+          // 대회가 닫히면 참가 행만 `ELIMINATED`가 되고 카운터는 죽은 대회
+          // 것이 된다. 조건이 걸리면 그 참가 행도 함께 되돌아간다.
           return await tx.tournament.update({
-            where: { id: tournamentId },
+            where: { id: tournamentId, status: NOT_CLOSED_TOURNAMENT_FILTER },
             data: { activePlayers: { decrement: changed.count } },
             select,
-          });
+          }).catch(asClosedTournamentWrite);
         });
+
+        // **트랜잭션이 성공한 뒤에 찍는다.** 이 대입은 Redis라 되돌아가지
+        // 않는데, 위 트랜잭션은 닫힌 대회를 만나면 던진다. 앞에 두면 킥이
+        // 거절된 사람이 'KICKED'로 남아 **무엇을 눌러도 폴드**가 된다
+        // (`handleAction`의 `isKicked` 분기) — 킥당하지 않았는데도.
+        await this.redis.setUserContext(tournamentId, targetUserId, tableId, targetIdx, 'KICKED');
       }
 
       await this.playsync.scheduleTurnTimeout(tableId, state);
