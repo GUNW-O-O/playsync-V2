@@ -89,6 +89,8 @@ export async function setupTournament(
     /** 레벨 상승을 보는 시나리오만 여러 레벨을 넣는다. */
     blindStructure?: { lv: number; sb: number; ante: boolean; duration: number }[];
     prizePayouts?: { place: number; percent: number }[];
+    /** 상점이 걷은 총액에서 가져가는 비율(%). 안 주면 0 — 걷은 돈 전부가 상금이다. */
+    rakePercent?: number;
   } = {},
 ): Promise<Harness> {
   const redis = createTestRedis();
@@ -152,6 +154,7 @@ export async function setupTournament(
     rebuyUntil: opts.rebuyUntil ?? 5,
     // 상금 분배율은 대회 생성 시 상점이 정한다. itmCount는 여기서 파생된다.
     prizePayouts: opts.prizePayouts ?? [{ place: 1, percent: 100 }],
+    rakePercent: opts.rakePercent ?? 0,
     // 착석 자체가 등록이라 열려 있어야 한다. 리바인 가능 여부도 이 값이 정하므로
     // 리바인을 보지 않는 시나리오는 착석을 마친 뒤 닫는다(`closeRegistration`).
     isRegistrationOpen: opts.registrationOpen ?? true,

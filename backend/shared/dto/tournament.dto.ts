@@ -33,6 +33,19 @@ export const REBUY_UNTIL_MIN = 0;
 /** 휴식 레벨의 센티널이 `lv: 99`라 그 위의 레벨 번호는 없다. */
 export const REBUY_UNTIL_MAX = 99;
 
+/**
+ * 상점 몫(레이크) 비율의 상한.
+ *
+ * **100은 못 쓴다.** 걷은 돈 전부가 상점으로 가면 프라이즈풀이 0이 되고,
+ * `parsePayouts`가 요구하는 「합이 100인 분배율」이 나눌 것 없는 0을 나눈다 —
+ * 상금이 전부 0인 대회가 만들어지는데 그건 대회가 아니다.
+ *
+ * 50은 실무 상한보다 훨씬 높다(홀덤펍이 10~20% 남짓). 넉넉히 두되 "상금보다
+ * 상점이 더 가져가는 대회"는 만들 수 없게 한다.
+ */
+export const RAKE_PERCENT_MIN = 0;
+export const RAKE_PERCENT_MAX = 50;
+
 /** 프라이즈풀에서 한 등수가 가져가는 몫. 전체 합이 100이어야 한다. */
 export class PrizePayoutDto {
   @IsInt()
@@ -84,6 +97,15 @@ export class CreateTournamentDto {
   @Type(() => PrizePayoutDto)
   prizePayouts: PrizePayoutDto[];
 
+  // 상점이 걷은 총액에서 가져가는 비율(%). **참가자가 따로 내는 수수료가
+  // 아니다** — 참가비는 그대로 걷히고, 대회를 닫을 때 `totalBuyinAmount`에
+  // 한 번 곱해 뗀다. 안 주면 0이고 그때는 걷은 돈 전부가 상금으로 나간다.
+  @IsInt()
+  @IsOptional()
+  @Min(RAKE_PERCENT_MIN)
+  @Max(RAKE_PERCENT_MAX)
+  rakePercent?: number;
+
   @IsBoolean()
   @IsOptional()
   isRegistrationOpen: boolean;
@@ -118,6 +140,12 @@ export class UpdateTournamentDto {
   @Min(ENTRY_FEE_MIN)
   @Max(ENTRY_FEE_MAX)
   entryFee?: number;
+
+  @IsInt()
+  @IsOptional()
+  @Min(RAKE_PERCENT_MIN)
+  @Max(RAKE_PERCENT_MAX)
+  rakePercent?: number;
 
   @IsInt()
   @IsOptional()

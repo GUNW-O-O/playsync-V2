@@ -489,6 +489,7 @@ describe('PaymentService.joinSession — 등록 마감', () => {
         totalPlayer: 0,
         activePlayer: 0,
         totalBuyinAmount: 0,
+        rakePercent: 0,
         rebuyUntil: t.rebuyUntil,
         avgStack: 0,
         entryFee: t.entryFee,

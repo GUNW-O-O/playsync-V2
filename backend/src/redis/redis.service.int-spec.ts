@@ -562,6 +562,7 @@ describe('RedisService.checkAndSyncBlindLevel — 등록 마감', () => {
         totalPlayer: 9,
         activePlayer: 9,
         totalBuyinAmount: 90000,
+        rakePercent: 0,
         rebuyUntil,
         avgStack: 30000,
         tournamentName: '테스트 토너먼트',

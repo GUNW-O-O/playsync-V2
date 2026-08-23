@@ -19,6 +19,7 @@ describe('buildTournamentMeta', () => {
     totalPlayers: 0,
     activePlayers: 0,
     totalBuyinAmount: 0,
+    rakePercent: 0,
     rebuyUntil: 0,
     avgStack: 0,
     itmCount: 1,
