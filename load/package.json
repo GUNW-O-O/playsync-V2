@@ -1,0 +1,9 @@
+{
+  "name": "playsync-load",
+  "private": true,
+  "type": "module",
+  "//": "루트 workspaces에 없다 — 부하 하네스는 k6가 실행하지 그 워크스페이스에 설치되지 않는다. 이 파일이 있는 이유는 `node --test`가 lib/*.js를 ESM으로 읽게 하기 위해서다.",
+  "scripts": {
+    "test": "node --test \"lib/**/*.spec.js\""
+  }
+}

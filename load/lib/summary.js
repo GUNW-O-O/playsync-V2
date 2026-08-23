@@ -95,6 +95,8 @@ function signupLine(summary) {
 export function oneLine(label, summary) {
   const my = summary.myAction;
   const others = summary.othersAction;
+  const myServer = summary.myActionServer;
+  const myClient = summary.myActionClient;
   return [
     label,
     `핸드 ${summary.hands}`,
@@ -104,6 +106,8 @@ export function oneLine(label, summary) {
     `자리비움 ${summary.absentActions}`,
     `지각 ${summary.lateActions}`,
     `무응답창 ${summary.staleWindows}`,
+    `창밖봉투 ${summary.staleBroadcasts}`,
+    `내 액션 서버 p95 ${myServer ? myServer.p95 : '-'}ms/단말 p95 ${myClient ? myClient.p95 : '-'}ms`,
     signupLine(summary),
     `레이즈 ${summary.raises}/폴드 ${summary.folds}/리바인 ${summary.rebuysAccepted}`,
     `테이블409 ${summary.tableCreateConflicts}`,
@@ -129,6 +133,7 @@ export function buildSummary(data, name) {
     absentActions: counter(data, 'absent_actions'),
     lateActions: counter(data, 'late_actions'),
     staleWindows: counter(data, 'stale_windows'),
+    staleBroadcasts: counter(data, 'stale_broadcasts'),
     signups: counter(data, 'signups'),
     logins: counter(data, 'logins'),
     seatsTaken: counter(data, 'seats_taken'),
@@ -144,6 +149,10 @@ export function buildSummary(data, name) {
     reconnects: counter(data, 'reconnects'),
     reconnectMs: trend(data, 'reconnect_ms'),
     myAction: trend(data, 'my_action_ms'),
+    // 내 액션의 왕복을 서버 쪽과 단말 쪽으로 쪼갠 값(T76). 합계 하나로는
+    // "왕복 1초인데 서버 lag은 2ms"를 가릴 수 없었다.
+    myActionServer: trend(data, 'my_action_server_ms'),
+    myActionClient: trend(data, 'my_action_client_ms'),
     othersAction: trend(data, 'others_action_ms'),
     http: trend(data, 'http_req_duration'),
     server: server(data),

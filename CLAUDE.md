@@ -83,6 +83,7 @@ npm run build          # contract → backend → frontend
 npm run dev:backend    # NestJS watch
 npm run dev:frontend   # Next dev
 npm run test           # 단위 테스트 (인프라 없음, 1분)
+cd load && npm test    # 부하 하네스의 창 큐 (node --test, 인프라 없음)
 npm run test:int       # 통합 테스트 (컨테이너 기동부터 자동)
 npm run test:e2e       # 화면 회귀 (Playwright, 시드 필요)
 npm run seed           # 개발 시드 (= npm run seed -w backend)
@@ -112,12 +113,13 @@ contract       62  (4 suites)
 프론트 단위   177  (31 files)
 통합          491  (33 suites)
 e2e            13  (4 files, regression 프로젝트)
+부하 하네스    12  (1 file, `cd load && npm test`)
 타입 에러       0
 ```
 
-다섯 다 #86이 머지되면 `main`이 될 브랜치에서 실제로 돌린 값이다. **e2e도
-이제 돌려 본 값이다**(T73) — 회귀 13건이 통과했고 `npm run demo`도 장면 1~5를
-끝까지 간다. 둘 다 CI가 아니라 사람이 돌린다.
+여섯 다 이 판에서 실제로 돌린 값이다. **e2e도 이제 돌려 본 값이다**(T73) —
+회귀 13건이 통과했고 `npm run demo`도 장면 1~5를 끝까지 간다. e2e와 부하
+하네스는 CI가 아니라 사람이 돌린다.
 
 플레이키는 없다. `EntryService.enterSeat`의 「다른 좌석에 동시에 앉으면 서로를
 지우지 않는다」가 간헐 실패했는데, 원인은 제품이 아니라 **스펙이 프로덕션에 없는
@@ -135,6 +137,16 @@ e2e            13  (4 files, regression 프로젝트)
 | 통합 | `*.int-spec.ts` | Redis + PostgreSQL | 락, 트랜잭션처럼 진짜 인프라라야 의미 있는 것 |
 | 시나리오 | `src/scenario/*.int-spec.ts` | 위와 같음 | **이음매**. 부품이 각각 옳은데 조립이 틀린 경우 |
 | 화면 회귀 | `frontend/e2e/` | 시드 + 백엔드 | 봉투 모양 · 키 이름 · 상태 전이. 색·간격은 단언하지 않는다 |
+| 부하 하네스 | `load/lib/*.spec.js` | 없음 | 지연 **측정기** 자체. 제품이 아니라 자를 잰다 |
+
+**부하 하네스의 테스트는 루트 `npm test`에 없다.** `load/`가 워크스페이스가
+아니라서다 — k6가 실행하지 npm이 설치하지 않는다. `cd load && npm test`로 따로
+돌린다(`node --test`, 의존성 0).
+
+측정기에 테스트를 붙인 이유는 T76이다. 짝짓기 로직이 `table.js`의 클로저 안에
+있는 동안 **검증할 길이 실행 요약을 사람이 읽는 것뿐이었고**, 12,000명 실측에서
+235배 틀린 값을 내고도 아무도 못 잡았다. 순수 모듈(`load/lib/windows.js`)로
+빼면서 그 길을 만들었다.
 
 `src/...`와 `shared/...` 절대경로는 jest `moduleNameMapper`로 해석한다.
 
