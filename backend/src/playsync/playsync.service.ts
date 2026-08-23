@@ -9,6 +9,10 @@ import { TableEngine } from 'src/game-engine/table-engine';
 import { ActionType, GamePhase, TablePlayer, TableState } from 'src/game-engine/types';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { LIVE_PLAYER_STATUSES } from 'src/store/session/player-status';
+import {
+  NOT_CLOSED_TOURNAMENT_FILTER,
+  asClosedTournamentWrite,
+} from 'src/store/session/tournament-status';
 import { RedisService } from 'src/redis/redis.service';
 import { retryAsync } from 'src/common/retry';
 import { awardPrize, prizeFor, splitBustedRanks } from './prize';
@@ -443,11 +447,15 @@ export class PlaysyncService {
       //    `totalBuyinAmount`가 있지만 그건 화면용 파생값이고 **돈의 진실은
       //    DB다.** 인원수도 같은 규칙을 따른다(T60) — 등수가 상금을 정하므로
       //    (`prizeFor`) 화면용 파생값에서 오는 것 자체가 위험했다.
+      //    **닫힌 대회면 여기서 멈춘다.** 상금이 이 뒤에 나가고
+      //    (`tournamentFinished` → `awardPrize`), 그 판단의 재료가 방금 깎은
+      //    인원수다. 회계가 끝난 대회에서 한 번 더 나가면 되돌릴 수 없다.
+      //    위의 좌석 삭제도 같은 트랜잭션이라 함께 되돌아간다.
       const { activePlayers, totalBuyinAmount, prizePayouts } = await tx.tournament.update({
-        where: { id: tournamentId },
+        where: { id: tournamentId, status: NOT_CLOSED_TOURNAMENT_FILTER },
         data: { activePlayers: { decrement: busted.length } },
         select: { activePlayers: true, totalBuyinAmount: true, prizePayouts: true },
-      });
+      }).catch(asClosedTournamentWrite);
 
       // 3. 핸드 시작 스택으로 등수를 가르고 공동 등수의 몫을 나눈다.
       const awards = splitBustedRanks(
@@ -673,10 +681,22 @@ export class PlaysyncService {
         }
       });
 
+      // **닫힌 대회에는 쓰지 않는다.** 이 자리의 창이 제일 넓다 — 리바인은
+      // 사람에게 15초를 묻고 오는 길이라(`waitForRebuyResponse`) 묻는 동안
+      // 대회가 닫히는 것이 드문 일이 아니다.
+      //
+      // 막지 않으면 **돈만 사라진다.** 참가비는 위에서 이미 빠졌는데 칩을 넣는
+      // `mutateSnapshot`은 지워진 스냅샷을 못 찾아 아무 일도 안 한다. 장부
+      // 검산(`걷은 참가비 == 나간 상금`)은 그보다 앞에서 통과한 뒤다.
+      //
+      // 조건을 여기 거는 이유는 **판정과 쓰기가 같은 문장이어야** 하기
+      // 때문이다. 트랜잭션 앞에서 상태를 읽어 보면 그 읽기와 이 UPDATE 사이가
+      // 다시 창이 된다. UPDATE가 행 잠금을 잡으므로, 닫는 쪽과 이쪽 중 하나는
+      // 반드시 상대의 커밋을 보고 결정한다.
       await tx.tournament.update({
-        where: { id: tournamentId },
+        where: { id: tournamentId, status: NOT_CLOSED_TOURNAMENT_FILTER },
         data: { totalBuyinAmount: { increment: entryFee } },
-      })
+      }).catch(asClosedTournamentWrite);
 
       // 리바인은 장부 하나만 건드린다. 예전에는 buyInCount(참가 행)와
       // currentStack(좌석 행)이 갈라져 있어 update가 둘이었다.

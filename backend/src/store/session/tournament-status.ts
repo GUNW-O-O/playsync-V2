@@ -34,3 +34,24 @@ export function isClosedTournament(status: TournamentStatus): boolean {
 export const NOT_CLOSED_TOURNAMENT_FILTER: { notIn: TournamentStatus[] } = {
   notIn: [...CLOSED_TOURNAMENT_STATUSES],
 };
+
+/**
+ * 닫힌 대회에 쓰려다 거절당했다.
+ *
+ * 가드는 `where`에 `status`를 얹는 모양이라(`NOT_CLOSED_TOURNAMENT_FILTER`),
+ * 걸리면 Prisma가 P2025 「필요한 레코드를 찾지 못했다」를 던진다. 그 문구는
+ * **행이 없다**는 뜻이라 로그를 읽는 사람이 대회가 사라진 줄 안다 — 실제로는
+ * 있고, 닫혀 있을 뿐이다.
+ */
+export const CLOSED_TOURNAMENT_WRITE = '닫힌 대회에는 쓸 수 없습니다.';
+
+/**
+ * P2025**만** 위 문구로 바꾼다.
+ *
+ * 전부 삼키면 연결 끊김이나 제약 위반이 「닫힌 대회」로 둔갑해, 정작 고쳐야 할
+ * 원인이 로그에서 사라진다.
+ */
+export function asClosedTournamentWrite(e: unknown): never {
+  if ((e as { code?: string }).code === 'P2025') throw new Error(CLOSED_TOURNAMENT_WRITE);
+  throw e;
+}

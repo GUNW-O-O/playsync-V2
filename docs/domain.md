@@ -280,6 +280,29 @@ t=0에 둘이 같은 것은 우연이지 불변식이 아니다. 근거 주석�
 `PLAYING`만 앉히므로 **킥된 사람은 복구된 스냅샷에 없다**
 (`recovery.service.ts`의 `rebuildTable`).
 
+### 파이널 테이블에서는 딜러가 킥도 폴드도 못 한다
+
+**전이가 아니라 상태로 정한다** — `등록 마감(파생값) == false`이고 `그 대회의
+table 수 == 1`이면 파이널 테이블이다(`store/session/final-table.ts`의
+`isFinalTable`). "테이블이 2에서 1로 떨어지는 순간"으로 적으면 그 순간을 놓친
+재접속·복구가 판정을 잃고, 사람이 적어 **처음부터 테이블 하나로 연 대회**가
+빠진다. 테이블이 0이면 아니다 — 딜러가 조작할 자리 자체가 없어서, 막았다고
+안내하면 딜러가 엉뚱한 곳을 본다.
+
+**막는 자리는 `DealerService.handleDealerAction`의 맨 앞**이다. 스냅샷을 읽기
+전에 걸러야 KICK·FOLD가 상태에 손대기 전에 끝난다.
+
+금지의 근거가 둘로 갈린다.
+
+| | 왜 막나 |
+|---|---|
+| **킥** | 인원수를 깎는데 **아무도 그 결과로 대회를 닫지 않는다.** 최후 1인 판정(`tournamentFinished`)을 부르는 자리는 `eliminatePlayer` 하나뿐이고 킥은 그 길로 가지 않아서, 헤즈업에서 킥이 일어나면 `activePlayers`가 1인 채 대회가 열려 있고 `completeSession`은 정산이 안 끝나 거절한다 — 나올 길이 없다 |
+| **폴드** | 카운터와 무관하다(`hasFolded`만 세운다). 공정성이다 — 남은 사람이 적어지면 딜러의 대리 조작이 결과를 직접 좌우한다. 자리를 비운 사람은 턴 타임아웃(`TURN_TIMEOUT_MS`, 30초)이 자동으로 폴드시키므로 막아도 판이 멎지 않는다 |
+
+**여기서 읽는 마감은 컬럼이 아니라 파생값이다**(아래 「등록 마감」). T77이 원시
+컬럼을 읽어, 마감 레벨을 지났는데 그 뒤 아무도 참가를 시도하지 않은 대회는
+게이트가 헤즈업에서도 안 걸렸다.
+
 ## 테이블 이동은 사람이 걸어가는 일이다
 
 서버가 좌석을 재배치하지 않는다. 세 걸음으로 나뉜다.
@@ -398,9 +421,20 @@ t=0에 둘이 같은 것은 우연이지 불변식이 아니다. 근거 주석�
 | 진행 중 | Redis 값 | 핸드마다 `checkAndSyncBlindLevel`이 갱신하는 값이라 이미 신선하다 |
 | 진행 중 · 메타 유실 | DB로 계산 | 레벨 재료(`startedAt`·`pausedMs`·구조)가 전부 DB에 있다. 거절하지 않고 정확히 계산한다 |
 
-**마감은 단조다.** 결제가 마감으로 거절할 때 DB 컬럼도 조건부로 닫으므로
-(`payment.service.ts`), 한 번 닫힌 등록은 다시 열리지 않는다 — 복구가 정지
-시간을 과잉 보정해 레벨이 한 칸 내려가도 그렇다.
+**컬럼을 그대로 믿으면 안 된다.** `Tournament.isRegistrationOpen`은 마감 시각에
+스스로 닫히지 않는다 — **마감 시각에 발화하는 스케줄러가 없다.** 컬럼은 누군가
+그 대회를 건드렸을 때만 게으르게 flip하므로, "상점이 손으로 닫았는가"에 가깝고
+"지금 마감인가"는 위 표대로 **레벨에서 파생된 값**이다. 그 파생값을 읽는 경로가
+`store/session/registration-gate.ts`의 `isRegistrationOpenLive`이고, 판정식은
+여전히 `registration.ts` 하나뿐이다 — 이 파일은 **재료를 어디서 가져오는지만**
+정한다.
+
+**마감은 단조다.** 결제가 마감으로 거절할 때와 딜러의 파이널 테이블 게이트가
+걸릴 때 DB 컬럼도 조건부로 닫는다(둘 다 `registration-gate.ts`의
+`closeRegistration`). 한 번 닫힌 등록은 다시 열리지 않는다 — 복구가 정지 시간을
+과잉 보정해 레벨이 한 칸 내려가도 그렇다. 조건부 갱신이라 실제 쓰기는 최초
+한 번뿐이고, 실패는 삼킨다 — 부르는 쪽은 이미 판정을 마쳤고, 여기서 던지면
+"마감된 대회에 참가 실패"가 500으로 나가 원인을 가린다.
 
 **`rebuyUntil`은 레벨 번호(`lv`)와 비교된다.** 구조의 첫 레벨이 보통 `lv: 1`이라
 `rebuyUntil: 0`은 "처음부터 닫힘"이라는 뜻이다(스키마 기본값이 0이다). 리바인이
@@ -602,3 +636,47 @@ await this.redis.mutateSnapshot(tableId, async (state) => {
 착석으로도 낫지 않는다. 그래서 복구는 **스냅샷이 살아 있어도 비트맵을 따로
 본다**(`recoverTournament`). 되세울 때의 권위는 **스냅샷**이다 — DB 좌석
 행에는 참가가 끝난 잔재가 남고, 불변식이 "좌석 비트맵 == 스냅샷"이다.
+
+### 닫힌 대회에는 아무것도 쓰지 않는다
+
+`FINISHED`·`CANCELLED`가 되면 그 대회는 **회계가 끝났다.** 닫는 쪽이 「걷은
+참가비 == 나간 상금」을 맞춰 놓고 닫으므로(`completeSession`의 게이트), 그
+뒤에 들어온 쓰기는 어느 상금으로도 나가지 않는다.
+
+**판정과 쓰기가 같은 문장이어야 한다.** 상태를 트랜잭션 **밖**에서 읽고
+안에서 쓰면 그 사이가 창이다. 네 자리가 그 모양이었다.
+
+| 자리 | 새던 것 |
+|---|---|
+| `PlaysyncService.executeRebuyTransaction` | 참가비 차감 · `totalBuyinAmount` · `buyInCount` |
+| `PlaysyncService.eliminatePlayer` | 상금 지급 · `activePlayers` |
+| `PaymentService.joinSession` | 참가비 · 참가 행 · `totalPlayers` |
+| `DealerService.handleDealerAction`의 KICK | `activePlayers` · 참가 `ELIMINATED` |
+
+막는 모양은 하나다 — 대회 장부를 건드리는 UPDATE의 `where`에 상태를 얹는다.
+
+```ts
+where: { id: tournamentId, status: NOT_CLOSED_TOURNAMENT_FILTER }
+```
+
+UPDATE가 행 잠금을 잡으므로, **닫는 쪽과 쓰는 쪽 중 하나는 반드시 상대의
+커밋을 보고 결정한다.** 걸리면 P2025가 나고 같은 트랜잭션의 나머지 쓰기가
+함께 되돌아간다. P2025의 문구는 "필요한 레코드를 찾지 못했다"라 대회가 사라진
+것처럼 읽히므로 `asClosedTournamentWrite`가 뜻을 바꿔 준다.
+
+**창이 제일 넓은 곳은 리바인이다.** 사람에게 15초를 묻고 오는 길이라
+(`waitForRebuyResponse`) 묻는 동안 닫히는 것이 드물지 않고, 막지 않으면
+**돈만 사라진다** — 참가비는 빠지는데 칩을 넣는 `mutateSnapshot`이 지워진
+스냅샷을 못 찾아 아무 일도 안 한다.
+
+**Redis 쓰기는 트랜잭션 뒤로 보낸다.** 되돌아가지 않아서다. 딜러 킥의
+`setUserContext('KICKED')`가 트랜잭션 앞에 있었는데, 거절된 킥이 그 자국을
+남기면 킥당하지 않은 사람이 무엇을 눌러도 폴드가 된다(`handleAction`의
+`isKicked` 분기). 같은 이유로 `RedisService.rebuyPlayer`의 `hincrby`는
+**없는 키를 만들므로**, 트랜잭션이 먼저 거절해야 닫으면서 지운
+`tournament:{id}:info`가 TTL 없는 쓰레기로 부활하지 않는다.
+
+**지금 안전한 자리들은 가드가 아니라 부수효과로 안전하다.** `startPreFlop` ·
+`handleAction` · `resolveWinners`는 대회 상태를 아예 안 보고, 닫는 쪽이 Redis
+스냅샷을 지워 `SNAPSHOT_MISSING`으로 죽을 뿐이다 — **스냅샷 삭제 전에 락을
+잡은 호출은 그대로 지나간다.** 여기를 건드릴 때 "이미 막혀 있다"고 읽지 마라.

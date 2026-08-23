@@ -9,6 +9,7 @@ import { GamePhase, TablePlayer, TableState } from 'src/game-engine/types';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { FINAL_TABLE_DEALER_BLOCKED } from 'src/store/session/final-table';
+import { CLOSED_TOURNAMENT_WRITE } from 'src/store/session/tournament-status';
 import { Dashboard } from 'shared/types/tournamentMeta';
 import { PlaysyncService } from './playsync.service';
 import * as playerOtp from '../payment/player-otp';
@@ -466,4 +467,68 @@ describe('탈락 처리 멱등성', () => {
       ).resolves.toBeDefined();
     });
   });
+
+  /**
+   * **킥하는 사이에 대회가 닫힌다.**
+   *
+   * `handleDealerAction`은 맨 앞에서 대회 상태를 보는데 그 검사는 트랜잭션
+   * **밖**이다. 늦게 도착한 킥은 그 검사가 잡지만, 검사를 통과한 뒤 커밋
+   * 전에 닫히면 참가 행만 `ELIMINATED`가 되고 카운터는 죽은 대회 것이 된다.
+   *
+   * 창을 만드는 자리로 `mutateSnapshot`을 고른 이유: 상태 확인 **직후**이자
+   * 트랜잭션 **직전**이라, 딱 그 사이에서만 닫힌다.
+   */
+  describe('킥하는 사이에 대회가 닫히면', () => {
+    /** 스냅샷 락을 잡기 직전에 대회를 닫는다. 진짜를 부르되 앞에 시각 하나를 끼운다. */
+    function closeMidAction() {
+      const real = redisService.mutateSnapshot.bind(redisService);
+      jest
+        .spyOn(redisService, 'mutateSnapshot')
+        .mockImplementation(async (...args: Parameters<typeof real>) => {
+          await prisma.tournament.update({
+            where: { id: TOURNAMENT },
+            data: { status: 'CANCELLED' },
+          });
+          return real(...args);
+        });
+    }
+
+    it('거절한다', async () => {
+      closeMidAction();
+
+      await expect(
+        dealer.handleDealerAction(TOURNAMENT, TABLE, 'carol', 'KICK'),
+      ).rejects.toThrow(CLOSED_TOURNAMENT_WRITE);
+    });
+
+    it('참가 상태와 인원수가 그대로다 — 같은 트랜잭션이라 함께 되돌아간다', async () => {
+      closeMidAction();
+
+      await expect(
+        dealer.handleDealerAction(TOURNAMENT, TABLE, 'carol', 'KICK'),
+      ).rejects.toThrow();
+
+      const row = await prisma.tournamentParticipation.findUniqueOrThrow({
+        where: { tournamentId_userId: { tournamentId: TOURNAMENT, userId: 'carol' } },
+      });
+      expect(`${row.status} / db ${await activePlayersInDb()}`).toBe('PLAYING / db 3');
+    });
+
+    /**
+     * **Redis는 트랜잭션이 아니다.** 'KICKED' 대입이 트랜잭션 앞에 있으면
+     * 거절된 킥이 그 자국을 남기고, 그 사람은 킥당하지 않았는데도 무엇을
+     * 눌러도 폴드가 된다(`handleAction`의 `isKicked` 분기).
+     */
+    it('거절된 킥은 KICKED 자국을 남기지 않는다', async () => {
+      closeMidAction();
+
+      await expect(
+        dealer.handleDealerAction(TOURNAMENT, TABLE, 'carol', 'KICK'),
+      ).rejects.toThrow();
+
+      const raw = await redis.hget(`tournament:${TOURNAMENT}:user`, 'carol');
+      expect(raw === null ? '자국 없음' : String(JSON.parse(raw).status)).not.toBe('KICKED');
+    });
+  });
+
 });
