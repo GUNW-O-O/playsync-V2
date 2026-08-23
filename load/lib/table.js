@@ -3,6 +3,7 @@ import { WebSocket } from 'k6/experimental/websockets';
 import { setTimeout, clearTimeout } from 'k6/timers';
 import { Trend, Counter } from 'k6/metrics';
 import {
+  chargeForEntry,
   dealerLogin,
   enterSeat,
   joinTournament,
@@ -294,6 +295,7 @@ function pickAction(state, me, bigBlind) {
  * @param poolBase 이 테이블이 쓸 풀 계정의 시작 인덱스. 램프에서 테이블끼리
  *   겹치면 `@@unique([tournamentId, userId])`가 두 번째를 409로 막는다.
  * @param prefix 신규 가입용 접두사. 닉네임은 3~10자다(`CreateUserDto`).
+ * @param entryFee 참가비. 봇이 "거절되는 금액"을 계산하는 데 쓴다(T72).
  */
 export function seatPlayers({
   tournamentId,
@@ -304,6 +306,7 @@ export function seatPlayers({
   poolBase,
   accountPrefix,
   accountPool,
+  entryFee,
 }) {
   const players = [];
   for (let seat = 0; seat < seatCount; seat++) {
@@ -331,6 +334,9 @@ export function seatPlayers({
 
     const token = login(nickname, password);
     logins.add(1);
+    // 거절을 한 번 밟고 다시 충전한다(T72). `LOAD_DECLINE_RATIO`가 0이면
+    // 아무 요청도 안 나가므로 기본 부하 모양은 그대로다.
+    chargeForEntry(token, entryFee || 1);
     joinTournament(token, tournamentId);
     const otp = myPlayerOtp(token, tournamentId);
     const seatToken = enterSeat(tournamentId, otp, tableId, seat);
