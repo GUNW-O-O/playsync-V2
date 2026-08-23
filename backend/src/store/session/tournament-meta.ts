@@ -1,6 +1,12 @@
 import { BlindField, Dashboard } from 'shared/types/tournamentMeta';
 import { getCurrentBlindLevel, parseBlindStructure } from 'shared/util/util';
-import { prizePoolOf, startablePayouts } from 'src/playsync/prize';
+import {
+  entryCountOf,
+  PayoutTier,
+  payoutsFor,
+  startablePayoutTable,
+} from 'src/playsync/payout-table';
+import { prizePoolOf } from 'src/playsync/prize';
 import { isRegistrationOpenAtLevel } from './registration';
 
 /**
@@ -29,19 +35,18 @@ export interface TournamentMetaSource {
   rakePercent: number;
   rebuyUntil: number;
   avgStack: number;
-  itmCount: number;
-  // Prisma의 Json 컬럼이라 타입이 JsonValue다. PrizePayout[]로 좁혀 선언하면
-  // 실제 조회 결과(`{ ... } & { prizePayouts: JsonValue }`)가 구조적으로
+  // Prisma의 Json 컬럼이라 타입이 JsonValue다. PayoutTier[]로 좁혀 선언하면
+  // 실제 조회 결과(`{ ... } & { payoutTable: JsonValue }`)가 구조적으로
   // 맞지 않아 두 호출자 모두에서 타입 에러가 난다 — 검증은 어차피
-  // `startablePayouts`가 런타임에 한다.
-  prizePayouts: unknown;
+  // `startablePayoutTable`이 런타임에 한다.
+  payoutTable: unknown;
   blindStructure: { structure: unknown };
 }
 
 export function buildTournamentMeta(
   game: TournamentMetaSource,
   blindBaseAt: number,
-): { dashboard: Dashboard; blindField: BlindField } {
+): { dashboard: Dashboard; blindField: BlindField; payoutTable: PayoutTier[] } {
   const blindStructure = parseBlindStructure(game.blindStructure.structure);
   const blindInfo = getCurrentBlindLevel(blindStructure, blindBaseAt);
 
@@ -57,6 +62,12 @@ export function buildTournamentMeta(
   // `rebuyUntil`은 그보다 크므로 이 식이 시작 경로에 영향을 주지 않는다.
   const curLv = blindStructure[blindInfo.currentIndex]?.lv ?? 0;
 
+  // 규모가 정하는 값 둘. 엔트리 수로 구간을 고르고, 그 구간이 상금권 인원과
+  // 분배율을 함께 준다 — 둘이 같은 자리에서 나와야 어긋나지 않는다.
+  const entryCount = entryCountOf(game.totalBuyinAmount, game.entryFee);
+  const payoutTable = startablePayoutTable(game.payoutTable);
+  const payouts = payoutsFor(entryCount, payoutTable);
+
   const dashboard: Dashboard = {
     isRegistrationOpen: isRegistrationOpenAtLevel(game.isRegistrationOpen, curLv, game.rebuyUntil),
     totalPlayer: game.totalPlayers,
@@ -71,14 +82,17 @@ export function buildTournamentMeta(
     entryFee: game.entryFee,
     tournamentName: game.name,
     startStack: game.startStack,
-    itmCount: game.itmCount,
     // **걷은 총액이 아니라 상점 몫을 뺀 나머지다.** 전광판이 보여주는
     // 프라이즈풀은 실제로 상금으로 나갈 돈이어야 한다 — 걷은 총액을 띄우면
     // 참가자가 받을 수 없는 금액을 보게 된다.
     prizePool: prizePoolOf(game.totalBuyinAmount, game.rakePercent),
+    // **엔트리 수도 상금권 인원도 파생값이다.** 저장하면 두 벌이 되고,
+    // 리바인이 들어오는 순간 어느 쪽이 정본인지가 흐려진다.
+    entryCount,
+    itmCount: payouts.length,
     // 금액은 여기서 굳히지 않는다. Redis에서 읽을 때 그때의 풀로 파생된다 —
     // 리바인으로 풀이 커지면 전광판이 따라 올라야 하기 때문이다.
-    prizes: startablePayouts(game.prizePayouts).map(p => ({ ...p, amount: 0 })),
+    prizes: payouts.map(p => ({ ...p, amount: 0 })),
   };
   const blindField: BlindField = {
     isBreak: blindInfo.isBreak,
@@ -89,5 +103,7 @@ export function buildTournamentMeta(
     blindStructure,
   };
 
-  return { dashboard, blindField };
+  // **표를 함께 돌려준다.** Redis에 싣는 것은 결과가 아니라 규칙이다 —
+  // 리바인이 들어오면 그때의 엔트리 수로 다시 세워져야 한다.
+  return { dashboard, blindField, payoutTable };
 }

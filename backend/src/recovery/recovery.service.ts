@@ -170,11 +170,11 @@ export class RecoveryService implements OnApplicationBootstrap {
       // 시작한 시각에 누적 정지를 더한 값이다. `buildTournamentMeta`가 DB
       // `activePlayers`를 이미 싣고 있으므로 여기서 따로 맞출 것이 없다.
       if (!t.startedAt) throw new Error('ONGOING인데 startedAt이 없다');
-      const { dashboard, blindField } = buildTournamentMeta(
+      const { dashboard, blindField, payoutTable } = buildTournamentMeta(
         t,
         t.startedAt.getTime() + t.pausedMs,
       );
-      await this.redis.setTournamentMeta(tournamentId, dashboard, blindField);
+      await this.redis.setTournamentMeta(tournamentId, dashboard, blindField, payoutTable);
     }
 
     // 3. **테이블 단위**로 Redis 키 셋을 본다. 대회 하나 안에서 어떤 테이블은

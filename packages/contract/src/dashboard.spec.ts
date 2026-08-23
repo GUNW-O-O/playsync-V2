@@ -5,7 +5,7 @@ const VALID = {
     isRegistrationOpen: true, totalPlayer: 20, activePlayer: 7,
     totalBuyinAmount: 350000, rakePercent: 0, rebuyUntil: 0, avgStack: 50000,
     tournamentName: '데모 토너먼트', entryFee: 50000, startStack: 30000,
-    itmCount: 3, prizePool: 350000,
+    entryCount: 7, itmCount: 3, prizePool: 350000,
     prizes: [{ place: 1, percent: 50, amount: 175000 }],
   },
   blindField: {

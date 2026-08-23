@@ -1,6 +1,7 @@
 import { Inject, Injectable } from "@nestjs/common";
 import Redis from "ioredis";
 import { BlindField, Dashboard, FullTournamentInfo } from "shared/types/tournamentMeta";
+import { entryCountOf, PayoutTier, payoutsFor } from "src/playsync/payout-table";
 import { calculatePrizes, PrizePayout, prizePoolOf } from "src/playsync/prize";
 import { UserInfo } from "shared/types/userInfo";
 import { getCurrentBlindLevel } from "shared/util/util";
@@ -257,7 +258,17 @@ export class RedisService {
     return bitmap ? bitmap.split('').map((bit) => bit === '1') : [];
   }
   // 초기 생성 대회정보
-  async setTournamentMeta(id: string, dashboard: Dashboard, blindField: BlindField) {
+  /**
+   * @param payoutTable 상금 구간표. **결과가 아니라 규칙을 싣는다**(T81) —
+   *   분배율도 상금권 인원도 엔트리 수에서 파생되므로, 결과를 저장하면
+   *   리바인마다 갱신해야 하고 하나만 갱신되는 순간 전광판이 틀어진다.
+   */
+  async setTournamentMeta(
+    id: string,
+    dashboard: Dashboard,
+    blindField: BlindField,
+    payoutTable: PayoutTier[],
+  ) {
     const key = this.getInfoKey(id);
     await this.redis.hset(
       key,
@@ -271,17 +282,15 @@ export class RedisService {
       'totalBuyinAmount', dashboard.totalBuyinAmount,
       'rebuyUntil', dashboard.rebuyUntil,
       'avgStack', dashboard.avgStack,
-      'itmCount', dashboard.itmCount,
       // 상점 몫도 비율만 싣는다. 프라이즈풀은 아래에서 `totalBuyinAmount`와
       // 함께 파생된다 — 금액을 저장하면 리바인마다 두 값을 같이 갱신해야 하고,
       // 하나만 갱신되는 순간 전광판이 틀어진다.
       'rakePercent', dashboard.rakePercent,
-      // 비율만 저장한다. 금액은 totalBuyinAmount에서 매번 파생시킨다 — 금액을
-      // 저장하면 리바인마다 두 값을 같이 갱신해야 하고, 하나만 갱신되는 순간
-      // 전광판이 틀어진다.
-      'prizePayouts', JSON.stringify(
-        dashboard.prizes.map(({ place, percent }) => ({ place, percent })),
-      ),
+      // **구간표를 통째로 싣는다**(T81). 분배율도 상금권 인원도 엔트리 수에서
+      // 파생되므로, 결과를 저장하면 리바인이 들어올 때마다 갱신해야 하고
+      // 하나만 갱신되는 순간 전광판이 틀어진다. 규칙을 실으면 읽을 때 다시
+      // 세워진다 — `rakePercent`를 싣는 것과 같은 이유다.
+      'payoutTable', JSON.stringify(payoutTable),
       // BlindField는 객체로 유지
       'blindField', JSON.stringify(blindField)
     );
@@ -301,8 +310,15 @@ export class RedisService {
     // 나누면 참가자가 받을 수 없는 금액이 뜨고, 지급 경로
     // (`eliminatePlayer`·`tournamentFinished`)와도 어긋난다.
     const rakePercent = parseInt(raw.rakePercent || '0');
-    const pool = prizePoolOf(parseInt(raw.totalBuyinAmount || '0'), rakePercent);
-    const payouts: PrizePayout[] = raw.prizePayouts ? JSON.parse(raw.prizePayouts) : [];
+    const totalBuyinAmount = parseInt(raw.totalBuyinAmount || '0');
+    const pool = prizePoolOf(totalBuyinAmount, rakePercent);
+
+    // **규모가 분배율을 정한다**(T81). 엔트리 수로 구간을 고르고, 그 구간이
+    // 상금권 인원과 분배율을 함께 준다 — 둘이 같은 자리에서 나와야 어긋나지
+    // 않는다. 예전에는 `itmCount`가 따로 저장돼 있었다.
+    const entryCount = entryCountOf(totalBuyinAmount, parseInt(raw.entryFee || '0'));
+    const table: PayoutTier[] = raw.payoutTable ? JSON.parse(raw.payoutTable) : [];
+    const payouts: PrizePayout[] = table.length > 0 ? payoutsFor(entryCount, table) : [];
     const amounts = payouts.length > 0
       ? calculatePrizes(pool, payouts)
       : new Map<number, number>();
@@ -341,7 +357,8 @@ export class RedisService {
         tournamentName: raw.tournamentName || '',
         entryFee: parseInt(raw.entryFee || '0'),
         startStack: parseInt(raw.startStack || '0'),
-        itmCount: parseInt(raw.itmCount || '0'),
+        entryCount,
+        itmCount: payouts.length,
         rakePercent,
       },
       blindField: blindField,

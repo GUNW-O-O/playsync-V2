@@ -52,12 +52,13 @@ describe('상금 지급', () => {
       activePlayer,
       totalBuyinAmount: INITIAL_POOL,
       rakePercent: 0,
+      entryCount: 0,
+      itmCount: 1,
       rebuyUntil: 0,
       avgStack: 10000,
       tournamentName: 'T',
       entryFee: ENTRY_FEE,
       startStack: 10000,
-      itmCount: PAYOUTS.length,
       prizePool: INITIAL_POOL,
       prizes: PAYOUTS.map(p => ({ ...p, amount: 0 })),
     };
@@ -93,9 +94,9 @@ describe('상금 지급', () => {
         id: TOURNAMENT, name: 'T', blindId: blind.id, storeId: store.id,
         dealerOtpHash: 'unused-hash', // 이 스펙은 로그인 경로를 검증하지 않는다.
         entryFee: ENTRY_FEE, startStack: 10000,
-        itmCount: PAYOUTS.length, prizePayouts: PAYOUTS,
         totalBuyinAmount: INITIAL_POOL,
         rakePercent: 0,
+        payoutTable: [{ minEntries: 0, payouts: PAYOUTS }],
         activePlayers: USERS.length, totalPlayers: USERS.length,
       },
     });
@@ -184,7 +185,7 @@ describe('상금 지급', () => {
       isBreak: false, startedAt: Date.now(), currentBlindLv: 0,
       nextLevelAt: Date.now() + 600000, serverTime: Date.now(),
       blindStructure: [{ lv: 1, sb: 100, ante: false, duration: 600 }],
-    });
+    }, [{ minEntries: 0, payouts: PAYOUTS }]);
     await redis.set(`table:state:${TABLE}`, JSON.stringify(makeState()));
   });
 

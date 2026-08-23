@@ -57,6 +57,25 @@ export class PrizePayoutDto {
   percent: number;
 }
 
+/**
+ * 상금 구간표의 한 구간.
+ *
+ * **엔트리 수(바이인 횟수)로 고른다.** 사람 수가 아니다 — 리바인 대회에서
+ * 50명이 두 번씩 사면 엔트리는 100개이고 프라이즈풀도 100 바이인이다.
+ */
+export class PayoutTierDto {
+  // 경계는 포함이다. 첫 구간은 0이어야 한다(`parsePayoutTable`이 막는다) —
+  // 아무도 안 낸 대회가 고를 구간이 없으면 전광판이 예상 상금을 못 그린다.
+  @IsInt()
+  @Min(0)
+  minEntries: number;
+
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => PrizePayoutDto)
+  payouts: PrizePayoutDto[];
+}
+
 export class CreateTournamentDto {
   @IsString()
   name: string;
@@ -90,12 +109,17 @@ export class CreateTournamentDto {
   @Max(REBUY_UNTIL_MAX)
   rebuyUntil: number;
 
-  // itmCount는 여기서 받지 않는다. 분배율 항목 수에서 파생된다 — 따로 받으면
+  // itmCount는 여기서 받지 않는다. 구간표에서 파생된다 — 따로 받으면
   // "인 더 머니인데 받을 몫이 없는 등수"가 만들어질 수 있다.
+  //
+  // **표 자체도 선택이다**(T81). 안 주면 `DEFAULT_PAYOUT_TABLE`이고, 상금권
+  // 인원이 참가 규모를 따라가는 것이 기본 동작이다. 고정하고 싶으면 구간
+  // 하나짜리 표를 주면 된다 — 표현력이 예전 `prizePayouts`와 같다.
   @IsArray()
+  @IsOptional()
   @ValidateNested({ each: true })
-  @Type(() => PrizePayoutDto)
-  prizePayouts: PrizePayoutDto[];
+  @Type(() => PayoutTierDto)
+  payoutTable?: PayoutTierDto[];
 
   // 상점이 걷은 총액에서 가져가는 비율(%). **참가자가 따로 내는 수수료가
   // 아니다** — 참가비는 그대로 걷히고, 대회를 닫을 때 `totalBuyinAmount`에
@@ -125,8 +149,8 @@ export class UpdateTournamentDto {
   @IsArray()
   @IsOptional()
   @ValidateNested({ each: true })
-  @Type(() => PrizePayoutDto)
-  prizePayouts?: PrizePayoutDto[];
+  @Type(() => PayoutTierDto)
+  payoutTable?: PayoutTierDto[];
 
 
   @IsInt()

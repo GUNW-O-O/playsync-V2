@@ -563,12 +563,13 @@ describe('RedisService.checkAndSyncBlindLevel — 등록 마감', () => {
         activePlayer: 9,
         totalBuyinAmount: 90000,
         rakePercent: 0,
+        entryCount: 0,
+        itmCount: 1,
         rebuyUntil,
         avgStack: 30000,
         tournamentName: '테스트 토너먼트',
         entryFee: 10000,
         startStack: 30000,
-        itmCount: 3,
         prizePool: 90000,
         prizes: [
           { place: 1, percent: 50, amount: 45000 },
@@ -584,6 +585,12 @@ describe('RedisService.checkAndSyncBlindLevel — 등록 마감', () => {
         serverTime: startedAt,
         blindStructure: STRUCTURE,
       },
+      [{
+        minEntries: 0,
+        payouts: [
+          { place: 1, percent: 50 }, { place: 2, percent: 30 }, { place: 3, percent: 20 },
+        ],
+      }],
     );
   };
 

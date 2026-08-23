@@ -13,7 +13,12 @@ import { CreateTournamentDto, UpdateTournamentDto } from 'shared/dto/tournament.
 import { generateDealerOtp, hashDealerOtp } from 'src/dealer/dealer-otp';
 import { OtpAttempts } from 'src/dealer/otp-attempts';
 import { GamePhase, TableState, createEmptyTableState } from 'src/game-engine/types';
-import { parsePayouts, PrizePayout, rakeOf } from 'src/playsync/prize';
+import {
+  DEFAULT_PAYOUT_TABLE,
+  parsePayoutTable,
+  PayoutTier,
+} from 'src/playsync/payout-table';
+import { rakeOf } from 'src/playsync/prize';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { buildTournamentMeta } from './tournament-meta';
@@ -175,11 +180,14 @@ export class SessionService {
       })
       blindId = newBlind.id;
     }
-    // 분배율은 트랜잭션 밖에서 검증한다. 합이 100이 아닌 대회는 지급하는
-    // 순간에야 어긋남이 드러나는데, 그때는 이미 돈이 나간 뒤다.
-    let payouts: PrizePayout[];
+    // 구간표는 트랜잭션 밖에서 검증한다. 합이 100이 아닌 구간은 그 규모의
+    // 대회가 실제로 열리는 날에야 드러나는데, 그때는 이미 돈이 나간 뒤다.
+    //
+    // **안 주면 기본표다**(T81). 상금권 인원이 참가 규모를 따라가는 것이
+    // 기본 동작이어야 한다 — 고정하고 싶으면 구간 하나짜리 표를 주면 된다.
+    let table: PayoutTier[];
     try {
-      payouts = parsePayouts((dto.prizePayouts ?? []) as PrizePayout[]);
+      table = parsePayoutTable(dto.payoutTable ?? DEFAULT_PAYOUT_TABLE);
     } catch (e) {
       throw new BadRequestException((e as Error).message);
     }
@@ -196,8 +204,7 @@ export class SessionService {
           name: dto.name,
           type: dto.type,
           storeId: dto.storeId,
-          itmCount: payouts.length,
-          prizePayouts: payouts as unknown as Prisma.InputJsonValue,
+          payoutTable: table as unknown as Prisma.InputJsonValue,
           blindId: blindId,
           dealerOtpHash,
           startStack: dto.startStack,
@@ -542,7 +549,7 @@ export class SessionService {
 
     const startedAt = new Date();
     if (!game) throw new NotFoundException('세션을 찾을 수 없습니다.');
-    const { dashboard, blindField } = buildTournamentMeta(game, startedAt.getTime());
+    const { dashboard, blindField, payoutTable } = buildTournamentMeta(game, startedAt.getTime());
 
     const minPlayers = minPlayersToStart();
     if (game.totalPlayers < minPlayers) {
@@ -642,7 +649,7 @@ export class SessionService {
         전광판에 그리고, 그 폴링이 `checkAndSyncBlindLevel`을 밀어 **시작하지도
         않은 대회의 블라인드 시계가 스스로 올라간다.**
     */
-    await this.redis.setTournamentMeta(id, dashboard, blindField);
+    await this.redis.setTournamentMeta(id, dashboard, blindField, payoutTable);
 
     // 뽑은 버튼을 호출자에게 넘긴다. 여기서 DB에 쓰지 않는 이유는 이 메서드가
     // "아직 시작이 아니다"라는 계약을 갖기 때문이다 — 커밋은 startSession의
@@ -1278,11 +1285,10 @@ export class SessionService {
 
     // 수정 경로에도 같은 검증이 걸려야 한다. 생성만 막으면 만든 뒤에 고쳐서
     // 합이 100이 아닌 대회를 만들 수 있다.
-    if (dto.prizePayouts) {
+    if (dto.payoutTable) {
       try {
-        const payouts = parsePayouts(dto.prizePayouts as PrizePayout[]);
-        updateData.prizePayouts = payouts as unknown as Prisma.InputJsonValue;
-        updateData.itmCount = payouts.length;
+        const table = parsePayoutTable(dto.payoutTable);
+        updateData.payoutTable = table as unknown as Prisma.InputJsonValue;
       } catch (e) {
         throw new BadRequestException((e as Error).message);
       }

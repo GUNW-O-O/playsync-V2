@@ -32,11 +32,11 @@ describe('SessionService.createSession', () => {
     entryFee: 10000,
     rebuyUntil: 5,
     isRegistrationOpen: true,
-    prizePayouts: [
+    payoutTable: [{ minEntries: 0, payouts: [
       { place: 1, percent: 50 },
       { place: 2, percent: 30 },
       { place: 3, percent: 20 },
-    ],
+    ] }],
   });
 
   const setup = () => {
@@ -141,37 +141,51 @@ describe('SessionService.createSession', () => {
     await expect(service.createSession(baseDto(), OWNER)).rejects.toThrow(BadRequestException);
   });
 
-  describe('상금 분배율', () => {
-    // 상금은 참가비에서 나온다. 비율을 대회마다 상점이 정하므로, 코드가
-    // 기본값을 지어내면 아무도 합의하지 않은 비율로 돈이 나간다.
+  describe('상금 구간표', () => {
+    // 상금은 참가비에서 나온다. 구간표가 대회마다 다르므로, 코드가 아무 값을
+    // 지어내면 아무도 합의하지 않은 비율로 돈이 나간다.
 
-    it('분배율을 그대로 저장한다', async () => {
+    it('구간표를 그대로 저장한다', async () => {
       const { service, tournamentCreate } = setup();
 
       await service.createSession({ ...baseDto(), blindId: 'blind-1' }, OWNER);
 
-      expect(tournamentCreate.mock.calls[0][0].data.prizePayouts).toEqual([
-        { place: 1, percent: 50 },
-        { place: 2, percent: 30 },
-        { place: 3, percent: 20 },
+      expect(tournamentCreate.mock.calls[0][0].data.payoutTable).toEqual([
+        { minEntries: 0, payouts: [
+          { place: 1, percent: 50 },
+          { place: 2, percent: 30 },
+          { place: 3, percent: 20 },
+        ] },
       ]);
     });
 
-    it('itmCount는 분배율에서 파생된다', async () => {
-      // 따로 받으면 둘이 어긋날 수 있다. itmCount 5에 분배율 3개면 4·5위는
-      // 인 더 머니인데 받을 몫이 없다 — 어느 쪽이 맞는지 코드가 못 정한다.
+    /**
+     * **상금권 인원은 저장하지 않는다**(T81). 엔트리 수로 표에서 파생되므로
+     * 대회 행에는 규칙만 남는다 — 예전에는 `itmCount`가 분배율 길이를 복사해
+     * 들고 있었고, 그것이 두 벌이 되는 자리였다.
+     */
+    it('상금권 인원을 따로 저장하지 않는다', async () => {
       const { service, tournamentCreate } = setup();
 
-      await service.createSession({
-        ...baseDto(),
-        blindId: 'blind-1',
-        prizePayouts: [
-          { place: 1, percent: 60 },
-          { place: 2, percent: 40 },
-        ],
-      }, OWNER);
+      await service.createSession({ ...baseDto(), blindId: 'blind-1' }, OWNER);
 
-      expect(tournamentCreate.mock.calls[0][0].data.itmCount).toBe(2);
+      expect(tournamentCreate.mock.calls[0][0].data.itmCount).toBeUndefined();
+    });
+
+    /**
+     * **표를 안 주면 기본표다.** 상금권 인원이 참가 규모를 따라가는 것이 기본
+     * 동작이어야 한다 — 고정하고 싶으면 구간 하나짜리 표를 주면 된다.
+     */
+    it('구간표를 안 주면 기본표를 쓴다', async () => {
+      const { service, tournamentCreate } = setup();
+      const dto = { ...baseDto(), blindId: 'blind-1' } as Record<string, unknown>;
+      delete dto.payoutTable;
+
+      await service.createSession(dto as never, OWNER);
+
+      const table = tournamentCreate.mock.calls[0][0].data.payoutTable;
+      expect(`구간 ${table.length}개 / 최대 ${table[table.length - 1].payouts.length}자리`)
+        .toBe('구간 8개 / 최대 9자리');
     });
 
     it('합이 100이 아니면 트랜잭션까지 가지 않고 400이다', async () => {
@@ -180,7 +194,7 @@ describe('SessionService.createSession', () => {
       await expect(service.createSession({
         ...baseDto(),
         blindId: 'blind-1',
-        prizePayouts: [{ place: 1, percent: 90 }],
+        payoutTable: [{ minEntries: 0, payouts: [{ place: 1, percent: 90 }] }],
       }, OWNER)).rejects.toThrow(BadRequestException);
 
       expect(prisma.$transaction).not.toHaveBeenCalled();
@@ -194,7 +208,7 @@ describe('SessionService.createSession', () => {
       await expect(service.createSession({
         ...baseDto(),
         blindId: 'blind-1',
-        prizePayouts: [],
+        payoutTable: [{ minEntries: 0, payouts: [] }],
       }, OWNER)).rejects.toThrow(BadRequestException);
 
       expect(prisma.$transaction).not.toHaveBeenCalled();
@@ -419,9 +433,8 @@ describe('SessionService.startSession', () => {
     rebuyUntil: 5,
     avgStack: 10000,
     startStack: 10000,
-    itmCount: 3,
     totalBuyinAmount: 6000,
-    prizePayouts: [{ place: 1, percent: 100 }],
+    payoutTable: [{ minEntries: 0, payouts: [{ place: 1, percent: 100 }] }],
     blindStructure: { structure: [{ lv: 1, sb: 100, ante: false, duration: 20 }] },
     // `assertTournamentOwnership`도 같은 mock `findUnique`를 타므로 store를
     // 함께 담는다 — mock은 select를 해석하지 않고 통째로 돌려준다.
@@ -621,9 +634,8 @@ describe('SessionService 시작 최소 인원', () => {
           rebuyUntil: 5,
           avgStack: 10000,
           startStack: 10000,
-          itmCount: 3,
           totalBuyinAmount: 1000 * totalPlayers,
-          prizePayouts: [{ place: 1, percent: 100 }],
+          payoutTable: [{ minEntries: 0, payouts: [{ place: 1, percent: 100 }] }],
           blindStructure: { structure: [{ lv: 1, sb: 100, ante: false, duration: 20 }] },
           // `assertTournamentOwnership`도 이 mock을 탄다 — select를 해석하지
           // 않고 통째로 돌려주므로 store를 같이 담아 둔다.

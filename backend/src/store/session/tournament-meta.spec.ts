@@ -22,8 +22,7 @@ describe('buildTournamentMeta', () => {
     rakePercent: 0,
     rebuyUntil: 0,
     avgStack: 0,
-    itmCount: 1,
-    prizePayouts: [{ place: 1, percent: 100 }],
+    payoutTable: [{ minEntries: 0, payouts: [{ place: 1, percent: 100 }] }],
     blindStructure: { structure: [] },
     ...overrides,
   });

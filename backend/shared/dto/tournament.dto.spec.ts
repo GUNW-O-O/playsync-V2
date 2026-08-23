@@ -27,7 +27,7 @@ const validCreate = {
   startStack: 30000,
   entryFee: 50000,
   rebuyUntil: 5,
-  prizePayouts: [{ place: 1, percent: 100 }],
+  payoutTable: [{ minEntries: 0, payouts: [{ place: 1, percent: 100 }] }],
 };
 
 const has = (errs: unknown[]) => `오류 ${errs.length > 0 ? '있음' : '없음'}`;
