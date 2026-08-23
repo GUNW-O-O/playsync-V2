@@ -105,13 +105,13 @@ npm run assets         # 촬영본을 자르고 합쳐 img/ 로 (ffmpeg-static)
 타입 에러 0건, 테스트 전부 통과가 정상이다. CI(`.github/workflows/ci.yml`)가
 타입 체크 · 테스트 · 빌드를 돌린다.
 
-현재 기준선 (#86 완료 시점):
+현재 기준선 (T76 · T72 완료 시점):
 
 ```
 contract       62  (4 suites)
-백엔드 단위   288  (29 suites)
+백엔드 단위   303  (31 suites)
 프론트 단위   177  (31 files)
-통합          491  (33 suites)
+통합          500  (33 suites)
 e2e            13  (4 files, regression 프로젝트)
 부하 하네스    12  (1 file, `cd load && npm test`)
 타입 에러       0

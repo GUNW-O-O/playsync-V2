@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, Logger } from '@nestjs/common';
+import { ConflictException, HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { PlayerStatus } from '@prisma/client';
 import { PayMentDto } from 'shared/dto/payment.dto';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -6,6 +6,7 @@ import { isRegistrationOpenNow } from 'src/store/session/registration';
 import { RedisService } from 'src/redis/redis.service';
 import { SessionService } from 'src/store/session/session.service';
 import { UserService } from 'src/user/user.service';
+import { approveCharge } from './mock-approval';
 import * as playerOtp from './player-otp';
 import { NOT_CLOSED_TOURNAMENT_FILTER, isClosedTournament } from 'src/store/session/tournament-status';
 
@@ -191,6 +192,34 @@ export class PaymentService {
   // 참가비 결제. **좌석은 여기서 정하지 않는다**(T28) — 오프라인에서 돈은
   // 미리 내고 의자는 현장에서 정해진다. 좌석 확정은 EntryService가 참가
   // OTP를 받는 순간에 한다.
+  /**
+   * 포인트 충전. **승인 판정과 반영을 갈라 둔다.**
+   *
+   * 목업이 성공/실패를 돌려주는 자리가 그 사이다(`approveCharge`). 지금은
+   * 규칙이 한 줄이어도 그 경계가 있어야 나중에 실 PG를 끼워 넣을 수 있고,
+   * 그때 이 함수는 판정의 출처만 바뀐다.
+   *
+   * **거절은 402고 포인트 부족은 409다.** 갈라야 화면이 "결제가 거절됐다"와
+   * "돈이 모자란다"를 다르게 안내할 수 있다 — 전자는 다시 시도할 일이고
+   * 후자는 충전할 일이다.
+   *
+   * 거절이면 트랜잭션을 아예 열지 않는다. 열고 던져도 되돌아가지만, **되돌릴
+   * 것이 없는 일에 트랜잭션을 여는 것은 부하 아래서 공짜가 아니다** — 이
+   * 경로는 부하가 실제로 밟는다(T72).
+   */
+  async chargePoint(userId: string, amount: number) {
+    const approval = approveCharge(amount);
+    if (!approval.approved) {
+      throw new HttpException(approval.reason!, HttpStatus.PAYMENT_REQUIRED);
+    }
+
+    await this.prismaService.$transaction(async (tx) => {
+      await this.user.chargePoint(tx, userId, amount);
+    });
+
+    return { charged: amount };
+  }
+
   async joinSession(dto: PayMentDto, userId: string) {
     const user = await this.user.findByUUID(userId);
     const session = await this.prismaService.tournament.findUnique({

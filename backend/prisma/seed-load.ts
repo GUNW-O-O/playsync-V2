@@ -319,6 +319,9 @@ async function main() {
       // 봇의 레이즈 단위. 블라인드 구조의 sb를 두 배 한 값이고, 레벨이
       // 하나뿐이라 실행 내내 고정이다.
       bigBlind: BIG_BLIND,
+      // 봇이 충전 금액을 만드는 데 쓴다(T72). 거절 규칙이 금액 기반이라
+      // 봇이 참가비를 알아야 "거절되는 금액"을 계산할 수 있다.
+      entryFee: ENTRY_FEE_MIN,
       accountPrefix: ACCOUNT_PREFIX,
       accountPool: ACCOUNT_POOL,
       tournaments,

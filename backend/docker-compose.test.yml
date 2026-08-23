@@ -115,6 +115,11 @@ services:
       # `seed-load.ts`의 `BOT_POINTS`와 같은 변수라 — 여기서 안 맞추면 풀
       # 계정과 실행 중 신규 계정의 잔고가 벌어진다.
       SIGNUP_INITIAL_POINTS: 100000000
+      # 목업 충전 라우트를 켠다(T72). 이 값이 없으면 `POST /payments/charge`가
+      # **존재하지 않는다** — 등록 시점에 갈리기 때문이다(`payment.module.ts`).
+      # 부하가 결제 거절을 밟으려면 켜져 있어야 하고, 거절 자체는 봇 쪽
+      # `LOAD_DECLINE_RATIO`가 정한다.
+      MOCK_PAYMENT: 1
     depends_on:
       db-test:
         condition: service_healthy

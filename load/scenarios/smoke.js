@@ -67,6 +67,7 @@ export default function (data) {
     poolBase: (__VU - 1) * SEAT_COUNT,
     accountPrefix: manifest.accountPrefix,
     accountPool: manifest.accountPool,
+    entryFee: manifest.entryFee,
   });
 
   // 대회를 시작해야 Redis에 블라인드 메타가 서고, 그래야 `startPreFlop`이

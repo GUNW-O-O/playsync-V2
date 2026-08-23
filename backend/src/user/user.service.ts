@@ -49,6 +49,35 @@ export class UserService {
   }
 
   /**
+   * 포인트 충전. **`paymentPoint`의 거울이다** — `decrement` + `BUY_IN` 대신
+   * `increment` + `CHARGE`.
+   *
+   * `TransactionType.CHARGE`가 `schema.prisma`에 선언만 있고 사용처가
+   * 0건이었다(T71 9-3이 적었고 T72로 옮겼다). 충전 경로가 없던 것이 부하
+   * 무대의 `entryFee: 0`을 낳았고, T64가 그 값을 걷어내며 드러났다.
+   *
+   * **승인 판정은 여기 없다.** 이 함수는 도메인 연산만 한다 — 목업이든 실
+   * PG든 "승인됐다"의 뒤는 같은 두 줄이고, 갈라 둬야 나중에 PG가 생겨도 이
+   * 자리를 안 고친다(`payment/mock-approval.ts`).
+   */
+  async chargePoint(tx: any, userId: string, amount: number) {
+    await this.findByUUID(userId);
+
+    await tx.user.update({
+      where: { id: userId },
+      data: { points: { increment: amount } },
+    });
+    await tx.pointTransaction.create({
+      data: {
+        userId,
+        amount,
+        type: 'CHARGE',
+        description: '포인트 충전',
+      },
+    });
+  }
+
+  /**
    * 내가 참여한 대회 목록. 마이페이지가 쓴다.
    *
    * **참가 OTP를 읽는 유일한 곳이다.** `PrismaService`가 이 필드를 기본으로

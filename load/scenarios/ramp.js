@@ -211,6 +211,7 @@ export function table(data) {
     poolBase: index * SEAT_COUNT,
     accountPrefix: manifest.accountPrefix,
     accountPool: manifest.accountPool,
+    entryFee: manifest.entryFee,
   });
   tableSetupMs.add(Date.now() - setupStart);
 

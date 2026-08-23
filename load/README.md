@@ -27,6 +27,15 @@ npm run load:ramp-a    # 성장 램프 — 6테이블마다 다음 대회로
 npm run load:down      # 정리
 ```
 
+**결제 거절을 부하에 넣으려면 `LOAD_DECLINE_RATIO`를 켠다**(T72). 기본값 0이면
+충전 요청 자체가 안 나가므로 기본 부하 모양은 그대로다. 백엔드 쪽은 부하 무대가
+`MOCK_PAYMENT=1`로 이미 켜 둔다 — 그 값이 없으면 `POST /payments/charge`가
+**존재하지 않는다**(등록 시점에 갈린다).
+
+```bash
+docker compose -f backend/docker-compose.test.yml --profile load --profile k6   run --rm k6 run -e LOAD_DECLINE_RATIO=0.1 /load/scenarios/ramp.js
+```
+
 하네스에 붙은 유일한 자동 검증은 창 큐의 단위 테스트다. 인프라가 필요 없다.
 
 ```bash
@@ -377,6 +386,7 @@ node scripts/load-report.mjs load/results/ramp-b-raw.json
 | `my_action_client_ms` | 그 왕복 중 **선과 측정기가 나르기까지** | 기록용 |
 | `stale_windows` | 응답이 끝내 안 와서 버린 측정 창 | 기록용 |
 | `stale_broadcasts` | 창보다 먼저 서버를 떠나 짝짓지 않은 봉투 | 기록용 |
+| `charge_declines` · `charge_retries` | 목업 결제가 거절한 충전과, 그 뒤 다시 시도한 충전 | 기록용 |
 
 ### 왕복을 둘로 쪼개는 이유
 

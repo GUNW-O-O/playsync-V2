@@ -1,4 +1,4 @@
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import { ConflictException, HttpException, HttpStatus, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { Queue } from 'bullmq';
@@ -679,5 +679,178 @@ describe('PaymentService.joinSession — 등록 마감', () => {
     await service.joinSession({ tournamentId: TOURNAMENT }, 'late-comer');
 
     expect(lookup).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * 목업 결제 — 충전과 거절(T72).
+ *
+ * **이 스펙의 값어치는 "가짜 결제"가 아니라 거절이다.** 지금까지 결제 거절
+ * 경로에는 통합 테스트가 없었다. 포인트 게이트를 단위로 확인하는 것은 있어도,
+ * **거절 뒤에 무엇이 남지 않는지**를 보는 검사가 없었다.
+ *
+ * 스텁을 쓰지 않는다. 검증 대상이 "트랜잭션이 통째로 되돌아가는가"라서
+ * 진짜 트랜잭션이 있어야 의미가 있다.
+ */
+describe('PaymentService — 목업 충전과 거절 롤백', () => {
+  let prisma: PrismaClient;
+  let redis: Redis;
+  let userService: UserService;
+  let service: PaymentService;
+
+  const TOURNAMENT = 'charge-tournament-1';
+  const USER = 'charge-user-1';
+  const ENTRY_FEE = 5000;
+
+  async function seedDb(points: number) {
+    const owner = await prisma.user.create({ data: { nickname: 'charge-owner', password: 'x' } });
+    const store = await prisma.store.create({ data: { name: 'charge-store-1', ownerId: owner.id } });
+    const blind = await prisma.blindStructure.create({
+      data: {
+        name: 'charge-blind-1',
+        storeId: store.id,
+        structure: [{ lv: 1, sb: 100, ante: false, duration: 600 }],
+      },
+    });
+    await prisma.tournament.create({
+      data: {
+        id: TOURNAMENT,
+        name: '충전 대회',
+        blindId: blind.id,
+        storeId: store.id,
+        dealerOtpHash: 'unused-hash',
+        entryFee: ENTRY_FEE,
+        startStack: 10000,
+        isRegistrationOpen: true,
+      },
+    });
+    await prisma.user.create({ data: { id: USER, nickname: USER, password: 'x', points } });
+  }
+
+  beforeAll(() => {
+    redis = createTestRedis();
+    prisma = createTestPrisma();
+    userService = new UserService(prisma as unknown as PrismaService);
+    service = new PaymentService(
+      userService,
+      {} as unknown as SessionService,
+      prisma as unknown as PrismaService,
+      new RedisService(redis),
+    );
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+    await closeTestPrisma(prisma);
+  });
+
+  beforeEach(async () => {
+    await flushTestRedis(redis);
+    await truncateAll(prisma);
+  });
+
+  it('승인되면 포인트가 오른다', async () => {
+    await seedDb(0);
+
+    await service.chargePoint(USER, 10_000);
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: USER } });
+    expect(user.points).toBe(10_000);
+  });
+
+  /**
+   * `TransactionType.CHARGE`가 `schema.prisma`에 **선언만 있고 사용처가
+   * 0건**이었다(T71 9-3이 같은 항목을 적었고 T72로 옮겼다). 여기가 첫
+   * 사용처다.
+   */
+  it('승인되면 CHARGE 거래 내역이 남는다', async () => {
+    await seedDb(0);
+
+    await service.chargePoint(USER, 10_000);
+
+    const rows = await prisma.pointTransaction.findMany({ where: { userId: USER } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].type).toBe('CHARGE');
+    expect(rows[0].amount).toBe(10_000);
+  });
+
+  /**
+   * 402다. **`HttpException`을 직접 쓴다** — NestJS에 `PaymentRequiredException`이
+   * 없다. 409(포인트 부족)와 갈라야 화면이 "결제가 거절됐다"와 "돈이 모자란다"를
+   * 다르게 안내할 수 있다.
+   */
+  it('거절되면 402로 막는다', async () => {
+    await seedDb(0);
+
+    const err = await service.chargePoint(USER, 9_999).catch((e) => e);
+    expect(err).toBeInstanceOf(HttpException);
+    expect((err as HttpException).getStatus()).toBe(HttpStatus.PAYMENT_REQUIRED);
+  });
+
+  /**
+   * 두 단언을 갈라 뒀다. 포인트만 보면 **거래 내역만 남기는 구현**이
+   * 통과하고, 내역만 보면 그 반대가 통과한다.
+   */
+  it('거절되면 포인트가 그대로다', async () => {
+    await seedDb(700);
+
+    await expect(service.chargePoint(USER, 9_999)).rejects.toThrow();
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: USER } });
+    expect(user.points).toBe(700);
+  });
+
+  it('거절되면 거래 내역이 안 남는다', async () => {
+    await seedDb(700);
+
+    await expect(service.chargePoint(USER, 9_999)).rejects.toThrow();
+
+    expect(await prisma.pointTransaction.count({ where: { userId: USER } })).toBe(0);
+  });
+
+  /**
+   * **거절의 진짜 값어치가 여기 있다.**
+   *
+   * 충전이 거절되면 그 사람은 포인트가 모자란 채로 참가를 시도한다. 그
+   * 참가가 409로 막힐 때 넷이 하나도 안 남아야 한다 — 참가 행 · 참가 OTP ·
+   * 거래 내역 · 프라이즈풀. 아무도 이걸 재지 않았다.
+   */
+  describe('거절당한 사람이 참가를 시도하면', () => {
+    beforeEach(async () => {
+      await seedDb(ENTRY_FEE - 1);
+      await expect(service.chargePoint(USER, 9_999)).rejects.toThrow();
+    });
+
+    it('409로 막는다', async () => {
+      await expect(
+        service.joinSession({ tournamentId: TOURNAMENT }, USER),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('참가 행이 안 남는다', async () => {
+      await expect(service.joinSession({ tournamentId: TOURNAMENT }, USER)).rejects.toThrow();
+
+      expect(
+        await prisma.tournamentParticipation.count({ where: { userId: USER } }),
+      ).toBe(0);
+    });
+
+    it('거래 내역이 안 남는다', async () => {
+      await expect(service.joinSession({ tournamentId: TOURNAMENT }, USER)).rejects.toThrow();
+
+      expect(await prisma.pointTransaction.count({ where: { userId: USER } })).toBe(0);
+    });
+
+    /**
+     * 프라이즈풀은 `totalBuyinAmount`다. 여기가 올라가면 전광판의 상금이
+     * 아무도 안 낸 돈을 표시한다.
+     */
+    it('프라이즈풀이 안 오른다', async () => {
+      await expect(service.joinSession({ tournamentId: TOURNAMENT }, USER)).rejects.toThrow();
+
+      const tournament = await prisma.tournament.findUniqueOrThrow({ where: { id: TOURNAMENT } });
+      expect(tournament.totalBuyinAmount).toBe(0);
+      expect(tournament.totalPlayers).toBe(0);
+    });
   });
 });

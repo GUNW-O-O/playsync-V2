@@ -1,5 +1,6 @@
 import http from 'k6/http';
 import { fail, sleep } from 'k6';
+import { Counter } from 'k6/metrics';
 
 /**
  * 부하 봇이 타는 REST 경로.
@@ -59,6 +60,77 @@ export function login(nickname, password) {
     { headers: JSON_HEADERS, tags: { step: 'login' } },
   );
   return must(res, `로그인(${nickname})`).accessToken;
+}
+
+/**
+ * 목업 결제가 거절하는 금액의 나머지. **백엔드의 `DECLINE_REMAINDER`와 같은
+ * 값이어야 한다**(`backend/src/payment/mock-approval.ts`).
+ *
+ * 손으로 맞춘 사본이라 어긋날 수 있는 자리다. 계약(`packages/contract`)에
+ * 넣지 않은 이유는 이것이 경계를 넘는 값이 아니라 **목업의 내부 규칙**이기
+ * 때문이다 — 프론트는 이 값을 모르고, 알 이유도 없다.
+ */
+const DECLINE_REMAINDER = 999;
+
+/** 나머지를 재는 단위. 백엔드의 `DECLINE_MODULUS`와 같아야 한다. */
+const DECLINE_MODULUS = 1000;
+
+/** 거절을 밟는 봇의 비율. 0이면 충전 경로 자체를 안 탄다. */
+const DECLINE_RATIO = Number(__ENV.LOAD_DECLINE_RATIO || 0);
+
+/** 거절당한 충전과, 그 뒤 다시 시도해 성공한 충전. */
+export const chargeDeclines = new Counter('charge_declines');
+export const chargeRetries = new Counter('charge_retries');
+
+/**
+ * 포인트 충전. **`MOCK_PAYMENT=1`일 때만 라우트가 있다.**
+ *
+ * 부하가 이 경로를 타는 이유는 충전 자체가 아니라 **거절**이다. 지금까지
+ * 부하는 결제 실패를 한 번도 밟은 적이 없어서, 거절 뒤에 참가 행 · 참가 OTP ·
+ * 거래 내역 · 프라이즈풀이 안 남는지를 아무도 재지 않았다(T72).
+ *
+ * @returns 402로 거절당했으면 `false`. 그 외 실패는 `must`가 끊는다.
+ */
+export function chargePoint(token, amount) {
+  const res = http.post(
+    `${BASE}/payments/charge`,
+    JSON.stringify({ amount }),
+    { headers: bearer(token), tags: { step: 'charge' } },
+  );
+  // 402는 실패가 아니라 **재려던 것**이다. `must`에 태우면 VU가 죽어 거절이
+  // 부하 모양을 바꿔 버린다.
+  if (res.status === 402) return false;
+  must(res, '포인트 충전');
+  return true;
+}
+
+/**
+ * 거절을 한 번 밟고 다시 충전한다. **선택된 봇만 이 경로를 탄다.**
+ *
+ * `LOAD_DECLINE_RATIO`가 0이면 아무 요청도 안 보낸다 — 기본 부하 모양을
+ * 바꾸지 않으려는 것이다. 켜야 거절이 부하에 들어간다.
+ *
+ * **재시도하는 이유.** 사람이 하는 일이 그렇다 — 돈이 그대로 있는 것을 보고
+ * 다시 누른다. 죽는 선택지도 있었지만 그러면 VU가 줄어 램프의 규모 축이
+ * 흔들리고, 재는 것이 정원이 아니라 거절 비율이 된다.
+ *
+ * 재시도는 **한 번**이다. 두 번째 금액은 거절 규칙을 안 밟으므로 반드시
+ * 통과하고, 그래도 실패하면 그것은 목업이 아니라 진짜 결함이라 끊는 편이 옳다.
+ */
+export function chargeForEntry(token, entryFee) {
+  if (DECLINE_RATIO <= 0 || Math.random() >= DECLINE_RATIO) return;
+
+  // 거절을 부르는 금액은 규칙에 맞춰 만든다.
+  const declineAmount = Math.ceil(entryFee / DECLINE_MODULUS) * DECLINE_MODULUS + DECLINE_REMAINDER;
+  if (chargePoint(token, declineAmount)) {
+    fail(`거절돼야 할 금액이 승인됐다 (${declineAmount}) — 목업 규칙이 어긋났다`);
+  }
+  chargeDeclines.add(1);
+
+  // 나머지가 규칙에 걸리면 1을 더해 비껴간다.
+  const clean = entryFee % DECLINE_MODULUS === DECLINE_REMAINDER ? entryFee + 1 : entryFee;
+  chargePoint(token, clean);
+  chargeRetries.add(1);
 }
 
 /** 참가비 결제. 참가 행과 참가 OTP가 여기서 생긴다. */
