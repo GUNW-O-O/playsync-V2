@@ -13,7 +13,7 @@ import { CreateTournamentDto, UpdateTournamentDto } from 'shared/dto/tournament.
 import { generateDealerOtp, hashDealerOtp } from 'src/dealer/dealer-otp';
 import { OtpAttempts } from 'src/dealer/otp-attempts';
 import { GamePhase, TableState, createEmptyTableState } from 'src/game-engine/types';
-import { parsePayouts, PrizePayout } from 'src/playsync/prize';
+import { parsePayouts, PrizePayout, rakeOf } from 'src/playsync/prize';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { buildTournamentMeta } from './tournament-meta';
@@ -203,6 +203,7 @@ export class SessionService {
           startStack: dto.startStack,
           avgStack: dto.startStack,
           entryFee: dto.entryFee,
+          rakePercent: dto.rakePercent ?? 0,
           rebuyUntil: dto.rebuyUntil,
           isRegistrationOpen: dto.isRegistrationOpen,
         },
@@ -689,15 +690,34 @@ export class SessionService {
       select: { prizeAmount: true },
     });
     const paid = participations.reduce((sum, p) => sum + p.prizeAmount, 0);
-    const remaining = tournament.totalBuyinAmount - paid;
+
+    /**
+     * **게이트가 보는 것은 「걷은 것 == 상금 + 상점 몫」이다.**
+     *
+     * 예전에는 상금만 봤다. 레이크가 붙은 뒤로는 상금이 프라이즈풀만큼만
+     * 나가므로 걷은 총액과는 상점 몫만큼 벌어지고, 그 차이를 남는 돈으로
+     * 읽으면 **레이크 있는 대회는 영영 안 닫힌다.**
+     *
+     * 레이크가 0이면 `rake`도 0이라 이 식이 예전 식과 같아진다.
+     */
+    const rake = rakeOf(tournament.totalBuyinAmount, tournament.rakePercent);
+    const remaining = tournament.totalBuyinAmount - paid - rake;
 
     if (remaining !== 0) {
       throw new ConflictException(
         remaining > 0
           ? `상금 정산이 끝나지 않았습니다. ${remaining} 남았습니다.`
-          : `지급된 상금이 참가비 총액보다 ${-remaining} 많습니다.`,
+          : `지급된 상금이 프라이즈풀보다 ${-remaining} 많습니다.`,
       );
     }
+
+    // **돈을 받는 사람은 상점 주인이다.** 상점 자체는 지갑이 없고
+    // (`Store`에 포인트 컬럼이 없다) 주인은 이미 `User`라, 새 모델 없이
+    // 포인트 증가 + 거래 내역으로 끝난다(`abortSession`과 같은 자리).
+    const { ownerId: storeOwnerId } = await this.prismaService.store.findUniqueOrThrow({
+      where: { id: tournament.storeId },
+      select: { ownerId: true },
+    });
 
     const tables = await this.prismaService.table.findMany({
       where : { tournamentId : id }
@@ -706,16 +726,40 @@ export class SessionService {
     tables.forEach(t => {
       tableIds.push(t.id);
     })
-    await this.prismaService.$transaction(async (tx) => {
-      await tx.tournament.update({
-        where: {
-          id: id,
-        },
+    const closed = await this.prismaService.$transaction(async (tx) => {
+      /**
+       * **상태 전이가 문지기다.** 종료가 돈 경로가 됐으므로(상점 몫)
+       * 두 번 눌리면 두 번 나간다. 위의 `isClosedTournament`는 트랜잭션
+       * **밖**이라 순차 호출만 잡고, 동시 호출은 여기서만 갈린다 —
+       * `abortSession`·`cancelSession`과 같은 모양이다.
+       */
+      const won = await tx.tournament.updateMany({
+        where: { id, status: NOT_CLOSED_TOURNAMENT_FILTER },
         data: {
           status: TournamentStatus.FINISHED,
           finishedAt: new Date(),
         },
       });
+      if (won.count === 0) return false;
+
+      // 0원은 옮기지 않는다. 레이크 없는 대회에 0원짜리 거래가 쌓이면
+      // 「상점이 가져갔다」와 「가져갈 것이 없었다」가 같은 모양으로 남는다.
+      if (rake > 0) {
+        await tx.user.update({
+          where: { id: storeOwnerId },
+          data: { points: { increment: rake } },
+        });
+        await tx.pointTransaction.create({
+          data: {
+            userId: storeOwnerId,
+            amount: rake,
+            type: 'SETTLEMENT',
+            tournamentId: id,
+            description: `${tournament.name} 상점 몫`,
+          },
+        });
+      }
+
       await tx.table.deleteMany({
         where: {
           tournamentId: id,
@@ -726,7 +770,13 @@ export class SessionService {
           tournamentId: id,
         },
       });
+      return true;
     });
+
+    // **두 번째 호출은 아무것도 안 했다.** Redis는 이미 첫 번째가 비웠다.
+    if (!closed) {
+      throw new ConflictException('이미 닫힌 세션입니다.');
+    }
     await this.redis.deleteTournament(id, tableIds);
   }
 
@@ -1198,9 +1248,18 @@ export class SessionService {
     // `status === ONGOING`이던 때는 N명이 결제한 뒤 아직 시작 전인 대회의
     // entryFee를 그대로 바꿀 수 있었고, 위와 같은 굳음이 시작 전에도 그대로
     // 재현됐다. 시작 스택도 같은 성질이다.
+    //
+    // **레이크도 같은 성질이다.** 프라이즈풀이 `걷은 총액 - 레이크`라
+    // 비율을 바꾸면 **이미 지급된 상금이 소급해서 틀린 금액이 된다** —
+    // 나간 돈은 되돌릴 근거가 없고, `completeSession`의 게이트는 새 비율로
+    // 다시 재므로 그 대회는 닫히지 않는다.
     if (session && session.totalBuyinAmount > 0) {
-      if (dto.entryFee !== undefined || dto.startStack !== undefined) {
-        throw new ConflictException('이미 걷은 참가비가 있는 대회의 참가비와 시작 스택은 바꿀 수 없습니다.');
+      if (
+        dto.entryFee !== undefined
+        || dto.startStack !== undefined
+        || dto.rakePercent !== undefined
+      ) {
+        throw new ConflictException('이미 걷은 참가비가 있는 대회의 참가비와 시작 스택, 상점 몫은 바꿀 수 없습니다.');
       }
     }
 
@@ -1214,6 +1273,7 @@ export class SessionService {
       startStack: dto.startStack,
       rebuyUntil: dto.rebuyUntil,
       entryFee: dto.entryFee,
+      rakePercent: dto.rakePercent,
     };
 
     // 수정 경로에도 같은 검증이 걸려야 한다. 생성만 막으면 만든 뒤에 고쳐서

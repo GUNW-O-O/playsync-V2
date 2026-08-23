@@ -1,7 +1,7 @@
 import { Inject, Injectable } from "@nestjs/common";
 import Redis from "ioredis";
 import { BlindField, Dashboard, FullTournamentInfo } from "shared/types/tournamentMeta";
-import { calculatePrizes, PrizePayout } from "src/playsync/prize";
+import { calculatePrizes, PrizePayout, prizePoolOf } from "src/playsync/prize";
 import { UserInfo } from "shared/types/userInfo";
 import { getCurrentBlindLevel } from "shared/util/util";
 import { TableState } from "src/game-engine/types";
@@ -272,6 +272,10 @@ export class RedisService {
       'rebuyUntil', dashboard.rebuyUntil,
       'avgStack', dashboard.avgStack,
       'itmCount', dashboard.itmCount,
+      // 상점 몫도 비율만 싣는다. 프라이즈풀은 아래에서 `totalBuyinAmount`와
+      // 함께 파생된다 — 금액을 저장하면 리바인마다 두 값을 같이 갱신해야 하고,
+      // 하나만 갱신되는 순간 전광판이 틀어진다.
+      'rakePercent', dashboard.rakePercent,
       // 비율만 저장한다. 금액은 totalBuyinAmount에서 매번 파생시킨다 — 금액을
       // 저장하면 리바인마다 두 값을 같이 갱신해야 하고, 하나만 갱신되는 순간
       // 전광판이 틀어진다.
@@ -293,7 +297,11 @@ export class RedisService {
     if (!raw || Object.keys(raw).length === 0) return null;
     if (!blindField) return null;
 
-    const pool = parseInt(raw.totalBuyinAmount || '0');
+    // **전광판의 프라이즈풀은 상점 몫을 뺀 나머지다.** 걷은 총액을 그대로
+    // 나누면 참가자가 받을 수 없는 금액이 뜨고, 지급 경로
+    // (`eliminatePlayer`·`tournamentFinished`)와도 어긋난다.
+    const rakePercent = parseInt(raw.rakePercent || '0');
+    const pool = prizePoolOf(parseInt(raw.totalBuyinAmount || '0'), rakePercent);
     const payouts: PrizePayout[] = raw.prizePayouts ? JSON.parse(raw.prizePayouts) : [];
     const amounts = payouts.length > 0
       ? calculatePrizes(pool, payouts)
@@ -334,6 +342,7 @@ export class RedisService {
         entryFee: parseInt(raw.entryFee || '0'),
         startStack: parseInt(raw.startStack || '0'),
         itmCount: parseInt(raw.itmCount || '0'),
+        rakePercent,
       },
       blindField: blindField,
     };

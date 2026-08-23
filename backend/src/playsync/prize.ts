@@ -65,6 +65,34 @@ export function startablePayouts(raw: unknown): PrizePayout[] {
 }
 
 /**
+ * 상점이 걷은 총액에서 가져가는 몫.
+ *
+ * **참가자가 따로 내는 수수료가 아니다.** 참가비는 그대로 걷히고, 그 총액에서
+ * 상점 비율만큼을 떼어 나머지가 프라이즈풀이 된다. 입장할 때마다 떼지 않는
+ * 이유가 여기 있다 — **한 번만 곱하면 내림도 한 번뿐**이라 999원짜리 대회에서
+ * 건당 내림으로 상점 몫이 통째로 사라지는 일이 없다.
+ *
+ * **나머지는 프라이즈풀에 남긴다.** 상점 쪽에서 올림하면 참가자에게 갈 돈이
+ * 한 원씩 줄고, 그 방향의 손해는 설명하기 어렵다.
+ *
+ * 포인트에서 현금으로 넘어갈 때의 수수료는 이 시스템 밖의 일이다.
+ */
+export function rakeOf(totalBuyinAmount: number, rakePercent: number): number {
+  if (rakePercent <= 0 || totalBuyinAmount <= 0) return 0;
+  return Math.floor((totalBuyinAmount * rakePercent) / 100);
+}
+
+/**
+ * 상금으로 나갈 돈. **전광판의 프라이즈풀이 이 값이다.**
+ *
+ * `프라이즈풀 + 상점 몫 == 걷은 총액`이 언제나 성립한다 — 한쪽을 빼서 정의하기
+ * 때문이다. 두 값을 각각 계산하면 내림이 두 번 생겨 한 원이 사라진다.
+ */
+export function prizePoolOf(totalBuyinAmount: number, rakePercent: number): number {
+  return totalBuyinAmount - rakeOf(totalBuyinAmount, rakePercent);
+}
+
+/**
  * 풀을 등수별 금액으로 나눈다.
  *
  * 2위 이하를 먼저 내림으로 확정하고 **1위가 나머지를 흡수한다.** 각자 따로

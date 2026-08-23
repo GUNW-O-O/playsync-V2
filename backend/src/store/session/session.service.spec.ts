@@ -269,13 +269,21 @@ describe('SessionService.completeSession — 정산 게이트', () => {
    * 않는다 — 어떻게 나눴든 **합이 맞으면** 통과한다.
    */
 
-  const setup = (opts: { pool: number; prizes: number[]; status?: TournamentStatus }) => {
+  const setup = (opts: {
+    pool: number;
+    prizes: number[];
+    status?: TournamentStatus;
+    rakePercent?: number;
+  }) => {
     const prisma = {
       tournament: {
         findUnique: jest.fn().mockResolvedValue({
           id: 't1',
+          name: '테스트 대회',
           status: opts.status ?? TournamentStatus.ONGOING,
           totalBuyinAmount: opts.pool,
+          rakePercent: opts.rakePercent ?? 0,
+          storeId: 'store-1',
           // 소유권 검사(T56)가 보는 것. 같은 `findUnique` 목이 검사와 본문
           // 양쪽에 답하므로 두 모양을 한 행에 겹쳐 둔다.
           store: { ownerId: OWNER },
@@ -287,8 +295,11 @@ describe('SessionService.completeSession — 정산 게이트', () => {
           opts.prizes.map((prizeAmount, i) => ({ userId: `u${i}`, prizeAmount })),
         ),
       },
+      store: { findUniqueOrThrow: jest.fn().mockResolvedValue({ ownerId: OWNER }) },
       table: { findMany: jest.fn().mockResolvedValue([{ id: 'table-1' }]) },
-      $transaction: jest.fn(),
+      // 문지기가 이겼다는 뜻이다. 지는 쪽은 통합 스펙이 경합으로 본다 —
+      // 여기서는 게이트 산수만 잰다.
+      $transaction: jest.fn().mockResolvedValue(true),
     };
     const redis = { deleteTournament: jest.fn() };
     return {
@@ -315,6 +326,31 @@ describe('SessionService.completeSession — 정산 게이트', () => {
     const { service } = setup({ pool: 30000, prizes: [18000] });
 
     await expect(service.completeSession('t1', OWNER)).rejects.toThrow(/12000/);
+  });
+
+  /**
+   * **레이크가 있으면 상금은 프라이즈풀만큼만 나간다.** 게이트가 상금만 보면
+   * 상점 몫이 「남은 돈」으로 읽혀 대회가 영영 안 닫힌다.
+   *
+   * 위의 「합이 맞으면 닫는다」와 짝이다 — 그쪽은 레이크 0, 이쪽은 10%라
+   * **둘이 어긋나는 입력**이다. `rake` 항을 지우면 이 검사만, 잘못된 부호로
+   * 넣으면 저 검사만 터진다.
+   */
+  it('레이크가 있으면 상금이 프라이즈풀만큼만 나가도 닫는다', async () => {
+    // 30,000의 10%인 3,000이 상점 몫이고 상금은 27,000이다.
+    const { service, prisma } = setup({ pool: 30000, prizes: [27000], rakePercent: 10 });
+
+    await service.completeSession('t1', OWNER);
+
+    expect(prisma.$transaction).toHaveBeenCalled();
+  });
+
+  it('레이크가 있는데 걷은 총액만큼 나갔으면 초과 지급이다', async () => {
+    // 레이크를 빼면 프라이즈풀이 27,000인데 30,000이 나갔다.
+    const { service, prisma } = setup({ pool: 30000, prizes: [30000], rakePercent: 10 });
+
+    await expect(service.completeSession('t1', OWNER)).rejects.toThrow(/3000/);
+    expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
   it('더 나갔어도 닫지 않는다', async () => {

@@ -32,9 +32,13 @@ export const DashboardSchema = z.object({
   entryFee: chips,
   startStack: chips,
   itmCount: z.int().min(0),
-  // 프라이즈풀은 걷은 참가비 총액(totalBuyinAmount)과 같다. 지급의 진실은
-  // DB고, 이 둘은 전광판용 파생값이다 — 어긋나면 화면 숫자가 틀리는 것이지
-  // 지급이 틀리는 것은 아니다.
+  // 상점이 걷은 총액에서 가져가는 비율(%). **참가자가 따로 내는 수수료가
+  // 아니다** — 참가비는 그대로 걷히고 대회를 닫을 때 총액에 한 번 곱해 뗀다.
+  // 화면은 이 값을 그리지 않지만, 프라이즈풀이 왜 걷은 총액보다 작은지가 여기 있다.
+  rakePercent: z.int().min(0).max(100),
+  // 프라이즈풀은 걷은 참가비 총액에서 **상점 몫을 뺀 나머지**다. 지급의
+  // 진실은 DB고, 이 둘은 전광판용 파생값이다 — 어긋나면 화면 숫자가 틀리는
+  // 것이지 지급이 틀리는 것은 아니다. 레이크가 0이면 걷은 총액과 같다.
   prizePool: chips,
   prizes: z.array(PrizeRowSchema),
 });

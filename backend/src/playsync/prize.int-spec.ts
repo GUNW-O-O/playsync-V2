@@ -51,6 +51,7 @@ describe('상금 지급', () => {
       totalPlayer: USERS.length,
       activePlayer,
       totalBuyinAmount: INITIAL_POOL,
+      rakePercent: 0,
       rebuyUntil: 0,
       avgStack: 10000,
       tournamentName: 'T',
@@ -94,6 +95,7 @@ describe('상금 지급', () => {
         entryFee: ENTRY_FEE, startStack: 10000,
         itmCount: PAYOUTS.length, prizePayouts: PAYOUTS,
         totalBuyinAmount: INITIAL_POOL,
+        rakePercent: 0,
         activePlayers: USERS.length, totalPlayers: USERS.length,
       },
     });

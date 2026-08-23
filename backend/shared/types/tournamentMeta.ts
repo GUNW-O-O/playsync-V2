@@ -12,6 +12,10 @@ export interface Dashboard {
   totalPlayer: number,
   activePlayer: number,
   totalBuyinAmount: number,
+  // 상점이 걷은 총액에서 가져가는 비율(%). 참가자가 따로 내는 수수료가 아니다 —
+  // 참가비는 그대로 걷히고 대회를 닫을 때 총액에 한 번 곱해 뗀다. 화면은 이
+  // 값을 쓰지 않지만, 프라이즈풀이 왜 걷은 총액보다 작은지가 여기에 있다.
+  rakePercent: number,
   rebuyUntil: number,
   avgStack: number,
   tournamentName: string,
@@ -19,8 +23,9 @@ export interface Dashboard {
   startStack: number,
   itmCount: number,
 
-  // 프라이즈풀은 걷은 참가비 총액(totalBuyinAmount)과 같다. 리바인이 들어올
-  // 때마다 커지므로 전광판 숫자도 그 자리에서 따라 오른다.
+  // 프라이즈풀은 걷은 참가비 총액에서 **상점 몫을 뺀 나머지**다
+  // (`prizePoolOf`). 리바인이 들어올 때마다 커지므로 전광판 숫자도 그 자리에서
+  // 따라 오른다. 레이크가 0이면 걷은 총액과 같다.
   //
   // 지급의 진실은 DB다. 이 둘은 전광판용 파생값이라, 어긋나면 화면 숫자가
   // 틀리는 것이지 지급이 틀리는 것은 아니다.

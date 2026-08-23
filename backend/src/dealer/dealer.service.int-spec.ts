@@ -94,6 +94,7 @@ describe('DealerService 동시성', () => {
       totalPlayer: 3,
       activePlayer: 3,
       totalBuyinAmount: 3000,
+      rakePercent: 0,
       // 현재 레벨(lv 1)보다 커야 등록이 열린 상태가 된다.
       rebuyUntil: 5,
       avgStack: 10000,

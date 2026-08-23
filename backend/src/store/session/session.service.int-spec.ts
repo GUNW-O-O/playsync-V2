@@ -2830,3 +2830,189 @@ describe('SessionService.abortSession', () => {
       .toBe(`포인트 ${START_POINTS - ENTRY_FEE} / 환불 0건`);
   });
 });
+
+/**
+ * **정상 마감의 상점 몫.**
+ *
+ * 레이크는 참가자가 따로 내는 수수료가 아니다 — 참가비는 그대로 걷히고,
+ * 대회를 닫을 때 걷은 총액에 **한 번** 곱해 뗀다. 그래서 입장 경로에는
+ * 아무것도 늘지 않는다.
+ *
+ * 건당 떼지 않는 이유가 둘이다. **내림이 한 번뿐이라 정확하고**, 결제
+ * 트랜잭션이 상점 주인의 `User` 행을 잠그지 않는다 — 잠그면 그 대회의 모든
+ * 참가가 한 행에서 줄을 선다.
+ */
+describe('SessionService.completeSession — 상점 몫', () => {
+  let prisma: PrismaClient;
+  let redis: Redis;
+  let sessionService: SessionService;
+  let tournamentId: string;
+  let ownerId: string;
+
+  const ENTRY_FEE = 10000;
+
+  beforeAll(() => {
+    prisma = createTestPrisma();
+    redis = createTestRedis();
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+    await closeTestPrisma(prisma);
+  });
+
+  /**
+   * 정산이 끝난 대회를 만든다. 걷은 총액과 나간 상금을 직접 심는다 —
+   * 여기서 재는 것은 대회를 어떻게 돌렸는가가 아니라 **닫을 때 얼마가
+   * 상점으로 가는가**다.
+   */
+  async function seedSettled(opts: { rakePercent: number; players: number }) {
+    const pool = ENTRY_FEE * opts.players;
+    const rake = Math.floor((pool * opts.rakePercent) / 100);
+    await prisma.tournament.update({
+      where: { id: tournamentId },
+      data: {
+        status: TournamentStatus.ONGOING,
+        startedAt: new Date(),
+        rakePercent: opts.rakePercent,
+        totalPlayers: opts.players,
+        totalBuyinAmount: pool,
+      },
+    });
+    // 우승자 하나가 프라이즈풀 전부를 가져간 상태.
+    const champ = await prisma.user.create({
+      data: { nickname: `champ-${opts.rakePercent}`, password: 'x', points: 0 },
+    });
+    await prisma.tournamentParticipation.create({
+      data: {
+        userId: champ.id,
+        tournamentId,
+        status: PlayerStatus.AWARDED,
+        finalPlace: 1,
+        prizeAmount: pool - rake,
+        currentStack: 0,
+        playerOtp: `otp-champ-${opts.rakePercent}`,
+      },
+    });
+    return { pool, rake };
+  }
+
+  async function pointsOf(userId: string): Promise<number> {
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    return user.points;
+  }
+
+  beforeEach(async () => {
+    await truncateAll(prisma);
+    await flushTestRedis(redis);
+
+    sessionService = new SessionService(
+      prisma as unknown as PrismaService,
+      new RedisService(redis),
+      new OtpAttempts(redis),
+      new EventEmitter2(),
+    );
+
+    ({ ownerId, tournamentId } = await seedTournamentWithTable(prisma));
+  });
+
+  /**
+   * **게이트가 「걷은 것 == 상금 + 상점 몫」으로 넓어진다.** 예전에는 상금만
+   * 봤으므로, 레이크가 있는 대회는 상금이 프라이즈풀만큼만 나가 남는 돈이
+   * 생기고 **대회가 영영 안 닫혔다.**
+   */
+  it('레이크가 있어도 정산이 끝나면 닫힌다', async () => {
+    await seedSettled({ rakePercent: 10, players: 5 });
+
+    await sessionService.completeSession(tournamentId, ownerId);
+
+    const t = await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } });
+    expect(t.status).toBe(TournamentStatus.FINISHED);
+  });
+
+  it('상점 몫이 주인에게 가고 SETTLEMENT 내역이 남는다', async () => {
+    const { rake } = await seedSettled({ rakePercent: 10, players: 5 });
+    const before = await pointsOf(ownerId);
+
+    await sessionService.completeSession(tournamentId, ownerId);
+
+    const row = await prisma.pointTransaction.findFirst({
+      where: { userId: ownerId, tournamentId, type: 'SETTLEMENT' },
+    });
+    expect(`상점 +${(await pointsOf(ownerId)) - before} / 내역 ${row === null ? '없음' : row.amount}`)
+      .toBe(`상점 +${rake} / 내역 ${rake}`);
+  });
+
+  /** **레이크 0이면 아무것도 안 옮긴다.** 0원짜리 거래는 장부를 흐린다. */
+  it('레이크가 0이면 상점 내역을 만들지 않는다', async () => {
+    await seedSettled({ rakePercent: 0, players: 5 });
+    const before = await pointsOf(ownerId);
+
+    await sessionService.completeSession(tournamentId, ownerId);
+
+    const rows = await prisma.pointTransaction.count({ where: { type: 'SETTLEMENT' } });
+    expect(`상점 +${(await pointsOf(ownerId)) - before} / 내역 ${rows}건`)
+      .toBe('상점 +0 / 내역 0건');
+  });
+
+  /**
+   * **상금이 프라이즈풀보다 적으면 여전히 거절한다.** 게이트가 넓어진 것이지
+   * 없어진 것이 아니다.
+   */
+  it('상금이 덜 나갔으면 거절한다', async () => {
+    await seedSettled({ rakePercent: 10, players: 5 });
+    await prisma.tournamentParticipation.updateMany({
+      where: { tournamentId },
+      data: { prizeAmount: 1000 },
+    });
+
+    await expect(sessionService.completeSession(tournamentId, ownerId))
+      .rejects.toThrow('상금 정산이 끝나지 않았습니다.');
+  });
+
+  /** 상금이 프라이즈풀보다 많으면 그것도 거절한다. 방향이 반대일 뿐이다. */
+  it('상금이 프라이즈풀보다 많으면 거절한다', async () => {
+    const { pool } = await seedSettled({ rakePercent: 10, players: 5 });
+    await prisma.tournamentParticipation.updateMany({
+      where: { tournamentId },
+      data: { prizeAmount: pool + 1 },
+    });
+
+    await expect(sessionService.completeSession(tournamentId, ownerId))
+      .rejects.toThrow('많습니다');
+  });
+
+  /**
+   * **멱등이 요건이다.** 종료가 돈 경로가 됐으므로 두 번 눌리면 상점 몫이 두
+   * 번 나간다. 문지기는 조건부 `updateMany`다 — 바깥의 `isClosedTournament`는
+   * 순차 호출만 잡고 동시 호출은 여기서만 갈린다.
+   */
+  it('동시에 두 번 종료해도 상점 몫은 한 번만 나간다', async () => {
+    const { rake } = await seedSettled({ rakePercent: 10, players: 5 });
+    const before = await pointsOf(ownerId);
+
+    const results = await Promise.allSettled([
+      sessionService.completeSession(tournamentId, ownerId),
+      sessionService.completeSession(tournamentId, ownerId),
+    ]);
+
+    const rows = await prisma.pointTransaction.count({
+      where: { userId: ownerId, tournamentId, type: 'SETTLEMENT' },
+    });
+    const ok = results.filter((r) => r.status === 'fulfilled').length;
+    expect(`성공 ${ok}건 / 상점 +${(await pointsOf(ownerId)) - before} / 내역 ${rows}건`)
+      .toBe(`성공 1건 / 상점 +${rake} / 내역 1건`);
+  });
+
+  it('경합에서 진 쪽은 500이 아니라 409를 받는다', async () => {
+    await seedSettled({ rakePercent: 10, players: 5 });
+
+    const results = await Promise.allSettled([
+      sessionService.completeSession(tournamentId, ownerId),
+      sessionService.completeSession(tournamentId, ownerId),
+    ]);
+
+    const rejected = results.find((r) => r.status === 'rejected');
+    expect((rejected as PromiseRejectedResult).reason).toBeInstanceOf(ConflictException);
+  });
+});

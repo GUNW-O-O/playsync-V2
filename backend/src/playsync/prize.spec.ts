@@ -1,4 +1,4 @@
-import { calculatePrizes, parsePayouts, splitBustedRanks } from './prize';
+import { calculatePrizes, parsePayouts, prizePoolOf, rakeOf, splitBustedRanks } from './prize';
 
 /**
  * 상금 분배.
@@ -209,5 +209,62 @@ describe('동시 파산의 등수와 상금', () => {
       }
       expect(`${stacks}: 지급 ${paid}`).toBe(`${stacks}: 지급 ${expected}`);
     }
+  });
+});
+
+/**
+ * 상점 몫(레이크).
+ *
+ * **참가자가 따로 내는 수수료가 아니다.** 걷은 총액(`totalBuyinAmount`)에서
+ * 상점이 가져가는 비율이고, 입장할 때마다 떼지 않는다 — 대회를 닫을 때 총액에
+ * **한 번** 계산한다. 그래서 소수점이 한 번만 생기고, 그 나머지는 프라이즈풀에
+ * 남는다.
+ *
+ * 참가자 화면에는 이 값이 안 보인다. 전광판이 보여주는 프라이즈풀이 이미
+ * 레이크를 뺀 값이다.
+ */
+describe('상점 몫', () => {
+  it('걷은 총액의 비율만큼 상점이 가져간다', () => {
+    expect(rakeOf(100_000, 10)).toBe(10_000);
+  });
+
+  it('레이크가 0이면 상점 몫도 0이다', () => {
+    expect(rakeOf(100_000, 0)).toBe(0);
+  });
+
+  /**
+   * **나머지는 프라이즈풀에 남는다.** 상점 쪽에서 올림하면 참가자에게 갈 돈이
+   * 한 원씩 줄고, 그 방향의 손해는 설명하기 어렵다.
+   */
+  it('나누어떨어지지 않으면 상점 쪽을 내린다', () => {
+    // 10,001의 7%는 700.07이다.
+    expect(`상점 ${rakeOf(10_001, 7)} / 풀 ${prizePoolOf(10_001, 7)}`)
+      .toBe('상점 700 / 풀 9301');
+  });
+
+  /** **한 번만 뗀다.** 걷은 총액에 곱하지 참가 한 건마다 곱하지 않는다. */
+  it('참가 건수와 무관하게 총액에 한 번 계산한다', () => {
+    // 999원짜리 대회에 100명. 건당 내림이면 상점 몫이 0이 된다.
+    const perEntry = 100 * Math.floor((999 * 10) / 100);
+    expect(`한 번 ${rakeOf(99_900, 10)} / 건당 ${perEntry}`).toBe('한 번 9990 / 건당 9900');
+  });
+
+  it('프라이즈풀은 걷은 총액에서 상점 몫을 뺀 것이다', () => {
+    expect(prizePoolOf(100_000, 10)).toBe(90_000);
+  });
+
+  /** **보존 등식.** 걷은 총액이 프라이즈풀과 상점 몫으로 정확히 갈린다. */
+  it('프라이즈풀 + 상점 몫 == 걷은 총액', () => {
+    for (const total of [0, 1, 999, 10_001, 350_000]) {
+      for (const percent of [0, 7, 10, 33]) {
+        expect(`${total}/${percent}: ${prizePoolOf(total, percent) + rakeOf(total, percent)}`)
+          .toBe(`${total}/${percent}: ${total}`);
+      }
+    }
+  });
+
+  /** 걷은 것이 없으면 뗄 것도 없다. */
+  it('걷은 돈이 없으면 둘 다 0이다', () => {
+    expect(`상점 ${rakeOf(0, 10)} / 풀 ${prizePoolOf(0, 10)}`).toBe('상점 0 / 풀 0');
   });
 });

@@ -48,6 +48,7 @@ describe('탈락 처리 멱등성', () => {
       totalPlayer: 3,
       activePlayer: 3,
       totalBuyinAmount: 3000,
+      rakePercent: 0,
       rebuyUntil: 0,
       avgStack: 10000,
       tournamentName: 'T',

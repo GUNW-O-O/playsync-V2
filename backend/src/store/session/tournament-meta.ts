@@ -1,6 +1,6 @@
 import { BlindField, Dashboard } from 'shared/types/tournamentMeta';
 import { getCurrentBlindLevel, parseBlindStructure } from 'shared/util/util';
-import { startablePayouts } from 'src/playsync/prize';
+import { prizePoolOf, startablePayouts } from 'src/playsync/prize';
 import { isRegistrationOpenAtLevel } from './registration';
 
 /**
@@ -25,6 +25,8 @@ export interface TournamentMetaSource {
   totalPlayers: number;
   activePlayers: number;
   totalBuyinAmount: number;
+  /** 상점이 걷은 총액에서 가져가는 비율(%). 프라이즈풀은 그 나머지다. */
+  rakePercent: number;
   rebuyUntil: number;
   avgStack: number;
   itmCount: number;
@@ -63,13 +65,17 @@ export function buildTournamentMeta(
     // 같은 금액을 두 방식으로 구하는 셈이라, 참가 경로가 하나라도 달라지면
     // 전광판과 지급이 어긋난다.
     totalBuyinAmount: game.totalBuyinAmount,
+    rakePercent: game.rakePercent,
     rebuyUntil: game.rebuyUntil,
     avgStack: game.avgStack,
     entryFee: game.entryFee,
     tournamentName: game.name,
     startStack: game.startStack,
     itmCount: game.itmCount,
-    prizePool: game.totalBuyinAmount,
+    // **걷은 총액이 아니라 상점 몫을 뺀 나머지다.** 전광판이 보여주는
+    // 프라이즈풀은 실제로 상금으로 나갈 돈이어야 한다 — 걷은 총액을 띄우면
+    // 참가자가 받을 수 없는 금액을 보게 된다.
+    prizePool: prizePoolOf(game.totalBuyinAmount, game.rakePercent),
     // 금액은 여기서 굳히지 않는다. Redis에서 읽을 때 그때의 풀로 파생된다 —
     // 리바인으로 풀이 커지면 전광판이 따라 올라야 하기 때문이다.
     prizes: startablePayouts(game.prizePayouts).map(p => ({ ...p, amount: 0 })),
