@@ -12,7 +12,7 @@ import { CreateTournamentDto } from 'shared/dto/tournament.dto';
 import { DealerService } from 'src/dealer/dealer.service';
 import { EntryService } from 'src/entry/entry.service';
 import { OtpAttempts } from 'src/dealer/otp-attempts';
-import { GamePhase } from 'src/game-engine/types';
+import { createEmptyTableState, GamePhase } from 'src/game-engine/types';
 import { PlaysyncService } from 'src/playsync/playsync.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
@@ -3013,5 +3013,272 @@ describe('SessionService.completeSession — 상점 몫', () => {
 
     const rejected = results.find((r) => r.status === 'rejected');
     expect((rejected as PromiseRejectedResult).reason).toBeInstanceOf(ConflictException);
+  });
+});
+
+/**
+ * **ICM 찹 — 파이널 테이블에서 딜로 끝낸다.**
+ *
+ * 최후 1인까지 가지 않고 남은 상금을 칩 비율로 나눈다. 그 경로가 없으면 딜로
+ * 끝난 대회는 시스템이 닫지 못한다 — `completeSession`의 게이트가 「걷은 것 ==
+ * 나간 상금 + 상점 몫」인데, 딜은 그 합을 만드는 길이 없었다.
+ *
+ * 계산은 `settlement.spec.ts`가 순수 함수로 본다. 여기서 보는 것은 **문을 여는
+ * 조건**과 **돈이 실제로 옮겨지는가**다.
+ */
+describe('SessionService.chopSession', () => {
+  let prisma: PrismaClient;
+  let redis: Redis;
+  let redisService: RedisService;
+  let sessionService: SessionService;
+  let tournamentId: string;
+  let ownerId: string;
+  let tableId: string;
+
+  const ENTRY_FEE = 10000;
+  const START_POINTS = 50000;
+
+  beforeAll(() => {
+    prisma = createTestPrisma();
+    redis = createTestRedis();
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+    await closeTestPrisma(prisma);
+  });
+
+  /** 살아 있는 참가자 하나. 칩은 장부에 심는다 — 찹이 읽는 자리다. */
+  async function seatPlayer(nickname: string, currentStack: number) {
+    const user = await prisma.user.create({
+      data: { nickname, password: 'x', points: START_POINTS - ENTRY_FEE },
+    });
+    await prisma.tournamentParticipation.create({
+      data: {
+        userId: user.id,
+        tournamentId,
+        status: PlayerStatus.PLAYING,
+        currentStack,
+        playerOtp: `otp-${nickname}`,
+      },
+    });
+    await prisma.tournament.update({
+      where: { id: tournamentId },
+      data: {
+        totalPlayers: { increment: 1 },
+        activePlayers: { increment: 1 },
+        totalBuyinAmount: { increment: ENTRY_FEE },
+      },
+    });
+    return user.id;
+  }
+
+  /** 파이널 테이블의 조건 둘 — 등록 마감, 테이블 하나. 시드가 하나만 만든다. */
+  async function makeFinalTable() {
+    await prisma.tournament.update({
+      where: { id: tournamentId },
+      data: {
+        status: TournamentStatus.ONGOING,
+        startedAt: new Date(),
+        isRegistrationOpen: false,
+      },
+    });
+  }
+
+  /** 핸드 사이의 스냅샷. 찹은 핸드가 도는 중에는 안 받는다. */
+  async function saveSnapshot(phase: GamePhase) {
+    await redisService.saveSnapshotUnlocked(
+      tableId,
+      { ...createEmptyTableState(tournamentId), phase },
+      'table-created',
+    );
+  }
+
+  async function pointsOf(userId: string): Promise<number> {
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    return user.points;
+  }
+
+  beforeEach(async () => {
+    await truncateAll(prisma);
+    await flushTestRedis(redis);
+
+    redisService = new RedisService(redis);
+    sessionService = new SessionService(
+      prisma as unknown as PrismaService,
+      redisService,
+      new OtpAttempts(redis),
+      new EventEmitter2(),
+    );
+
+    ({ ownerId, tournamentId, tableId } = await seedTournamentWithTable(prisma));
+    await saveSnapshot(GamePhase.WAITING);
+  });
+
+  it('남의 대회는 딜로 끝낼 수 없다', async () => {
+    const stranger = await prisma.user.create({
+      data: { nickname: 'stranger', password: 'x', role: 'STORE_ADMIN' },
+    });
+
+    await expect(sessionService.chopSession(tournamentId, stranger.id))
+      .rejects.toThrow(ForbiddenException);
+  });
+
+  /**
+   * **파이널 테이블이 아니면 안 받는다.** 딜은 남은 사람 전원의 합의인데,
+   * 테이블이 둘이면 그 자리에 없는 사람이 있다.
+   */
+  it('등록이 열려 있으면 거절한다', async () => {
+    await seatPlayer('a', 30000);
+    await seatPlayer('b', 10000);
+    await prisma.tournament.update({
+      where: { id: tournamentId },
+      data: { status: TournamentStatus.ONGOING, startedAt: new Date() },
+    });
+
+    await expect(sessionService.chopSession(tournamentId, ownerId))
+      .rejects.toThrow('파이널 테이블');
+  });
+
+  it('테이블이 둘 이상이면 거절한다', async () => {
+    await seatPlayer('a', 30000);
+    await seatPlayer('b', 10000);
+    await makeFinalTable();
+    const dealer = await prisma.dealerSession.findFirstOrThrow({ where: { tournamentId } });
+    await prisma.table.create({
+      data: { tournamentId, dealerId: dealer.id, tableOrder: 2 },
+    });
+
+    await expect(sessionService.chopSession(tournamentId, ownerId))
+      .rejects.toThrow('파이널 테이블');
+  });
+
+  /**
+   * **핸드가 도는 중에는 안 받는다.** 딜은 핸드 사이에 한다. 그리고 장부의
+   * 칩(`currentStack`)은 체크포인트가 핸드 경계에서 내리는 값이라, 핸드 중에는
+   * 스냅샷보다 낡았다 — 그 값으로 나누면 방금 딴 칩이 반영되지 않는다.
+   */
+  it('핸드가 도는 중이면 거절한다', async () => {
+    await seatPlayer('a', 30000);
+    await seatPlayer('b', 10000);
+    await makeFinalTable();
+    await saveSnapshot(GamePhase.FLOP);
+
+    await expect(sessionService.chopSession(tournamentId, ownerId))
+      .rejects.toThrow('핸드');
+  });
+
+  /** 한 명이면 딜이 아니라 우승이다. 그 길은 최후 1인 판정이 이미 들고 있다. */
+  it('남은 사람이 하나면 거절한다', async () => {
+    await seatPlayer('a', 30000);
+    await makeFinalTable();
+
+    await expect(sessionService.chopSession(tournamentId, ownerId))
+      .rejects.toThrow('두 명');
+  });
+
+  it('칩 비율대로 남은 상금이 포인트로 들어온다', async () => {
+    const big = await seatPlayer('big', 30000);
+    const small = await seatPlayer('small', 10000);
+    await makeFinalTable();
+
+    await sessionService.chopSession(tournamentId, ownerId);
+
+    // 걷은 20000이 전부 프라이즈풀이고(레이크 0), 3:1로 갈린다.
+    expect(`big ${await pointsOf(big)} / small ${await pointsOf(small)}`)
+      .toBe(`big ${START_POINTS - ENTRY_FEE + 15000} / small ${START_POINTS - ENTRY_FEE + 5000}`);
+  });
+
+  it('등수와 상금이 참가 행에 남는다', async () => {
+    await seatPlayer('big', 30000);
+    await seatPlayer('small', 10000);
+    await makeFinalTable();
+
+    await sessionService.chopSession(tournamentId, ownerId);
+
+    const rows = await prisma.tournamentParticipation.findMany({
+      where: { tournamentId },
+      orderBy: { finalPlace: 'asc' },
+      include: { user: { select: { nickname: true } } },
+    });
+    expect(rows.map(r => `${r.finalPlace}위 ${r.user.nickname} ${r.prizeAmount}원 ${r.status}`).join(' / '))
+      .toBe('1위 big 15000원 AWARDED / 2위 small 5000원 AWARDED');
+  });
+
+  /**
+   * **이미 나간 상금은 빼고 나눈다.** 파이널 테이블에 오기까지 상금권 탈락이
+   * 있었으면 그 돈은 이미 풀에서 빠졌다.
+   */
+  it('이미 나간 상금을 빼고 나눈다', async () => {
+    const big = await seatPlayer('big', 30000);
+    await seatPlayer('small', 10000);
+    // 3위가 이미 4000을 받고 나갔다. 그 사람의 참가비도 풀에 있다.
+    const gone = await prisma.user.create({
+      data: { nickname: 'gone', password: 'x', points: 0 },
+    });
+    await prisma.tournamentParticipation.create({
+      data: {
+        userId: gone.id, tournamentId, status: PlayerStatus.AWARDED,
+        finalPlace: 3, prizeAmount: 4000, currentStack: 0, playerOtp: 'otp-gone',
+      },
+    });
+    await prisma.tournament.update({
+      where: { id: tournamentId },
+      data: { totalPlayers: { increment: 1 }, totalBuyinAmount: { increment: ENTRY_FEE } },
+    });
+    await makeFinalTable();
+
+    await sessionService.chopSession(tournamentId, ownerId);
+
+    // 걷은 30000 − 나간 4000 = 26000을 3:1로. 26000 × 0.75 = 19500.
+    expect(await pointsOf(big)).toBe(START_POINTS - ENTRY_FEE + 19500);
+  });
+
+  /** **상점 몫은 나눌 돈에서 먼저 빠진다.** 프라이즈풀이 곧 나눌 대상이다. */
+  it('상점 몫을 뺀 프라이즈풀만 나눈다', async () => {
+    const big = await seatPlayer('big', 30000);
+    await seatPlayer('small', 10000);
+    await makeFinalTable();
+    await prisma.tournament.update({
+      where: { id: tournamentId },
+      data: { rakePercent: 10 },
+    });
+
+    await sessionService.chopSession(tournamentId, ownerId);
+
+    // 걷은 20000의 10%인 2000이 상점 몫. 남은 18000을 3:1로.
+    expect(await pointsOf(big)).toBe(START_POINTS - ENTRY_FEE + 13500);
+  });
+
+  /**
+   * **찹이 대회를 닫는다.** 지급이 끝나면 게이트가 통과하므로 그대로 종료까지
+   * 간다 — 상점이 두 번 누를 이유가 없다.
+   */
+  it('대회가 그대로 닫힌다', async () => {
+    await seatPlayer('big', 30000);
+    await seatPlayer('small', 10000);
+    await makeFinalTable();
+
+    await sessionService.chopSession(tournamentId, ownerId);
+
+    const t = await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } });
+    const tables = await prisma.table.count({ where: { tournamentId } });
+    expect(`${t.status} / 테이블 ${tables}`).toBe('FINISHED / 테이블 0');
+  });
+
+  /** 돈은 두 번 나가면 되돌릴 근거가 없다. */
+  it('두 번 눌러도 상금은 한 번만 나간다', async () => {
+    const big = await seatPlayer('big', 30000);
+    await seatPlayer('small', 10000);
+    await makeFinalTable();
+
+    await sessionService.chopSession(tournamentId, ownerId);
+    await sessionService.chopSession(tournamentId, ownerId).catch(() => undefined);
+
+    const prizes = await prisma.pointTransaction.count({
+      where: { userId: big, tournamentId, type: 'PRIZE' },
+    });
+    expect(`포인트 ${await pointsOf(big)} / 내역 ${prizes}건`)
+      .toBe(`포인트 ${START_POINTS - ENTRY_FEE + 15000} / 내역 1건`);
   });
 });
