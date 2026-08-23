@@ -77,6 +77,40 @@ describe('시나리오: 파이널 테이블에서 딜로 끝낸다', () => {
     return user.points - (before.get(userId) ?? 0);
   }
 
+  /**
+   * **미리보기가 실제 거절과 같은 문장을 쓴다.**
+   *
+   * 콘솔은 못 누르는 버튼을 숨기지 않고 이유를 그 자리에 적는데, 그 문장을
+   * 화면이 따로 지으면 서버가 실제로 거절하는 조건과 갈라진다 — 「닫을 수
+   * 있다」고 그려 놓고 누르면 409가 나는 화면이다. 여기서 **두 경로를 실제로
+   * 부딪쳐** 같은 문자열인지 본다. 문구를 복사한 단언은 두 벌을 증명하지
+   * 못한다.
+   */
+  it('0-a. 종료를 막는 이유가 실제 거절 문장과 같다', async () => {
+    const preview = await h.session.getFinishPreview(h.tournamentId, SCENARIO.owner);
+
+    const thrown = await h.session
+      .completeSession(h.tournamentId, SCENARIO.owner)
+      .then(() => null)
+      .catch((e: Error) => e.message);
+
+    expect(`${preview.complete.canRun} / ${preview.complete.reason}`)
+      .toBe(`false / ${thrown}`);
+  });
+
+  /**
+   * 미리보기의 금액이 **실제 지급과 같은 계산**에서 나온다. 여기서는 그것이
+   * 장부와 맞는지만 본다 — 아래 2번이 실제로 나간 돈을 재고, 그 둘이 같아야
+   * 미리보기가 그림이 아니라 예고가 된다.
+   */
+  it('0-b. 딜 미리보기가 남은 상금을 전부 나눈다', async () => {
+    const preview = await h.session.getFinishPreview(h.tournamentId, SCENARIO.owner);
+    const sum = preview.chop.rows.reduce((acc, r) => acc + r.amount, 0);
+
+    expect(`딜 ${preview.chop.canRun} / 나눔 ${sum} / 남은 ${preview.remainingPrize}`)
+      .toBe(`딜 true / 나눔 2400 / 남은 2400`);
+  });
+
   it('1. 딜이 대회를 닫는다', async () => {
     await h.session.chopSession(h.tournamentId, SCENARIO.owner);
 

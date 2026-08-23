@@ -192,3 +192,84 @@ export function calculateChop(
     amount: amounts.get(p.userId) ?? 0,
   }));
 }
+
+/**
+ * 대회를 닫지 못하는 이유. 닫아도 되면 `null`이다.
+ *
+ * **게이트와 화면이 같은 문장을 쓰게 하려고 뗀 함수다.** 콘솔의 「종료」는
+ * 못 누를 때 이유를 그 자리에 적는데(와이어프레임 「못 누를 때」), 그 이유를
+ * 화면이 따로 계산하면 서버가 실제로 거절하는 조건과 어긋나는 날이 온다 —
+ * 「닫을 수 있다」고 그려 놓고 누르면 409가 나는 화면이다. `completeSession`이
+ * 던지는 문장과 미리보기가 그리는 문장이 여기 하나에서 나온다.
+ *
+ * 보는 것은 **「걷은 것 == 나간 상금 + 상점 몫」**이다. 상금만 보면 레이크가
+ * 붙은 대회는 상점 몫만큼 늘 벌어져 영영 안 닫힌다. 레이크가 0이면 이 식이
+ * 예전 식과 같아진다.
+ */
+export function completeBlocker(
+  totalBuyinAmount: number,
+  paidPrize: number,
+  rake: number,
+): string | null {
+  const remaining = totalBuyinAmount - paidPrize - rake;
+  if (remaining === 0) return null;
+
+  // **자릿수를 끊어 준다.** 이 문장은 그대로 화면에 뜨는데(콘솔의 「왜 못
+  // 누르나」), 「350000 남았습니다」는 한눈에 자릿수를 못 읽는다. 로케일에
+  // 맡기지 않는 이유는 서버가 만든 문장이 실행 환경에 따라 달라지면 안
+  // 되기 때문이다 — 화면과 로그와 테스트가 같은 문자열이라야 한다.
+  const won = (n: number) => n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+
+  return remaining > 0
+    ? `상금 정산이 끝나지 않았습니다. ${won(remaining)} 남았습니다.`
+    : `지급된 상금이 프라이즈풀보다 ${won(-remaining)} 많습니다.`;
+}
+
+/** 중단 환불의 무리. 순서는 고정이다 — 화면이 이 순서대로 줄을 그린다. */
+export type AbortGroupKind = 'LIVE' | 'FINISHED' | 'PRIZED';
+
+export interface AbortGroup {
+  kind: AbortGroupKind;
+  count: number;
+  amount: number;
+}
+
+const ABORT_GROUP_ORDER: AbortGroupKind[] = ['LIVE', 'FINISHED', 'PRIZED'];
+
+/**
+ * 환불을 무리별 합으로 접는다.
+ *
+ * **누르는 사람이 확인할 수 있는 것은 규칙이지 사람마다의 금액이 아니다.**
+ * 열여섯 줄을 그려 봐야 읽는 것은 「진행 중인 사람이 낸 돈 전부를 받는가」
+ * 하나다. 그래서 확인 대화는 무리 셋과 상점 몫, 그리고 그 합이 걷은 돈과
+ * 같은지를 보여준다.
+ *
+ * **상금을 받은 사람이 따로 선다.** `calculateAbortSettlement`이 그 사람의
+ * 환불에서 받은 상금을 빼므로 대개 0원인데, 탈락 무리에 섞으면 그 무리의
+ * 1인당이 절반 규칙과 어긋나 보인다. 살아 있든 탈락했든 상금이 먼저다 —
+ * 파이널 테이블의 상금권은 `PLAYING`인 채로 상금을 들고 있다.
+ *
+ * **빈 무리도 남긴다.** 지우면 「빠뜨렸나」로 읽힌다. 0이라는 것이 결과다.
+ */
+export function groupAbortRefunds(
+  participants: SettlementParticipant[],
+  refunds: { userId: string; amount: number }[],
+): AbortGroup[] {
+  const amountByUser = new Map(refunds.map((r) => [r.userId, r.amount]));
+  const groups = new Map<AbortGroupKind, AbortGroup>(
+    ABORT_GROUP_ORDER.map((kind) => [kind, { kind, count: 0, amount: 0 }]),
+  );
+
+  for (const participant of participants) {
+    const kind: AbortGroupKind = participant.prizeAmount > 0
+      ? 'PRIZED'
+      : isFinishedParticipant(participant.status)
+        ? 'FINISHED'
+        : 'LIVE';
+    const group = groups.get(kind)!;
+    group.count += 1;
+    group.amount += amountByUser.get(participant.userId) ?? 0;
+  }
+
+  return ABORT_GROUP_ORDER.map((kind) => groups.get(kind)!);
+}

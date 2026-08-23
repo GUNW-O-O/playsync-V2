@@ -80,6 +80,20 @@ export class SessionController {
     return await this.sessionService.abortSession(id, req.user.userId);
   }
 
+  /**
+   * 마무리 미리보기. **읽기만 한다.**
+   *
+   * 조작 셋(`complete`·`abort`·`chop`)과 문을 나눈다 — 저 셋은 돈을 움직이고
+   * 이것은 아무것도 안 바꾼다. 소유권 확인은 다른 조회와 같은 자리, 서비스
+   * 메서드 안이다. 남의 대회 참가자 명단과 칩이 그대로 나가는 조회라
+   * `@Roles`도 조작 셋과 같은 STORE_ADMIN이다.
+   */
+  @Roles(Role.STORE_ADMIN)
+  @Get(':id/finish-preview')
+  async finishPreview(@Req() req, @Param('id') id: string) {
+    return await this.sessionService.getFinishPreview(id, req.user.userId);
+  }
+
   // 딜(ICM 찹)도 돈 경로다. 중단과 문을 나누는 이유는 **뜻이 달라서**다 —
   // 중단은 대회가 못 열려서 되돌리는 것이고, 딜은 정상적인 마무리다. 남는
   // 기록도 다르다(중단은 `REFUND`, 딜은 `PRIZE`).

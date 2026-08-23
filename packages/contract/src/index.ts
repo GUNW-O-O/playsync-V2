@@ -13,3 +13,4 @@ export * from "./dealer-action";
 export * from "./ws-ticket";
 export * from "./table-state";
 export * from "./dashboard";
+export * from "./finish-preview";

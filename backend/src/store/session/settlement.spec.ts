@@ -3,6 +3,8 @@ import {
   SettlementParticipant,
   calculateAbortSettlement,
   calculateChop,
+  completeBlocker,
+  groupAbortRefunds,
   splitByRatio,
 } from './settlement';
 
@@ -288,5 +290,94 @@ describe('calculateChop', () => {
     const awards = calculateChop([chip('a', 5000), chip('b', 3000)], 0);
 
     expect(awards.map(a => `${a.place}위 ${a.amount}원`).join(' / ')).toBe('1위 0원 / 2위 0원');
+  });
+});
+
+describe('completeBlocker', () => {
+  /**
+   * **게이트와 화면이 같은 문장을 쓴다.** 콘솔의 「종료」 버튼은 못 누를 때
+   * 이유를 그 자리에 적는데, 그 이유를 화면이 따로 계산하면 서버가 실제로
+   * 거절하는 조건과 어긋나는 날이 온다 — 「닫을 수 있다」고 그려 놓고 누르면
+   * 409가 나는 화면이다.
+   */
+  it('맞아떨어지면 막지 않는다', () => {
+    // 걷은 10,000 · 나간 상금 9,000 · 상점 몫 1,000.
+    expect(completeBlocker(10_000, 9_000, 1_000)).toBeNull();
+  });
+
+  it('남았으면 얼마가 남았는지 말한다', () => {
+    expect(completeBlocker(10_000, 5_000, 1_000))
+      .toBe('상금 정산이 끝나지 않았습니다. 4,000 남았습니다.');
+  });
+
+  // 넘친 경우를 남는 경우와 같은 문장으로 적으면 「-4000 남았다」가 된다.
+  it('넘쳤으면 다른 문장이다', () => {
+    expect(completeBlocker(10_000, 13_000, 1_000))
+      .toBe('지급된 상금이 프라이즈풀보다 4,000 많습니다.');
+  });
+
+  // 레이크가 0이면 식이 「걷은 것 == 나간 상금」으로 되돌아간다.
+  it('레이크가 없으면 상금만 본다', () => {
+    expect(completeBlocker(10_000, 10_000, 0)).toBeNull();
+  });
+});
+
+describe('groupAbortRefunds', () => {
+  /**
+   * 중단 확인 대화가 사람마다의 금액이 아니라 **무리별 합**을 보여준다.
+   * 열여섯 줄을 그려도 누르는 사람이 확인할 수 있는 것은 「진행 중인 사람이
+   * 낸 돈 전부를 받는가」 하나다.
+   *
+   * **상금을 받은 사람이 따로 선다.** 그 사람은 환불에서 받은 상금이
+   * 상쇄돼 대개 0원인데, 탈락 무리에 섞으면 그 무리의 1인당이 규칙과 안
+   * 맞아 보인다 — 「탈락 15명 73,500」이면 한 명당 4,900이고 절반 규칙과
+   * 어긋난다.
+   */
+  it('세 무리로 가른다 — 진행 중 · 탈락 · 상금 받은 사람', () => {
+    const participants = [
+      p('live1', PlayerStatus.PLAYING),
+      p('live2', PlayerStatus.PLAYING),
+      p('out1', PlayerStatus.ELIMINATED),
+      p('prized', PlayerStatus.ELIMINATED, { prizeAmount: 600 }),
+    ];
+    const refunds = [
+      { userId: 'live1', amount: 1000 },
+      { userId: 'live2', amount: 1000 },
+      { userId: 'out1', amount: 500 },
+      { userId: 'prized', amount: 0 },
+    ];
+
+    expect(groupAbortRefunds(participants, refunds)).toEqual([
+      { kind: 'LIVE', count: 2, amount: 2000 },
+      { kind: 'FINISHED', count: 1, amount: 500 },
+      { kind: 'PRIZED', count: 1, amount: 0 },
+    ]);
+  });
+
+  // 빈 무리를 지우면 「빠뜨렸나」로 읽힌다. 0이라는 것이 결과다.
+  it('빈 무리도 0으로 남긴다', () => {
+    expect(groupAbortRefunds([p('a', PlayerStatus.PLAYING)], [{ userId: 'a', amount: 1000 }]))
+      .toEqual([
+        { kind: 'LIVE', count: 1, amount: 1000 },
+        { kind: 'FINISHED', count: 0, amount: 0 },
+        { kind: 'PRIZED', count: 0, amount: 0 },
+      ]);
+  });
+
+  /**
+   * **아직 살아 있는데 상금을 받은 사람이 있다.** 파이널 테이블에서 상금권에
+   * 든 사람이 그렇다 — 상태는 `PLAYING`이고 `prizeAmount`는 이미 0이 아니다.
+   * 상금 여부가 상태보다 먼저다: 그 사람의 환불은 상금만큼 깎여 있으므로
+   * 「진행 중 = 낸 돈 100%」 무리에 두면 그 무리의 합이 규칙과 어긋난다.
+   */
+  it('살아 있어도 상금을 받았으면 상금 무리다', () => {
+    expect(groupAbortRefunds(
+      [p('itm', PlayerStatus.PLAYING, { prizeAmount: 400 })],
+      [{ userId: 'itm', amount: 600 }],
+    )).toEqual([
+      { kind: 'LIVE', count: 0, amount: 0 },
+      { kind: 'FINISHED', count: 0, amount: 0 },
+      { kind: 'PRIZED', count: 1, amount: 600 },
+    ]);
   });
 });
