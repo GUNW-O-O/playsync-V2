@@ -8,6 +8,7 @@ import { OtpAttempts } from 'src/dealer/otp-attempts';
 import { GamePhase, TablePlayer, TableState } from 'src/game-engine/types';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
+import { FINAL_TABLE_DEALER_BLOCKED } from 'src/store/session/final-table';
 import { Dashboard } from 'shared/types/tournamentMeta';
 import { PlaysyncService } from './playsync.service';
 import * as playerOtp from '../payment/player-otp';
@@ -319,6 +320,104 @@ describe('탈락 처리 멱등성', () => {
       await dealer.handleDealerAction(TOURNAMENT, TABLE, 'carol', 'KICK');
 
       expect(await activePlayerInRedis()).toBe(2);
+    });
+  });
+
+  /**
+   * 파이널 테이블의 딜러 개입 금지(T77).
+   *
+   * **이 절이 닫는 것은 위 「딜러 킥」 절이 못 닫은 구멍이다.** 킥은
+   * `tournamentFinished`를 부르지 않으므로 헤즈업에서 킥이 일어나면
+   * `activePlayers`가 1인데 대회를 닫을 경로가 없다. 위 절의 주석이 그것을
+   * "규칙으로 막는다"고 적어 뒀고, 여기가 그 규칙이다.
+   *
+   * 시드는 등록이 열린 상태다(`isRegistrationOpen`의 스키마 기본값이 `true`).
+   * 그래서 위 절의 킥들은 이 게이트에 걸리지 않는다 — **닫는 조건을 이
+   * 절에서만 만든다.**
+   */
+  describe('파이널 테이블의 딜러 개입', () => {
+    /** 등록을 마감한다. 테이블은 시드가 하나만 만든다. */
+    async function closeRegistration() {
+      await prisma.tournament.update({
+        where: { id: TOURNAMENT },
+        data: { isRegistrationOpen: false },
+      });
+    }
+
+    it('킥을 거절한다', async () => {
+      await closeRegistration();
+
+      await expect(
+        dealer.handleDealerAction(TOURNAMENT, TABLE, 'carol', 'KICK'),
+      ).rejects.toThrow(FINAL_TABLE_DEALER_BLOCKED);
+    });
+
+    /**
+     * **거절만으로는 부족하다.** 던지기 전에 이미 카운터를 깎았거나 참가를
+     * `ELIMINATED`로 만들었으면, 대회는 여전히 닫을 수 없는 상태로 남는다 —
+     * 이 티켓이 막으려던 바로 그 상태다. 게이트가 **부수효과보다 앞**에 있어야
+     * 한다.
+     */
+    it('거절된 킥은 인원수를 건드리지 않는다', async () => {
+      await closeRegistration();
+
+      await expect(
+        dealer.handleDealerAction(TOURNAMENT, TABLE, 'carol', 'KICK'),
+      ).rejects.toThrow();
+
+      expect(`redis ${await activePlayerInRedis()} / db ${await activePlayersInDb()}`)
+        .toBe('redis 3 / db 3');
+    });
+
+    it('거절된 킥은 참가 상태를 건드리지 않는다', async () => {
+      await closeRegistration();
+
+      await expect(
+        dealer.handleDealerAction(TOURNAMENT, TABLE, 'carol', 'KICK'),
+      ).rejects.toThrow();
+
+      const row = await prisma.tournamentParticipation.findUniqueOrThrow({
+        where: { tournamentId_userId: { tournamentId: TOURNAMENT, userId: 'carol' } },
+      });
+      expect(row.status).not.toBe('ELIMINATED');
+    });
+
+    /** 폴드는 카운터와 무관하지만 같은 게이트에 걸린다. 근거는 공정성이다. */
+    it('폴드도 거절한다', async () => {
+      await closeRegistration();
+
+      await expect(
+        dealer.handleDealerAction(TOURNAMENT, TABLE, 'carol', 'FOLD'),
+      ).rejects.toThrow(FINAL_TABLE_DEALER_BLOCKED);
+    });
+
+    /**
+     * **두 조건이 어긋나는 입력이다.** 마감만 풀고 테이블 수는 그대로 두면,
+     * 게이트에서 `isRegistrationOpen` 항을 지웠을 때 이 검사가 빨간불이 된다.
+     * 위 넷만으로는 그 항을 지워도 전부 초록이다.
+     */
+    it('등록이 열려 있으면 통과시킨다 — 테이블이 하나여도', async () => {
+      await expect(
+        dealer.handleDealerAction(TOURNAMENT, TABLE, 'carol', 'KICK'),
+      ).resolves.toBeDefined();
+    });
+
+    /**
+     * 반대쪽 어긋남이다. 테이블을 하나 더 열면 마감됐어도 파이널 테이블이
+     * 아니다 — 게이트에서 `tableCount` 항을 지우면 여기가 빨간불이 된다.
+     */
+    it('테이블이 둘이면 통과시킨다 — 마감됐어도', async () => {
+      await closeRegistration();
+      const session = await prisma.dealerSession.findFirstOrThrow({
+        where: { tournamentId: TOURNAMENT },
+      });
+      await prisma.table.create({
+        data: { id: 'table-2', tournamentId: TOURNAMENT, dealerId: session.id, tableOrder: 2 },
+      });
+
+      await expect(
+        dealer.handleDealerAction(TOURNAMENT, TABLE, 'carol', 'KICK'),
+      ).resolves.toBeDefined();
     });
   });
 });
