@@ -403,6 +403,52 @@ describe('탈락 처리 멱등성', () => {
     });
 
     /**
+     * **컬럼이 마감을 늦게 안다.**
+     *
+     * `isRegistrationOpen` 컬럼은 마감 시각에 스스로 닫히지 않는다.
+     * `PaymentService.closeRegistrationInDb`가 **마감 뒤 누군가 참가를
+     * 시도했을 때만** 게으르게 flip하고, 그 외에는 상점의 수동 스위치다.
+     * 그래서 마감 레벨을 지났는데도 그 뒤 아무도 참가를 시도하지 않은 대회는
+     * 컬럼이 `true`로 남는다 — 헤즈업에 도달해도 게이트가 안 걸린다.
+     *
+     * 정본은 **레벨에서 파생된 값**이다(`isRegistrationOpenAtLevel`).
+     * `getTournamentDashboard`가 `checkAndSyncBlindLevel`을 거쳐 그 값을
+     * 돌려주고, Redis가 없으면 `isRegistrationOpenNow`가 DB만으로 같은 규칙을
+     * 다시 센다. 결제 게이트가 이미 그 경로를 쓴다.
+     */
+    async function driftPastRegistrationClose() {
+      // 컬럼은 열린 채로 둔다. 시작 시각만 과거로 밀어 레벨이 마감을 지나게
+      // 한다 — 시드의 `rebuyUntil`은 0이라 첫 레벨부터 이미 마감이다.
+      await prisma.tournament.update({
+        where: { id: TOURNAMENT },
+        data: { startedAt: new Date(Date.now() - 60_000) },
+      });
+    }
+
+    it('컬럼이 열린 채여도 마감 레벨을 지났으면 거절한다', async () => {
+      await driftPastRegistrationClose();
+
+      await expect(
+        dealer.handleDealerAction(TOURNAMENT, TABLE, 'carol', 'KICK'),
+      ).rejects.toThrow(FINAL_TABLE_DEALER_BLOCKED);
+    });
+
+    /**
+     * 읽은 김에 컬럼도 닫는다. 안 닫으면 다음 호출도 같은 파생을 다시 하고,
+     * **컬럼을 읽는 다른 자리들은 영영 틀린 값을 본다.**
+     */
+    it('거절하면서 컬럼도 닫는다', async () => {
+      await driftPastRegistrationClose();
+
+      await expect(
+        dealer.handleDealerAction(TOURNAMENT, TABLE, 'carol', 'KICK'),
+      ).rejects.toThrow();
+
+      const row = await prisma.tournament.findUniqueOrThrow({ where: { id: TOURNAMENT } });
+      expect(row.isRegistrationOpen).toBe(false);
+    });
+
+    /**
      * 반대쪽 어긋남이다. 테이블을 하나 더 열면 마감됐어도 파이널 테이블이
      * 아니다 — 게이트에서 `tableCount` 항을 지우면 여기가 빨간불이 된다.
      */

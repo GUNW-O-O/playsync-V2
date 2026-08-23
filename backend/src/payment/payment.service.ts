@@ -2,27 +2,17 @@ import { ConflictException, HttpException, HttpStatus, Injectable, Logger } from
 import { PlayerStatus } from '@prisma/client';
 import { PayMentDto } from 'shared/dto/payment.dto';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { isRegistrationOpenNow } from 'src/store/session/registration';
+import {
+  RegistrationGateSource,
+  closeRegistration,
+  isRegistrationOpenLive,
+} from 'src/store/session/registration-gate';
 import { RedisService } from 'src/redis/redis.service';
 import { SessionService } from 'src/store/session/session.service';
 import { UserService } from 'src/user/user.service';
 import { approveCharge } from './mock-approval';
 import * as playerOtp from './player-otp';
 import { NOT_CLOSED_TOURNAMENT_FILTER, isClosedTournament } from 'src/store/session/tournament-status';
-
-/**
- * 등록 마감 판정이 **읽는 것만** 받는다.
- *
- * `Tournament` 모델 전체를 받으면 `PrismaService`가 감추는 `dealerOtpHash`가
- * 빠진 행을 넘길 수 없다(T51). 그리고 그 필드는 이 판정과 아무 상관이 없다 —
- * `tournament-meta.ts`의 `TournamentMetaSource`와 같은 이유로, 실제로 읽는
- * 셋만 요구한다.
- */
-interface RegistrationGateSource {
-  id: string;
-  startedAt: Date | null;
-  isRegistrationOpen: boolean;
-}
 
 @Injectable()
 export class PaymentService {
@@ -142,51 +132,11 @@ export class PaymentService {
    * `registration.ts` 한 곳뿐이고, 전광판·리바인·여기가 모두 그것을 지난다.
    */
   private async assertRegistrationOpen(session: RegistrationGateSource) {
-    const open = await this.isRegistrationOpen(session);
+    const open = await isRegistrationOpenLive(this.prismaService, this.redisService, session);
     if (open) return;
 
-    await this.closeRegistrationInDb(session.id);
+    await closeRegistration(this.prismaService, session.id, (m) => this.logger.warn(m));
     throw new ConflictException('등록이 마감된 대회입니다.');
-  }
-
-  private async isRegistrationOpen(session: RegistrationGateSource): Promise<boolean> {
-    if (!session.startedAt) return session.isRegistrationOpen;
-
-    const dashboard = await this.redisService.getTournamentDashboard(session.id);
-    if (dashboard) return dashboard.isRegistrationOpen;
-
-    const withBlind = await this.prismaService.tournament.findUniqueOrThrow({
-      where: { id: session.id },
-      include: { blindStructure: { select: { structure: true } } },
-    });
-    return isRegistrationOpenNow(withBlind);
-  }
-
-  /**
-   * 마감을 DB에도 남긴다. **한 번 닫히면 다시 열리지 않는다**(단조).
-   *
-   * 그래야 Redis를 잃은 뒤의 fallback이 이미 닫힌 상태에서 출발하고, 복구가
-   * 정지 시간을 과잉 보정해 레벨이 한 칸 내려가는 경우에도(T31이 테스트로
-   * 잡아 둔 자리) 등록이 되살아나지 않는다.
-   *
-   * **조건부 갱신이라 실제 쓰기는 최초 한 번뿐이다.** 이미 닫혔으면 0행이라,
-   * 마감 뒤 결제 시도가 몰려도 UPDATE가 반복되지 않는다.
-   *
-   * 실패해도 삼킨다. 거절은 이미 확정됐고, 이 쓰기는 다음 요청이 다시
-   * 시도한다 — 여기서 던지면 "마감된 대회에 참가 실패"가 500으로 나가
-   * 원인을 가린다.
-   */
-  private async closeRegistrationInDb(tournamentId: string) {
-    try {
-      await this.prismaService.tournament.updateMany({
-        where: { id: tournamentId, isRegistrationOpen: true },
-        data: { isRegistrationOpen: false },
-      });
-    } catch (e) {
-      this.logger.warn(
-        `등록 마감을 DB에 남기지 못했습니다 (tournament=${tournamentId}): ${(e as Error).message}`,
-      );
-    }
   }
 
   // 참가비 결제. **좌석은 여기서 정하지 않는다**(T28) — 오프라인에서 돈은
