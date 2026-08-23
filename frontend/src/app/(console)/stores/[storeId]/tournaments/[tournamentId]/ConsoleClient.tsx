@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
-import type { FullTournamentInfo } from '@playsync/contract';
+import type { FinishPreview, FullTournamentInfo } from '@playsync/contract';
 
 /**
  * 대회 메타. `GET /tournaments/:id`가 주는 `{ tournament, seatStatus }`
@@ -91,6 +91,11 @@ export default function ConsoleClient({
   closeTable,
   releaseSeats,
   reissueDealerOtp,
+  preview,
+  completeTournament,
+  chopTournament,
+  abortTournament,
+  fetchFinishPreview,
 }: {
   storeId: string;
   tournamentId: string;
@@ -110,6 +115,14 @@ export default function ConsoleClient({
   reissueDealerOtp: (
     tournamentId: string,
   ) => Promise<{ ok: true; dealerOtp: string } | { error: string }>;
+  /** 페이지가 그릴 때 받아 둔 마무리 미리보기. 조회에 실패했으면 null이다. */
+  preview: FinishPreview | null;
+  completeTournament: (tournamentId: string) => Promise<ActionResult>;
+  chopTournament: (tournamentId: string) => Promise<ActionResult>;
+  abortTournament: (tournamentId: string) => Promise<ActionResult>;
+  fetchFinishPreview: (
+    tournamentId: string,
+  ) => Promise<{ preview: FinishPreview } | { error: string }>;
 }) {
   const router = useRouter();
   const [activeTableId, setActiveTableId] = useState<string | null>(tables[0]?.id ?? null);
@@ -154,6 +167,16 @@ export default function ConsoleClient({
     return window.sessionStorage.getItem(dealerOtpKey(tournamentId));
   });
   const [pending, startTransition] = useTransition();
+  /*
+    확인 대화. **여는 순간 미리보기를 새로 받는다.**
+
+    페이지가 그린 값은 이미 낡았을 수 있다 — 그 사이 핸드가 돌고 칩이
+    움직인다. 셋 다 되돌릴 수 없는 조작이라, 사람이 확인하는 숫자는
+    **누르기 직전의 것**이어야 한다. 실패하면 대화를 열지 않는다: 숫자
+    없이 「그래도 진행」을 내주면 확인 대화가 하는 일이 없어진다.
+  */
+  const [confirming, setConfirming] = useState<'chop' | 'abort' | null>(null);
+  const [live, setLive] = useState<FinishPreview | null>(preview);
 
   const activeTable = tables.find((t) => t.id === activeTableId) ?? tables[0] ?? null;
   const occupants = seatOccupants.find((t) => t.tableId === activeTable?.id)?.players ?? [];
@@ -219,6 +242,42 @@ export default function ConsoleClient({
    * (`run`의 주석과 같은 이유). 한 파일에 같은 결함이 두 벌 있으면 한쪽만
    * 고쳐지는 날이 온다.
    */
+  /**
+   * 확인 대화를 연다. 미리보기를 먼저 받고, 받은 뒤에만 연다.
+   */
+  function openConfirm(kind: 'chop' | 'abort') {
+    startTransition(async () => {
+      try {
+        const result = await fetchFinishPreview(tournamentId);
+        if ('error' in result) {
+          setMessage(result.error);
+          return;
+        }
+        setMessage(null);
+        setLive(result.preview);
+        setConfirming(kind);
+      } catch {
+        setMessage(NETWORK_ERROR);
+      }
+    });
+  }
+
+  /**
+   * 마무리 조작. 성공하면 **그 자리에서 다시 그린다.**
+   *
+   * 처음에는 대회 목록으로 보냈는데, 콘솔에 그 화면이 없어서
+   * (`(console)` 아래 라우트는 대회 상세 하나뿐이다) 404로 갔다. 게다가
+   * `run`이 뒤이어 부르는 `router.refresh()`가 그 이동을 되돌려, 닫힌
+   * 대회를 「진행 중」이라고 그린 낡은 화면이 남았다.
+   *
+   * 다시 그리면 대회가 `FINISHED`·`CANCELLED`로 오므로 마무리 영역이
+   * 스스로 사라진다 — 조작이 없어졌다는 사실을 화면이 상태로 말한다.
+   */
+  function finish(action: () => Promise<ActionResult>) {
+    setConfirming(null);
+    run(action);
+  }
+
   function handleReissue() {
     startTransition(async () => {
       try {
@@ -300,11 +359,32 @@ export default function ConsoleClient({
 
         <div className="flex flex-wrap gap-7">
           <Stat label="남은 인원" value={numbers ? numbers.activePlayer : '-'} />
-          <Stat label="총 참가" value={numbers ? numbers.totalPlayer : '-'} />
+          {/* 분모가 엔트리다(T81). 사람 수는 부제로 내린다 — 전광판과 같은 규칙. */}
+          <Stat
+            label="엔트리"
+            value={numbers ? numbers.entryCount : '-'}
+            sub={numbers ? `참가 ${numbers.totalPlayer}명` : undefined}
+          />
           <Stat
             label="프라이즈풀"
             value={numbers ? numbers.prizePool.toLocaleString() : '-'}
           />
+          {/*
+            **상점 몫은 콘솔에만 있다.** 참가자 화면에 그리면 "내 참가비의
+            일부가 어디로 갔나"가 프라이즈풀 옆에 상시로 붙는데, 그것은 대회
+            안내문의 몫이지 전광판의 몫이 아니다.
+
+            레이크가 0인 대회에는 줄이 없다 — 0원짜리 칸은 「가져갔다」와
+            「가져갈 것이 없었다」를 같은 모양으로 만든다.
+          */}
+          {live && live.rakePercent > 0 && (
+            <Stat
+              label={`상점 몫 · ${live.rakePercent}%`}
+              value={live.rakeAmount.toLocaleString()}
+              small
+            />
+          )}
+          {live && <Stat label="나간 상금" value={live.paidPrize.toLocaleString()} small />}
           <Stat label="참가비" value={tournament.entryFee.toLocaleString()} small />
           <Stat
             label="평균 스택"
@@ -500,12 +580,98 @@ export default function ConsoleClient({
             </button>
           </div>
         </div>
+
+        {/*
+          **마무리는 버튼 셋이 아니다.** 종료·ICM·중단은 규칙이 서로 다르고
+          셋 다 되돌릴 수 없다 — 누르면 테이블과 딜러 세션과 Redis가 지워지고
+          누가 몇 등이었는지 재구성할 근거가 남지 않는다. 같은 크기로 늘어
+          놓으면 무엇이 일어날지 모른 채 가까운 것을 누른다. **줄 하나에 조작
+          하나**, 왼쪽이 무엇을 하는지다.
+
+          시작 전 대회에는 이 영역이 없다. 닫을 것이 아직 없고, 그때의
+          되돌리기는 「취소」라는 다른 문이다.
+        */}
+        {live && tournament.status === 'ONGOING' && (
+          <>
+            <div className="h-px bg-[var(--hairline)]" />
+            <div>
+              <p className="mb-2.5 text-[11px] tracking-[0.06em] text-[var(--ink-subtle)]">
+                대회 마무리 — 되돌릴 수 없습니다
+              </p>
+              <div className="flex flex-col border border-[var(--hairline)]">
+                <FinishRow
+                  title="종료"
+                  what="상금이 다 나간 뒤에 대회를 닫고 상점 몫을 정산합니다."
+                  gate={live.complete}
+                  pending={pending}
+                  label="종료"
+                  tone="primary"
+                  onRun={() => finish(() => completeTournament(tournamentId))}
+                />
+                <FinishRow
+                  title="ICM 마무리"
+                  /*
+                    문이 닫혀 있으면 명단이 비어 있다(`getFinishPreview`) —
+                    그 값을 그대로 쓰면 「남은 0명이 나눕니다」가 된다.
+                    인원은 나눌 수 있을 때만 말한다.
+                  */
+                  what={
+                    live.chop.rows.length > 0
+                      ? `남은 ${live.chop.rows.length}명이 남은 상금을 칩 비율대로 나누고 대회를 닫습니다.`
+                      : '남은 사람이 남은 상금을 칩 비율대로 나누고 대회를 닫습니다.'
+                  }
+                  gate={live.chop}
+                  pending={pending}
+                  label="ICM 마무리"
+                  tone="secondary"
+                  onRun={() => openConfirm('chop')}
+                />
+                <FinishRow
+                  title="중단"
+                  what="대회를 열 수 없게 됐을 때. 진행 중인 사람은 낸 돈 전부, 탈락한 사람은 절반을 돌려받습니다."
+                  gate={live.abort}
+                  pending={pending}
+                  label="중단"
+                  tone="ghost"
+                  onRun={() => openConfirm('abort')}
+                />
+              </div>
+            </div>
+          </>
+        )}
       </div>
+
+      {confirming === 'chop' && live && (
+        <ChopConfirm
+          preview={live}
+          pending={pending}
+          onCancel={() => setConfirming(null)}
+          onConfirm={() => finish(() => chopTournament(tournamentId))}
+        />
+      )}
+      {confirming === 'abort' && live && (
+        <AbortConfirm
+          preview={live}
+          pending={pending}
+          onCancel={() => setConfirming(null)}
+          onConfirm={() => finish(() => abortTournament(tournamentId))}
+        />
+      )}
     </div>
   );
 }
 
-function Stat({ label, value, small }: { label: string; value: string | number; small?: boolean }) {
+function Stat({
+  label,
+  value,
+  small,
+  sub,
+}: {
+  label: string;
+  value: string | number;
+  small?: boolean;
+  sub?: string;
+}) {
   return (
     <div className="flex flex-col gap-0.5">
       <span className="text-[11px] tracking-[0.06em] text-[var(--ink-subtle)]">{label}</span>
@@ -518,6 +684,319 @@ function Stat({ label, value, small }: { label: string; value: string | number; 
       >
         {value}
       </span>
+      {sub && <span className="text-[12px] text-[var(--ink-subtle)]">{sub}</span>}
     </div>
+  );
+}
+
+/**
+ * 마무리 조작 한 줄.
+ *
+ * **못 누르는 버튼을 숨기지 않는다.** 왜 못 누르는지를 그 자리에 적는다 —
+ * 사라진 버튼은 "이 대회는 원래 종료가 없다"로 읽힌다. 그 문장은 서버가
+ * 실제로 거절할 때 던지는 것과 같다(`FINISH_BLOCKERS`·`completeBlocker`).
+ */
+function FinishRow({
+  title,
+  what,
+  gate,
+  pending,
+  label,
+  tone,
+  onRun,
+}: {
+  title: string;
+  what: string;
+  gate: { canRun: boolean; reason: string | null };
+  pending: boolean;
+  label: string;
+  tone: 'primary' | 'secondary' | 'ghost';
+  onRun: () => void;
+}) {
+  const button =
+    tone === 'primary'
+      ? 'bg-[var(--blue)] text-white'
+      : tone === 'secondary'
+        ? 'bg-[var(--ink)] text-white'
+        : 'border border-[var(--err)] text-[var(--err)]';
+
+  return (
+    <div
+      className={
+        gate.canRun
+          ? 'flex flex-wrap items-center justify-between gap-3 border-b border-[var(--hairline)] p-4 last:border-b-0'
+          : 'flex flex-wrap items-center justify-between gap-3 border-b border-[var(--hairline)] bg-[var(--surface)] p-4 last:border-b-0'
+      }
+    >
+      <div className="flex flex-col gap-0.5">
+        <b className="text-sm font-semibold">{title}</b>
+        <span className="text-[13px] text-[var(--ink-subtle)]">{what}</span>
+        {!gate.canRun && gate.reason && (
+          <span className="text-[13px] text-[var(--err)]">{gate.reason}</span>
+        )}
+      </div>
+      <button
+        type="button"
+        disabled={pending || !gate.canRun}
+        onClick={onRun}
+        className={`px-4 py-3 text-sm disabled:opacity-40 ${button}`}
+      >
+        {label}
+      </button>
+    </div>
+  );
+}
+
+/**
+ * 확인 대화의 껍데기.
+ *
+ * 대화 밖을 눌러 닫는 길은 두지 않는다 — 되돌릴 수 없는 조작 앞이라,
+ * 실수로 닫히는 것보다 「취소」를 한 번 더 누르는 편이 낫다.
+ */
+function Modal({
+  title,
+  lede,
+  children,
+  foot,
+}: {
+  title: string;
+  lede: string;
+  children: React.ReactNode;
+  foot: React.ReactNode;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className="max-h-full w-full max-w-[520px] overflow-auto border border-[var(--hairline)] bg-[var(--canvas)] text-[var(--ink)]"
+      >
+        <div className="border-b border-[var(--hairline)] p-5">
+          <h3 className="m-0 text-[19px] font-normal">{title}</h3>
+          <p className="mb-0 mt-1.5 text-[13px] text-[var(--ink-subtle)]">{lede}</p>
+        </div>
+        <div className="p-5">{children}</div>
+        <div className="flex justify-end gap-2 border-t border-[var(--hairline)] p-4">{foot}</div>
+      </div>
+    </div>
+  );
+}
+
+function Ledger({ head, children }: { head: string[]; children: React.ReactNode }) {
+  return (
+    <table className="w-full border-collapse text-sm">
+      <thead>
+        <tr>
+          {head.map((h, i) => (
+            <th
+              key={h}
+              className={
+                i === 0
+                  ? 'border-b border-[var(--hairline)] pb-2 text-left text-[11px] font-normal tracking-[0.06em] text-[var(--ink-subtle)]'
+                  : 'border-b border-[var(--hairline)] pb-2 text-right text-[11px] font-normal tracking-[0.06em] text-[var(--ink-subtle)]'
+              }
+            >
+              {h}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>{children}</tbody>
+    </table>
+  );
+}
+
+/** 오른쪽 정렬 숫자 칸. 표의 숫자는 자릿수가 맞아야 비교가 된다. */
+const NUM = 'py-2 text-right font-mono tabular-nums';
+const NAME = 'py-2 text-left';
+const NOTE = 'ml-1.5 text-[12px] text-[var(--ink-subtle)]';
+
+/**
+ * ICM 마무리 확인.
+ *
+ * **딜은 사람이 합의한 결과를 시스템에 적는 일이다.** 화면의 숫자가 테이블
+ * 위에서 합의한 숫자와 같은지 확인할 자리가 있어야 한다 — 그래서 누구에게
+ * 얼마가 가는지를 먼저 보여주고, 합이 남은 상금과 같은지를 마지막 줄에 둔다.
+ */
+function ChopConfirm({
+  preview,
+  pending,
+  onCancel,
+  onConfirm,
+}: {
+  preview: FinishPreview;
+  pending: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const stackSum = preview.chop.rows.reduce((sum, r) => sum + r.currentStack, 0);
+  const amountSum = preview.chop.rows.reduce((sum, r) => sum + r.amount, 0);
+
+  return (
+    <Modal
+      title="ICM으로 마무리할까요?"
+      lede={`남은 상금 ${preview.remainingPrize.toLocaleString()}원을 지금 칩 비율대로 나눕니다. 대회는 그대로 닫힙니다.`}
+      foot={
+        <>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="border border-[var(--hairline)] px-4 py-3 text-sm text-[var(--ink-subtle)]"
+          >
+            취소
+          </button>
+          <button
+            type="button"
+            disabled={pending}
+            onClick={onConfirm}
+            className="bg-[var(--ink)] px-4 py-3 text-sm text-white disabled:opacity-40"
+          >
+            ICM 마무리
+          </button>
+        </>
+      }
+    >
+      <Ledger head={['받는 사람', '칩', '상금']}>
+        {preview.chop.rows.map((row) => (
+          <tr key={row.userId} className="border-b border-[var(--hairline)]">
+            <td className={NAME}>
+              {row.nickname ?? row.userId}
+              <span className={NOTE}>{row.place}위</span>
+            </td>
+            <td className={NUM}>{row.currentStack.toLocaleString()}</td>
+            <td className={NUM}>{row.amount.toLocaleString()}</td>
+          </tr>
+        ))}
+        <tr className="font-semibold">
+          <td className={NAME}>합계</td>
+          <td className={NUM}>{stackSum.toLocaleString()}</td>
+          <td className={NUM}>{amountSum.toLocaleString()}</td>
+        </tr>
+      </Ledger>
+      <p className="mt-3.5 border-l-2 border-[var(--hairline)] pl-3 text-[13px] text-[var(--ink-subtle)]">
+        등수는 칩이 정합니다.{' '}
+        <strong className="text-[var(--ink)]">
+          이미 나간 상금 {preview.paidPrize.toLocaleString()}원은 다시 나누지 않습니다.
+        </strong>
+      </p>
+    </Modal>
+  );
+}
+
+const ABORT_GROUP_LABEL: Record<string, { name: string; note: string }> = {
+  LIVE: { name: '진행 중', note: '낸 돈 100%' },
+  FINISHED: { name: '탈락', note: '낸 돈 50%' },
+  PRIZED: { name: '상금 받은 사람', note: '받은 상금을 뺀 나머지' },
+};
+
+/**
+ * 중단 확인.
+ *
+ * **마지막 줄이 걷은 돈이다.** 위 네 줄의 합과 같아야 하고, 그것이 서버가
+ * 지키는 보존 등식이다 — 확인하는 사람이 그 등식을 눈으로 맞춰 볼 수 있어야
+ * 「돌려줄 돈이 어디로 갔나」를 나중에 묻지 않는다.
+ *
+ * **0원 줄도 적는다.** 상금을 이미 받은 사람은 대개 0원인데, 그 줄을 지우면
+ * 빠뜨린 것처럼 보인다 — 0이라는 것이 결과다.
+ */
+function AbortConfirm({
+  preview,
+  pending,
+  onCancel,
+  onConfirm,
+}: {
+  preview: FinishPreview;
+  pending: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Modal
+      title="대회를 중단할까요?"
+      lede="진행 중인 사람은 낸 돈 전부, 이미 탈락한 사람은 절반을 돌려받습니다. 되돌릴 수 없습니다."
+      foot={
+        <>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="border border-[var(--hairline)] px-4 py-3 text-sm text-[var(--ink-subtle)]"
+          >
+            취소
+          </button>
+          <button
+            type="button"
+            disabled={pending}
+            onClick={onConfirm}
+            className="bg-[var(--err)] px-4 py-3 text-sm text-white disabled:opacity-40"
+          >
+            중단
+          </button>
+        </>
+      }
+    >
+      <Ledger head={['돌려주는 곳', '인원', '금액']}>
+        {preview.abort.groups.map((group) => {
+          const label = ABORT_GROUP_LABEL[group.kind];
+          return (
+            <tr key={group.kind} className="border-b border-[var(--hairline)]">
+              <td className={NAME}>
+                {label.name}
+                <span className={NOTE}>{label.note}</span>
+              </td>
+              <td className={NUM}>{group.count}</td>
+              <td className={NUM}>{group.amount.toLocaleString()}</td>
+            </tr>
+          );
+        })}
+        {/*
+          **이미 나간 상금이 한 줄로 서야 합이 맞는다.**
+
+          환불 세 줄과 상점 몫만 적으면 그 합이 걷은 돈보다 이미 지급된
+          상금만큼 적다 — 실제로 그렇게 그려 놓고 보니 350,000에 287,000이
+          붙어 있었다. 확인 대화의 존재 이유가 「합이 맞는가」인데 그 자리에서
+          합이 안 맞으면, 보는 사람은 돈이 사라졌다고 읽는다.
+
+          위의 「상금 받은 사람」과 다른 줄이다: 저쪽은 그 사람이 **환불로**
+          받을 몫(대개 0)이고, 이 줄은 대회가 도는 동안 **이미 나간** 상금이다.
+        */}
+        {preview.paidPrize > 0 && (
+          <tr className="border-b border-[var(--hairline)]">
+            <td className={NAME}>
+              이미 나간 상금<span className={NOTE}>대회 중에 지급됨</span>
+            </td>
+            <td className={NUM}>—</td>
+            <td className={NUM}>{preview.paidPrize.toLocaleString()}</td>
+          </tr>
+        )}
+        <tr className="border-b border-[var(--hairline)]">
+          <td className={NAME}>
+            상점<span className={NOTE}>나가고 남은 돈</span>
+          </td>
+          <td className={NUM}>—</td>
+          <td className={NUM}>{preview.abort.storeAmount.toLocaleString()}</td>
+        </tr>
+        <tr className="font-semibold">
+          <td className={NAME}>걷은 돈</td>
+          <td className={NUM}>—</td>
+          <td className={NUM}>{preview.totalBuyinAmount.toLocaleString()}</td>
+        </tr>
+      </Ledger>
+      <p className="mt-3.5 border-l-2 border-[var(--hairline)] pl-3 text-[13px] text-[var(--ink-subtle)]">
+        중단에는{' '}
+        <strong className="text-[var(--ink)]">상점 몫을 따로 떼지 않습니다.</strong> 나가고 남은
+        돈이 이미 상점 것입니다.
+      </p>
+      {/*
+        **깎였다는 사실은 숨기지 않는다.** 상금이 크게 나간 뒤에 중단하면
+        남은 돈이 환불 희망액보다 적어 비율대로 깎인다 — 운영이 그것을 모르면
+        참가자에게 "낸 돈 전부"라고 말하게 된다.
+      */}
+      {preview.abort.scaled && (
+        <p className="mt-2 text-[13px] text-[var(--err)]">
+          남은 돈이 모자라 환불이 비율대로 깎였습니다. 위 금액이 실제로 나갑니다.
+        </p>
+      )}
+    </Modal>
   );
 }

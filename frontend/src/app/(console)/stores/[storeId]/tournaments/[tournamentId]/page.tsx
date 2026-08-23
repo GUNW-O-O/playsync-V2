@@ -1,5 +1,10 @@
 import { cookies } from 'next/headers';
-import { FullTournamentInfoSchema, type FullTournamentInfo } from '@playsync/contract';
+import {
+  FinishPreviewSchema,
+  FullTournamentInfoSchema,
+  type FinishPreview,
+  type FullTournamentInfo,
+} from '@playsync/contract';
 import ConsoleClient, { type TournamentMeta, type TableInfo, type TableSeatInfo } from './ConsoleClient';
 import {
   startTournament,
@@ -7,6 +12,10 @@ import {
   closeTable,
   releaseSeats,
   reissueDealerOtp,
+  completeTournament,
+  chopTournament,
+  abortTournament,
+  fetchFinishPreview,
 } from './action';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
@@ -88,6 +97,33 @@ async function fetchDashboard(tournamentId: string): Promise<FullTournamentInfo 
 }
 
 /**
+ * 마무리 미리보기. 좌석 조회와 같은 문(STORE_ADMIN + 소유권 확인)이라
+ * 관리자 토큰을 실어 보낸다.
+ *
+ * **실패를 페이지의 문지기로 쓰지 않는다.** 소유권은 `fetchSeatOccupants`가
+ * 이미 본다. 여기서 실패하는 경우는 시작 전 대회처럼 정상적인 것도 있어서,
+ * `null`이면 마무리 영역을 안 그리는 것으로 끝난다.
+ *
+ * 계약을 실제로 태운다 — 되돌릴 수 없는 조작의 근거로 보여줄 숫자라,
+ * 모양이 어긋났을 때 조용히 잘못 그리는 것이 가장 나쁘다.
+ */
+async function fetchPreview(
+  tournamentId: string,
+  token: string | undefined,
+): Promise<FinishPreview | null> {
+  if (!token) return null;
+
+  const res = await fetch(`${BACKEND_URL}/store/sessions/${tournamentId}/finish-preview`, {
+    cache: 'no-store',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) return null;
+
+  const parsed = FinishPreviewSchema.safeParse(await res.json().catch(() => null));
+  return parsed.success ? parsed.data : null;
+}
+
+/**
  * 좌석 해제의 입력. `GET /store/sessions/:id/seats`는 STORE_ADMIN 전용
  * 가드가 걸려 있다(다른 운영 조작과 같은 문) — 그래서 관리자의 쿠키
  * 토큰을 Authorization 헤더로 실어 보내야 한다.
@@ -155,11 +191,12 @@ export default async function ConsoleTournamentPage({
   const { storeId, tournamentId } = await params;
   const token = (await cookies()).get('accessToken')?.value;
 
-  const [tournament, dashboard, tables, seatResult] = await Promise.all([
+  const [tournament, dashboard, tables, seatResult, preview] = await Promise.all([
     fetchTournament(tournamentId),
     fetchDashboard(tournamentId),
     fetchTables(tournamentId),
     fetchSeatOccupants(tournamentId, token),
+    fetchPreview(tournamentId, token),
   ]);
 
   const ownershipDenied = seatResult.seatError !== null;
@@ -178,6 +215,11 @@ export default async function ConsoleTournamentPage({
       closeTable={closeTable}
       releaseSeats={releaseSeats}
       reissueDealerOtp={reissueDealerOtp}
+      preview={ownershipDenied ? null : preview}
+      completeTournament={completeTournament}
+      chopTournament={chopTournament}
+      abortTournament={abortTournament}
+      fetchFinishPreview={fetchFinishPreview}
     />
   );
 }

@@ -1,6 +1,7 @@
 'use server';
 
 import { cookies } from 'next/headers';
+import { FinishPreviewSchema, type FinishPreview } from '@playsync/contract';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
 const DEFAULT_ERROR = '요청을 처리하지 못했습니다.';
@@ -113,4 +114,61 @@ export async function reissueDealerOtp(
   );
   if ('error' in result) return result;
   return { ok: true, dealerOtp: (result.body as { dealerOtp: string }).dealerOtp };
+}
+
+/**
+ * `PATCH /store/sessions/:id/complete`. **되돌릴 수 없다.**
+ *
+ * 서버가 「걷은 것 == 나간 상금 + 상점 몫」을 다시 재고, 안 맞으면 남은
+ * 금액을 담아 거절한다. 그 문장이 화면의 「왜 못 누르나」와 같은 자리에서
+ * 나온다(`completeBlocker`) — 여기서 판단을 흉내 내지 않는다.
+ */
+export async function completeTournament(tournamentId: string): Promise<ActionResult> {
+  const result = await callConsoleApi(`/store/sessions/${tournamentId}/complete`, {
+    method: 'PATCH',
+  });
+  return 'error' in result ? result : { ok: true };
+}
+
+/**
+ * `POST /store/sessions/:id/chop`. ICM으로 마무리한다. **되돌릴 수 없다.**
+ *
+ * 남은 상금을 칩 비율로 나누고 그대로 대회를 닫는다. 금액을 여기서 보내지
+ * 않는다 — 미리보기로 본 숫자는 그림이고, 확정은 서버가 그 순간의 칩으로
+ * 다시 계산한다.
+ */
+export async function chopTournament(tournamentId: string): Promise<ActionResult> {
+  const result = await callConsoleApi(`/store/sessions/${tournamentId}/chop`, { method: 'POST' });
+  return 'error' in result ? result : { ok: true };
+}
+
+/**
+ * `POST /store/sessions/:id/abort`. 대회를 중단하고 환불한다. **되돌릴 수 없다.**
+ *
+ * 응답의 `{ refunded, storeAmount, scaled }`는 버린다 — 성공 뒤 화면은
+ * 대회 목록으로 떠나고, 그 숫자를 다시 그릴 자리가 없다. 남은 기록은
+ * `PointTransaction`이다.
+ */
+export async function abortTournament(tournamentId: string): Promise<ActionResult> {
+  const result = await callConsoleApi(`/store/sessions/${tournamentId}/abort`, { method: 'POST' });
+  return 'error' in result ? result : { ok: true };
+}
+
+/**
+ * `GET /store/sessions/:id/finish-preview`. 읽기만 한다.
+ *
+ * **계약을 실제로 태운다.** `FinishPreviewSchema`를 통과하지 못하면 실패로
+ * 돌린다 — 되돌릴 수 없는 조작 직전에 보여주는 숫자라, 모양이 어긋났을 때
+ * 조용히 잘못 그리는 것이 가장 나쁘다. 백엔드가 필드를 늘려도 스키마에 없는
+ * 것은 화면까지 오지 않는다.
+ */
+export async function fetchFinishPreview(
+  tournamentId: string,
+): Promise<{ preview: FinishPreview } | { error: string }> {
+  const result = await callConsoleApi(`/store/sessions/${tournamentId}/finish-preview`);
+  if ('error' in result) return result;
+
+  const parsed = FinishPreviewSchema.safeParse(result.body);
+  if (!parsed.success) return { error: '마무리 정보를 읽지 못했습니다.' };
+  return { preview: parsed.data };
 }

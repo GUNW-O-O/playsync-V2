@@ -44,6 +44,11 @@ function useFixtures(seatStatus: number) {
       HttpResponse.json({ id: 'trn-1', tables: [{ id: 'tbl-1', tableOrder: 1 }] }),
     ),
     http.get('http://backend.test/playsync/dashboard/trn-1', () => new HttpResponse('', { status: 200 })),
+    // 마무리 미리보기도 같은 문(STORE_ADMIN + 소유권)이라 좌석 조회와 같이
+    // 움직인다. 여기서는 소유권 판정만 보므로 시작 전 대회처럼 404를 준다.
+    http.get('http://backend.test/store/sessions/trn-1/finish-preview', () =>
+      HttpResponse.json({ statusCode: 404, message: '세션을 찾을 수 없습니다.' }, { status: 404 }),
+    ),
     http.get('http://backend.test/store/sessions/trn-1/seats', () => {
       if (seatStatus === 200) return HttpResponse.json([]);
       return HttpResponse.json(
