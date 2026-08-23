@@ -121,7 +121,24 @@ describe('DealerService 동시성', () => {
     process.env.DB_SYNC_RETRY_BASE_MS = '5';
 
     redisService = new RedisService(redis);
-    const prisma = {} as PrismaService;
+    /**
+     * **이 스펙은 DB를 안 띄운다.** 재려는 것이 Redis 락 아래의 동시성이라
+     * 진짜 DB가 있어야 의미가 생기는 자리가 없었다.
+     *
+     * 그런데 T77이 `handleDealerAction` 앞에 파이널 테이블 게이트를 달면서
+     * 조회 둘이 생겼다. 빈 객체로는 `undefined.findUniqueOrThrow`로 죽어,
+     * 여기 있던 딜러 폴드 검사 셋이 **재려던 것과 무관한 이유로** 빨간불이
+     * 됐다.
+     *
+     * 그래서 **게이트가 통과하는 값만** 심는다 — 등록이 열려 있으면 테이블
+     * 수와 무관하게 파이널 테이블이 아니다. 게이트 자체의 검증은 진짜 DB가
+     * 있는 `elimination.int-spec.ts`가 한다. 여기서 그것까지 보려면 이 스펙에
+     * DB를 들여야 하고, 그러면 이 파일의 존재 이유(락만 본다)가 흐려진다.
+     */
+    const prisma = {
+      tournament: { findUniqueOrThrow: async () => ({ isRegistrationOpen: true }) },
+      table: { count: async () => 1 },
+    } as unknown as PrismaService;
     emitter = new EventEmitter2();
     playsync = new PlaysyncService(queue, redisService, prisma, emitter);
     dealer = new DealerService(

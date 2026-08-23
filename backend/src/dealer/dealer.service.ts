@@ -13,6 +13,7 @@ import { ActionType, GamePhase, TablePlayer, TableState } from 'src/game-engine/
 import { PlaysyncService } from 'src/playsync/playsync.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
+import { FINAL_TABLE_DEALER_BLOCKED, isFinalTable } from 'src/store/session/final-table';
 import { isClosedTournament } from 'src/store/session/tournament-status';
 
 /**
@@ -277,6 +278,34 @@ export class DealerService {
 
   async handleDealerAction(tournamentId: string, tableId: string, targetUserId: string, type: 'FOLD' | 'KICK') {
     /**
+     * **파이널 테이블이면 둘 다 막는다**(T77).
+     *
+     * 스냅샷을 열기 **전에** 판정한다. 부수효과보다 앞이어야 한다 — 뒤에 두면
+     * 거절하기 전에 이미 카운터가 깎이거나 참가가 `ELIMINATED`가 되고, 그러면
+     * 이 게이트가 막으려던 상태(대회를 닫을 경로가 없다)가 그대로 남는다.
+     *
+     * **엔진이 아니라 여기다.** `TableEngine`은 스냅샷만 알고 대회의 테이블
+     * 수도 등록 마감도 모른다. 엔진에 두려면 그 둘을 스냅샷에 실어야 하고,
+     * 그러면 계약이 커지면서 파생값이 두 벌이 된다 — T60이 인원수에서 겪은
+     * 것과 같은 모양이다.
+     *
+     * 두 값을 한 트랜잭션으로 묶지 않는다. 이 판정은 **완화되는 방향으로만**
+     * 틀릴 수 있어서다 — 그 사이에 테이블이 열리면 막았어야 할 것을 통과시키고,
+     * 닫히면 통과시켜도 될 것을 막는다. 둘 다 돈이나 카운터를 어긋내지 않고,
+     * 딜러가 다시 누르면 그때의 상태로 판정된다.
+     */
+    const [tournament, tableCount] = await Promise.all([
+      this.prisma.tournament.findUniqueOrThrow({
+        where: { id: tournamentId },
+        select: { isRegistrationOpen: true },
+      }),
+      this.prisma.table.count({ where: { tournamentId } }),
+    ]);
+    if (isFinalTable({ isRegistrationOpen: tournament.isRegistrationOpen, tableCount })) {
+      throw new ForbiddenException(FINAL_TABLE_DEALER_BLOCKED);
+    }
+
+    /**
      * 킥 트랜잭션이 돌려준 값. 전광판 카운터를 맞추는 데 쓴다(T60).
      *
      * **`mutateSnapshot` 콜백 안에서 Redis에 쓰지 않는다.** 대입 자체는 락과
@@ -339,9 +368,9 @@ export class DealerService {
 
     // 킥은 최후 1인 판정을 부르지 않는다. `tournamentFinished`를 부르는 자리는
     // `PlaysyncService.eliminatePlayer` 하나뿐이라, 킥으로 마지막 한 명이 남으면
-    // 대회를 닫을 경로가 없다 — 그 상황("헤즈업에서 딜러가 킥한다")은 규칙으로
-    // 막는다(`docs/backlog.md`의 파이널 테이블부터의 딜러 개입 제한).
-    // **그 규칙이 서기 전까지 이 구멍은 남는다.** 여기서는 카운터만 맞춘다.
+    // 대회를 닫을 경로가 없다. **그 상황은 위의 파이널 테이블 게이트가
+    // 막는다**(T77) — 헤즈업은 테이블이 하나이고 등록이 마감된 뒤라 반드시
+    // 그 조건에 걸린다. 여기서는 카운터만 맞춘다.
     if (counter !== null) {
       const { activePlayers, startStack, entryFee } = counter;
       await this.redis.syncActivePlayer(tournamentId, activePlayers, startStack, entryFee);
