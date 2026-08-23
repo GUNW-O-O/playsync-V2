@@ -61,7 +61,21 @@ export type Dashboard = z.infer<typeof DashboardSchema>;
 export const BlindLevelSchema = z.object({
   lv: z.int().min(1),
   sb: chips,
-  ante: z.boolean(),
+  /**
+   * 앤티 **금액**. 0이면 없다는 뜻이다.
+   *
+   * DB의 블라인드 구조는 `boolean`("앤티가 붙나")으로 저장되고, 금액은
+   * `deriveAnteAmount`가 `sb`에서 낸다. **경계를 넘는 것은 금액 쪽이다** —
+   * 전광판이 「앤티 있음」만 받으면 얼마를 내는지가 화면 어디에도 없고,
+   * 그렇다고 프론트가 `sb / 5`를 다시 적으면 식이 두 곳이 된다.
+   *
+   * `boolean`을 남긴 채 금액을 옆에 더하지 않는다 — 같은 사실을 두 벌로
+   * 들면 어긋날 자리가 생긴다. `TableStateSchema.ante`가 T58에 같은 이유로
+   * 같은 모양이 됐다.
+   *
+   * `sb`가 입구에서 5의 배수로 강제되므로(`BlindLevelDto`) 이 값은 정수다.
+   */
+  ante: chips,
   duration: z.int().min(1),
 });
 

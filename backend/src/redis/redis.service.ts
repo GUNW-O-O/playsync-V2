@@ -4,7 +4,7 @@ import { BlindField, Dashboard, FullTournamentInfo } from "shared/types/tourname
 import { entryCountOf, PayoutTier, payoutsFor } from "src/playsync/payout-table";
 import { calculatePrizes, PrizePayout, prizePoolOf } from "src/playsync/prize";
 import { UserInfo } from "shared/types/userInfo";
-import { getCurrentBlindLevel } from "shared/util/util";
+import { getCurrentBlindLevel, toWireBlindStructure } from "shared/util/util";
 import { TableState } from "src/game-engine/types";
 import {
   currentRegistrationLevel,
@@ -361,7 +361,13 @@ export class RedisService {
         itmCount: payouts.length,
         rakePercent,
       },
-      blindField: blindField,
+      // **앤티가 여기서 금액이 된다.** 내부는 boolean으로 판단하고 화면은
+      // 금액을 그린다 — 경계를 넘는 자리가 하나뿐이라야 프론트가 `sb / 5`를
+      // 다시 적을 이유가 없다(`toWireBlindStructure`).
+      blindField: {
+        ...blindField,
+        blindStructure: toWireBlindStructure(blindField.blindStructure),
+      },
     };
   }
 

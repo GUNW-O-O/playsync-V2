@@ -49,6 +49,29 @@ export function deriveAnteAmount(sb: number, hasAnte: boolean): number {
   return hasAnte ? sb / 5 : 0;
 }
 
+/**
+ * 블라인드 구조를 **경계 밖으로 내보낼 모양**으로 바꾼다.
+ *
+ * 바뀌는 것은 `ante` 하나다 — DB와 입력 DTO는 "앤티가 붙나"(`boolean`)를 들고,
+ * 계약(`BlindLevelSchema.ante`)은 금액을 받는다. 그 사이를 잇는 자리를 여기
+ * 하나로 둔 이유는 `deriveAnteAmount`의 머리말과 같다: **식이 두 곳에 있으면
+ * 한쪽만 고쳐지는 날이 온다.** 프론트가 `sb / 5`를 다시 적을 이유를 없앤다.
+ *
+ * **새 배열을 만든다.** 같은 배열을 내부 경로도 들고 있어서
+ * (`DealerService.startPreFlop`이 보는 `blind.blindStructure`), 제자리에서
+ * 고치면 그쪽의 `ante`가 숫자가 되어 `deriveAnteAmount(sb, 120)`처럼 불린다.
+ */
+export function toWireBlindStructure(
+  structure: BlindLevelDto[],
+): { lv: number; sb: number; ante: number; duration: number }[] {
+  return structure.map(({ lv, sb, ante, duration }) => ({
+    lv,
+    sb,
+    ante: deriveAnteAmount(sb, ante),
+    duration,
+  }));
+}
+
 export function parseBlindStructure(data: unknown): BlindLevelDto[] {
   if (!Array.isArray(data)) {
     throw new Error("Invalid blind structure");

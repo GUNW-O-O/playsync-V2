@@ -1,4 +1,4 @@
-import { deriveAnteAmount, getCurrentBlindLevel, parseBlindStructure } from './util';
+import { deriveAnteAmount, getCurrentBlindLevel, parseBlindStructure, toWireBlindStructure } from './util';
 
 describe('parseBlindStructure', () => {
   it('배열이 아니면 거부한다', () => {
@@ -50,5 +50,36 @@ describe('getCurrentBlindLevel — 빈 구조가 도달할 수 없음을 확인�
     const 결과 = getCurrentBlindLevel(구조, Date.now() - 10 * 60 * 1000);
     expect(결과.currentIndex).toBe(0);
     expect(결과.isBreak).toBe(false);
+  });
+});
+
+describe('toWireBlindStructure', () => {
+  /**
+   * **경계에서 boolean이 금액이 된다.** DB는 "앤티가 붙나"를 저장하고
+   * 계약(`BlindLevelSchema.ante`)은 금액을 받는다 — 그 사이를 잇는 자리가
+   * 여기 하나뿐이라야 프론트가 `sb / 5`를 다시 적을 이유가 없어진다.
+   */
+  it('앤티 boolean을 금액으로 바꾼다', () => {
+    expect(toWireBlindStructure([
+      { lv: 1, sb: 600, ante: true, duration: 10 },
+      { lv: 2, sb: 800, ante: false, duration: 10 },
+    ])).toEqual([
+      { lv: 1, sb: 600, ante: 120, duration: 10 },
+      { lv: 2, sb: 800, ante: 0, duration: 10 },
+    ]);
+  });
+
+  // 휴식 원소(lv 99)도 구조의 원소다. 걸러 내면 전광판이 다음 레벨을 못 찾는다.
+  it('휴식 원소를 빼지 않는다', () => {
+    expect(toWireBlindStructure([{ lv: 99, sb: 100, ante: false, duration: 5 }]))
+      .toEqual([{ lv: 99, sb: 100, ante: 0, duration: 5 }]);
+  });
+
+  // 원본을 건드리면 같은 배열을 들고 있는 내부 경로(`DealerService.startPreFlop`이
+  // 보는 `blind.blindStructure`)의 `ante`가 숫자로 바뀐다.
+  it('원본을 바꾸지 않는다', () => {
+    const 원본 = [{ lv: 1, sb: 600, ante: true, duration: 10 }];
+    toWireBlindStructure(원본);
+    expect(원본[0].ante).toBe(true);
   });
 });

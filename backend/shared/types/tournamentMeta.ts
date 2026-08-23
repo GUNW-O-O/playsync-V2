@@ -46,7 +46,28 @@ export interface BlindField {
   blindStructure: BlindLevelDto[],
 }
 
+/**
+ * 경계를 넘는 블라인드 레벨. 내부 `BlindLevelDto`와 다른 점은 **`ante`가
+ * 금액**이라는 것 하나다(`toWireBlindStructure`).
+ *
+ * 두 모양을 나눈 이유: 내부 경로는 "앤티가 붙나"로 판단하고
+ * (`deriveAnteAmount(sb, ante)`), 화면은 "얼마인가"를 그린다. 한 타입으로
+ * 합치면 어느 쪽이든 상대의 뜻으로 읽는 자리가 생긴다.
+ */
+export interface WireBlindLevel {
+  lv: number,
+  sb: number,
+  /** 앤티 금액. 0이면 없다는 뜻이다. */
+  ante: number,
+  duration: number,
+}
+
+export interface WireBlindField extends Omit<BlindField, 'blindStructure'> {
+  blindStructure: WireBlindLevel[],
+}
+
+/** 전광판 응답. **경계 밖으로 나가는 봉투라 `blindField`가 금액형이다.** */
 export interface FullTournamentInfo {
   dashboard: Dashboard,
-  blindField: BlindField,
+  blindField: WireBlindField,
 }
