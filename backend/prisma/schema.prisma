@@ -137,7 +137,6 @@ model Tournament {
   blindStructure BlindStructure @relation(fields: [blindId], references: [id])
   entryFee       Int            @default(0)
   startStack     Int            @default(0)
-  itmCount       Int            @default(0) // prizePayouts.length에서 파생된다. 기본값이 3이면 빈 prizePayouts와 모순이었다(T71)
 
   /// 상점이 걷은 총액에서 가져가는 비율(%). **참가자가 따로 내는 수수료가
   /// 아니다** — 참가비는 그대로 걷히고, 대회를 닫을 때 `totalBuyinAmount`에
@@ -147,9 +146,16 @@ model Tournament {
   /// 기본값 0은 「레이크 없음」이고, 그때 걷은 돈 전부가 상금으로 나간다.
   rakePercent Int @default(0)
 
-  // 상금 분배율. [{place:1, percent:50}, ...] 이고 percent 합이 100이다.
-  // 대회 생성 시 상점이 정한다 — 코드가 정할 수 있는 값이 아니라 기본값이 없다.
-  prizePayouts Json @default("[]")
+  /// 상금 **구간표**. `[{minEntries:0, payouts:[{place:1,percent:100}]}, ...]`이고
+  /// 엔트리 수(`totalBuyinAmount / entryFee`)로 구간을 고른다.
+  ///
+  /// **분배율도 상금권 인원도 여기서 파생된다.** 저장하지 않는 이유는 두 벌이
+  /// 되면 어긋나기 때문이다 — 예전에 `itmCount`가 정확히 그 자리였다.
+  /// 굳히는 코드도 없다: 리바인이 등록 마감과 함께 끝나므로 마감 뒤에는
+  /// 걷은 총액이 불변이고 파생값도 저절로 고정된다.
+  ///
+  /// 상점이 안 주면 `DEFAULT_PAYOUT_TABLE`(상위 10~15%, 파이널 테이블까지).
+  payoutTable Json @default("[]")
 
   // 실시간 전광판용 데이터
   rebuyUntil         Int     @default(0)

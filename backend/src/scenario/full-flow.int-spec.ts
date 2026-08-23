@@ -284,7 +284,7 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
       startStack: START_STACK,
       entryFee: ENTRY_FEE,
       rebuyUntil: 5,
-      prizePayouts: PAYOUTS,
+      payoutTable: [{ minEntries: 0, payouts: PAYOUTS }],
       isRegistrationOpen: true,
       blindId: blind.id,
     } as never, userIds.owner);
@@ -296,8 +296,9 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
       where: { tournamentId },
     })).id;
 
-    // itmCount는 분배율에서 파생된다 (T18).
-    expect(created.itmCount).toBe(PAYOUTS.length);
+    // 상금권 인원은 **저장하지 않는다**(T81). 엔트리 수로 구간표에서
+    // 파생되므로, 대회 행에는 규칙(`payoutTable`)만 남는다.
+    expect(created.payoutTable).toEqual([{ minEntries: 0, payouts: PAYOUTS }]);
     expect(created.status).toBe('PENDING');
   });
 

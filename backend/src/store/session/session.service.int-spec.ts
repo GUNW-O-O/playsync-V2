@@ -87,7 +87,7 @@ describe('SessionService.createSession — OTP 해시 통합', () => {
     entryFee: 1000,
     rebuyUntil: 5,
     isRegistrationOpen: true,
-    prizePayouts: [{ place: 1, percent: 100 }],
+    payoutTable: [{ minEntries: 0, payouts: [{ place: 1, percent: 100 }] }],
   });
 
   it('대회를 만들면 평문 OTP는 반환에만 있고 DB에는 해시만 남는다', async () => {
@@ -296,7 +296,7 @@ describe('SessionService — 딜러 OTP 재발급과 내보내기', () => {
       entryFee: 1000,
       rebuyUntil: 5,
       isRegistrationOpen: true,
-      prizePayouts: [{ place: 1, percent: 100 }],
+      payoutTable: [{ minEntries: 0, payouts: [{ place: 1, percent: 100 }] }],
     } as CreateTournamentDto, owner.id);
 
     const table = await prisma.table.findFirstOrThrow({
@@ -521,8 +521,7 @@ async function seedTournamentWithTable(prisma: PrismaClient) {
       entryFee: 10000,
       rebuyUntil: 5,
       isRegistrationOpen: true,
-      itmCount: 1,
-      prizePayouts: [{ place: 1, percent: 100 }],
+      payoutTable: [{ minEntries: 0, payouts: [{ place: 1, percent: 100 }] }],
     },
   });
   const dealerSession = await prisma.dealerSession.create({
@@ -977,8 +976,8 @@ describe('SessionService.deleteTable', () => {
         blindId: (await prisma.blindStructure.findFirstOrThrow()).id,
         dealerOtpHash: 'unused-hash', // 이 스펙은 로그인 경로를 검증하지 않는다.
         startStack: 30000, avgStack: 30000, entryFee: 10000, rebuyUntil: 5,
-        isRegistrationOpen: true, itmCount: 1,
-        prizePayouts: [{ place: 1, percent: 100 }],
+        isRegistrationOpen: true,
+        payoutTable: [{ minEntries: 0, payouts: [{ place: 1, percent: 100 }] }],
       },
     });
     const otherDealer = await prisma.dealerSession.create({
@@ -1362,8 +1361,8 @@ describe('SessionService.releaseSeats', () => {
       data: {
         name: '남의 대회', type: GameType.TOURNAMENT, storeId: store.id, blindId: blind.id,
         dealerOtpHash: 'unused-hash', startStack: 30000, avgStack: 30000, entryFee: 10000,
-        rebuyUntil: 5, isRegistrationOpen: true, itmCount: 1,
-        prizePayouts: [{ place: 1, percent: 100 }],
+        rebuyUntil: 5, isRegistrationOpen: true,
+        payoutTable: [{ minEntries: 0, payouts: [{ place: 1, percent: 100 }] }],
       },
     });
     const otherDealer = await prisma.dealerSession.create({ data: { tournamentId: other.id } });

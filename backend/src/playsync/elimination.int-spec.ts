@@ -49,12 +49,13 @@ describe('탈락 처리 멱등성', () => {
       activePlayer: 3,
       totalBuyinAmount: 3000,
       rakePercent: 0,
+      entryCount: 0,
+      itmCount: 1,
       rebuyUntil: 0,
       avgStack: 10000,
       tournamentName: 'T',
       entryFee: 1000,
       startStack: 10000,
-      itmCount: 1,
       prizePool: 3000,
       prizes: [{ place: 1, percent: 100, amount: 3000 }],
     };
@@ -114,7 +115,6 @@ describe('탈락 처리 멱등성', () => {
         dealerOtpHash: 'unused-hash', // 이 스펙은 로그인 경로를 검증하지 않는다.
         entryFee: 1000,
         startStack: 10000,
-        itmCount: 1,
         activePlayers: 3,
         totalPlayers: 3,
       },
@@ -200,7 +200,7 @@ describe('탈락 처리 멱등성', () => {
       nextLevelAt: Date.now() + 600000,
       serverTime: Date.now(),
       blindStructure: [{ lv: 1, sb: 100, ante: false, duration: 600 }],
-    });
+    }, [{ minEntries: 0, payouts: [{ place: 1, percent: 100 }] }]);
     await redis.set(stateKey, JSON.stringify(makeState()));
   });
 

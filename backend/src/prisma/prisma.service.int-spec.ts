@@ -62,8 +62,7 @@ describe('PrismaService — 비밀 필드는 기본이 감춤이다', () => {
         entryFee: 10000,
         rebuyUntil: 5,
         isRegistrationOpen: true,
-        itmCount: 1,
-        prizePayouts: [{ place: 1, percent: 100 }],
+        payoutTable: [{ minEntries: 0, payouts: [{ place: 1, percent: 100 }] }],
       },
     });
   });

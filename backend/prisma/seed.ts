@@ -182,8 +182,7 @@ async function main() {
         entryFee: ENTRY_FEE,
         startStack: START_STACK,
         rebuyUntil: REBUY_UNTIL,
-        itmCount: PRIZE_PAYOUTS.length,
-        prizePayouts: PRIZE_PAYOUTS,
+        payoutTable: [{ minEntries: 0, payouts: PRIZE_PAYOUTS }],
         dealerOtpHash: await hashDealerOtp(dealerOtp),
       },
     });

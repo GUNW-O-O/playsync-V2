@@ -95,7 +95,7 @@ describe('상점 경계 — 남의 상점을 건드릴 수 없다', () => {
     entryFee: 1000,
     rebuyUntil: 5,
     isRegistrationOpen: true,
-    prizePayouts: [{ place: 1, percent: 100 }],
+    payoutTable: [{ minEntries: 0, payouts: [{ place: 1, percent: 100 }] }],
   });
 
   /**
@@ -110,7 +110,7 @@ describe('상점 경계 — 남의 상점을 건드릴 수 없다', () => {
     entryFee: 1000,
     rebuyUntil: 5,
     isRegistrationOpen: true,
-    prizePayouts: [{ place: 1, percent: 100 }],
+    payoutTable: [{ minEntries: 0, payouts: [{ place: 1, percent: 100 }] }],
   };
 
   describe('createSession', () => {

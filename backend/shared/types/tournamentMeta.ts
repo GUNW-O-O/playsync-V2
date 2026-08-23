@@ -21,6 +21,10 @@ export interface Dashboard {
   tournamentName: string,
   entryFee: number,
   startStack: number,
+  // 엔트리 수 = 바이인 횟수. 사람 수가 아니다 — 리바인이 사람을 안 늘리고
+  // 엔트리를 늘린다. 프라이즈풀과 상금권 인원의 분모가 이 값이다.
+  entryCount: number,
+  // 상금권 인원. 구간표에서 파생된다(`payoutsFor`). `prizes.length`와 같다.
   itmCount: number,
 
   // 프라이즈풀은 걷은 참가비 총액에서 **상점 몫을 뺀 나머지**다

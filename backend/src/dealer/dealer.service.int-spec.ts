@@ -95,17 +95,18 @@ describe('DealerService 동시성', () => {
       activePlayer: 3,
       totalBuyinAmount: 3000,
       rakePercent: 0,
+      entryCount: 0,
+      itmCount: 1,
       // 현재 레벨(lv 1)보다 커야 등록이 열린 상태가 된다.
       rebuyUntil: 5,
       avgStack: 10000,
       tournamentName: 'T',
       entryFee: 1000,
       startStack: 10000,
-      itmCount: 1,
       prizePool: 3000,
       prizes: [{ place: 1, percent: 100, amount: 3000 }],
     };
-    await redisService.setTournamentMeta(TOURNAMENT, dashboard, blind);
+    await redisService.setTournamentMeta(TOURNAMENT, dashboard, blind, [{ minEntries: 0, payouts: [{ place: 1, percent: 100 }] }]);
   }
 
   function chipTotal(state: TableState): number {

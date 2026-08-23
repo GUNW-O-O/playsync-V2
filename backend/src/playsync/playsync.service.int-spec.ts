@@ -670,8 +670,8 @@ describe('PlaysyncService.syncTableInventoryToDb — 버튼 좌석', () => {
       data: {
         name: '버튼 체크포인트 대회', type: 'TOURNAMENT', storeId: store.id, blindId: blind.id,
         dealerOtpHash: 'unused-hash', startStack: 10000, avgStack: 10000, entryFee: 1000,
-        rebuyUntil: 5, isRegistrationOpen: true, itmCount: 1,
-        prizePayouts: [{ place: 1, percent: 100 }],
+        rebuyUntil: 5, isRegistrationOpen: true,
+        payoutTable: [{ minEntries: 0, payouts: [{ place: 1, percent: 100 }] }],
       },
     });
     tournamentId = tournament.id;

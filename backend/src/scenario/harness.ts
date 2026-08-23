@@ -88,7 +88,10 @@ export async function setupTournament(
     rebuyUntil?: number;
     /** 레벨 상승을 보는 시나리오만 여러 레벨을 넣는다. */
     blindStructure?: { lv: number; sb: number; ante: boolean; duration: number }[];
+    /** 규모와 무관하게 고정할 분배율. 구간 하나짜리 표로 감싸 넘어간다. */
     prizePayouts?: { place: number; percent: number }[];
+    /** 규모에 따라 상금권이 늘어나는 것을 보는 시나리오만 표를 통째로 준다. */
+    payoutTable?: { minEntries: number; payouts: { place: number; percent: number }[] }[];
     /** 상점이 걷은 총액에서 가져가는 비율(%). 안 주면 0 — 걷은 돈 전부가 상금이다. */
     rakePercent?: number;
   } = {},
@@ -153,7 +156,12 @@ export async function setupTournament(
     entryFee: SCENARIO.entryFee,
     rebuyUntil: opts.rebuyUntil ?? 5,
     // 상금 분배율은 대회 생성 시 상점이 정한다. itmCount는 여기서 파생된다.
-    prizePayouts: opts.prizePayouts ?? [{ place: 1, percent: 100 }],
+    // **표가 대회의 규칙이다**(T81). 고정 분배율은 구간 하나짜리 표와 뜻이
+    // 같으므로, 기존 시나리오는 `prizePayouts`를 그대로 쓰고 여기서 감싼다.
+    payoutTable: opts.payoutTable ?? [{
+      minEntries: 0,
+      payouts: opts.prizePayouts ?? [{ place: 1, percent: 100 }],
+    }],
     rakePercent: opts.rakePercent ?? 0,
     // 착석 자체가 등록이라 열려 있어야 한다. 리바인 가능 여부도 이 값이 정하므로
     // 리바인을 보지 않는 시나리오는 착석을 마친 뒤 닫는다(`closeRegistration`).

@@ -490,12 +490,13 @@ describe('PaymentService.joinSession — 등록 마감', () => {
         activePlayer: 0,
         totalBuyinAmount: 0,
         rakePercent: 0,
+        entryCount: 0,
+        itmCount: 1,
         rebuyUntil: t.rebuyUntil,
         avgStack: 0,
         entryFee: t.entryFee,
         tournamentName: t.name,
         startStack: t.startStack,
-        itmCount: t.itmCount,
         prizePool: 0,
         prizes: [{ place: 1, percent: 100, amount: 0 }],
       },
@@ -509,6 +510,7 @@ describe('PaymentService.joinSession — 등록 마감', () => {
         serverTime: Date.now(),
         blindStructure: STRUCTURE,
       },
+      [{ minEntries: 0, payouts: [{ place: 1, percent: 100 }] }],
     );
   }
 

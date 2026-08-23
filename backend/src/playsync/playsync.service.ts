@@ -15,6 +15,7 @@ import {
 } from 'src/store/session/tournament-status';
 import { RedisService } from 'src/redis/redis.service';
 import { retryAsync } from 'src/common/retry';
+import { entryCountOf, payoutsForRaw } from './payout-table';
 import { awardPrize, prizeFor, prizePoolOf, splitBustedRanks } from './prize';
 import { SEAT_ROLE } from 'src/auth/seat-role';
 
@@ -451,14 +452,19 @@ export class PlaysyncService {
       //    (`tournamentFinished` → `awardPrize`), 그 판단의 재료가 방금 깎은
       //    인원수다. 회계가 끝난 대회에서 한 번 더 나가면 되돌릴 수 없다.
       //    위의 좌석 삭제도 같은 트랜잭션이라 함께 되돌아간다.
-      const { activePlayers, totalBuyinAmount, rakePercent, prizePayouts } = await tx.tournament.update({
+      const { activePlayers, totalBuyinAmount, entryFee, rakePercent, payoutTable } = await tx.tournament.update({
         where: { id: tournamentId, status: NOT_CLOSED_TOURNAMENT_FILTER },
         data: { activePlayers: { decrement: busted.length } },
         select: {
-          activePlayers: true, totalBuyinAmount: true,
-          rakePercent: true, prizePayouts: true,
+          activePlayers: true, totalBuyinAmount: true, entryFee: true,
+          rakePercent: true, payoutTable: true,
         },
       }).catch(asClosedTournamentWrite);
+
+      // **분배율은 규모가 정한다**(T81). 엔트리 수로 구간을 고른다 — 사람 수가
+      // 아니라 바이인 횟수다. 프라이즈풀이 `엔트리 × entryFee`라 같은 분모를
+      // 써야 상금권 인원과 풀이 함께 움직인다.
+      const payouts = payoutsForRaw(entryCountOf(totalBuyinAmount, entryFee), payoutTable);
 
       // 3. 핸드 시작 스택으로 등수를 가르고 공동 등수의 몫을 나눈다.
       //
@@ -470,7 +476,7 @@ export class PlaysyncService {
         busted,
         activePlayers + busted.length,
         prizePoolOf(totalBuyinAmount, rakePercent),
-        prizePayouts,
+        payouts,
       );
 
       // 상태 전환·포인트·거래 내역이 한 곳에서 함께 일어난다. 기록만 되고
@@ -533,10 +539,16 @@ export class PlaysyncService {
     });
     if (!user) throw new Error('유저 없음.');
     await this.prisma.$transaction(async (tx) => {
-      const { totalBuyinAmount, rakePercent, prizePayouts } = await tx.tournament.findUniqueOrThrow({
+      const { totalBuyinAmount, entryFee, rakePercent, payoutTable } = await tx.tournament.findUniqueOrThrow({
         where: { id: tournamentId },
-        select: { totalBuyinAmount: true, rakePercent: true, prizePayouts: true },
+        select: {
+          totalBuyinAmount: true, entryFee: true,
+          rakePercent: true, payoutTable: true,
+        },
       });
+      // 위 `eliminatePlayer`와 같은 자리를 쓴다. 두 경로가 같은 표를 봐야
+      // 마지막 한 자리의 상금이 앞의 자리들과 어긋나지 않는다.
+      const payouts = payoutsForRaw(entryCountOf(totalBuyinAmount, entryFee), payoutTable);
 
       await awardPrize(
         tx,
@@ -546,7 +558,7 @@ export class PlaysyncService {
           place: 1,
           // 상점 몫을 뺀 프라이즈풀에서 나눈다. 위 `eliminatePlayer`와 같은
           // 자리를 써야 두 경로가 같은 풀을 본다.
-          amount: prizeFor(prizePoolOf(totalBuyinAmount, rakePercent), prizePayouts, 1),
+          amount: prizeFor(prizePoolOf(totalBuyinAmount, rakePercent), payouts, 1),
         }],
         '우승 상금',
       );

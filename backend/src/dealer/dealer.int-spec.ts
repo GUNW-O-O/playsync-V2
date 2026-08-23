@@ -103,7 +103,7 @@ async function seedTournament({ status }: { status?: TournamentStatus } = {}) {
     entryFee: 1000,
     rebuyUntil: 5,
     isRegistrationOpen: true,
-    prizePayouts: [{ place: 1, percent: 100 }],
+    payoutTable: [{ minEntries: 0, payouts: [{ place: 1, percent: 100 }] }],
   } as CreateTournamentDto, owner.id);
 
   const table = await prisma.table.findFirstOrThrow({

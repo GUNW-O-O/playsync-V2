@@ -31,6 +31,13 @@ export const DashboardSchema = z.object({
   tournamentName: z.string(),
   entryFee: chips,
   startStack: chips,
+  // 엔트리 수 = 바이인 횟수. **사람 수가 아니다** — 리바인이 사람을 안 늘리고
+  // 엔트리를 늘린다(`totalPlayer`는 결제한 사람 수다). 프라이즈풀도 상금권
+  // 인원도 이 값에서 파생되므로, 화면이 프라이즈풀 옆에 띄울 수 있어야
+  // "왜 저만큼인가"가 설명된다. 나눗셈을 프론트에 두면 계산이 두 곳이 된다.
+  entryCount: z.int().min(0),
+  // 상금권 인원. **구간표에서 파생된다**(`payoutsFor`) — 엔트리가 늘면 는다.
+  // 저장된 컬럼이 아니라 `prizes.length`와 언제나 같다.
   itmCount: z.int().min(0),
   // 상점이 걷은 총액에서 가져가는 비율(%). **참가자가 따로 내는 수수료가
   // 아니다** — 참가비는 그대로 걷히고 대회를 닫을 때 총액에 한 번 곱해 뗀다.
