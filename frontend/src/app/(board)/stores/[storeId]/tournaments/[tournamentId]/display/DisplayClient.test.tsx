@@ -23,7 +23,7 @@ const VALID = {
   blindField: {
     isBreak: false, startedAt: 0, currentBlindLv: 0,
     nextLevelAt: 1000, serverTime: 0,
-    blindStructure: [{ lv: 1, sb: 100, ante: false, duration: 10 }],
+    blindStructure: [{ lv: 1, sb: 100, ante: 0, duration: 10 }],
   },
 };
 
@@ -89,31 +89,116 @@ describe('DisplayClient', () => {
     server.use(http.get('*/playsync/dashboard/:id', () => HttpResponse.json(VALID)));
     render(<DisplayClient tournamentId="t1" />);
     expect(await screen.findByText('350,000')).toBeInTheDocument();
-    expect(screen.getByText('7')).toBeInTheDocument();
+    // 자리로 집는다. 픽스처의 `activePlayer`와 `entryCount`가 둘 다 7이라
+    // 글자로 찾으면 어느 칸을 본 것인지 알 수 없다.
+    expect(screen.getByTestId('active-player')).toHaveTextContent('7');
   });
 
   /**
-   * T58. 칩이 디지털이고 화면이 유일한 장부인데, 딜러가 이 대회에 앤티가
-   * 붙는지 전광판으로는 몰랐다. BlindLevel.ante는 구조 층의 값이라 여전히
-   * boolean이다 — 얼마인지는 실제 핸드가 도는 Felt가 그린다(state.ante).
+   * T58에서는 「앤티 있음」 배지였다. 그것만으로는 딜러도 참가자도 **얼마를
+   * 내는지** 화면으로 못 본다 — 칩이 디지털이고 화면이 유일한 장부인데,
+   * 매 핸드 나가는 돈이 화면 어디에도 없었다.
+   *
+   * 금액은 계약이 든다(`BlindLevelSchema.ante`). 여기서 `sb / 5`를 다시
+   * 적으면 백엔드가 식을 바꿀 때 조용히 어긋난다.
    */
-  it('현재 레벨에 앤티가 붙으면 배지를 보여준다', async () => {
+  it('앤티가 붙으면 금액을 보여준다', async () => {
     server.use(http.get('*/playsync/dashboard/:id', () => HttpResponse.json({
       ...VALID,
       blindField: {
         ...VALID.blindField,
-        blindStructure: [{ lv: 1, sb: 100, ante: true, duration: 10 }],
+        blindStructure: [{ lv: 1, sb: 600, ante: 120, duration: 10 }],
       },
     })));
     render(<DisplayClient tournamentId="t1" />);
-    expect(await screen.findByTestId('ante-badge')).toBeInTheDocument();
+    expect(await screen.findByText('앤티 120')).toBeInTheDocument();
   });
 
-  it('앤티가 없는 레벨에서는 배지가 없다', async () => {
+  /**
+   * **없으면 줄이 없다.** 「앤티 없음」을 적지 않는다 — 10m 밖에서 읽는
+   * 화면에 없는 것을 알리는 줄이 자리를 먹는다.
+   *
+   * 0을 그대로 렌더하면 `{0 && ...}`가 화면에 `0`을 남긴다. React가 falsy
+   * 중 `0`만 그리기 때문이고, `boolean`이던 시절에는 없던 함정이다.
+   */
+  it('앤티가 없으면 그 줄이 통째로 없다 — 0도 안 뜬다', async () => {
     server.use(http.get('*/playsync/dashboard/:id', () => HttpResponse.json(VALID)));
     render(<DisplayClient tournamentId="t1" />);
     await screen.findByText('350,000');
-    expect(screen.queryByTestId('ante-badge')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ante-current')).not.toBeInTheDocument();
+    expect(screen.queryByText('0')).not.toBeInTheDocument();
+  });
+
+  /**
+   * **분모가 엔트리다.** 프라이즈풀도 상금권 인원도 바이인 횟수에서
+   * 파생되므로(T81), 그 자리에 사람 수가 있으면 "왜 저만큼인가"가 안 읽힌다.
+   * 사람 수는 부제로 내린다 — 리바인이 없으면 둘이 같고, 있으면 갈린다.
+   */
+  it('엔트리를 크게, 사람 수를 부제로 그린다', async () => {
+    server.use(http.get('*/playsync/dashboard/:id', () => HttpResponse.json({
+      ...VALID,
+      dashboard: { ...VALID.dashboard, entryCount: 21, totalPlayer: 16 },
+    })));
+    render(<DisplayClient tournamentId="t1" />);
+    expect(await screen.findByText('엔트리')).toBeInTheDocument();
+    expect(screen.getByTestId('entry-count')).toHaveTextContent('21');
+    expect(screen.getByText('참가 16명')).toBeInTheDocument();
+    // 「총 참가」는 사라졌다. 같은 자리에 두 이름이 있으면 어느 쪽이 분모인지 흐려진다.
+    expect(screen.queryByText('총 참가')).not.toBeInTheDocument();
+  });
+
+  /**
+   * **등록이 열려 있는 동안 상금은 미정이다.** 리바인이 들어올 때마다
+   * 프라이즈풀이 커지고 구간이 바뀌면 상금권 인원도 는다 — 그 숫자를 확정된
+   * 것처럼 그리면 참가자가 그 금액을 받을 것으로 읽는다.
+   */
+  it('등록이 열려 있으면 상금이 미정이라고 말한다', async () => {
+    server.use(http.get('*/playsync/dashboard/:id', () => HttpResponse.json(VALID)));
+    render(<DisplayClient tournamentId="t1" />);
+    expect(await screen.findByText('마감 전 · 예상')).toBeInTheDocument();
+  });
+
+  it('마감되면 미정 표시가 걷힌다', async () => {
+    server.use(http.get('*/playsync/dashboard/:id', () => HttpResponse.json({
+      ...VALID,
+      dashboard: { ...VALID.dashboard, isRegistrationOpen: false },
+    })));
+    render(<DisplayClient tournamentId="t1" />);
+    await screen.findByText('350,000');
+    expect(screen.queryByText('마감 전 · 예상')).not.toBeInTheDocument();
+  });
+
+  /**
+   * **상금권이 늘면 한 줄에 안 들어간다.** 엔트리가 많은 대회는 아홉까지
+   * 가는데, 줄바꿈하면 전광판의 다른 정보가 밀리고 자르면 뒤 등수가 영영
+   * 안 보인다. 한 방향으로 흘려 전부 지나가게 한다.
+   *
+   * **넷까지는 안 흐른다.** 이유 없는 움직임은 읽는 사람이 눈으로 따라가게
+   * 만든다.
+   */
+  it('상금권이 넷을 넘으면 목록이 흐른다', async () => {
+    const prizes = Array.from({ length: 9 }, (_, i) => ({
+      place: i + 1, percent: 10, amount: 1000 * (9 - i),
+    }));
+    server.use(http.get('*/playsync/dashboard/:id', () => HttpResponse.json({
+      ...VALID,
+      dashboard: { ...VALID.dashboard, isRegistrationOpen: false, itmCount: 9, prizes },
+    })));
+    render(<DisplayClient tournamentId="t1" />);
+    expect(await screen.findByTestId('prize-flow')).toBeInTheDocument();
+  });
+
+  it('상금권이 넷 이하면 흐르지 않는다', async () => {
+    const prizes = Array.from({ length: 4 }, (_, i) => ({
+      place: i + 1, percent: 25, amount: 1000,
+    }));
+    server.use(http.get('*/playsync/dashboard/:id', () => HttpResponse.json({
+      ...VALID,
+      dashboard: { ...VALID.dashboard, isRegistrationOpen: false, itmCount: 4, prizes },
+    })));
+    render(<DisplayClient tournamentId="t1" />);
+    await screen.findByText('1ST');
+    expect(screen.queryByTestId('prize-flow')).not.toBeInTheDocument();
   });
 
   /**

@@ -93,10 +93,13 @@ export const TableStateSchema = z.object({
   /**
    * 앤티 금액. 0이면 없다는 뜻이다.
    *
-   * T58 전에는 `boolean`이었다. `BlindLevelSchema.ante`(대회 블라인드
-   * 구조 쪽)는 여전히 `boolean`으로 남는다 — 구조는 "앤티가 붙나"를
-   * 선언하고, 이 스냅샷의 값은 "얼마인가"를 든다. 화면(`Felt`)이 금액을
-   * 직접 계산하지 않고 여기서 받아 그리게 하려고 층을 나눴다.
+   * T58 전에는 `boolean`이었다. 화면(`Felt`)이 금액을 직접 계산하지 않고
+   * 여기서 받아 그리게 하려는 것이었다.
+   *
+   * `BlindLevelSchema.ante`(대회 블라인드 구조 쪽)도 뒤따라 금액이 됐다 —
+   * 전광판이 같은 이유로 금액을 필요로 했다. 두 스키마가 같은 모양인 것은
+   * 우연이 아니라 규칙이다: **경계를 넘는 앤티는 언제나 금액이고, "붙나"는
+   * DB와 입력 DTO에만 남는다.**
    */
   ante: chips,
   actionDeadline: z.int().optional(),

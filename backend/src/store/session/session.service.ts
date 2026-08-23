@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PlayerStatus, Prisma, TournamentStatus } from '@prisma/client';
+import type { FinishPreview } from '@playsync/contract';
 import { CreateBlindStructureDto } from 'shared/dto/blind-structure.dto';
 import { CreateTournamentDto, UpdateTournamentDto } from 'shared/dto/tournament.dto';
 import { generateDealerOtp, hashDealerOtp } from 'src/dealer/dealer-otp';
@@ -23,10 +24,11 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { buildTournamentMeta } from './tournament-meta';
 import { isFinalTable } from './final-table';
-import { LIVE_PLAYER_STATUSES } from './player-status';
+import { LIVE_PLAYER_STATUSES, isLiveParticipant } from './player-status';
 import { isRegistrationOpenLive } from './registration-gate';
-import { calculateAbortSettlement, calculateChop } from './settlement';
+import { calculateAbortSettlement, calculateChop, completeBlocker, groupAbortRefunds } from './settlement';
 import { NOT_CLOSED_TOURNAMENT_FILTER, isClosedTournament } from './tournament-status';
+import { FINISH_BLOCKERS } from './finish-blockers';
 
 /**
  * 대회를 시작할 수 있는 최소 인원.
@@ -711,15 +713,12 @@ export class SessionService {
      * 레이크가 0이면 `rake`도 0이라 이 식이 예전 식과 같아진다.
      */
     const rake = rakeOf(tournament.totalBuyinAmount, tournament.rakePercent);
-    const remaining = tournament.totalBuyinAmount - paid - rake;
 
-    if (remaining !== 0) {
-      throw new ConflictException(
-        remaining > 0
-          ? `상금 정산이 끝나지 않았습니다. ${remaining} 남았습니다.`
-          : `지급된 상금이 프라이즈풀보다 ${-remaining} 많습니다.`,
-      );
-    }
+    // **문장이 `completeBlocker` 하나에서 나온다.** 콘솔의 「종료」가 못 누를
+    // 이유를 그 자리에 적는데(`getFinishPreview`), 그 판단을 화면이 따로
+    // 계산하면 「닫을 수 있다」고 그려 놓고 누르면 409가 나는 날이 온다.
+    const blocked = completeBlocker(tournament.totalBuyinAmount, paid, rake);
+    if (blocked) throw new ConflictException(blocked);
 
     // **돈을 받는 사람은 상점 주인이다.** 상점 자체는 지갑이 없고
     // (`Store`에 포인트 컬럼이 없다) 주인은 이미 `User`라, 새 모델 없이
@@ -835,19 +834,132 @@ export class SessionService {
    *
    * 문을 여는 조건 셋. 각각 막는 이유가 다르다.
    */
-  async chopSession(tournamentId: string, ownerId: string) {
+  /**
+   * 대회 마무리 미리보기. **읽기만 한다.**
+   *
+   * 콘솔의 마무리 영역과 확인 대화 둘이 이 응답 하나로 그려진다. 라우트를
+   * 셋으로 나누지 않은 이유는 화면이 **「합이 걷은 돈과 같다」를 눈으로
+   * 확인하는 자리**이기 때문이다 — 세 시점의 값을 섞어 그리면 그 확인이
+   * 무의미해진다.
+   *
+   * **금액을 여기서 정하지 않는다.** 실제 지급이 쓰는 계산
+   * (`calculateChop`·`calculateAbortSettlement`)을 그대로 부른다. 미리보기
+   * 전용 식을 따로 적으면 화면의 숫자와 실제 지급이 갈라지는데, 그 갈라짐을
+   * 잡아 주는 장치가 없다.
+   *
+   * **프론트가 이 값을 되돌려 보내지 않는다.** 확정은 각 라우트가 서버에서
+   * 다시 계산한다 — 이 응답은 근거가 아니라 미리 보여주는 그림이다.
+   */
+  async getFinishPreview(tournamentId: string, ownerId: string): Promise<FinishPreview> {
     await this.assertTournamentOwnership(tournamentId, ownerId);
 
     const tournament = await this.prismaService.tournament.findUnique({
       where: { id: tournamentId },
     });
     if (!tournament) throw new NotFoundException('세션을 찾을 수 없습니다.');
-    if (isClosedTournament(tournament.status)) {
-      throw new ConflictException('이미 닫힌 세션입니다.');
-    }
-    if (tournament.startedAt === null) {
-      throw new ConflictException('시작하지 않은 대회는 딜로 끝낼 수 없습니다.');
-    }
+
+    const participations = await this.prismaService.tournamentParticipation.findMany({
+      where: { tournamentId },
+      select: {
+        userId: true,
+        status: true,
+        buyInCount: true,
+        prizeAmount: true,
+        currentStack: true,
+        user: { select: { nickname: true } },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const rake = rakeOf(tournament.totalBuyinAmount, tournament.rakePercent);
+    const prizePool = prizePoolOf(tournament.totalBuyinAmount, tournament.rakePercent);
+    const paidPrize = participations.reduce((sum, p) => sum + p.prizeAmount, 0);
+    // 음수가 되는 상태(지급이 풀을 넘었다)는 `completeBlocker`가 문장으로
+    // 말한다. 여기서 0으로 눌러 두면 화면이 「나눌 것이 없다」로만 읽힌다.
+    const remainingPrize = Math.max(0, prizePool - paidPrize);
+
+    const closed = isClosedTournament(tournament.status);
+
+    /**
+     * **닫힌 대회는 셋 다 못 한다.** 조작마다 다른 이유를 적을 것이 없다 —
+     * 이미 닫혔다는 사실 하나가 셋을 다 막는다.
+     */
+    const closedGate = { canRun: false, reason: FINISH_BLOCKERS.closed };
+
+    const completeReason = closed
+      ? FINISH_BLOCKERS.closed
+      : completeBlocker(tournament.totalBuyinAmount, paidPrize, rake);
+
+    const chopReason = closed ? FINISH_BLOCKERS.closed : await this.chopBlocker(tournament);
+    /**
+     * **문이 열렸을 때만 줄을 그린다.** 못 하는 상태에서 명단을 그리면
+     * 「이렇게 나뉜다」가 화면에 남는데, 그 값은 조건이 갖춰진 뒤와 다르다 —
+     * 핸드가 도는 중이면 `currentStack`이 낡았고, 그것이 애초에 막는 이유다.
+     */
+    const alive = chopReason === null
+      ? participations.filter((p) => isLiveParticipant(p.status))
+      : [];
+    const nicknameByUser = new Map(
+      participations.map((p) => [p.userId, p.user.nickname ?? null]),
+    );
+    const chopRows = calculateChop(alive, remainingPrize).map((row) => ({
+      ...row,
+      nickname: nicknameByUser.get(row.userId) ?? null,
+      currentStack: alive.find((p) => p.userId === row.userId)?.currentStack ?? 0,
+    }));
+
+    const abortReason = closed
+      ? FINISH_BLOCKERS.closed
+      : tournament.startedAt === null
+        ? FINISH_BLOCKERS.abortNotStarted
+        : null;
+    const settlement = calculateAbortSettlement(
+      participations, tournament.entryFee, tournament.totalBuyinAmount,
+    );
+
+    return {
+      totalBuyinAmount: tournament.totalBuyinAmount,
+      rakePercent: tournament.rakePercent,
+      rakeAmount: rake,
+      prizePool,
+      paidPrize,
+      remainingPrize,
+      complete: closed
+        ? closedGate
+        : { canRun: completeReason === null, reason: completeReason },
+      chop: {
+        canRun: chopReason === null && chopRows.length >= 2,
+        // 문은 열렸는데 사람이 모자란 경우다. 트랜잭션 안의 검사와 같은 문장을
+        // 쓴다(`FINISH_BLOCKERS.chopTooFew`).
+        reason: chopReason ?? (chopRows.length >= 2 ? null : FINISH_BLOCKERS.chopTooFew),
+        rows: chopRows,
+      },
+      abort: {
+        canRun: abortReason === null,
+        reason: abortReason,
+        groups: groupAbortRefunds(participations, settlement.refunds),
+        storeAmount: settlement.storeAmount,
+        scaled: settlement.scaled,
+      },
+    };
+  }
+
+  /**
+   * 딜로 끝낼 수 없는 이유. 끝낼 수 있으면 `null`이다.
+   *
+   * **실행과 미리보기가 같은 문을 지난다.** `chopSession`이 이것을 보고
+   * 던지고, `getFinishPreview`가 같은 값을 화면의 「왜 못 누르나」로 그린다 —
+   * 판단이 두 곳이면 「할 수 있다」고 그려 놓고 누르면 409가 나는 날이 온다.
+   *
+   * 여기서 보는 것은 **밖에서 확인할 수 있는 문 셋**이다. 인원(두 명 이상)은
+   * 트랜잭션 안에서 다시 세므로 여기 없다 — 미리보기는 `rows.length`로 같은
+   * 사실을 보여준다.
+   */
+  private async chopBlocker(
+    tournament: { id: string; startedAt: Date | null; isRegistrationOpen: boolean },
+  ): Promise<string | null> {
+    // **시작 여부의 정본은 `startedAt`이다**(`cancelSession`과 같은 판정).
+    if (tournament.startedAt === null) return FINISH_BLOCKERS.chopNotStarted;
 
     /**
      * **파이널 테이블에서만 받는다**(T77의 `isFinalTable`).
@@ -858,12 +970,13 @@ export class SessionService {
      * 마감은 컬럼이 아니라 파생값이다(`isRegistrationOpenLive`) — 컬럼은 마감
      * 시각에 스스로 닫히지 않는다.
      */
+    const tournamentId = tournament.id;
     const tableCount = await this.prismaService.table.count({ where: { tournamentId } });
     const isRegistrationOpen = await isRegistrationOpenLive(
       this.prismaService, this.redis, tournament,
     );
     if (!isFinalTable({ isRegistrationOpen, tableCount })) {
-      throw new ConflictException('파이널 테이블에서만 딜로 끝낼 수 있습니다.');
+      return FINISH_BLOCKERS.chopNotFinalTable;
     }
 
     /**
@@ -883,8 +996,24 @@ export class SessionService {
     });
     const state = await this.redis.getSnapShot(table.id);
     if (!state || (state.phase !== GamePhase.WAITING && state.phase !== GamePhase.HAND_END)) {
-      throw new ConflictException('핸드가 도는 중에는 딜로 끝낼 수 없습니다. 핸드를 마치고 다시 시도해 주세요.');
+      return FINISH_BLOCKERS.chopHandRunning;
     }
+
+    return null;
+  }
+
+  async chopSession(tournamentId: string, ownerId: string) {
+    await this.assertTournamentOwnership(tournamentId, ownerId);
+
+    const tournament = await this.prismaService.tournament.findUnique({
+      where: { id: tournamentId },
+    });
+    if (!tournament) throw new NotFoundException('세션을 찾을 수 없습니다.');
+    if (isClosedTournament(tournament.status)) {
+      throw new ConflictException('이미 닫힌 세션입니다.');
+    }
+    const blocked = await this.chopBlocker(tournament);
+    if (blocked) throw new ConflictException(blocked);
 
     await this.prismaService.$transaction(async (tx) => {
       /**
@@ -900,7 +1029,7 @@ export class SessionService {
         orderBy: { createdAt: 'asc' },
       });
       if (alive.length < 2) {
-        throw new ConflictException('딜은 두 명 이상 남아 있어야 합니다.');
+        throw new ConflictException(FINISH_BLOCKERS.chopTooFew);
       }
 
       const current = await tx.tournament.findUniqueOrThrow({
@@ -960,7 +1089,7 @@ export class SessionService {
     }
     // **시작 여부의 정본은 `startedAt`이다**(`cancelSession`과 같은 판정).
     if (tournament.startedAt === null) {
-      throw new ConflictException('시작하지 않은 대회는 취소로 닫습니다.');
+      throw new ConflictException(FINISH_BLOCKERS.abortNotStarted);
     }
 
     const tables = await this.prismaService.table.findMany({

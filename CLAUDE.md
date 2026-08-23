@@ -105,22 +105,23 @@ npm run assets         # 촬영본을 자르고 합쳐 img/ 로 (ffmpeg-static)
 타입 에러 0건, 테스트 전부 통과가 정상이다. CI(`.github/workflows/ci.yml`)가
 타입 체크 · 테스트 · 빌드를 돌린다.
 
-현재 기준선 (#95 완료 시점):
+현재 기준선 (#96 완료 시점):
 
 ```
-contract       62  (4 suites)
-백엔드 단위   364  (34 suites)
-프론트 단위   177  (31 files)
-통합          582  (38 suites)
+contract       67  (5 suites)
+백엔드 단위   374  (34 suites)
+프론트 단위   187  (32 files)
+통합          584  (38 suites)
 e2e            13  (4 files, regression 프로젝트)
 부하 하네스    12  (1 file, `cd load && npm test`)
 타입 에러       0
 ```
 
 다섯 다 **이 브랜치에서 실제로 돌린 값**이다 — PR들이 각자 잰 숫자를 합산한
-것이 아니다. **e2e는 #90 시점에 돌린 값을 그대로 둔다**(T73) — 회귀 13건이
-통과했고 `npm run demo`도 장면 1~5를 끝까지 갔다. e2e와 부하 하네스는 CI가
-아니라 사람이 돌린다.
+것이 아니다. **e2e도 #96에서 다시 돌렸다**(13건 통과, 1.7분) — 계약의
+`BlindLevelSchema.ante`가 boolean에서 금액이 되어 전광판이 실제로 바뀌었기
+때문이다. 화면이 바뀐 PR에서는 e2e를 물려받지 않는다. e2e와 부하 하네스는
+CI가 아니라 사람이 돌린다.
 
 플레이키는 없다. `EntryService.enterSeat`의 「다른 좌석에 동시에 앉으면 서로를
 지우지 않는다」가 간헐 실패했는데, 원인은 제품이 아니라 **스펙이 프로덕션에 없는

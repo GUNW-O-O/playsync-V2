@@ -339,7 +339,11 @@ describe('SessionService.completeSession — 정산 게이트', () => {
     // 다시 누르는 것 말고 할 수 있는 일이 없다.
     const { service } = setup({ pool: 30000, prizes: [18000] });
 
-    await expect(service.completeSession('t1', OWNER)).rejects.toThrow(/12000/);
+    // 자릿수까지 단언한다. 이 문장은 그대로 콘솔 화면에 뜨므로
+    // (`getFinishPreview`의 「왜 못 누르나」) 「12000」과 「12,000」은
+    // 다른 결과다 — 사람이 한눈에 자릿수를 읽을 수 있느냐가 갈린다.
+    await expect(service.completeSession('t1', OWNER))
+      .rejects.toThrow('상금 정산이 끝나지 않았습니다. 12,000 남았습니다.');
   });
 
   /**
@@ -363,7 +367,8 @@ describe('SessionService.completeSession — 정산 게이트', () => {
     // 레이크를 빼면 프라이즈풀이 27,000인데 30,000이 나갔다.
     const { service, prisma } = setup({ pool: 30000, prizes: [30000], rakePercent: 10 });
 
-    await expect(service.completeSession('t1', OWNER)).rejects.toThrow(/3000/);
+    await expect(service.completeSession('t1', OWNER))
+      .rejects.toThrow('지급된 상금이 프라이즈풀보다 3,000 많습니다.');
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 

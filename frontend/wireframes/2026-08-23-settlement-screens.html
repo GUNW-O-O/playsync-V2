@@ -1,0 +1,750 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Playsync V2 — 정산 화면 와이어프레임</title>
+<style>
+  /* ─────────────────────────────────────────────────────────────
+     2026-08-02-screens.html의 토큰을 그대로 쓴다. 값은 안 바꾼다 —
+     색과 간격의 판단은 그때 끝났고, 이 문서는 **바뀌는 자리만** 그린다.
+
+     T79(중단) · T80(상점 몫) · T81(상금권 자동 조정) · T82(딜)가
+     화면에 남긴 것만 담았다. 안 바뀌는 화면은 원본을 본다.
+     ───────────────────────────────────────────────────────────── */
+  :root {
+    --canvas:#ffffff; --surface:#f4f4f4; --ink:#161616;
+    --ink-muted:#525252; --ink-subtle:#8c8c8c;
+    --hairline:#e0e0e0; --hairline-strong:#161616;
+    --blue:#0f62fe; --blue-80:#002d9c;
+
+    --sb-bg:#08090a; --sb-ink:#ffffff; --sb-dim:#6e7479;
+    --sb-live:#ffb000; --sb-break:#3ddc97;
+
+    --ok:#24a148; --warn:#f1c21b; --err:#da1e28;
+
+    --sans: ui-sans-serif, system-ui, "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+    --mono: ui-monospace, "Cascadia Mono", Consolas, "D2Coding", monospace;
+    --cond: "Arial Narrow", "Roboto Condensed", "Helvetica Neue Condensed", var(--sans);
+
+    --page:#f7f7f5; --page-ink:#161616; --page-muted:#56565a;
+    --page-line:#dcdcd8; --page-accent:#0f62fe; --page-card:#ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --page:#131316; --page-ink:#ececef; --page-muted:#9a9aa2; --page-line:#2c2c32; --page-accent:#6ba0ff; --page-card:#1b1b20; }
+  }
+  :root[data-theme="dark"] { --page:#131316; --page-ink:#ececef; --page-muted:#9a9aa2; --page-line:#2c2c32; --page-accent:#6ba0ff; --page-card:#1b1b20; }
+  :root[data-theme="light"] { --page:#f7f7f5; --page-ink:#161616; --page-muted:#56565a; --page-line:#dcdcd8; --page-accent:#0f62fe; --page-card:#ffffff; }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  body { margin:0; background:var(--page); color:var(--page-ink); font-family:var(--sans); font-size:16px; line-height:1.5; -webkit-font-smoothing:antialiased; }
+  a { color: var(--page-accent); }
+  :focus-visible { outline:2px solid var(--page-accent); outline-offset:2px; }
+
+  .wrap { max-width:1180px; margin:0 auto; padding:0 24px 120px; }
+  header.masthead { padding:72px 0 40px; border-bottom:1px solid var(--page-line); margin-bottom:48px; }
+  .eyebrow { font-size:13px; letter-spacing:0.08em; color:var(--page-muted); margin:0 0 20px; }
+  h1 { font-size:clamp(34px,5.2vw,58px); font-weight:300; line-height:1.12; letter-spacing:-0.4px; margin:0 0 24px; text-wrap:balance; }
+  .lede { max-width:64ch; font-size:18px; line-height:1.55; color:var(--page-muted); margin:0 0 10px; }
+  .lede strong { color:var(--page-ink); font-weight:600; }
+  .lede code, .band-note code, .sources code, .decide code { font-family:var(--mono); font-size:0.92em; }
+
+  .decisions { display:grid; gap:10px; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); margin-top:30px; }
+  .decide { border:1px solid var(--page-line); background:var(--page-card); padding:14px 16px; }
+  .decide b { display:block; font-size:14px; margin-bottom:5px; }
+  .decide span { font-size:13px; color:var(--page-muted); line-height:1.5; display:block; }
+
+  section.band { margin:0 0 96px; }
+  .band-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:12px 20px; padding-bottom:14px; border-bottom:1px solid var(--page-line); margin-bottom:12px; }
+  .band-head h2 { font-size:30px; font-weight:400; letter-spacing:-0.2px; margin:0; }
+  .band-meta { font-family:var(--mono); font-size:13px; color:var(--page-muted); }
+  .band-note { max-width:70ch; color:var(--page-muted); font-size:15px; margin:0 0 32px; }
+  .band-note strong { color:var(--page-ink); }
+
+  .screen { margin:0 0 46px; }
+  .screen-label { display:flex; flex-wrap:wrap; align-items:baseline; gap:8px 14px; margin:0 0 12px; }
+  .screen-label .route { font-family:var(--mono); font-size:14px; font-weight:600; }
+  .screen-label .job { font-size:14px; color:var(--page-muted); }
+  .screen-label .tag { font-size:12px; letter-spacing:0.04em; color:var(--page-muted); border:1px solid var(--page-line); padding:2px 8px; }
+
+  .frame { border:1px solid var(--page-line); overflow:hidden; }
+  .frame.carbon { background:var(--canvas); color:var(--ink); letter-spacing:0.16px; }
+  .frame.score  { background:var(--sb-bg); color:var(--sb-ink); }
+  .frame-bar { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:7px 14px; font-family:var(--mono); font-size:11px; letter-spacing:0.03em; }
+  .frame.carbon .frame-bar { background:var(--surface); color:var(--ink-subtle); border-bottom:1px solid var(--hairline); }
+  .frame-body { padding:22px; }
+
+  .sources { display:grid; grid-template-columns:104px 1fr; gap:4px 14px; margin:12px 0 0; padding:12px 14px; background:var(--page-card); border:1px solid var(--page-line); font-size:13px; }
+  .sources dt { color:var(--page-muted); font-size:12px; letter-spacing:0.04em; line-height:1.35; }
+  .sources dd { margin:0; }
+  .sources strong { color:var(--page-ink); }
+  .sources code { font-size:12.5px; }
+
+  .row { display:flex; gap:12px; }
+  .row.wrap { flex-wrap:wrap; }
+  .row.between { justify-content:space-between; }
+  .row.center { align-items:center; }
+  .grow { flex:1 1 0; min-width:0; }
+  .kicker { font-size:11px; letter-spacing:0.06em; margin:0 0 4px; color:var(--ink-subtle); }
+  .num { font-family:var(--mono); font-variant-numeric:tabular-nums; }
+
+  /* ── 전광판 ─────────────────────────────────────────────── */
+  .sb-top { display:flex; justify-content:space-between; align-items:baseline; font-family:var(--cond); font-size:15px; letter-spacing:0.16em; color:var(--sb-dim); text-transform:uppercase; padding-bottom:16px; border-bottom:1px solid #1b1f22; }
+  .sb-main { display:flex; gap:44px; align-items:flex-end; padding:26px 0 28px; flex-wrap:wrap; }
+  .sb-block { display:flex; flex-direction:column; gap:6px; }
+  .sb-cap { font-family:var(--cond); font-size:14px; letter-spacing:0.18em; color:var(--sb-dim); text-transform:uppercase; }
+  .sb-huge { font-family:var(--cond); font-variant-numeric:tabular-nums; font-size:clamp(56px,12vw,140px); font-weight:700; line-height:0.86; letter-spacing:-0.01em; }
+  .sb-huge.live { color:var(--sb-live); }
+  .sb-mid { font-family:var(--cond); font-variant-numeric:tabular-nums; font-size:clamp(26px,4.4vw,48px); font-weight:700; line-height:1; color:var(--sb-dim); }
+
+  /*
+   * 앤티. **있으면 줄이 있고 없으면 줄이 없다** — 「앤티 없음」을 적지 않는다.
+   * 없다는 것은 빈자리로 충분하고, 한 줄을 더 쓰면 10m 밖에서 읽을 것이 는다.
+   *
+   * 블라인드보다 작지만 `--sb-dim`이 아니라 흰색이다. 이건 매 핸드 나가는
+   * 돈이라 「참고」가 아니다 — 딤을 쓰면 거리에서 먼저 사라진다.
+   */
+  .sb-ante { font-family:var(--cond); font-variant-numeric:tabular-nums; font-size:clamp(17px,2.3vw,27px); font-weight:700; letter-spacing:0.1em; color:var(--sb-ink); margin-top:8px; }
+  .sb-strip { display:grid; grid-template-columns:repeat(4,1fr); border-top:1px solid #1b1f22; }
+  .sb-cell { padding:18px 4px 4px; }
+  .sb-cell + .sb-cell { border-left:1px solid #1b1f22; padding-left:20px; }
+  .sb-cell .n { font-family:var(--cond); font-variant-numeric:tabular-nums; font-size:clamp(30px,5vw,54px); font-weight:700; line-height:1; }
+
+  /*
+   * 엔트리 칸의 부제. **사람 수와 엔트리가 갈리는 것을 화면이 말한다** —
+   * 리바인이 없으면 둘이 같고, 있으면 벌어진다. 프라이즈풀의 분모가
+   * 엔트리라, 이 줄이 없으면 "왜 참가 6명인데 풀이 10바이인인가"가
+   * 화면 어디에도 안 적힌다.
+   */
+  .sb-sub { font-family:var(--cond); font-size:clamp(13px,1.7vw,17px); letter-spacing:0.1em; color:var(--sb-dim); margin-top:5px; }
+
+  .sb-prizes { display:flex; gap:34px; flex-wrap:wrap; border-top:1px solid #1b1f22; margin-top:22px; padding-top:18px; align-items:baseline; }
+  .sb-prize { display:flex; align-items:baseline; gap:10px; }
+  .sb-prize .p { font-family:var(--cond); font-size:17px; letter-spacing:0.14em; color:var(--sb-dim); }
+  .sb-prize .a { font-family:var(--cond); font-variant-numeric:tabular-nums; font-size:clamp(22px,3.2vw,34px); font-weight:700; }
+
+  /*
+   * **시그니처 — 상금 줄이 자기 상태를 말한다.**
+   *
+   * 등록이 열려 있는 동안 목록은 계속 변한다. 그 사실을 금액의 밝기로
+   * 말하고, 왜인지는 줄 앞의 짧은 문구가 한 번만 적는다. 마감되면 둘 다
+   * 걷히고 금액이 제 밝기로 온다 — 10m 밖에서 **밝기만으로** "굳었다"가
+   * 읽히고, 가까이서 읽는 사람은 문구로 이유를 안다.
+   *
+   * 처음에는 왼쪽에 노란 세로선을 하나 더 세웠다. 지웠다 — 흐린 금액과
+   * 문구가 이미 그 말을 하고 있어서 선은 같은 말의 **세 번째 사본**이었다.
+   * 남은 둘은 하는 일이 다르다: 밝기가 "아직 아니다", 문구가 "왜".
+   */
+  .sb-prizes.provisional .a { color:#b9bec2; }
+  .sb-prizes.provisional .p { color:#565c60; }
+  .prov-note { font-family:var(--cond); font-size:15px; letter-spacing:0.14em; color:var(--sb-live); text-transform:uppercase; align-self:center; }
+
+  /*
+   * **상금권이 아홉이면 한 줄에 안 들어간다.**
+   *
+   * 줄바꿈으로 두 줄이 되면 전광판의 세로가 늘어나 아래가 잘리고, 글자를
+   * 줄이면 10m 밖에서 안 읽힌다 — 둘 다 못 쓴다. 그래서 **한 방향으로
+   * 흘린다.** 공항 안내판과 같은 방식이고, 보는 사람이 조작할 수 없는
+   * 화면이라 스크롤이 아니라 흐름이라야 한다.
+   *
+   * 같은 목록을 두 벌 두고 절반만큼 밀면 이음매가 없다. 뒤 벌은 읽는
+   * 것이 아니라 빈자리를 메우는 것이라 보조기기에서 숨긴다.
+   *
+   * **넘칠 때만 흐른다.** 넷까지는 한 줄에 들어가므로 그때 흘리면 읽는
+   * 사람이 눈으로 따라가야 하는 이유 없는 움직임이 생긴다.
+   */
+  .sb-prizes.flowing { display:block; overflow:hidden; }
+  .sb-flow { display:flex; width:max-content; animation:sb-scroll 34s linear infinite; }
+  .sb-set { display:flex; gap:34px; padding-right:34px; }
+  @keyframes sb-scroll { from { transform:translateX(0); } to { transform:translateX(-50%); } }
+
+  /*
+   * 움직임을 끈 사람에게는 **잘린 목록을 주지 않는다.** 흐름을 멈추는 것으로
+   * 끝내면 다섯 번째 뒤가 영영 안 보인다 — 줄바꿈으로 되돌리고 사본을 지운다.
+   */
+  @media (prefers-reduced-motion: reduce) {
+    .sb-prizes.flowing { display:flex; flex-wrap:wrap; gap:34px; }
+    .sb-flow { animation:none; width:auto; flex-wrap:wrap; }
+    .sb-set { flex-wrap:wrap; gap:34px; padding-right:0; }
+    .sb-set[aria-hidden="true"] { display:none; }
+  }
+
+  /* ── 콘솔 ───────────────────────────────────────────────── */
+  .tile { padding:16px; border:1px solid var(--hairline); }
+  .tile.raised { background:var(--surface); }
+  .stat { display:flex; flex-direction:column; gap:2px; }
+  .stat .v { font-family:var(--mono); font-variant-numeric:tabular-nums; font-size:26px; font-weight:300; line-height:1.1; }
+  .stat .v.sm { font-size:19px; }
+  .hr { height:1px; background:var(--hairline); margin:20px 0; }
+
+  .btn { display:inline-flex; align-items:center; justify-content:center; padding:12px 16px; font-size:14px; border:1px solid transparent; white-space:nowrap; }
+  .btn.primary { background:var(--blue); color:#fff; }
+  .btn.secondary { background:var(--ink); color:#fff; }
+  .btn.tertiary { color:var(--blue); border-color:var(--blue); }
+  .btn.danger { background:var(--err); color:#fff; }
+  .btn.ghost { color:var(--ink-muted); border-color:var(--hairline); }
+  .btn[aria-disabled="true"] { background:var(--hairline); color:var(--ink-subtle); border-color:transparent; }
+
+  /*
+   * 마무리 셋은 나란한 버튼으로 두지 않는다. 셋 다 **되돌릴 수 없는 돈
+   * 경로**이고 서로 다른 규칙이라, 같은 크기로 늘어놓으면 무엇이 일어날지
+   * 모른 채 가까운 것을 누른다. 줄 하나에 조작 하나 — 왼쪽이 무엇을 하는지,
+   * 오른쪽이 버튼이다.
+   */
+  .finish { border:1px solid var(--hairline); }
+  .finish-row { display:flex; gap:16px; align-items:center; padding:15px 16px; }
+  .finish-row + .finish-row { border-top:1px solid var(--hairline); }
+  .finish-row .what { flex:1 1 0; min-width:0; }
+  .finish-row .what b { display:block; font-size:15px; font-weight:600; margin-bottom:3px; }
+  .finish-row .what span { font-size:13px; color:var(--ink-muted); line-height:1.45; }
+  .finish-row.off .what b, .finish-row.off .what span { color:var(--ink-subtle); }
+  .why { font-size:12px; color:var(--ink-subtle); margin-top:4px; display:block; }
+
+  /* 확인 대화 — **누르기 전에 금액을 보여준다.** */
+  /*
+   * **색을 자기 안에서 닫는다.** `background`만 주고 `color`를 안 주면 페이지가
+   * 다크 테마일 때 흰 바탕에 `--page-ink`(밝은 회색)가 얹혀 안 읽힌다.
+   * `.frame.carbon`이 같은 이유로 둘을 함께 준다.
+   */
+  .modal { border:1px solid var(--hairline); background:var(--canvas); color:var(--ink); max-width:520px; }
+  .modal-head { padding:18px 20px 0; }
+  .modal-head h3 { margin:0 0 6px; font-size:20px; font-weight:400; }
+  .modal-head p { margin:0; font-size:13.5px; color:var(--ink-muted); line-height:1.5; }
+  .modal-body { padding:16px 20px 4px; }
+  .modal-foot { display:flex; gap:1px; margin-top:18px; }
+  .modal-foot .btn { flex:1 1 0; padding:15px 16px; }
+
+  .ledger { width:100%; border-collapse:collapse; font-size:14px; }
+  .ledger th { text-align:left; font-size:11px; letter-spacing:0.06em; color:var(--ink-subtle); font-weight:400; padding:0 0 7px; border-bottom:1px solid var(--hairline); }
+  .ledger th.r, .ledger td.r { text-align:right; }
+  .ledger td { padding:9px 0; border-bottom:1px solid var(--hairline); }
+  .ledger td.r { font-family:var(--mono); font-variant-numeric:tabular-nums; }
+  .ledger tr.total td { border-bottom:0; padding-top:12px; font-weight:600; }
+  .ledger .who { color:var(--ink); }
+  .ledger .note { display:block; font-size:12px; color:var(--ink-subtle); }
+  .ledger .zero { color:var(--ink-subtle); }
+
+  .callout { border-left:3px solid var(--warn); background:var(--surface); padding:11px 14px; font-size:13px; color:var(--ink-muted); line-height:1.5; }
+  .callout strong { color:var(--ink); }
+
+  .pair { display:grid; gap:20px; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); }
+
+  footer.end { border-top:1px solid var(--page-line); padding-top:26px; color:var(--page-muted); font-size:14px; }
+  footer.end code { font-family:var(--mono); font-size:13px; }
+
+  @media (max-width:720px) {
+    .sb-strip { grid-template-columns:repeat(2,1fr); }
+    .sb-cell + .sb-cell { border-left:0; padding-left:4px; }
+    .finish-row { flex-direction:column; align-items:stretch; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { animation:none !important; transition:none !important; } }
+</style>
+
+<div class="wrap">
+
+<header class="masthead">
+  <p class="eyebrow">Playsync V2 · 2026-08-23 · 정산 화면</p>
+  <h1>돈이 어디로 가는지 화면이 말한다</h1>
+  <p class="lede">
+    T79~T82가 백엔드에 붙인 것 넷 — <strong>중단</strong>·<strong>상점 몫</strong>·<strong>상금권 자동 조정</strong>·<strong>딜</strong> —
+    이 화면에 남긴 자리만 그렸다. 안 바뀌는 화면은
+    <a href="./2026-08-02-screens.html">2026-08-02-screens.html</a>을 본다.
+  </p>
+  <p class="lede">
+    두 면뿐이다. <strong>전광판</strong>은 참가자가 10m 밖에서 읽는 화면이라 「내가 받을 수 있는 돈」만 말하고,
+    <strong>상점 콘솔</strong>은 되돌릴 수 없는 조작 셋이 새로 붙는 자리다.
+  </p>
+
+  <div class="decisions">
+    <div class="decide">
+      <b>상금권 인원을 숫자로 안 띄운다</b>
+      <span><code>prizes.length</code>가 곧 <code>itmCount</code>다. 숫자와 목록을 둘 다 그리면 화면이 같은 사실을 두 번 적는다 — <b>목록이 그 숫자다.</b></span>
+    </div>
+    <div class="decide">
+      <b>「총 참가」를 「엔트리」로</b>
+      <span>프라이즈풀의 분모가 엔트리(바이인 횟수)다. 사람 수만 띄우면 「참가 6명인데 풀이 10바이인」이 화면 어디에도 안 적힌다. 사람 수는 부제로 내린다.</span>
+    </div>
+    <div class="decide">
+      <b>상금 줄이 마감 여부를 말한다</b>
+      <span>등록이 열린 동안 목록은 계속 변한다. 배지를 따로 달지 않고 <b>줄 자체를 미정 상태로</b> 둔다 — 배지는 같은 사실의 두 번째 사본이다.</span>
+    </div>
+    <div class="decide">
+      <b>마무리는 버튼 셋이 아니다</b>
+      <span>종료·중단·딜은 규칙이 서로 다르고 셋 다 되돌릴 수 없다. 같은 크기로 늘어놓으면 무엇이 일어날지 모른 채 가까운 것을 누른다.</span>
+    </div>
+  </div>
+</header>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section class="band">
+  <div class="band-head">
+    <h2>전광판</h2>
+    <span class="band-meta">GET /tournaments/:id/full · 1초 폴링</span>
+  </div>
+  <p class="band-note">
+    바뀐 것은 <strong>하단 통계 줄 한 칸</strong>과 <strong>상금 목록의 상태</strong>뿐이다.
+    블라인드 시계와 레벨은 그대로다 — 이 화면의 주인공은 여전히 시계이고, 돈은 그 아래에 있다.
+  </p>
+
+  <div class="screen">
+    <div class="screen-label">
+      <span class="route">/stores/:storeId/tournaments/:id/display</span>
+      <span class="job">등록이 열려 있다 — 상금권이 아직 안 굳었다</span>
+      <span class="tag">변경</span>
+    </div>
+    <div class="frame score">
+      <div class="frame-body">
+        <div class="sb-top">
+          <span>금요 나이트 · 플레이싱크 강남점</span>
+          <span>등록 마감 레벨 5</span>
+        </div>
+
+        <div class="sb-main">
+          <div class="sb-block">
+            <span class="sb-cap">Level 3 · 블라인드</span>
+            <span class="sb-huge">200 / 400</span>
+          </div>
+          <div class="sb-block">
+            <span class="sb-cap">다음 레벨</span>
+            <span class="sb-huge live">7:41</span>
+          </div>
+          <div class="sb-block" style="padding-bottom:6px">
+            <span class="sb-cap">다음</span>
+            <span class="sb-mid">300 / 600</span>
+          </div>
+        </div>
+
+        <div class="sb-strip">
+          <div class="sb-cell"><span class="sb-cap">남은 인원</span><div class="n">9</div></div>
+          <!--
+            바뀐 칸. 엔트리가 큰 숫자이고 사람 수가 부제다.
+            리바인이 없으면 "참가 12명"과 같아지고, 그때는 부제가
+            같은 값을 반복하는 대신 둘이 같다는 사실을 말한다.
+          -->
+          <div class="sb-cell">
+            <span class="sb-cap">엔트리</span>
+            <div class="n">14</div>
+            <div class="sb-sub">참가 12명</div>
+          </div>
+          <div class="sb-cell"><span class="sb-cap">평균 스택</span><div class="n">15,556</div></div>
+          <div class="sb-cell"><span class="sb-cap">프라이즈풀</span><div class="n">126,000</div></div>
+        </div>
+
+        <!--
+          미정 상태. 왼쪽 세로선 하나와 낮춘 밝기가 전부다.
+          "예상"이라는 말은 한 번만 적는다.
+        -->
+        <div class="sb-prizes provisional">
+          <span class="prov-note">마감 전 · 예상</span>
+          <div class="sb-prize"><span class="p">1ST</span><span class="a">63,000</span></div>
+          <div class="sb-prize"><span class="p">2ND</span><span class="a">37,800</span></div>
+          <div class="sb-prize"><span class="p">3RD</span><span class="a">25,200</span></div>
+        </div>
+      </div>
+    </div>
+    <dl class="sources">
+      <dt>읽기</dt>
+      <dd><code>dashboard.entryCount</code> · <code>totalPlayer</code> · <code>prizePool</code> · <code>prizes[]</code> · <code>isRegistrationOpen</code></dd>
+      <dt>파생</dt>
+      <dd>상금권 인원은 <strong>안 받는다</strong> — <code>prizes.length</code>가 그 값이다(<code>itmCount</code>와 언제나 같다)</dd>
+      <dt>레이크</dt>
+      <dd><code>prizePool</code>이 <strong>이미 상점 몫을 뺀 값</strong>이다. 참가자 화면에 <code>rakePercent</code>는 안 그린다</dd>
+    </dl>
+  </div>
+
+  <div class="screen">
+    <div class="screen-label">
+      <span class="route">/stores/:storeId/tournaments/:id/display</span>
+      <span class="job">마감됐다 — 상금권이 굳었고 엔트리도 안 는다</span>
+      <span class="tag">변경</span>
+    </div>
+    <div class="frame score">
+      <div class="frame-body">
+        <div class="sb-top">
+          <span>금요 나이트 · 플레이싱크 강남점</span>
+          <span>등록 마감</span>
+        </div>
+
+        <div class="sb-main">
+          <div class="sb-block">
+            <span class="sb-cap">Level 6 · 블라인드</span>
+            <span class="sb-huge">600 / 1,200</span>
+            <span class="sb-ante">앤티 120</span>
+          </div>
+          <div class="sb-block">
+            <span class="sb-cap">다음 레벨</span>
+            <span class="sb-huge live">3:02</span>
+          </div>
+          <div class="sb-block" style="padding-bottom:6px">
+            <span class="sb-cap">다음</span>
+            <span class="sb-mid">800 / 1,600</span>
+            <span class="sb-ante" style="color:var(--sb-dim)">앤티 160</span>
+          </div>
+        </div>
+
+        <div class="sb-strip">
+          <div class="sb-cell"><span class="sb-cap">남은 인원</span><div class="n">6</div></div>
+          <div class="sb-cell">
+            <span class="sb-cap">엔트리</span>
+            <div class="n">21</div>
+            <div class="sb-sub">참가 16명</div>
+          </div>
+          <div class="sb-cell"><span class="sb-cap">평균 스택</span><div class="n">35,000</div></div>
+          <div class="sb-cell"><span class="sb-cap">프라이즈풀</span><div class="n">189,000</div></div>
+        </div>
+
+        <!--
+          선이 사라지고 금액이 제 밝기로 온다. 엔트리가 21이라
+          기본표의 16~24 구간 — 상금권이 셋에서 넷으로 늘어난 뒤다.
+        -->
+        <div class="sb-prizes">
+          <div class="sb-prize"><span class="p">1ST</span><span class="a">75,600</span></div>
+          <div class="sb-prize"><span class="p">2ND</span><span class="a">56,700</span></div>
+          <div class="sb-prize"><span class="p">3RD</span><span class="a">37,800</span></div>
+          <div class="sb-prize"><span class="p">4TH</span><span class="a">18,900</span></div>
+        </div>
+      </div>
+    </div>
+    <dl class="sources">
+      <dt>차이</dt>
+      <dd>미정 표시가 걷힌 것 하나다. <strong>목록이 길어진 것은 코드 변경이 아니다</strong> — <code>prizes</code>를 그대로 <code>.map</code>하므로 구간이 바뀌면 줄이 는다</dd>
+      <dt>앤티</dt>
+      <dd><strong>금액이 계약에 없다.</strong> <code>BlindLevelSchema.ante</code>는 <code>z.boolean()</code>뿐이고 <code>deriveAnteAmount</code>는 <code>backend/shared</code>에만 있다 — 프론트가 <code>sb/5</code>를 다시 계산하면 두 벌이 된다. <strong>계약에 금액을 더하는 것이 이 줄보다 먼저다</strong></dd>
+      <dt>왜 안 변하나</dt>
+      <dd>리바인은 등록 마감과 함께 끝난다. 그 뒤로 <code>totalBuyinAmount</code>가 불변이라 엔트리도 상금권도 저절로 고정된다</dd>
+    </dl>
+  </div>
+
+  <div class="screen">
+    <div class="screen-label">
+      <span class="route">/stores/:storeId/tournaments/:id/display</span>
+      <span class="job">상금권이 아홉 — 한 줄에 안 들어간다</span>
+      <span class="tag">신규 상태</span>
+    </div>
+    <div class="frame score">
+      <div class="frame-body">
+        <div class="sb-top">
+          <span>여름 시리즈 메인 · 플레이싱크 강남점</span>
+          <span>등록 마감</span>
+        </div>
+
+        <div class="sb-main">
+          <div class="sb-block">
+            <span class="sb-cap">Level 11 · 블라인드</span>
+            <span class="sb-huge">2,000 / 4,000</span>
+            <span class="sb-ante">앤티 400</span>
+          </div>
+          <div class="sb-block">
+            <span class="sb-cap">다음 레벨</span>
+            <span class="sb-huge live">11:26</span>
+          </div>
+          <div class="sb-block" style="padding-bottom:6px">
+            <span class="sb-cap">다음</span>
+            <span class="sb-mid">2,500 / 5,000</span>
+            <span class="sb-ante" style="color:var(--sb-dim)">앤티 500</span>
+          </div>
+        </div>
+
+        <div class="sb-strip">
+          <div class="sb-cell"><span class="sb-cap">남은 인원</span><div class="n">23</div></div>
+          <div class="sb-cell">
+            <span class="sb-cap">엔트리</span>
+            <div class="n">96</div>
+            <div class="sb-sub">참가 71명</div>
+          </div>
+          <div class="sb-cell"><span class="sb-cap">평균 스택</span><div class="n">125,217</div></div>
+          <div class="sb-cell"><span class="sb-cap">프라이즈풀</span><div class="n">864,000</div></div>
+        </div>
+
+        <!--
+          엔트리 96 → 기본표의 70+ 구간 → 상금권 아홉. 한 줄에 안 들어가서
+          왼쪽으로 흐른다. 뒤 벌은 이음매를 메우는 사본이라 aria-hidden이다.
+        -->
+        <div class="sb-prizes flowing">
+          <div class="sb-flow">
+            <div class="sb-set">
+              <div class="sb-prize"><span class="p">1ST</span><span class="a">259,200</span></div>
+              <div class="sb-prize"><span class="p">2ND</span><span class="a">172,800</span></div>
+              <div class="sb-prize"><span class="p">3RD</span><span class="a">120,960</span></div>
+              <div class="sb-prize"><span class="p">4TH</span><span class="a">86,400</span></div>
+              <div class="sb-prize"><span class="p">5TH</span><span class="a">69,120</span></div>
+              <div class="sb-prize"><span class="p">6TH</span><span class="a">51,840</span></div>
+              <div class="sb-prize"><span class="p">7TH</span><span class="a">43,200</span></div>
+              <div class="sb-prize"><span class="p">8TH</span><span class="a">34,560</span></div>
+              <div class="sb-prize"><span class="p">9TH</span><span class="a">25,920</span></div>
+            </div>
+            <div class="sb-set" aria-hidden="true">
+              <div class="sb-prize"><span class="p">1ST</span><span class="a">259,200</span></div>
+              <div class="sb-prize"><span class="p">2ND</span><span class="a">172,800</span></div>
+              <div class="sb-prize"><span class="p">3RD</span><span class="a">120,960</span></div>
+              <div class="sb-prize"><span class="p">4TH</span><span class="a">86,400</span></div>
+              <div class="sb-prize"><span class="p">5TH</span><span class="a">69,120</span></div>
+              <div class="sb-prize"><span class="p">6TH</span><span class="a">51,840</span></div>
+              <div class="sb-prize"><span class="p">7TH</span><span class="a">43,200</span></div>
+              <div class="sb-prize"><span class="p">8TH</span><span class="a">34,560</span></div>
+              <div class="sb-prize"><span class="p">9TH</span><span class="a">25,920</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <dl class="sources">
+      <dt>언제 흐르나</dt>
+      <dd>목록이 한 줄을 넘칠 때만. 넷까지는 안 흐른다 — <strong>이유 없는 움직임은 읽는 사람이 눈으로 따라가게 만든다</strong></dd>
+      <dt>속도</dt>
+      <dd>한 바퀴 34초. 10m 밖에서 자기 등수를 찾는 데 드는 시간이 기준이고, 빠르면 못 읽고 느리면 안 도는 것처럼 보인다</dd>
+      <dt>움직임 끔</dt>
+      <dd><code>prefers-reduced-motion</code>이면 <strong>줄바꿈으로 되돌린다.</strong> 흐름만 멈추면 다섯 번째 뒤가 영영 안 보인다</dd>
+    </dl>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section class="band">
+  <div class="band-head">
+    <h2>상점 콘솔 — 대회 마무리</h2>
+    <span class="band-meta">POST :id/complete · :id/abort · :id/chop</span>
+  </div>
+  <p class="band-note">
+    지금 콘솔에는 <strong>대회를 끝내는 조작이 하나도 없다.</strong> 라우트는 백엔드에 있고 화면이 안 부른다.
+    셋이 한꺼번에 붙는데 <strong>규칙이 서로 다르고 셋 다 되돌릴 수 없다</strong> —
+    누르면 테이블·딜러 세션·Redis가 지워지고 누가 몇 등이었는지 재구성할 근거가 남지 않는다.
+  </p>
+
+  <div class="screen">
+    <div class="screen-label">
+      <span class="route">/stores/:storeId/tournaments/:id</span>
+      <span class="job">진행 중 · 파이널 테이블</span>
+      <span class="tag">신규 영역</span>
+    </div>
+    <div class="frame carbon">
+      <div class="frame-bar"><span>상점 콘솔</span><span>진행 중 · 등록 마감</span></div>
+      <div class="frame-body">
+
+        <div class="row wrap" style="gap:28px">
+          <div class="stat"><span class="kicker">남은 인원</span><span class="v">2</span></div>
+          <div class="stat"><span class="kicker">엔트리</span><span class="v">21</span></div>
+          <div class="stat"><span class="kicker">프라이즈풀</span><span class="v">189,000</span></div>
+          <!--
+            상점 몫은 **콘솔에만** 있다. 참가자 화면에 그리면 "내 참가비의
+            일부가 어디로 갔나"가 프라이즈풀 옆에 상시로 붙는데, 그것은
+            대회 안내문의 몫이지 전광판의 몫이 아니다.
+          -->
+          <div class="stat"><span class="kicker">상점 몫 · 10%</span><span class="v sm">21,000</span></div>
+          <div class="stat"><span class="kicker">나간 상금</span><span class="v sm">56,700</span></div>
+        </div>
+
+        <div class="hr"></div>
+
+        <p class="kicker" style="margin-bottom:10px">대회 마무리 — 되돌릴 수 없습니다</p>
+        <div class="finish">
+          <div class="finish-row off">
+            <div class="what">
+              <b>종료</b>
+              <span>상금이 다 나간 뒤에 대회를 닫고 상점 몫을 정산합니다.</span>
+              <span class="why">아직 132,300원이 남아 있어 닫을 수 없습니다.</span>
+            </div>
+            <button class="btn" aria-disabled="true">종료</button>
+          </div>
+
+          <div class="finish-row">
+            <div class="what">
+              <b>ICM 마무리</b>
+              <span>남은 두 명이 남은 상금을 칩 비율대로 나누고 대회를 닫습니다.</span>
+            </div>
+            <button class="btn secondary">ICM 마무리</button>
+          </div>
+
+          <div class="finish-row">
+            <div class="what">
+              <b>중단</b>
+              <span>대회를 열 수 없게 됐을 때. 진행 중인 사람은 낸 돈 전부, 탈락한 사람은 절반을 돌려받습니다.</span>
+            </div>
+            <button class="btn ghost">중단</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+    <dl class="sources">
+      <dt>활성 조건</dt>
+      <dd><strong>종료</strong> 걷은 것 == 나간 상금 + 상점 몫 · <strong>딜</strong> 파이널 테이블 + 핸드 사이 + 두 명 이상 · <strong>중단</strong> 시작한 대회</dd>
+      <dt>못 누를 때</dt>
+      <dd>버튼을 숨기지 않고 <strong>왜 못 누르는지를 그 자리에 적는다.</strong> 사라진 버튼은 "이 대회는 원래 종료가 없다"로 읽힌다</dd>
+      <dt>순서</dt>
+      <dd>가장 흔한 것이 위다. 중단은 천재지변이라 맨 아래이고 유일하게 테두리만 있는 버튼이다</dd>
+    </dl>
+  </div>
+
+  <div class="pair">
+    <div class="screen">
+      <div class="screen-label">
+        <span class="route">ICM 마무리 확인</span>
+        <span class="job">누르기 전에 금액을 본다</span>
+      </div>
+      <div class="modal">
+        <div class="modal-head">
+          <h3>ICM으로 마무리할까요?</h3>
+          <p>남은 상금 132,300원을 지금 칩 비율대로 나눕니다. 대회는 그대로 닫힙니다.</p>
+        </div>
+        <div class="modal-body">
+          <table class="ledger">
+            <thead>
+              <tr><th>받는 사람</th><th class="r">칩</th><th class="r">상금</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="who">김민준 <span class="note">1위</span></td>
+                <td class="r">157,500</td>
+                <td class="r">99,225</td>
+              </tr>
+              <tr>
+                <td class="who">이서연 <span class="note">2위</span></td>
+                <td class="r">52,500</td>
+                <td class="r">33,075</td>
+              </tr>
+              <tr class="total">
+                <td>합계</td>
+                <td class="r">210,000</td>
+                <td class="r">132,300</td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="callout" style="margin-top:14px">
+            등수는 칩이 정합니다. <strong>이미 나간 상금 56,700원은 다시 나누지 않습니다.</strong>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn ghost">취소</button>
+          <button class="btn secondary">ICM 마무리</button>
+        </div>
+      </div>
+      <dl class="sources">
+        <dt>왜 미리보기</dt>
+        <dd>딜은 <strong>사람이 합의한 결과를 시스템에 적는 일</strong>이다. 화면의 숫자가 테이블 위에서 합의한 숫자와 같은지 확인할 자리가 있어야 한다</dd>
+        <dt>계산</dt>
+        <dd>프론트가 나누지 않는다. <code>GET</code>으로 미리보기를 받거나, 칩과 남은 상금만 받아 그리고 확정은 서버가 다시 계산한다</dd>
+      </dl>
+    </div>
+
+    <div class="screen">
+      <div class="screen-label">
+        <span class="route">중단 확인</span>
+        <span class="job">환불이 사람마다 다르다</span>
+      </div>
+      <div class="modal">
+        <div class="modal-head">
+          <h3>대회를 중단할까요?</h3>
+          <p>진행 중인 사람은 낸 돈 전부, 이미 탈락한 사람은 절반을 돌려받습니다. 되돌릴 수 없습니다.</p>
+        </div>
+        <div class="modal-body">
+          <table class="ledger">
+            <thead>
+              <tr><th>돌려주는 곳</th><th class="r">인원</th><th class="r">금액</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="who">진행 중 <span class="note">낸 돈 100%</span></td>
+                <td class="r">2</td>
+                <td class="r">21,000</td>
+              </tr>
+              <tr>
+                <td class="who">탈락 <span class="note">낸 돈 50%</span></td>
+                <td class="r">14</td>
+                <td class="r">73,500</td>
+              </tr>
+              <tr>
+                <td class="who zero">상금 받은 사람 <span class="note">받은 상금을 뺀 나머지</span></td>
+                <td class="r">1</td>
+                <td class="r zero">0</td>
+              </tr>
+              <!--
+                **이미 나간 상금이 한 줄로 서야 합이 맞는다.**
+
+                이 줄이 없던 판을 실제로 화면에 붙여 보니 위 네 줄의 합이
+                걷은 돈보다 나간 상금만큼 적었다(350,000에 287,000). 확인
+                대화의 존재 이유가 「합이 맞는가」인데 그 자리에서 합이 안
+                맞으면, 보는 사람은 돈이 사라졌다고 읽는다.
+
+                바로 위 「상금 받은 사람」과 다른 줄이다 — 저쪽은 그 사람이
+                **환불로** 받을 몫(대개 0)이고, 이 줄은 대회가 도는 동안
+                **이미 나간** 상금이다.
+              -->
+              <tr>
+                <td class="who">이미 나간 상금 <span class="note">대회 중에 지급됨</span></td>
+                <td class="r">—</td>
+                <td class="r">56,700</td>
+              </tr>
+              <tr>
+                <td class="who">상점 <span class="note">나가고 남은 돈</span></td>
+                <td class="r">—</td>
+                <td class="r">58,800</td>
+              </tr>
+              <tr class="total">
+                <td>걷은 돈</td>
+                <td class="r">—</td>
+                <td class="r">210,000</td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="callout" style="margin-top:14px">
+            중단에는 <strong>상점 몫을 따로 떼지 않습니다.</strong> 나가고 남은 돈이 이미 상점 것입니다.
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn ghost">취소</button>
+          <button class="btn danger">중단</button>
+        </div>
+      </div>
+      <dl class="sources">
+        <dt>합이 보인다</dt>
+        <dd>마지막 줄이 <strong>걷은 돈</strong>이다. 위 줄들의 합과 같아야 하고, 그것이 서버가 지키는 보존 등식이다 — <strong>환불 세 줄만으로는 안 맞는다</strong>(이미 나간 상금이 빠진다)</dd>
+        <dt>0원도 적는다</dt>
+        <dd>상금을 이미 받은 사람은 대개 0원이다. 그 줄을 지우면 <strong>빠뜨린 것처럼 보인다</strong> — 0이라는 것이 결과다</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section class="band">
+  <div class="band-head">
+    <h2>안 그린 것</h2>
+    <span class="band-meta">범위 밖</span>
+  </div>
+  <p class="band-note">
+    이 문서가 <strong>그리지 않기로 한 것</strong>도 결정이다. 나중에 "빠뜨렸나"를 다시 묻지 않기 위해 적어 둔다.
+  </p>
+  <div class="decisions">
+    <div class="decide">
+      <b>대회 생성·수정 화면</b>
+      <span>지금 프론트에 없다. <code>rakePercent</code>와 상금 구간표를 상점이 화면에서 정할 자리가 없고, API로만 받는다. 별도 티켓.</span>
+    </div>
+    <div class="decide">
+      <b>참가자 폰의 상금 안내</b>
+      <span>「내가 몇 등이면 얼마」는 폰에 있으면 좋지만 이번 백엔드 변경이 요구하지 않는다. 전광판이 이미 그 목록을 든다.</span>
+    </div>
+    <div class="decide">
+      <b>딜러 화면</b>
+      <span>딜과 중단은 <b>상점의 조작</b>이다. 딜러는 핸드를 돌릴 뿐이고, 마무리 버튼이 딜러 태블릿에 있으면 권한이 두 곳이 된다.</span>
+    </div>
+    <div class="decide">
+      <b>상점 몫의 이력</b>
+      <span><code>PointTransaction</code>에 <code>SETTLEMENT</code>로 남지만 그것을 읽는 화면은 안 만든다 — 감사·정산 화면은 MVP 밖이다(B10).</span>
+    </div>
+  </div>
+</section>
+
+<footer class="end">
+  <p>
+    선행: <a href="./2026-08-02-screens.html">2026-08-02-screens.html</a> ·
+    규칙의 정본: <code>docs/domain.md</code>의 「대회를 닫는 문이 넷이다」 ·
+    경위: <code>docs/tickets-audit.md</code>의 T79 · T80 · T81 · T82
+  </p>
+  <p>
+    토큰은 선행 문서에서 그대로 가져왔다. 값을 안 바꾼 이유는 그때 판단이 끝났기 때문이고,
+    <strong>이 문서가 정하는 것은 배치와 상태 표현뿐이다.</strong>
+  </p>
+</footer>
+
+</div>
+</html>

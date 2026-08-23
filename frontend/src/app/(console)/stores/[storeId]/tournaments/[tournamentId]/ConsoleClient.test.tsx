@@ -32,6 +32,11 @@ function renderConsole(reissue = vi.fn(async () => ({ ok: true as const, dealerO
       closeTable={vi.fn(async () => ({ ok: true as const }))}
       releaseSeats={vi.fn(async () => ({ ok: true as const }))}
       reissueDealerOtp={reissue}
+      preview={null}
+      completeTournament={vi.fn(async () => ({ ok: true as const }))}
+      chopTournament={vi.fn(async () => ({ ok: true as const }))}
+      abortTournament={vi.fn(async () => ({ ok: true as const }))}
+      fetchFinishPreview={vi.fn(async () => ({ error: '없음' }))}
     />,
   );
   return { reissue };
@@ -129,6 +134,11 @@ describe('ConsoleClient — 좌석 선택', () => {
         closeTable={vi.fn(async () => ({ ok: true as const }))}
         releaseSeats={releaseSeats}
         reissueDealerOtp={vi.fn(async () => ({ ok: true as const, dealerOtp: '920576' }))}
+        preview={null}
+        completeTournament={vi.fn(async () => ({ ok: true as const }))}
+        chopTournament={vi.fn(async () => ({ ok: true as const }))}
+        abortTournament={vi.fn(async () => ({ ok: true as const }))}
+        fetchFinishPreview={vi.fn(async () => ({ error: '없음' }))}
       />
     );
     const { rerender } = render(view(players));
