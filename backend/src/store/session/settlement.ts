@@ -144,3 +144,51 @@ export function calculateAbortSettlement(
     scaled: true,
   };
 }
+
+/** 찹에 참여하는 한 사람. 칩은 장부(`TournamentParticipation.currentStack`)다. */
+export interface ChopParticipant {
+  userId: string;
+  currentStack: number;
+}
+
+/**
+ * ICM 찹 — 남은 사람들이 딜로 끝낸다.
+ *
+ * **파이널 테이블에서 지쳤을 때 하는 것이다.** 최후 1인까지 가지 않고 남은
+ * 상금을 각자의 칩 비율로 나눈다. 오프라인 대회에서 흔한 마무리라, 그 경로가
+ * 없으면 딜로 끝난 대회는 시스템이 닫지 못한다.
+ *
+ * **중단 정산과 같은 자리를 쓴다**(`splitByRatio`). 둘 다 "대회를 끝내면서
+ * 남은 돈을 여럿에게 나눈다"이고 다른 것은 무슨 비율로 나누는가뿐이다 —
+ * 중단은 각자가 낸 돈, 찹은 각자의 칩. 나머지 한 단위까지 보존하므로
+ * **나눈 합이 정확히 남은 상금과 같고**, 그래야 `completeSession`의 게이트가
+ * 열린다.
+ *
+ * **등수는 칩이 정한다.** 금액은 이미 비율로 갈렸지만 기록은 남아야 한다 —
+ * 딜로 끝난 대회도 누가 1위였는지가 참가 행에 적힌다. 칩이 같으면 입력 순서가
+ * 가르고, 그때는 금액도 같아서 구분할 근거가 어차피 없다.
+ *
+ * **상금 구조를 대체한다.** 남은 사람이 상금권 인원보다 많아도 전원이 나눈다 —
+ * 딜은 남은 사람들의 합의이고, 아직 지지 않은 사람을 0원으로 내보내면 그
+ * 사람이 딜에 동의할 이유가 없다.
+ *
+ * @param remainingPrize 프라이즈풀에서 이미 나간 상금을 뺀 나머지
+ */
+export function calculateChop(
+  participants: ChopParticipant[],
+  remainingPrize: number,
+): { userId: string; place: number; amount: number }[] {
+  const ordered = [...participants].sort((a, b) => b.currentStack - a.currentStack);
+  const amounts = new Map(
+    splitByRatio(
+      remainingPrize,
+      ordered.map(({ userId, currentStack }) => ({ userId, weight: currentStack })),
+    ).map(({ userId, amount }) => [userId, amount]),
+  );
+
+  return ordered.map((p, index) => ({
+    userId: p.userId,
+    place: index + 1,
+    amount: amounts.get(p.userId) ?? 0,
+  }));
+}

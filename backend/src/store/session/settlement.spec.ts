@@ -2,6 +2,7 @@ import { PlayerStatus } from '@prisma/client';
 import {
   SettlementParticipant,
   calculateAbortSettlement,
+  calculateChop,
   splitByRatio,
 } from './settlement';
 
@@ -230,5 +231,62 @@ describe('calculateAbortSettlement', () => {
     const s = calculateAbortSettlement([], FEE, 0);
 
     expect(`환불 ${s.refunds.length}건 / 상점 ${s.storeAmount}`).toBe('환불 0건 / 상점 0');
+  });
+});
+
+/**
+ * ICM 찹 — 남은 사람들이 딜로 끝낸다.
+ *
+ * **파이널 테이블에서 지쳤을 때 하는 것이다.** 남은 상금을 각자의 칩 비율로
+ * 나누고 대회를 끝낸다. 중단 정산과 **같은 자리**(`splitByRatio`)를 쓴다 —
+ * 둘 다 "대회를 끝내면서 남은 돈을 여럿에게 나눈다"이고 다른 것은 무슨 비율로
+ * 나누는가뿐이다.
+ */
+describe('calculateChop', () => {
+  function chip(userId: string, currentStack: number) {
+    return { userId, currentStack };
+  }
+
+  it('칩 비율대로 남은 상금을 나눈다', () => {
+    const awards = calculateChop(
+      [chip('a', 30_000), chip('b', 10_000)], 4000,
+    );
+
+    expect(awards.map(a => `${a.userId} ${a.amount}`).join(' / ')).toBe('a 3000 / b 1000');
+  });
+
+  /** **등수는 칩이 정한다.** 많이 든 사람이 1위다 — 딜에서도 기록은 남는다. */
+  it('칩이 많은 사람이 높은 등수다', () => {
+    const awards = calculateChop(
+      [chip('small', 1000), chip('big', 9000)], 10_000,
+    );
+
+    expect(awards.map(a => `${a.place}위 ${a.userId}`).join(' / ')).toBe('1위 big / 2위 small');
+  });
+
+  /**
+   * **나눈 합이 정확히 남은 상금과 같다.** 어긋나면 `completeSession`의
+   * 게이트가 영영 안 열려 대회가 닫히지 않는다.
+   */
+  it('나눈 합이 남은 상금과 정확히 같다', () => {
+    const awards = calculateChop(
+      [chip('a', 1), chip('b', 1), chip('c', 1)], 1000,
+    );
+
+    expect(awards.reduce((s, a) => s + a.amount, 0)).toBe(1000);
+  });
+
+  /** 칩이 같으면 입력 순서가 등수를 가른다. 금액은 어차피 같다. */
+  it('칩이 같으면 금액도 같다', () => {
+    const awards = calculateChop([chip('a', 5000), chip('b', 5000)], 4000);
+
+    expect(awards.map(a => a.amount)).toEqual([2000, 2000]);
+  });
+
+  /** 남은 상금이 없으면 아무도 못 받지만 등수는 남는다 — 대회는 닫혀야 한다. */
+  it('남은 상금이 0이면 전원 0원이고 등수는 매긴다', () => {
+    const awards = calculateChop([chip('a', 5000), chip('b', 3000)], 0);
+
+    expect(awards.map(a => `${a.place}위 ${a.amount}원`).join(' / ')).toBe('1위 0원 / 2위 0원');
   });
 });

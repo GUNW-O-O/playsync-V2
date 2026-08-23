@@ -18,11 +18,14 @@ import {
   parsePayoutTable,
   PayoutTier,
 } from 'src/playsync/payout-table';
-import { rakeOf } from 'src/playsync/prize';
+import { awardPrize, prizePoolOf, rakeOf } from 'src/playsync/prize';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { buildTournamentMeta } from './tournament-meta';
-import { calculateAbortSettlement } from './settlement';
+import { isFinalTable } from './final-table';
+import { LIVE_PLAYER_STATUSES } from './player-status';
+import { isRegistrationOpenLive } from './registration-gate';
+import { calculateAbortSettlement, calculateChop } from './settlement';
 import { NOT_CLOSED_TOURNAMENT_FILTER, isClosedTournament } from './tournament-status';
 
 /**
@@ -818,6 +821,115 @@ export class SessionService {
    *
    * 수수료·위약금은 다루지 않는다. 결제 도메인이라 여기서 정할 값이 아니다.
    */
+  /**
+   * **ICM 찹 — 파이널 테이블에서 딜로 끝낸다.**
+   *
+   * 최후 1인까지 가지 않고 남은 상금을 각자의 칩 비율로 나눈다. 오프라인
+   * 대회에서 흔한 마무리라, 그 경로가 없으면 딜로 끝난 대회는 시스템이 닫지
+   * 못한다 — `completeSession`의 게이트가 「걷은 것 == 나간 상금 + 상점 몫」인데
+   * 딜은 그 합을 만드는 길이 없었다.
+   *
+   * **지급하고 그대로 닫는다.** 지급이 끝나면 게이트가 통과하므로
+   * `completeSession`을 그대로 부른다 — 닫는 절차를 여기 복제하지 않는다.
+   * 그 게이트가 **찹 계산이 맞았는지를 다시 재 주는** 자리이기도 하다.
+   *
+   * 문을 여는 조건 셋. 각각 막는 이유가 다르다.
+   */
+  async chopSession(tournamentId: string, ownerId: string) {
+    await this.assertTournamentOwnership(tournamentId, ownerId);
+
+    const tournament = await this.prismaService.tournament.findUnique({
+      where: { id: tournamentId },
+    });
+    if (!tournament) throw new NotFoundException('세션을 찾을 수 없습니다.');
+    if (isClosedTournament(tournament.status)) {
+      throw new ConflictException('이미 닫힌 세션입니다.');
+    }
+    if (tournament.startedAt === null) {
+      throw new ConflictException('시작하지 않은 대회는 딜로 끝낼 수 없습니다.');
+    }
+
+    /**
+     * **파이널 테이블에서만 받는다**(T77의 `isFinalTable`).
+     *
+     * 딜은 남은 사람 **전원의 합의**다. 테이블이 둘이면 그 자리에 없는 사람이
+     * 있고, 등록이 열려 있으면 아직 안 온 사람이 있다.
+     *
+     * 마감은 컬럼이 아니라 파생값이다(`isRegistrationOpenLive`) — 컬럼은 마감
+     * 시각에 스스로 닫히지 않는다.
+     */
+    const tableCount = await this.prismaService.table.count({ where: { tournamentId } });
+    const isRegistrationOpen = await isRegistrationOpenLive(
+      this.prismaService, this.redis, tournament,
+    );
+    if (!isFinalTable({ isRegistrationOpen, tableCount })) {
+      throw new ConflictException('파이널 테이블에서만 딜로 끝낼 수 있습니다.');
+    }
+
+    /**
+     * **핸드가 도는 중에는 안 받는다.**
+     *
+     * 딜은 핸드 사이에 한다. 그리고 나눌 재료인 장부의 칩(`currentStack`)은
+     * 체크포인트가 **핸드 경계에서** 내리는 값이라(`syncTableInventoryToDb`),
+     * 핸드 중에는 스냅샷보다 낡았다 — 그 값으로 나누면 방금 딴 칩이 반영되지
+     * 않는다.
+     *
+     * 스냅샷이 없으면 유실이다(T38 이후 그 뜻이 하나다). 그때도 거절한다 —
+     * 칩이 신선한지 확인할 방법이 없다.
+     */
+    const table = await this.prismaService.table.findFirstOrThrow({
+      where: { tournamentId },
+      select: { id: true },
+    });
+    const state = await this.redis.getSnapShot(table.id);
+    if (!state || (state.phase !== GamePhase.WAITING && state.phase !== GamePhase.HAND_END)) {
+      throw new ConflictException('핸드가 도는 중에는 딜로 끝낼 수 없습니다. 핸드를 마치고 다시 시도해 주세요.');
+    }
+
+    await this.prismaService.$transaction(async (tx) => {
+      /**
+       * **살아 있는 사람이 나눈다.** 좌석만 뗀 사람(`RELEASED`)도 칩을 들고
+       * 있으므로 포함이다 — 인원수가 세는 집합과 같다(`LIVE_PLAYER_STATUSES`).
+       *
+       * 트랜잭션 안에서 다시 읽는 이유는 `abortSession`과 같다. 밖에서 읽은
+       * 값은 이미 낡았을 수 있다.
+       */
+      const alive = await tx.tournamentParticipation.findMany({
+        where: { tournamentId, status: { in: [...LIVE_PLAYER_STATUSES] } },
+        select: { userId: true, currentStack: true },
+        orderBy: { createdAt: 'asc' },
+      });
+      if (alive.length < 2) {
+        throw new ConflictException('딜은 두 명 이상 남아 있어야 합니다.');
+      }
+
+      const current = await tx.tournament.findUniqueOrThrow({
+        where: { id: tournamentId },
+        select: { totalBuyinAmount: true, rakePercent: true },
+      });
+      const paid = await tx.tournamentParticipation.aggregate({
+        where: { tournamentId },
+        _sum: { prizeAmount: true },
+      });
+
+      // 나눌 돈은 **상점 몫을 뺀 프라이즈풀에서 이미 나간 상금을 뺀 것**이다.
+      // 상금권 탈락이 있었으면 그 돈은 이미 풀에서 빠졌다.
+      const remaining = prizePoolOf(current.totalBuyinAmount, current.rakePercent)
+        - (paid._sum.prizeAmount ?? 0);
+
+      await awardPrize(
+        tx,
+        tournamentId,
+        calculateChop(alive, Math.max(0, remaining)),
+        '딜 정산',
+      );
+    });
+
+    // **지급이 끝나면 게이트가 통과한다.** 닫는 절차를 복제하지 않는다 —
+    // 상점 몫 지급도 Redis 정리도 저쪽이 이미 들고 있다.
+    return await this.completeSession(tournamentId, ownerId);
+  }
+
   /**
    * **진행 중인 대회를 중단한다.** 천재지변으로 대회를 더 못 여는 경우다.
    *

@@ -80,6 +80,16 @@ export class SessionController {
     return await this.sessionService.abortSession(id, req.user.userId);
   }
 
+  // 딜(ICM 찹)도 돈 경로다. 중단과 문을 나누는 이유는 **뜻이 달라서**다 —
+  // 중단은 대회가 못 열려서 되돌리는 것이고, 딜은 정상적인 마무리다. 남는
+  // 기록도 다르다(중단은 `REFUND`, 딜은 `PRIZE`).
+  @Roles(Role.STORE_ADMIN)
+  @Post(':id/chop')
+  async chop(@Req() req, @Param('id') id: string) {
+    await this.sessionService.chopSession(id, req.user.userId);
+    return { ok: true };
+  }
+
   // 재발급/내보내기는 다른 상점의 대회를 건드릴 수 없어야 한다 — 재발급은
   // 평문 OTP를 응답에 실어 돌려주므로 역할만 확인하고 지나가면 그대로
   // 남의 대회 딜러 접근권을 만들어내는 경로가 된다. 소유권 확인은
