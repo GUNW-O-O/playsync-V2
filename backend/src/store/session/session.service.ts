@@ -17,6 +17,7 @@ import { parsePayouts, PrizePayout } from 'src/playsync/prize';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { buildTournamentMeta } from './tournament-meta';
+import { calculateAbortSettlement } from './settlement';
 import { NOT_CLOSED_TOURNAMENT_FILTER, isClosedTournament } from './tournament-status';
 
 /**
@@ -760,6 +761,143 @@ export class SessionService {
    *
    * 수수료·위약금은 다루지 않는다. 결제 도메인이라 여기서 정할 값이 아니다.
    */
+  /**
+   * **진행 중인 대회를 중단한다.** 천재지변으로 대회를 더 못 여는 경우다.
+   *
+   * `cancelSession`과 문을 나누는 이유는 **규칙이 다르기 때문**이다. 그쪽은
+   * 시작 전이라 전액 환불이 성립하지만, 여기서는 이미 진 사람과 아직 지지 않은
+   * 사람이 갈려 있다. 한 메서드에 두 규칙을 담으면 어느 쪽이 도는지가 인자에
+   * 숨는다.
+   *
+   * **정지가 아니다.** 홀덤에 대회 전체 일시정지는 없다 — 테이블 하나가 못
+   * 도는 것은 핸드 대기(`HAND_WAIT`)이고 그건 그 테이블의 상태다. 중단은
+   * 대회가 끝나는 것이고 되돌릴 수 없다.
+   *
+   * 금액 계산은 `settlement.ts`의 `calculateAbortSettlement`. 순수 함수라
+   * 인프라 없이 검증된다 — 여기는 **옮기는 일**만 한다.
+   *
+   * @returns 실제로 나간 환불 총액과 상점 몫. 깎였는지도 함께 알린다.
+   */
+  async abortSession(tournamentId: string, ownerId: string) {
+    await this.assertTournamentOwnership(tournamentId, ownerId);
+
+    const tournament = await this.prismaService.tournament.findUnique({
+      where: { id: tournamentId },
+      include: { store: { select: { ownerId: true } } },
+    });
+    if (!tournament) throw new NotFoundException('세션을 찾을 수 없습니다.');
+    if (isClosedTournament(tournament.status)) {
+      throw new ConflictException('이미 닫힌 세션입니다.');
+    }
+    // **시작 여부의 정본은 `startedAt`이다**(`cancelSession`과 같은 판정).
+    if (tournament.startedAt === null) {
+      throw new ConflictException('시작하지 않은 대회는 취소로 닫습니다.');
+    }
+
+    const tables = await this.prismaService.table.findMany({
+      where: { tournamentId },
+      select: { id: true },
+    });
+
+    // **돈을 받는 사람은 상점 주인이다.** 상점 자체는 지갑이 없고
+    // (`Store`에 포인트 컬럼이 없다) 주인은 이미 `User`라, 새 모델 없이
+    // 포인트 증가 + 거래 내역으로 끝난다.
+    const storeOwnerId = tournament.store.ownerId;
+
+    const settled = await this.prismaService.$transaction(async (tx) => {
+      // **트랜잭션 안에서 다시 읽는다.** 밖에서 읽은 값은 이미 낡았을 수 있다 —
+      // 검사와 정산 사이에 참가가 하나 더 들어오면 그 사람 돈은 계산에 안 들어간
+      // 채로 대회가 닫힌다(`cancelSession`의 장부 대조와 같은 이유).
+      const current = await tx.tournament.findUniqueOrThrow({
+        where: { id: tournamentId },
+        select: { entryFee: true, totalBuyinAmount: true, name: true },
+      });
+      const participations = await tx.tournamentParticipation.findMany({
+        where: { tournamentId },
+        select: { userId: true, status: true, buyInCount: true, prizeAmount: true },
+        orderBy: { createdAt: 'asc' },
+      });
+
+      const settlement = calculateAbortSettlement(
+        participations, current.entryFee, current.totalBuyinAmount,
+      );
+
+      // **상태 전이가 문지기다.** 이 한 문장이 통과한 호출만 돈을 움직인다.
+      // 두 번째 호출은 `status`가 이미 `CANCELLED`라 0행을 바꾸고 아래를
+      // 통째로 건너뛴다 — 판정을 코드가 아니라 `where`에 태워 DB에 맡긴다.
+      const closed = await tx.tournament.updateMany({
+        where: {
+          id: tournamentId,
+          startedAt: { not: null },
+          status: NOT_CLOSED_TOURNAMENT_FILTER,
+        },
+        data: {
+          status: TournamentStatus.CANCELLED,
+          finishedAt: new Date(),
+          // 걷은 돈이 전부 나갔다 — 환불과 상점 몫으로. 남겨 두면 이 대회의
+          // 회계가 "걷었는데 아무도 안 받았다"로 남는다(`cancelSession`과 같다).
+          totalBuyinAmount: 0,
+          activePlayers: 0,
+        },
+      });
+      if (closed.count === 0) return null;
+
+      let refunded = 0;
+      for (const { userId, amount } of settlement.refunds) {
+        // 0원은 옮기지 않는다. 거래 내역에 0원짜리가 쌓이면 "돌려받았다"와
+        // "받을 것이 없었다"가 같은 모양으로 남는다.
+        if (amount <= 0) continue;
+        refunded += amount;
+        await tx.user.update({
+          where: { id: userId },
+          data: { points: { increment: amount } },
+        });
+        await tx.pointTransaction.create({
+          data: {
+            userId,
+            amount,
+            type: 'REFUND',
+            tournamentId,
+            description: `${current.name} 중단 환불`,
+          },
+        });
+      }
+
+      if (settlement.storeAmount > 0) {
+        await tx.user.update({
+          where: { id: storeOwnerId },
+          data: { points: { increment: settlement.storeAmount } },
+        });
+        await tx.pointTransaction.create({
+          data: {
+            userId: storeOwnerId,
+            amount: settlement.storeAmount,
+            type: 'SETTLEMENT',
+            tournamentId,
+            description: `${current.name} 중단 정산`,
+          },
+        });
+      }
+
+      // 참가 행은 지우지 않는다. 장부라서다 — 누가 얼마를 돌려받았는지가
+      // `PointTransaction`과 짝이 맞아야 한다. 대회가 `CANCELLED`인 것으로
+      // "이 참가는 중단으로 끝났다"가 이미 표현된다.
+
+      await tx.table.deleteMany({ where: { tournamentId } });
+      await tx.dealerSession.delete({ where: { tournamentId } });
+
+      return { refunded, storeAmount: settlement.storeAmount, scaled: settlement.scaled };
+    });
+
+    // **두 번째 호출은 아무것도 안 했다.** Redis는 이미 첫 번째가 비웠다.
+    if (settled === null) {
+      throw new ConflictException('이미 닫힌 세션입니다.');
+    }
+
+    await this.redis.deleteTournament(tournamentId, tables.map((t) => t.id));
+    return settled;
+  }
+
   async cancelSession(tournamentId: string, ownerId: string) {
     await this.assertTournamentOwnership(tournamentId, ownerId);
 

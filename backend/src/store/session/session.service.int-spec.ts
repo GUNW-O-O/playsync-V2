@@ -2513,3 +2513,320 @@ describe('SessionService.updateSession — 수정 경로의 검사', () => {
     expect(updated.blindId).toBe(myOtherBlindId);
   });
 });
+
+/**
+ * **시작한 대회의 중단.**
+ *
+ * `cancelSession`이 못 닫는 자리다. 그쪽은 `startedAt`으로 시작 전만 받는데,
+ * 근거는 "시작한 뒤에는 전액 환불의 뜻이 성립하지 않는다"였다. 그 말이 맞고,
+ * 그래서 **다른 규칙으로 닫는 문**을 따로 낸다 — 진행 중인 사람은 100%,
+ * 이미 탈락한 사람은 50%, 남은 돈은 상점 몫이다.
+ *
+ * 계산 자체는 `settlement.spec.ts`가 순수 함수로 다 본다. 여기서 보는 것은
+ * **돈이 실제로 옮겨지는가**와 **두 번 눌러도 한 번만 나가는가**다.
+ */
+describe('SessionService.abortSession', () => {
+  let prisma: PrismaClient;
+  let redis: Redis;
+  let sessionService: SessionService;
+  let tournamentId: string;
+  let ownerId: string;
+
+  const ENTRY_FEE = 10000;
+  const START_POINTS = 50000;
+
+  beforeAll(() => {
+    prisma = createTestPrisma();
+    redis = createTestRedis();
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+    await closeTestPrisma(prisma);
+  });
+
+  /**
+   * 참가비를 낸 사람 하나. `status`로 살아 있는지 탈락했는지를 정하고,
+   * `prizeAmount`로 이미 받은 상금을 심는다.
+   */
+  async function seedPaidPlayer(
+    nickname: string,
+    opts: { status?: PlayerStatus; prizeAmount?: number; buyInCount?: number } = {},
+  ) {
+    const buyInCount = opts.buyInCount ?? 1;
+    const paid = ENTRY_FEE * buyInCount;
+    const user = await prisma.user.create({
+      data: { nickname, password: 'x', points: START_POINTS - paid },
+    });
+    await prisma.tournamentParticipation.create({
+      data: {
+        userId: user.id,
+        tournamentId,
+        status: opts.status ?? PlayerStatus.PLAYING,
+        buyInCount,
+        prizeAmount: opts.prizeAmount ?? 0,
+        currentStack: 30000,
+        playerOtp: `otp-${nickname}`,
+      },
+    });
+    await prisma.tournament.update({
+      where: { id: tournamentId },
+      data: {
+        totalPlayers: { increment: 1 },
+        totalBuyinAmount: { increment: paid },
+      },
+    });
+    return user.id;
+  }
+
+  /** 대회를 진행 중으로 만든다. 중단은 시작한 대회만 받는다. */
+  async function start() {
+    await prisma.tournament.update({
+      where: { id: tournamentId },
+      data: { status: TournamentStatus.ONGOING, startedAt: new Date() },
+    });
+  }
+
+  async function pointsOf(userId: string): Promise<number> {
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    return user.points;
+  }
+
+  beforeEach(async () => {
+    await truncateAll(prisma);
+    await flushTestRedis(redis);
+
+    sessionService = new SessionService(
+      prisma as unknown as PrismaService,
+      new RedisService(redis),
+      new OtpAttempts(redis),
+      new EventEmitter2(),
+    );
+
+    ({ ownerId, tournamentId } = await seedTournamentWithTable(prisma));
+  });
+
+  /**
+   * **시작 전 대회는 이 문으로 안 들어온다.** 그쪽은 전액 환불이 성립하므로
+   * `cancelSession`이 맞다. 두 문이 같은 상황을 다르게 처리하게 두면 어느
+   * 쪽이 정본인지가 흐려진다.
+   */
+  it('시작하지 않은 대회는 거절한다', async () => {
+    await seedPaidPlayer('player1');
+
+    await expect(sessionService.abortSession(tournamentId, ownerId))
+      .rejects.toThrow('시작하지 않은 대회는 취소로 닫습니다.');
+  });
+
+  it('닫힌 대회는 거절한다', async () => {
+    await start();
+    await prisma.tournament.update({
+      where: { id: tournamentId },
+      data: { status: TournamentStatus.CANCELLED },
+    });
+
+    await expect(sessionService.abortSession(tournamentId, ownerId))
+      .rejects.toThrow('이미 닫힌 세션입니다.');
+  });
+
+  it('남의 대회는 중단할 수 없다', async () => {
+    await start();
+    const stranger = await prisma.user.create({
+      data: { nickname: 'stranger', password: 'x', role: 'STORE_ADMIN' },
+    });
+
+    await expect(sessionService.abortSession(tournamentId, stranger.id))
+      .rejects.toThrow(ForbiddenException);
+  });
+
+  it('진행 중인 사람은 낸 돈을 다 돌려받는다', async () => {
+    const alive = await seedPaidPlayer('alive');
+    await start();
+
+    await sessionService.abortSession(tournamentId, ownerId);
+
+    const refund = await prisma.pointTransaction.findFirst({
+      where: { userId: alive, tournamentId, type: 'REFUND' },
+    });
+    expect(`포인트 ${await pointsOf(alive)} / 환불 ${refund === null ? '없음' : refund.amount}`)
+      .toBe(`포인트 ${START_POINTS} / 환불 ${ENTRY_FEE}`);
+  });
+
+  /** **둘이 어긋나는 입력이다.** 비율 하나를 지우면 둘 중 하나는 반드시 터진다. */
+  it('탈락한 사람은 절반만 돌려받는다', async () => {
+    const busted = await seedPaidPlayer('busted', { status: PlayerStatus.ELIMINATED });
+    await start();
+
+    await sessionService.abortSession(tournamentId, ownerId);
+
+    expect(await pointsOf(busted)).toBe(START_POINTS - ENTRY_FEE / 2);
+  });
+
+  /** 리바인한 사람은 낸 총액이 분모다. */
+  it('리바인한 사람은 낸 총액 기준으로 돌려받는다', async () => {
+    const rebuyer = await seedPaidPlayer('rebuyer', { buyInCount: 2 });
+    await start();
+
+    await sessionService.abortSession(tournamentId, ownerId);
+
+    expect(await pointsOf(rebuyer)).toBe(START_POINTS);
+  });
+
+  /**
+   * **남은 돈은 상점 주인에게 간다.** 갈 곳을 정해 두지 않으면 그 돈이
+   * 장부에서 사라진다 — `cancelSession`이 `totalBuyinAmount: 0`으로 피하려던
+   * 상태와 같은 모양이다.
+   */
+  it('남은 돈이 상점 주인에게 가고 SETTLEMENT 내역이 남는다', async () => {
+    await seedPaidPlayer('busted-a', { status: PlayerStatus.ELIMINATED });
+    await seedPaidPlayer('busted-b', { status: PlayerStatus.ELIMINATED });
+    await start();
+    const before = await pointsOf(ownerId);
+
+    await sessionService.abortSession(tournamentId, ownerId);
+
+    const settlement = await prisma.pointTransaction.findFirst({
+      where: { userId: ownerId, tournamentId, type: 'SETTLEMENT' },
+    });
+    // 둘이 20000을 냈고 절반씩 돌려받았다. 남은 10000이 상점 몫이다.
+    expect(`상점 +${(await pointsOf(ownerId)) - before} / 내역 ${settlement === null ? '없음' : settlement.amount}`)
+      .toBe('상점 +10000 / 내역 10000');
+  });
+
+  /** 남을 돈이 없으면 상점 내역도 만들지 않는다 — 0원짜리 거래는 장부를 흐린다. */
+  it('남은 돈이 없으면 상점 내역을 만들지 않는다', async () => {
+    await seedPaidPlayer('alive');
+    await start();
+
+    await sessionService.abortSession(tournamentId, ownerId);
+
+    expect(await prisma.pointTransaction.count({ where: { type: 'SETTLEMENT' } })).toBe(0);
+  });
+
+  /**
+   * **멱등이 요건이다.** 돈은 두 번 나가면 되돌릴 근거가 없다. 판정은 코드가
+   * 아니라 조건부 `updateMany`의 `where`에 태워 DB에 맡긴다.
+   */
+  it('두 번 중단해도 돈은 한 번만 나간다', async () => {
+    const alive = await seedPaidPlayer('alive');
+    await start();
+
+    await sessionService.abortSession(tournamentId, ownerId);
+    await sessionService.abortSession(tournamentId, ownerId).catch(() => undefined);
+
+    const refunds = await prisma.pointTransaction.count({
+      where: { userId: alive, tournamentId, type: 'REFUND' },
+    });
+    expect(`포인트 ${await pointsOf(alive)} / 환불 ${refunds}건`)
+      .toBe(`포인트 ${START_POINTS} / 환불 1건`);
+  });
+
+  it('중단한 대회는 CANCELLED로 닫히고 테이블과 딜러 세션이 사라진다', async () => {
+    await seedPaidPlayer('alive');
+    await start();
+
+    await sessionService.abortSession(tournamentId, ownerId);
+
+    const t = await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } });
+    const tables = await prisma.table.count({ where: { tournamentId } });
+    const dealer = await prisma.dealerSession.count({ where: { tournamentId } });
+
+    expect(`${t.status} / 걷은 ${t.totalBuyinAmount} / 인원 ${t.activePlayers} / 테이블 ${tables} / 딜러 ${dealer}`)
+      .toBe('CANCELLED / 걷은 0 / 인원 0 / 테이블 0 / 딜러 0');
+  });
+
+  /**
+   * **이미 받은 상금을 뺀다.** 상금도 이 대회의 돈에서 나갔으므로, 빼지 않으면
+   * 같은 사람이 같은 풀에서 두 번 가져간다.
+   */
+  it('이미 상금을 받은 사람은 그만큼 덜 받는다', async () => {
+    const awarded = await seedPaidPlayer('awarded', {
+      status: PlayerStatus.AWARDED,
+      prizeAmount: 2000,
+    });
+    await start();
+
+    await sessionService.abortSession(tournamentId, ownerId);
+
+    // 탈락 기준 5000에서 이미 받은 2000을 뺀 3000.
+    expect(await pointsOf(awarded)).toBe(START_POINTS - ENTRY_FEE + 3000);
+  });
+
+  /** 운영이 알아야 하는 사실이라 결과로 돌려준다. */
+  it('나간 금액과 상점 몫을 돌려준다', async () => {
+    await seedPaidPlayer('busted', { status: PlayerStatus.ELIMINATED });
+    await start();
+
+    const result = await sessionService.abortSession(tournamentId, ownerId);
+
+    expect(result).toEqual({ refunded: ENTRY_FEE / 2, storeAmount: ENTRY_FEE / 2, scaled: false });
+  });
+
+  /**
+   * **경합이라야 문지기에 닿는다.**
+   *
+   * 위의 「두 번 중단해도」는 순차 호출이라 두 번째가 트랜잭션 **밖**의
+   * `isClosedTournament`에 먼저 걸린다 — 조건부 `updateMany`를 통째로 지워도
+   * 초록이었다. 상점 화면에서 두 번 눌리는 것은 동시에도 일어나고, 그때는
+   * 둘 다 바깥 검사를 통과한다.
+   *
+   * `updateMany`가 행 잠금을 잡으므로 진 쪽은 이긴 쪽의 커밋을 보고 0행을
+   * 바꾼다. 그것이 이 가드의 전부다.
+   *
+   * **진 쪽이 무엇을 받는지까지 단언한다.** 돈이 한 번만 나가는 것만 보면
+   * 가드를 지워도 초록이다 — 그때는 `dealerSession.delete`가 이미 사라진
+   * 행에서 P2025로 죽어 트랜잭션이 통째로 되돌아가기 때문이다. 결과는 같지만
+   * **막은 것이 아니라 넘어진 것**이고, 상점 화면에는 409가 아니라 500이
+   * 뜬다. 이 리포가 「부수효과로 안전하다」를 결함으로 다뤄 온 자리다.
+   */
+  it('동시에 두 번 중단해도 돈은 한 번만 나간다', async () => {
+    const alive = await seedPaidPlayer('alive');
+    await start();
+
+    const results = await Promise.allSettled([
+      sessionService.abortSession(tournamentId, ownerId),
+      sessionService.abortSession(tournamentId, ownerId),
+    ]);
+
+    const refunds = await prisma.pointTransaction.count({
+      where: { userId: alive, tournamentId, type: 'REFUND' },
+    });
+    const ok = results.filter((r) => r.status === 'fulfilled').length;
+    expect(`성공 ${ok}건 / 포인트 ${await pointsOf(alive)} / 환불 ${refunds}건`)
+      .toBe(`성공 1건 / 포인트 ${START_POINTS} / 환불 1건`);
+  });
+
+  it('경합에서 진 쪽은 500이 아니라 409를 받는다', async () => {
+    await seedPaidPlayer('alive');
+    await start();
+
+    const results = await Promise.allSettled([
+      sessionService.abortSession(tournamentId, ownerId),
+      sessionService.abortSession(tournamentId, ownerId),
+    ]);
+
+    const rejected = results.find((r) => r.status === 'rejected');
+    expect((rejected as PromiseRejectedResult).reason).toBeInstanceOf(ConflictException);
+  });
+
+  /**
+   * **0원은 옮기지 않는다.** 이미 받은 상금이 환불액보다 많으면 돌려줄 것이
+   * 없다. 그래도 0원짜리 `REFUND`를 남기면 「돌려받았다」와 「받을 것이
+   * 없었다」가 장부에서 같은 모양이 된다.
+   */
+  it('돌려줄 것이 없는 사람은 환불 내역을 만들지 않는다', async () => {
+    const rich = await seedPaidPlayer('rich', {
+      status: PlayerStatus.AWARDED,
+      prizeAmount: ENTRY_FEE * 2,
+    });
+    await start();
+
+    await sessionService.abortSession(tournamentId, ownerId);
+
+    const refunds = await prisma.pointTransaction.count({
+      where: { userId: rich, tournamentId, type: 'REFUND' },
+    });
+    expect(`포인트 ${await pointsOf(rich)} / 환불 ${refunds}건`)
+      .toBe(`포인트 ${START_POINTS - ENTRY_FEE} / 환불 0건`);
+  });
+});

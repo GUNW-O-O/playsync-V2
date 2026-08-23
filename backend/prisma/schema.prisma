@@ -33,6 +33,7 @@ enum TransactionType {
   REBUY // 리바인/애드온
   PRIZE // 상금 수령
   REFUND // 취소 환불
+  SETTLEMENT // 중단 정산 뒤 남은 돈이 상점 주인에게
 }
 
 enum TournamentStatus {
