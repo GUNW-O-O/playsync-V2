@@ -1358,6 +1358,34 @@ isRegistrationOpen === false  &&  그 대회의 table 수 === 1
 `테이블이 둘이면 통과시킨다`). 나머지 넷만으로는 어느 항을 지워도 전부
 초록이다 — CLAUDE.md의 「두 검사가 서로를 가렸다」를 피한 자리다.
 
+### 머지 뒤에 드러난 결함 — 컬럼과 파생값을 같은 것으로 봤다
+
+**게이트가 원시 컬럼 `isRegistrationOpen`을 읽었다.** 그 컬럼은 마감 시각에
+스스로 닫히지 않는다 — 마감 시각에 발화하는 스케줄러가 없고,
+`PaymentService.closeRegistrationInDb`가 **마감 뒤 누군가 참가를 시도했을
+때만** 게으르게 flip한다. 그래서 마감 레벨을 지났는데 그 뒤 아무도 참가를
+시도하지 않은 대회는 컬럼이 `true`로 남고, **헤즈업에 도달해도 게이트가 안
+걸렸다** — 이 티켓이 막으려던 바로 그 상황이다.
+
+정본은 **레벨에서 파생된 값**이다. 그리고 그 경로가 이미 있었다.
+
+| 자리 | 무엇 |
+|---|---|
+| `getTournamentDashboard` → `getFullTournamentInfo` | 내부에서 `checkAndSyncBlindLevel`을 부르고, `isRegistrationOpenAtLevel`로 판정을 **다시 세운다**. 스스로 최신이다 |
+| `isRegistrationOpenNow` | Redis가 없을 때 DB만으로 같은 규칙을 다시 센다. 레벨 재료가 전부 DB에 있어 캐시가 필요 없다 |
+| `closeRegistrationInDb` | 거절하면서 컬럼도 닫는다. 조건부 `updateMany`라 멱등이고 단조다 |
+
+**결제 게이트가 이미 그 셋을 순서대로 쓰고 있었다.** 재사용할 것을 새로 만든
+셈이라, 그 경로를 `store/session/registration-gate.ts`로 뽑아 결제와 딜러가
+같이 쓴다(`isRegistrationOpenLive` · `closeRegistration`).
+
+딜러 게이트도 거절하면서 컬럼을 닫는다. 안 닫으면 **컬럼을 읽는 다른 자리들이
+영영 틀린 값을 본다.**
+
+**세 조건이 각각 증명되는지 확인했다.** 조건을 하나씩 되돌릴 때마다 정확히 그
+조건의 검사만 터진다 — `isRegistrationOpen` 항, `tableCount` 항, 그리고
+파생값 대신 원시 컬럼을 읽는 것.
+
 ### 물린 것 — 스텁이 게이트를 만났다
 
 `dealer.service.int-spec.ts`는 **DB를 안 띄운다.** 재는 것이 Redis 락 아래의

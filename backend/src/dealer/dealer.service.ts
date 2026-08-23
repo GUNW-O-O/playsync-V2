@@ -1,5 +1,5 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { ConflictException, ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Role, TournamentStatus } from '@prisma/client';
 import { Queue } from 'bullmq';
@@ -14,6 +14,7 @@ import { PlaysyncService } from 'src/playsync/playsync.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { FINAL_TABLE_DEALER_BLOCKED, isFinalTable } from 'src/store/session/final-table';
+import { closeRegistration, isRegistrationOpenLive } from 'src/store/session/registration-gate';
 import { isClosedTournament } from 'src/store/session/tournament-status';
 
 /**
@@ -34,6 +35,8 @@ const SNAPSHOT_MISSING = '테이블 상태를 찾을 수 없습니다. 진행을
 
 @Injectable()
 export class DealerService {
+  private readonly logger = new Logger(DealerService.name);
+
   constructor(
     @InjectQueue('player-timeout') private timeoutQueue: Queue,
     private prisma: PrismaService,
@@ -289,19 +292,30 @@ export class DealerService {
      * 그러면 계약이 커지면서 파생값이 두 벌이 된다 — T60이 인원수에서 겪은
      * 것과 같은 모양이다.
      *
+     * **마감은 컬럼이 아니라 파생값이다.** `isRegistrationOpen` 컬럼은 마감
+     * 시각에 스스로 닫히지 않는다 — 마감 시각에 발화하는 스케줄러가 없고,
+     * 누군가 그 대회를 건드렸을 때만 게으르게 flip한다. T77이 처음에 그
+     * 컬럼을 그대로 읽어서, 마감 레벨을 지났는데 그 뒤 아무도 참가를 시도하지
+     * 않은 대회는 헤즈업에서도 게이트가 안 걸렸다. `isRegistrationOpenLive`가
+     * 결제 게이트와 같은 경로를 탄다.
+     *
      * 두 값을 한 트랜잭션으로 묶지 않는다. 이 판정은 **완화되는 방향으로만**
      * 틀릴 수 있어서다 — 그 사이에 테이블이 열리면 막았어야 할 것을 통과시키고,
      * 닫히면 통과시켜도 될 것을 막는다. 둘 다 돈이나 카운터를 어긋내지 않고,
      * 딜러가 다시 누르면 그때의 상태로 판정된다.
      */
-    const [tournament, tableCount] = await Promise.all([
+    const [session, tableCount] = await Promise.all([
       this.prisma.tournament.findUniqueOrThrow({
         where: { id: tournamentId },
-        select: { isRegistrationOpen: true },
+        select: { id: true, startedAt: true, isRegistrationOpen: true },
       }),
       this.prisma.table.count({ where: { tournamentId } }),
     ]);
-    if (isFinalTable({ isRegistrationOpen: tournament.isRegistrationOpen, tableCount })) {
+    const isRegistrationOpen = await isRegistrationOpenLive(this.prisma, this.redis, session);
+    if (isFinalTable({ isRegistrationOpen, tableCount })) {
+      // **읽은 김에 컬럼도 닫는다.** 안 닫으면 컬럼을 읽는 다른 자리들이
+      // 영영 틀린 값을 본다. 결제 게이트가 거절하면서 하는 것과 같다.
+      await closeRegistration(this.prisma, tournamentId, (m) => this.logger.warn(m));
       throw new ForbiddenException(FINAL_TABLE_DEALER_BLOCKED);
     }
 
