@@ -6,6 +6,8 @@ k6가 도는 자리다. 무대(컨테이너·메트릭)는 T39가 세웠고
 ```
 lib/api.js         REST 체인. 회원가입부터 WS 티켓까지 제품 경로 그대로
 lib/table.js       VU 하나가 테이블 하나를 든다. 소켓 열 개
+lib/windows.js     지연 측정 창 큐. **순수 모듈이라 테스트가 붙는다**
+lib/windows.spec.js  `npm test -w`가 아니라 `cd load && npm test`
 lib/monitor.js     서버 지표를 주기적으로 읽어 시계열로. 경고·붕괴 판정
 lib/summary.js     결과를 results/에 파일로
 scenarios/smoke.js 테이블 하나로 "봇이 규칙대로 도는가"만 본다
@@ -24,6 +26,16 @@ npm run load:ramp-b    # 성장 램프 — 대회 하나 안에서 테이블을 
 npm run load:ramp-a    # 성장 램프 — 6테이블마다 다음 대회로
 npm run load:down      # 정리
 ```
+
+하네스에 붙은 유일한 자동 검증은 창 큐의 단위 테스트다. 인프라가 필요 없다.
+
+```bash
+cd load && npm test    # node --test. 12건
+```
+
+**나머지는 여전히 사람이 실행 요약을 읽는 것이다.** 그 한계가 T76을 낳았다 —
+짝짓기 로직이 `table.js`의 클로저 안에 있어, 12,000명 실측에서 235배 틀린
+값을 내고도 아무도 못 잡았다. 그래서 그 로직만 밖으로 뺐다.
 
 **`load:down`은 `-v`라 마이그레이션까지 지운다.** 다시 세울 때는 시드 앞에
 `cd backend && npx prisma migrate deploy`가 필요하다(부하 스택에는 통합
@@ -361,6 +373,27 @@ node scripts/load-report.mjs load/results/ramp-b-raw.json
 | `table_create_conflicts` | 테이블 생성이 409로 거절된 횟수 | 기록용 |
 | `table_setup_ms` | 테이블 하나를 열고 좌석 아홉을 채우기까지. 증설 비용 | 기록용 |
 | `reconnects` · `reconnect_ms` | 재접속 폭발 횟수와 복구 시간 | 기록용 |
+| `my_action_server_ms` | 그 왕복 중 **서버가 답을 만들기까지** | 기록용 |
+| `my_action_client_ms` | 그 왕복 중 **선과 측정기가 나르기까지** | 기록용 |
+| `stale_windows` | 응답이 끝내 안 와서 버린 측정 창 | 기록용 |
+| `stale_broadcasts` | 창보다 먼저 서버를 떠나 짝짓지 않은 봉투 | 기록용 |
+
+### 왕복을 둘로 쪼개는 이유
+
+`my_action_ms` 하나로는 **"왕복 1초인데 서버 lag은 2ms"를 설명할 수 없다.**
+12,000명 실측이 정확히 그 모양이었고(T76), 후보 셋의 결론이 서로 정반대라
+합계만으로는 1코어 배포 판단을 못 했다.
+
+봉투에 서버가 떠난 시각이 찍혀 있다 — `serverTime`(`WsGateway.toWireState`).
+그래서 왕복이 두 토막으로 갈린다.
+
+```
+my_action_server_ms = serverTime - 액션을 보낸 시각    서버가 답을 만들기까지
+my_action_client_ms = 받은 시각   - serverTime         선과 측정기가 나르기까지
+```
+
+서버 쪽이 크면 제품이고, 단말 쪽이 크면 측정 경로다(측정기가 포화됐거나 선이
+막혔다). **둘 중 어느 쪽도 아닌 세 번째가 있었다** — 아래.
 
 `hands_played`와 `socket_errors`가 있는 이유는 같다 — **소켓만 붙어 있고 아무
 일도 안 일어나는 실행**의 지연 수치는 아무것도 의미하지 않는다. 촬영에서 배운
@@ -422,6 +455,29 @@ node scripts/load-report.mjs load/results/ramp-b-raw.json
   그렇게 죽었다 — **서버 lag 0.4ms · CPU 1.8%인데 한 VU가 p95 1989ms를 보고
   실행을 중단시켰다.** 살아 있는 소켓으로 세고, 10초 넘게 응답이 없는 창은
   표본에서 버린다(`stale_windows`에 남긴다).
+- **응답이 안 오는 액션에 측정 창을 열면 지표가 235배로 뛴다**(T76). `LATE_MS`
+  (30,300ms)가 서버의 턴 타임아웃(`TURN_TIMEOUT_MS` 30,000ms)보다 뒤라, 지각
+  액션이 닿을 때는 타임아웃 잡이 이미 턴을 넘긴 뒤다 —
+  `PlaysyncService.applyAction`의 엔진 호출이 no-op이라(`if (!applied) return
+  null`) **브로드캐스트가 아예 안 나간다.** 그 창은 고아가 되어 큐 앞에
+  눌러앉고, **다음 사람의 액션이 만든 브로드캐스트가 거기 붙는다** — 기록되는
+  값은 왕복이 아니라 다음 사람의 생각 시간이다.
+
+  유휴 서버(lag 0.25ms · CPU 1%) 테이블 하나에서 갈라 잰 값이다.
+
+  | 지각 | 내 액션 p95 |
+  |---|---|
+  | 0 | 11.1ms |
+  | 6 | **2,585.6ms** |
+
+  **`stale_windows`는 이 결함의 크기가 아니다.** 10초 나이 상한에 걸린 찌꺼기만
+  세므로, 10초 안에 다음 브로드캐스트가 오면 조용히 짝지어진다 — 12,000명
+  실측에서 지각 3,657건에 `stale_windows`는 75였다. 지각은 마감 판정 경로가
+  돌았는지를 재는 것이지 왕복을 재는 것이 아니므로, **창을 열지 않는다.**
+- **창 없이 나가는 브로드캐스트가 창을 훔친다.** 타임아웃 잡이 대신 폴드시키면
+  아무도 창을 열지 않은 채 renderGame이 나가고, 그것이 열려 있는 창에 붙으면
+  그 창의 진짜 응답은 갈 곳을 잃는다. 봉투의 `serverTime`이 창을 연 시각보다
+  앞서면 그 창의 응답일 수 없으므로 짝짓지 않는다(`stale_broadcasts`).
 - **JWT가 1시간이라 램프가 그보다 오래 돌면 토큰이 죽는다**(`auth.module.ts:25`).
   `setup()`이 받은 상점 토큰을 VU에 물려주면 64분째부터 새 테이블이 전부 401로
   거절된다 — 실제로 그렇게 한 실행의 위쪽 절반이 무의미해졌다. 상점 토큰은 VU가

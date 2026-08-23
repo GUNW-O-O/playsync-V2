@@ -11,6 +11,7 @@ import {
   signup,
   wsTicket,
 } from './api.js';
+import { createWindowQueue } from './windows.js';
 
 /**
  * VU 하나가 테이블 하나를 통째로 든다.
@@ -53,6 +54,26 @@ export const lateActions = new Counter('late_actions');
  * 조용히 부풀지 않게 버리되, 버렸다는 사실 자체는 남긴다.
  */
 export const staleWindows = new Counter('stale_windows');
+/**
+ * 내 액션의 왕복 중 **서버가 답을 만들기까지**(창을 연 시각 → 봉투의
+ * `serverTime`).
+ *
+ * T76이 이걸 만들게 했다. 12,000명 실측에서 왕복은 1,061ms인데 서버 lag은
+ * 중앙 2.34ms였고, **합계 하나로는 그 1초가 어디 것인지 가릴 수 없었다.**
+ * 후보 셋(타임아웃 잡 몰림 · 짝짓기 결함 · k6 경로)의 결론이 서로 정반대라
+ * 그냥 둘 수 없었다.
+ */
+export const myActionServerMs = new Trend('my_action_server_ms', true);
+/** 같은 왕복 중 **선과 측정기가 나르기까지**(`serverTime` → 받은 시각). */
+export const myActionClientMs = new Trend('my_action_client_ms', true);
+/**
+ * 창이 열리기 **전에** 서버를 떠나 짝짓지 않은 봉투.
+ *
+ * 창 없이 나가는 브로드캐스트가 있다는 뜻이다 — 타임아웃 잡의 대리 폴드가
+ * 그것이다. 0이 아닌 것 자체는 정상이고, **그것이 창을 훔치지 않았다는
+ * 증거**다.
+ */
+export const staleBroadcasts = new Counter('stale_broadcasts');
 
 /**
  * WS는 Origin 헤더가 필수다(`ws.gateway.ts`의 `assertAllowedOrigin`).
@@ -345,29 +366,18 @@ export function runHands({
 
   const sockets = [];
   /**
-   * 진행 중인 액션들의 지연 측정 창. **큐여야 한다.**
+   * 진행 중인 액션들의 지연 측정 창. 규칙과 그 이유는 `windows.js`에 있다.
    *
-   * 처음에는 창을 하나만 두고 "열려 있으면 새 액션을 막는" 방식이었는데
-   * 테이블이 멈췄다. 브로드캐스트 하나를 소켓 열 개가 각자 처리하는데, 그중
-   * 세 번째 소켓이 "내 차례다"를 보고 액션을 보내려는 시점에는 아직 일곱이
-   * 안 받아 창이 열려 있다 — 그래서 막혔고, 아무도 다시 두지 못했다.
+   * **여기서 클로저 밖으로 뺐다**(T76). 로직이 이 안에 있는 동안에는 검증할
+   * 길이 실행 요약을 사람이 읽는 것뿐이었고, 실제로 12,000명 실측에서 틀린
+   * 값을 내고도 아무도 못 잡았다.
    *
-   * 큐로 두면 막을 이유가 없다. 소켓마다 **자기가 아직 못 본 가장 오래된
-   * 창**에 기록하면 되고, 살아 있는 소켓이 다 본 창은 앞에서 걷어낸다.
-   *
-   * **살아 있는 소켓으로 세는 것과 나이 상한이 둘 다 필요하다.** 소켓 하나가
-   * 죽으면(티켓 만료의 1008, 서버 재시작) 그 창은 영영 안 채워져 큐 앞에
-   * 눌러앉고, 그러면 뒤에 오는 메시지가 점점 더 오래된 창에 붙어 **지연이
-   * 실제와 무관하게 계속 부푼다.** 실제로 램프 B 첫 실행이 그렇게 죽었다 —
-   * 서버 lag 0.4ms · CPU 1.8%인데 한 VU의 롤링 창이 p95 1989ms를 보고
-   * 실행을 중단시켰다.
+   * 나이 상한은 "브로드캐스트가 아예 안 왔다"만 걸러낸다. **왕복 규모로
+   * 줄이지 않는다** — 진짜로 느린 왕복까지 버리면 T76이 재려던 것을 못 본다.
    */
-  const windows = []; // [{ at, actorSocketIdx, seen:Set }]
-  /**
-   * 응답이 이만큼 안 오면 그 창은 표본이 아니다. 액션의 왕복은 밀리초 단위라
-   * 10초는 "브로드캐스트가 아예 안 왔다"만 걸러낸다.
-   */
-  const WINDOW_MAX_AGE_MS = Number(__ENV.LOAD_WINDOW_MAX_AGE_MS || 10000);
+  const windows = createWindowQueue({
+    maxAgeMs: Number(__ENV.LOAD_WINDOW_MAX_AGE_MS || 10000),
+  });
   let latestState = null;
   let closing = false;
   /**
@@ -448,30 +458,29 @@ export function runHands({
       // 응답이 영영 안 온 창을 먼저 걷어낸다. 남겨 두면 뒤에 오는 메시지가
       // 그 창에 붙어 지연이 실제와 무관하게 부푼다.
       const now = Date.now();
-      while (windows.length > 0 && now - windows[0].at > WINDOW_MAX_AGE_MS) {
-        staleWindows.add(1);
-        windows.shift();
-      }
+      staleWindows.add(windows.expire(now));
 
-      // 지연 기록 — 보낸 시각과 받은 시각이 같은 VU 안에 있다.
-      const win = windows.find((w) => !w.seen.has(idx));
-      if (win) {
-        win.seen.add(idx);
-        const elapsed = Date.now() - win.at;
+      // **살아 있는 소켓으로 센다.** 죽은 소켓을 기다리면 큐가 영영 안 비고
+      // 지연이 계속 부푼다.
+      const live = sockets.filter((s) => !s.closed && !s.retired).length;
+      const hit = windows.match(idx, now, parsed.data.serverTime, live);
+      if (hit && hit.stale) {
+        staleBroadcasts.add(1);
+      } else if (hit) {
         // 단계 태그가 붙어야 원시 시계열에서 "테이블 12개 구간"을 갈라
         // 볼 수 있다. 램프가 아니면(스모크) 라벨이 없다.
         const tags = stepLabel ? { step: stepLabel() } : undefined;
-        if (idx === win.actorSocketIdx) {
-          myActionMs.add(elapsed, tags);
+        if (idx === hit.actorSocketIdx) {
+          myActionMs.add(hit.elapsedMs, tags);
+          // 왕복을 서버 쪽과 단말 쪽으로 쪼갠 값. 도장이 없는 서버를 상대하면
+          // (`serverTime`은 계약상 optional이다) 지어내지 않고 비운다.
+          if (hit.serverMs !== undefined) {
+            myActionServerMs.add(hit.serverMs, tags);
+            myActionClientMs.add(hit.clientMs, tags);
+          }
           // 중단 판정은 호출자가 한다. 이 모듈은 창을 모른다.
-          if (onMyAction) onMyAction(elapsed);
-        } else othersActionMs.add(elapsed, tags);
-        // **살아 있는 소켓으로 센다.** 죽은 소켓을 기다리면 큐가 영영 안 비고
-        // 지연이 계속 부푼다.
-        const live = sockets.filter((s) => !s.closed && !s.retired).length;
-        while (windows.length > 0 && windows[0].seen.size >= live) {
-          windows.shift();
-        }
+          if (onMyAction) onMyAction(hit.elapsedMs);
+        } else othersActionMs.add(hit.elapsedMs, tags);
       }
 
       if (!closing) step(entry, parsed.data);
@@ -507,7 +516,7 @@ export function runHands({
   function send(entry, payload) {
     if (entry.scheduled) return;
     entry.scheduled = true;
-    const fire = () => {
+    const fire = (measured) => () => {
       entry.scheduled = false;
       if (closing) return;
       // **재접속 폭발이 이 소켓을 끊은 뒤일 수 있다.** 생각 시간은 최대
@@ -515,7 +524,7 @@ export function runHands({
       // `send`를 불러 InvalidStateError로 VU가 죽는다. 다시 붙은 소켓이
       // 새 브로드캐스트를 받아 자기 차례를 다시 판단한다.
       if (entry.retired) return;
-      windows.push({ at: Date.now(), actorSocketIdx: entry.idx, seen: new Set() });
+      if (measured) windows.open(Date.now(), entry.idx);
       entry.ws.send(JSON.stringify(payload));
     };
     const isDeal = entry.role === 'dealer' && payload.data.action === 'START_PRE_FLOP';
@@ -528,10 +537,28 @@ export function runHands({
       entry.scheduled = false;
       return;
     }
-    if (wait >= LATE_MS) lateActions.add(1);
 
-    if (wait > 0) setTimeout(fire, wait);
-    else fire();
+    /**
+     * **지각은 창을 열지 않는다**(T76).
+     *
+     * `LATE_MS`(30,300ms)가 서버의 턴 타임아웃(`TURN_TIMEOUT_MS` 30,000ms)보다
+     * 뒤라서, 이 액션이 닿을 때는 타임아웃 잡이 이미 턴을 넘긴 뒤다. 그러면
+     * `PlaysyncService.applyAction`의 엔진 호출이 no-op이고
+     * (`if (!applied) return null`) **브로드캐스트가 아예 안 나간다.**
+     *
+     * 그런데도 창을 열면 그 창은 고아가 되어 큐 앞에 눌러앉고, 다음 사람의
+     * 액션이 만든 브로드캐스트가 거기 붙는다 — 기록되는 값은 왕복이 아니라
+     * **다음 사람의 생각 시간**이 된다. 유휴 서버(lag 0.25ms · CPU 1%)에서
+     * 지각 6건만으로 내 액션 p95가 11ms → 2,586ms로 뛰는 것을 실측했다.
+     *
+     * 지각이 재는 것은 왕복이 아니라 **마감 시각 판정 경로가 돌았는가**다.
+     * 그 목적은 창 없이도 그대로 달성된다.
+     */
+    const late = wait >= LATE_MS;
+    if (late) lateActions.add(1);
+
+    if (wait > 0) setTimeout(fire(!late), wait);
+    else fire(!late)();
   }
 
   /**
@@ -613,7 +640,7 @@ export function runHands({
             }
           });
           // 창을 비운다 — 끊긴 소켓이 못 받은 창은 영영 안 채워진다.
-          windows.length = 0;
+          windows.clear();
           reconnects.add(1);
           burstState = { at: Date.now(), seen: new Set() };
           seats.forEach((s) => open(s.seatToken, 'seat', s.seat));
