@@ -485,15 +485,47 @@ test.describe('데모 — 정산', () => {
       expect(`${step} ${s.tableOrder}번 정리됨`).toBe(`${step} ${s.tableOrder}번 정리됨`);
     };
 
-    // ── 첫 판 — 촬영 테이블부터 ─────────────────────────────────────
+    // ── 첫 판 — 전부 돌고, rebuyer의 테이블을 마지막에 ───────────────
     //
-    // **촬영 테이블을 먼저 돈다.** 그래야 리바인이 최대한 빨리 일어난다 —
-    // 리바인은 **등록이 열려 있는 동안에만** 물어보고(`rebuyUntil`), 그것이
-    // 이 촬영의 ITM 장면이다. 나머지 세 테이블은 그 뒤에 조용히 따라오며
-    // 마감까지 남은 시간을 채운다.
+    // **네 테이블이 다 첫 판을 돈 뒤에 리바인을 기다린다.** 프레임 ①이
+    // 「세 테이블에서 다섯씩 사라진다 → 전광판 인원 35→15 → 그 다음
+    // 엔트리가 36이 된다」를 한 컷으로 보여준다. 전광판이 15로 떨어진
+    // **뒤에** 엔트리가 올라야 그 인과가 읽힌다 — 촬영 테이블만 먼저 돌면
+    // 나머지 셋이 아직 안 줄어든 채로 리바인이 먼저 온다.
+    //
+    // **rebuyer의 테이블을 맨 마지막에 돈다.** 리바인 물음은 영원히 떠
+    // 있지 않다 — `DealerService.resolveWinners`가
+    // `PlaysyncService.waitForRebuyResponse`로 최대 15초를 기다리고
+    // 지나간다. rebuyer의 테이블을 먼저 돌리고 다른 셋을 도는 동안 그
+    // 창이 닫힌다.
+    //
+    // 비용은 리바인이 늦어지는 것뿐이다 — 실측 +2분 10초에서 +3분 30초쯤
+    // 으로 늦어지는데, 등록 마감이 +10분이라 여유가 크다.
+    //
+    // rebuyer의 테이블 번호를 박아 넣지 않는다. 시드(`SETTLEMENT_PLAYERS`)가
+    // 정하는 값이라 `playerOf(ON_SCREEN.rebuyer).tableOrder`로 뽑는다 —
+    // 배역을 다시 옮겨도 코드가 따라온다.
     mark('첫 판 — 한 판에 여섯이 올인한다');
+    const rebuyerTableOrder = playerOf(ON_SCREEN.rebuyer).tableOrder;
     const filmed = stages.get(FILMED_TABLE)!;
     await playHand(filmed, '첫 판');
+    await declineRebuys(filmed);
+    await settleToWaiting(filmed, '첫 판');
+
+    // 배경 테이블 중 rebuyer가 없는 것들. 화면이 없을 뿐 같은 소켓 · 같은
+    // 스키마 · 같은 딜러 명령이다.
+    for (const s of stages.values()) {
+      if (s.tableOrder === FILMED_TABLE || s.tableOrder === rebuyerTableOrder) continue;
+      await playHand(s, '첫 판');
+      await declineRebuys(s);
+      await settleToWaiting(s, '첫 판');
+    }
+
+    // rebuyer의 테이블은 판만 돌리고 정리하지 않는다 — 그 사람의 탈락과
+    // 리바인 오버레이가 뜨는 순간이 바로 다음 블록이라, 여기서 거절해
+    // 버리면 리바인을 물어볼 사람이 없어진다.
+    const rebuyerStage = stages.get(rebuyerTableOrder)!;
+    await playHand(rebuyerStage, '첫 판');
 
     // ── 리바인 — 엔트리가 36이 되고 상금권이 하나 는다 ──────────────
     //
@@ -510,7 +542,9 @@ test.describe('데모 — 정산', () => {
     await shoot(rebuyerTablet, '12-rebuy-accept-raises-entry');
     await press(rebuyerTablet, rebuyButton);
     chipsInPlay += settlement.tournament.startStack;
-    await declineRebuys(filmed);
+    // 거절도 rebuyer의 테이블에 준다 — 촬영 테이블(filmed)은 이미 정리가
+    // 끝났고, 리바인을 물어볼 파산자는 rebuyer의 테이블에 있다.
+    await declineRebuys(rebuyerStage);
 
     await expect
       .poll(async () => Number(await board.getByTestId('entry-count').innerText()), {
@@ -519,16 +553,7 @@ test.describe('데모 — 정산', () => {
       .toBe(beforeRebuy + 1);
     await linger(board, 2_500);
     await shoot(board, '13-entry-36-players-35');
-    await settleToWaiting(filmed, '첫 판');
-
-    // 나머지 세 테이블도 같은 판을 돈다. 화면이 없을 뿐 같은 소켓 · 같은
-    // 스키마 · 같은 딜러 명령이다.
-    for (const s of stages.values()) {
-      if (s.tableOrder === FILMED_TABLE) continue;
-      await playHand(s, '첫 판');
-      await declineRebuys(s);
-      await settleToWaiting(s, '첫 판');
-    }
+    await settleToWaiting(rebuyerStage, '첫 판');
 
     // ── 병합 1 — 넷에서 둘로 ────────────────────────────────────────
     //
