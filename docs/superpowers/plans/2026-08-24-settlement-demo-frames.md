@@ -150,11 +150,10 @@ for (const file of files) {
   seen.set(m[1], file);
 }
 
-// 4. 번호를 받은 그림 중 README가 안 쓰는 것. 번호는 등장 순서라 안 쓰면 뜻이 없다.
-for (const file of files) {
-  if (UNNUMBERED.has(file) || !NUMBERED.test(file)) continue;
-  if (!referenced.includes(file)) problems.push(`번호가 있는데 README가 안 쓴다: img/${file}`);
-}
+// 「번호를 받고도 README가 안 쓰이는 그림」은 **일부러 안 본다.** 정산 스틸
+// 아홉이 그 상태이고(README에 아직 정산 절이 없다), 그것을 검사로 만들면
+// 이 검사를 통과시키려고 README 구조를 건드리게 된다 — 층을 나누는 판단은
+// 그림을 다 보고 나야 서므로 별도 브랜치의 일이다(설계 문서 §5-6).
 
 if (problems.length > 0) {
   console.error(problems.join('\n'));
@@ -340,7 +339,13 @@ npm run typecheck
 
 Expected: `그림 이름 NN개 확인.` · 타입 에러 0.
 
-`번호가 있는데 README가 안 쓴다`가 뜨면 Step 4의 `sed`가 한 줄을 놓친 것이다. `grep -n 'img/' README.md`로 확인한다.
+`README가 없는 그림을 가리킨다`가 뜨면 Step 4의 `sed`가 한 줄을 놓친 것이다. 반대로 README에 옛 이름이 남았는지도 본다 — 그쪽은 검사가 아니라 grep이 잡는다.
+
+```bash
+grep -n 'img/\(s[0-9]\|console\.\|scoreboard\.\|seat-game\|dealer-felt\|dealer-winner\|dealer-refused\.\|seat-moved\|seat-rebuy\.\|phone-me\|phone-eliminated\|console-dealer-otp\)' README.md
+```
+
+Expected: 출력 없음.
 
 - [ ] **Step 8: `package.json`에 검사를 건다**
 
@@ -1317,7 +1322,17 @@ npm run typecheck
 npm run test
 ```
 
-Expected: 셋 다 통과. `번호가 있는데 README가 안 쓴다`가 뜨면 Step 3에서 빠뜨린 그림이 있다.
+Expected: 셋 다 통과.
+
+새 그림이 README에 실제로 들어갔는지는 검사가 안 본다(고아 번호는 일부러 안 잡는다). 직접 센다.
+
+```bash
+for f in 11-entry-not-player.webp 03-four-tables-to-one.webp 04-prize-table-locked.png 05-two-doors-same-ledger.webp 20-abort-refunds-all.webp 22-closed-complete.png 24-closed-abort.png; do
+  grep -q "img/$f" README.md || echo "README에 없다: $f"
+done
+```
+
+Expected: 출력 없음.
 
 - [ ] **Step 5: e2e 회귀를 돌린다**
 
