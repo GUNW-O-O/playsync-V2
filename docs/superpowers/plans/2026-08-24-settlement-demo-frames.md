@@ -71,7 +71,6 @@
 | `console-final-table.png` | `17-final-table-origins.png` |
 | `console-finish-blocked.png` | `18-finish-blocked-reasons.png` |
 | `console-chop-ledger.png` | `19-chop-ledger-sums.png` |
-| `console-abort-ledger.png` | `21-abort-ledger-groups.png` |
 | `console-closed-chop.png` | `23-closed-chop.png` |
 | `seat-rebuy.png` | `25-rebuy-overlay.png` |
 | `phone-eliminated.png` | `26-phone-shows-rank.png` |
@@ -84,7 +83,9 @@
 `seat-waiting.png` · `seat-joined.png` · `dealer-refused-before-start.png`
 
 **아직 없는 것** — 코드에만 이름을 박는다. 파일은 Task 7에서 생긴다.
-`03-four-tables-to-one.webp` · `05-two-doors-same-ledger.webp` · `11-entry-not-player.webp` · `20-abort-refunds-all.webp` · `22-closed-complete.png` · `24-closed-abort.png`
+`03-four-tables-to-one.webp` · `05-two-doors-same-ledger.webp` · `11-entry-not-player.webp` · `20-abort-refunds-all.webp` · `21-abort-ledger-groups.png` · `22-closed-complete.png` · `24-closed-abort.png`
+
+`21` · `22` · `24`는 **촬영이 이미 남기는 스틸인데 `img/`에 없다.** `abort`와 `complete` 실행을 자른 적이 없어서다(인계 문서 §5 — 옛 이름으로 찍힌 것을 지웠다). 그래서 `git mv` 할 것이 없고, `shoot()`과 `settlementStills`에 새 이름만 박아 두면 Task 7에서 파일이 따라온다.
 
 **지우지 않는 것** — `s6-six-all-in.webp` · `s7-entry-not-player.webp` · `s8-four-tables-to-one.webp` · `s9-close-icm.webp`. Task 7에서 새 그림이 들어온 뒤에 지운다.
 
