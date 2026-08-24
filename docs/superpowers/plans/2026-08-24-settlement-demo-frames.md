@@ -726,7 +726,13 @@ const ON_SCREEN = { rebuyer: 'C5', mover: 'D5' } as const;
     });
 ```
 
-`releaseSeatOnScreen`은 새로 쓴다. **`ConsoleClient`가 좌석 도식에서 그 버튼을 어떤 접근 가능한 이름으로 그리는지 먼저 읽고 맞춘다** — 아래 선택자는 추정이고, 실제 이름이 다르면 실제 것을 따른다.
+`releaseSeatOnScreen`은 새로 쓴다. **선택자는 컨트롤러가 `ConsoleClient`를 읽고 확인한 실제 값이다** — 추정이 아니다.
+
+콘솔의 좌석 해제는 **자리마다 버튼이 있는 게 아니라 두 단계다.**
+
+1. 테이블 탭을 고른다 — `data-testid="console-pick-table-<tableId>"`
+2. 자리를 눌러 **고른다** — `data-testid="console-seat-<seatIndex>"` (토글이다. `toggleSeat`)
+3. 오른쪽 패널의 **「고른 자리 해제」** 버튼을 누른다 — `releaseSeats`를 부른다
 
 ```ts
 /**
@@ -735,6 +741,10 @@ const ON_SCREEN = { rebuyer: 'C5', mover: 'D5' } as const;
  * REST 한 번이면 될 일을 화면으로 하는 이유는 **그 조작이 사람의 일이라는
  * 것이 이 장면의 내용**이기 때문이다. 온라인이면 서버가 좌석을 재배치하고
  * 끝이지만, 여기서는 상점이 자리를 풀고 사람이 칩을 들고 걸어간다.
+ *
+ * **두 단계인 것이 화면의 설계다.** 자리를 고르는 것과 푸는 것이 갈려 있어야
+ * 여럿을 한 번에 풀 수 있고, 되돌릴 수 있는 중간 상태가 생긴다
+ * (`ConsoleClient`의 `toggleSeat`과 「고른 자리 해제」).
  */
 async function releaseSeatOnScreen(
   page: Page,
@@ -742,15 +752,17 @@ async function releaseSeatOnScreen(
   seatIndex: number,
   nickname: string,
 ) {
-  await page.getByRole('tab', { name: new RegExp(String(tableId.slice(-4))) }).click().catch(() => {});
-  const cell = page.getByTestId(`seat-${seatIndex}`);
-  await expect(cell).toContainText(nickname, { timeout: 15_000 });
-  await press(page, cell.getByRole('button', { name: '좌석 해제' }));
-  await expect(cell).not.toContainText(nickname, { timeout: 15_000 });
+  await press(page, page.getByTestId(`console-pick-table-${tableId}`));
+  const seat = page.getByTestId(`console-seat-${seatIndex}`);
+  // 그 자리에 그 사람이 있는 것을 먼저 본다. 도식이 아직 낡았으면 엉뚱한
+  // 자리를 고른다.
+  await expect(seat).toContainText(nickname, { timeout: 15_000 });
+  await press(page, seat);
+  await press(page, page.getByRole('button', { name: '고른 자리 해제' }));
+  // **성공 조건은 「눌렀다」가 아니라 「그 자리에서 이름이 사라졌다」다.**
+  await expect(seat).not.toContainText(nickname, { timeout: 15_000 });
 }
 ```
-
-성공 조건이 **「눌렀다」가 아니라 「그 자리에서 이름이 사라졌다」**인 것에 주의한다(`e2e/README.md`).
 
 딜러 태블릿 T3·T4는 그 테이블이 닫히면서 오류 화면이 된다. **프레임 ①의 창이 `병합` 마크에서 끝나므로 영상에 안 남는다.** 남는다면 창이 잘못 잡힌 것이다.
 
