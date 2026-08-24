@@ -819,6 +819,30 @@ test.describe('데모 — 정산', () => {
     await playHand(final, '셋만', 4);
     await settleToWaiting(final, '셋만');
 
+    // ── 남은 셋의 폰 ────────────────────────────────────────────────
+    //
+    // **여기서 연다. 앞에서는 누가 남을지 모른다.**
+    //
+    // 남는 셋은 결정적이지만(`planHand`가 스택 최대를 이기게 한다) 그 값은
+    // 판을 돌려 봐야 나온다. `stage()`는 테스트 도중 언제든 부를 수 있고,
+    // 늦게 연 면의 앞부분은 자르는 쪽이 검게 채운다
+    // (`make-demo-assets.mjs`의 `tpad`).
+    //
+    // **폰이 마무리 프레임의 절반이다.** 콘솔의 장부는 상점이 보는 숫자이고,
+    // 그 돈이 실제로 사람에게 갔는지는 폰이 말한다 — `/me`의 지난 참가에
+    // 등수와 상금이 그 사람 몫으로 찍힌다.
+    const survivors = (await stateOf(final)).players
+      .map((p, seatIndex) => (p ? { seatIndex, nickname: p.nickname } : null))
+      .filter((p): p is { seatIndex: number; nickname: string } => p !== null);
+    expect(`남은 인원 ${survivors.length}`).toBe('남은 인원 3');
+
+    const finalPhones: Page[] = [];
+    for (const [i, who] of survivors.entries()) {
+      const page = await stage('phone', `phone-final-${i + 1}`);
+      await openWithToken(page, await login(request, who.nickname, manifest.password), '/me');
+      finalPhones.push(page);
+    }
+
     // ── 마무리 미리보기 ─────────────────────────────────────────────
     //
     // **셋을 한 화면에 그린다.** 못 누르는 것은 숨기지 않고 왜 못 누르는지를
@@ -887,6 +911,15 @@ test.describe('데모 — 정산', () => {
     await linger(console_, 2_500);
     await shoot(console_, CLOSED_SHOT[ENDING]);
     await linger(board, 2_500);
+
+    // **닫힌 뒤에 다시 읽는다.** `/me`의 지난 참가는 폴링이 아니라 한 번
+    // 받아 그린 값이라, 대회가 닫히기 전에 연 폰은 등수도 상금도 비어 있다.
+    // 상금은 `awardPrize`가 그 자리에서 `finalPlace`를 박을 때 생긴다.
+    for (const page of finalPhones) {
+      await page.bringToFront();
+      await page.reload();
+      await linger(page, 2_000);
+    }
 
     mark('끝');
 
