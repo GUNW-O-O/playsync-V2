@@ -131,7 +131,7 @@ export const test = base.extend<{
 
     // 커서는 **촬영 프로젝트에만** 꽂는다. 회귀는 사람이 보는 영상이 아니라
     // 판정이고, 없는 DOM 노드를 하나 더 얹으면 그만큼 다른 것을 본다.
-    const filming = testInfo.project.name === 'demo';
+    const filming = testInfo.project.name !== 'regression';
 
     const opened: { label: string; context: BrowserContext; page: Page }[] = [];
 

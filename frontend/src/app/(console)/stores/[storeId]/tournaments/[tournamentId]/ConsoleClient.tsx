@@ -314,7 +314,24 @@ export default function ConsoleClient({
                 {STATUS_LABEL[tournament.status] ?? tournament.status}
               </span>
               <span className="inline-flex items-center gap-1.5 bg-[var(--surface)] px-2.5 py-1 text-[var(--ink-subtle)]">
-                {tournament.isRegistrationOpen ? '등록 열림' : '등록 마감'}
+                {/*
+                  **마감은 컬럼이 아니라 파생값이다**(`registration-gate.ts`).
+                  `Tournament.isRegistrationOpen`은 마감 시각에 스스로 닫히지
+                  않는다 — 발화하는 스케줄러가 없고 `closeRegistration`이 누가
+                  그 대회를 건드릴 때만 게으르게 flip한다.
+
+                  컬럼만 보면 화면이 스스로 모순된다. 정산 촬영에서 ICM
+                  마무리가 열린 채(=파이널 테이블이니 마감이다) 머리글은
+                  「등록 열림」을 띄우고 있었다. T77이 백엔드에서 한 착각의
+                  화면판이다.
+
+                  전광판 값이 없으면 컬럼이 곧 답이다 — 시작 전 대회에는
+                  레벨이 없어 파생할 재료가 없고, `isRegistrationOpenLive`도
+                  같은 자리에서 컬럼으로 떨어진다.
+                */}
+                {(numbers?.isRegistrationOpen ?? tournament.isRegistrationOpen)
+                  ? '등록 열림'
+                  : '등록 마감'}
               </span>
               <span className="text-[13px] text-[var(--ink-subtle)]">
                 레벨 {tournament.rebuyUntil}까지 리바인

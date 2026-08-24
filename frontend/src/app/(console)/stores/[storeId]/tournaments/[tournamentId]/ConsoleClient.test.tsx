@@ -198,3 +198,62 @@ describe('ConsoleClient — 좌석 선택', () => {
     );
   });
 });
+
+/**
+ * **마감은 컬럼이 아니라 파생값이다**(`registration-gate.ts`).
+ *
+ * `Tournament.isRegistrationOpen` 컬럼은 마감 시각에 스스로 닫히지 않는다 —
+ * 발화하는 스케줄러가 없고 `closeRegistration`이 누가 그 대회를 건드릴 때만
+ * 게으르게 flip한다. 그래서 그 컬럼은 "상점이 손으로 닫았는가"에 가깝다.
+ *
+ * 정산 촬영에서 드러났다. ICM 마무리가 열렸다는 것은 **파이널 테이블**이라는
+ * 뜻이고(`!isRegistrationOpen && tableCount === 1`), 그런데 같은 화면 머리글이
+ * 「등록 열림」을 띄우고 있었다. 화면 하나가 스스로 모순됐다.
+ *
+ * T77이 백엔드에서 같은 착각을 했다. 여기는 그 착각의 화면판이다.
+ */
+describe('ConsoleClient — 등록 마감', () => {
+  const numbers = {
+    prizePool: 0, prizes: [], isRegistrationOpen: false,
+    totalPlayer: 35, activePlayer: 5, totalBuyinAmount: 1_800_000,
+    rebuyUntil: 2, avgStack: 36_000, tournamentName: '정산 데모 토너먼트',
+    entryFee: 50_000, startStack: 5_000, entryCount: 36, itmCount: 6, rakePercent: 10,
+  };
+
+  it('컬럼이 열려 있어도 전광판 값이 닫혔으면 「등록 마감」이다', () => {
+    render(
+      <ConsoleClient
+        storeId="store-1"
+        tournamentId="trn-1"
+        // 컬럼은 아직 열려 있다. 게으른 flip이 아직 안 왔다.
+        tournament={{ ...TOURNAMENT, status: 'ONGOING', isRegistrationOpen: true }}
+        dashboard={{ dashboard: numbers, blindField: null } as never}
+        tables={[{ id: 'tbl-1', tableOrder: 1 }]}
+        seatOccupants={[{ tableId: 'tbl-1', tableOrder: 1, players: [] }]}
+        seatError={null}
+        startTournament={vi.fn(async () => ({ ok: true as const }))}
+        openTable={vi.fn(async () => ({ ok: true as const }))}
+        closeTable={vi.fn(async () => ({ ok: true as const }))}
+        releaseSeats={vi.fn(async () => ({ ok: true as const }))}
+        reissueDealerOtp={vi.fn(async () => ({ ok: true as const, dealerOtp: '920576' }))}
+        preview={null}
+        completeTournament={vi.fn(async () => ({ ok: true as const }))}
+        chopTournament={vi.fn(async () => ({ ok: true as const }))}
+        abortTournament={vi.fn(async () => ({ ok: true as const }))}
+        fetchFinishPreview={vi.fn(async () => ({ error: '없음' }))}
+      />,
+    );
+
+    expect(screen.getByText('등록 마감')).toBeInTheDocument();
+    expect(screen.queryByText('등록 열림')).not.toBeInTheDocument();
+  });
+
+  /**
+   * **시작 전에는 컬럼이 곧 답이다.** 레벨이 없어서 파생할 재료가 없고,
+   * `isRegistrationOpenLive`도 같은 자리에서 컬럼으로 떨어진다.
+   */
+  it('전광판 값이 없으면 컬럼을 그대로 쓴다', () => {
+    renderConsole();
+    expect(screen.getByText('등록 열림')).toBeInTheDocument();
+  });
+});

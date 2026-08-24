@@ -1,5 +1,5 @@
 import { PrismaPg } from '@prisma/adapter-pg';
-import { PlayerStatus, PrismaClient, Role, TournamentStatus } from '@prisma/client';
+import { PlayerStatus, Prisma, PrismaClient, Role, TournamentStatus } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { writeFileSync } from 'fs';
 import Redis from 'ioredis';
@@ -7,6 +7,7 @@ import { resolve } from 'path';
 import { Pool } from 'pg';
 import { generateDealerOtp, hashDealerOtp } from '../src/dealer/dealer-otp';
 import { generatePlayerOtp } from '../src/payment/player-otp';
+import { DEFAULT_PAYOUT_TABLE } from '../src/playsync/payout-table';
 import { resetAll, setEmptySnapshot, setSeatBitmap } from './seed-helpers';
 
 /**
@@ -112,6 +113,113 @@ const PRIZE_PAYOUTS = [
  * 사람이 걸어가서 OTP를 다시 넣고, 상점이 빈 테이블을 닫는다).
  */
 const TABLE_COUNT = 2;
+
+/* ────────────────────────── 정산 무대 ──────────────────────────
+ *
+ * **두 번째 대회를 같은 상점에 세운다.** 장면 1~5의 대회와 나누는 이유는
+ * 규모가 다르기 때문이다 — 마무리(종료 · ICM · 중단)는 **파이널 테이블에
+ * 도달해야** 문이 열리고, 그러려면 필드가 줄어드는 과정 자체가 필요하다.
+ * 일곱 명짜리 무대에서는 첫 핸드가 곧 파이널 테이블이라 「줄어든다」가
+ * 사라진다.
+ *
+ * 시드 파일을 나누지 않는다. 두 벌이 되면 어긋나고, 어긋난 것을 잡아 주는
+ * 장치가 없다(`CLAUDE.md`). **무대가 둘이지 시드가 둘이 아니다.**
+ *
+ * 여기서도 앉히지 않는다. 35명을 미리 앉혀 두면 촬영이 「이미 앉아 있는
+ * 사람들」에서 시작하는데, 그러면 좌석 비트맵도 스냅샷도 제품 경로가 아니라
+ * 시드가 만든 것이 되어 **화면이 증명하는 것이 줄어든다.** 착석은 촬영이
+ * 백스테이지 API로 한다(`frontend/e2e/fixtures/backstage.ts`).
+ */
+const SETTLEMENT_NAME = '정산 데모 토너먼트';
+
+/**
+ * 테이블 넷 · 딜러 화면 넷.
+ *
+ * `DealerSession`은 대회당 하나지만(스키마) 딜러 토큰은 **테이블마다** 다르다
+ * (`loginDealer`가 `tableId`를 서명해 넣는다). 그래서 같은 딜러 OTP로 태블릿
+ * 넷이 각자의 테이블에 붙고, 그중 하나가 남의 테이블을 조작할 수 없다는 것이
+ * 화면에서 드러난다(T66).
+ */
+const SETTLEMENT_LAYOUT = [
+  { tableOrder: 1, seats: 9 },
+  { tableOrder: 2, seats: 9 },
+  { tableOrder: 3, seats: 9 },
+  { tableOrder: 4, seats: 8 },
+];
+
+/**
+ * **35명이다. 36이 아니다.**
+ *
+ * 기본 분배표(`DEFAULT_PAYOUT_TABLE`)의 구간 경계가 25와 36에 있다. 36명으로
+ * 시작하면 이미 경계 위에 앉아 있어서 리바인이 일어나도 상금권이 안 움직인다.
+ * 35에서 출발해 **리바인 하나로 36을 넘기면** 전광판의 상금 목록이 다섯
+ * 줄에서 여섯 줄로 그 자리에서 늘어난다.
+ *
+ * 그때 **사람 수는 35 그대로**다 — 그것이 「분모는 사람 수가 아니라 엔트리
+ * 수다」의 증명이고(`payout-table.ts`), `itm-scaling.int-spec.ts`가 값으로
+ * 보는 성질을 화면이 같이 본다.
+ *
+ * 이름이 `A1`~`D8`인 것은 **어느 테이블에서 왔는지가 병합 뒤에도 남아야**
+ * 하기 때문이다. 파이널 테이블에 A와 C가 섞여 앉은 것이 좌석 카드만 보고
+ * 읽힌다 — 장면 1~5가 역할 이름(`숏스택`·`딥스택`)으로 얻은 것과 같은 것을
+ * 규모가 큰 쪽에서는 출신으로 얻는다.
+ */
+const SETTLEMENT_PLAYERS = SETTLEMENT_LAYOUT.flatMap(({ tableOrder, seats }) =>
+  Array.from({ length: seats }, (_, seatIndex) => ({
+    nickname: `${'ABCD'[tableOrder - 1]}${seatIndex + 1}`,
+    tableOrder,
+    seatIndex,
+  })),
+);
+
+/**
+ * 상점 몫 10%.
+ *
+ * 0으로 두면 `걷은 참가비 == 나간 상금`이라 등식의 항이 하나 줄어든다.
+ * 붙여 두면 마무리 확인 대화의 마지막 줄이 실제로 **셋의 합**이 된다 —
+ * 상금 + 환불 + 상점 몫.
+ */
+const SETTLEMENT_RAKE_PERCENT = 10;
+
+/**
+ * 정산 무대의 블라인드. **레벨 1의 길이가 촬영의 유일한 창이다.**
+ *
+ * 마감이 촬영 중간에 와야 한다. 앞뒤로 이유가 하나씩이다.
+ *
+ * **너무 이르면 안 된다.** 리바인은 등록이 열려 있는 동안에만 묻는다
+ * (`rebuyUntil: 2` → `curLv < 2`). 그 리바인 하나가 엔트리를 36으로 올려
+ * 상금권 인원을 다섯에서 여섯으로 늘리는데, 마감이 그 전에 오면 이 무대가
+ * 보여주려던 장면 자체가 사라진다.
+ *
+ * **너무 늦어도 안 된다.** 파이널 테이블 판정이
+ * `!isRegistrationOpen && tableCount === 1`이라(T77 · `isFinalTable`),
+ * 마감 전에는 테이블을 하나로 합쳐도 ICM의 문이 열리지 않는다.
+ *
+ * 10분은 그 사이다. 실측(개발 서버 · `slowMo` 220ms)으로 리바인이 **+2분 10초**,
+ * 네 테이블의 첫 판이 다 끝나는 것이 **+3분 30초**였다. 리바인까지 네 배 남짓
+ * 여유가 있고, 남는 시간은 **기다린 구간이라 잘려 나간다**(`mark()` 경계).
+ *
+ * 더 줄이지 않는 이유는 실패의 값이 다르기 때문이다 — 마감이 일찍 오면 리바인을
+ * 못 물어 **그 장면 자체가 사라지고 촬영을 다시 돌려야** 한다. 기다리는 것은
+ * 시간만 든다.
+ *
+ * 마감에 발화하는 스케줄러는 없다. 레벨이 시각에서 파생되고 누군가 그 대회를
+ * 읽을 때 게으르게 닫히는데(`registration-gate.ts`), 전광판이 계속 폴링하므로
+ * 그 일을 전광판이 한다.
+ *
+ * 뒤 레벨은 길게 둔다. 촬영이 레벨 2 안에서 끝나야 **실행마다 같은 블라인드**로
+ * 갈림목에 도착한다 — 레벨이 더 오르면 그만큼 걷힌 칩이 달라지고, ICM은 칩
+ * 비율로 나누는 것이라 금액까지 갈린다.
+ */
+const SETTLEMENT_BLIND_STRUCTURE = [
+  { lv: 1, sb: 100, ante: false, duration: 10 },
+  { lv: 2, sb: 200, ante: false, duration: 90 },
+  { lv: 3, sb: 400, ante: false, duration: 15 },
+  { lv: 4, sb: 800, ante: false, duration: 15 },
+  { lv: 5, sb: 1_500, ante: false, duration: 15 },
+];
+
+const SETTLEMENT_REBUY_UNTIL = 2;
 
 const DEMO_PASSWORD = 'password123';
 
@@ -262,10 +370,13 @@ async function main() {
       },
     });
 
+    const settlement = await seedSettlementStage({ prisma, redis, store: store.id, password });
+
     const manifest = {
       seededAt: new Date().toISOString(),
       password: DEMO_PASSWORD,
       store: { id: store.id, name: STORE_NAME },
+      settlement,
       tournament: {
         id: tournament.id,
         name: TOURNAMENT_NAME,
@@ -281,7 +392,19 @@ async function main() {
     };
     writeManifest(manifest);
 
-    report({ tournament: tournament.id, store: store.id, dealerOtp, tables, players });
+    report({
+      tournament: tournament.id,
+      store: store.id,
+      dealerOtp,
+      tables,
+      players,
+      settlement: {
+        tournament: settlement.tournament.id,
+        dealerOtp: settlement.dealerOtp,
+        playerCount: settlement.players.length,
+        tableCount: settlement.tables.length,
+      },
+    });
   } finally {
     await prisma.$disconnect();
     // 드라이버 어댑터 구성에서는 `$disconnect()`가 pg Pool을 닫지 않는다.
@@ -289,6 +412,121 @@ async function main() {
     await pool.end();
     redis.disconnect();
   }
+}
+
+/**
+ * 정산 무대를 세운다. **여기도 무대까지다** — 앉히지도, 시작하지도 않는다.
+ *
+ * 장면 1~5의 대회와 나란히 선다. 같은 상점 · 같은 계정 규칙 · 같은 「결제까지
+ * 마친 상태」이고, 다른 것은 **규모와 분배표**뿐이다.
+ *
+ * 분배표를 손으로 적지 않고 `DEFAULT_PAYOUT_TABLE`을 그대로 쓴다. 촬영이
+ * 보여줄 것이 「참가 규모가 상금권 인원을 정한다」인데, 그 표를 시드가 따로
+ * 지어내면 화면에 뜬 숫자가 제품의 기본값이 아니라 촬영용 값이 된다.
+ */
+async function seedSettlementStage(ctx: {
+  prisma: PrismaClient;
+  redis: Redis;
+  store: string;
+  /** 이미 해시된 공용 비밀번호. 35번 다시 해시하면 시드가 눈에 띄게 느려진다. */
+  password: string;
+}) {
+  const { prisma, redis, store, password } = ctx;
+
+  const blind = await prisma.blindStructure.create({
+    data: { name: '정산 데모 (짧은 구조)', structure: SETTLEMENT_BLIND_STRUCTURE, storeId: store },
+  });
+
+  const dealerOtp = generateDealerOtp();
+  const tournament = await prisma.tournament.create({
+    data: {
+      name: SETTLEMENT_NAME,
+      status: TournamentStatus.PENDING,
+      storeId: store,
+      blindId: blind.id,
+      entryFee: ENTRY_FEE,
+      startStack: START_STACK,
+      rebuyUntil: SETTLEMENT_REBUY_UNTIL,
+      rakePercent: SETTLEMENT_RAKE_PERCENT,
+      // Prisma의 Json 입력 타입은 인덱스 시그니처를 요구한다. 표의 형태는
+      // 이미 `PayoutTier[]`로 고정돼 있으니 여기서만 좁힌다 — 값을 손으로
+      // 다시 적으면 화면에 뜨는 것이 제품의 기본표가 아니게 된다.
+      payoutTable: DEFAULT_PAYOUT_TABLE as unknown as Prisma.InputJsonValue,
+      dealerOtpHash: await hashDealerOtp(dealerOtp),
+    },
+  });
+
+  const dealerSession = await prisma.dealerSession.create({
+    data: { tournamentId: tournament.id },
+  });
+
+  const tables: { id: string; tableOrder: number }[] = [];
+  for (const { tableOrder } of SETTLEMENT_LAYOUT) {
+    const table = await prisma.table.create({
+      data: { tableOrder, tournamentId: tournament.id, dealerId: dealerSession.id },
+    });
+    tables.push({ id: table.id, tableOrder });
+    await setSeatBitmap(redis, tournament.id, table.id);
+    await setEmptySnapshot(redis, tournament.id, table.id);
+  }
+
+  const players: { nickname: string; otp: string; tableOrder: number; seatIndex: number }[] = [];
+  for (const { nickname, tableOrder, seatIndex } of SETTLEMENT_PLAYERS) {
+    const user = await prisma.user.create({
+      data: { nickname, password, role: Role.USER, points: INITIAL_POINTS },
+    });
+    const otp = generatePlayerOtp();
+    // 결제 경로(`PaymentService.joinSession`)가 하는 셋을 그대로 한다.
+    // 포인트 차감이 빠지면 「걷은 참가비 == 나간 상금 + 환불 + 상점 몫」의
+    // 왼쪽 항이 시드부터 거짓이 된다.
+    await prisma.$transaction(async (tx) => {
+      await tx.user.update({ where: { id: user.id }, data: { points: { decrement: ENTRY_FEE } } });
+      await tx.pointTransaction.create({
+        data: {
+          userId: user.id,
+          amount: -ENTRY_FEE,
+          type: 'BUY_IN',
+          tournamentId: tournament.id,
+          description: `${SETTLEMENT_NAME} 바이인`,
+        },
+      });
+      await tx.tournamentParticipation.create({
+        data: {
+          userId: user.id,
+          tournamentId: tournament.id,
+          status: PlayerStatus.WAITING,
+          currentStack: START_STACK,
+          playerOtp: otp,
+        },
+      });
+    });
+    players.push({ nickname, otp, tableOrder, seatIndex });
+  }
+
+  await prisma.tournament.update({
+    where: { id: tournament.id },
+    data: {
+      totalPlayers: players.length,
+      // 위 대회와 같은 이유로 0이다 — `claimSeat`이 첫 착석에서 올린다.
+      activePlayers: 0,
+      totalBuyinAmount: ENTRY_FEE * players.length,
+    },
+  });
+
+  return {
+    tournament: {
+      id: tournament.id,
+      name: SETTLEMENT_NAME,
+      entryFee: ENTRY_FEE,
+      startStack: START_STACK,
+      rebuyUntil: SETTLEMENT_REBUY_UNTIL,
+      rakePercent: SETTLEMENT_RAKE_PERCENT,
+      blindStructure: SETTLEMENT_BLIND_STRUCTURE,
+    },
+    dealerOtp,
+    tables,
+    players,
+  };
 }
 
 /**
@@ -311,6 +549,8 @@ function report(data: {
   dealerOtp: string;
   tables: { id: string; tableOrder: number }[];
   players: { nickname: string; otp: string }[];
+  /** 정산 무대. 딜러 OTP는 해시로만 남으므로 **여기가 유일한 열람 경로다.** */
+  settlement: { tournament: string; dealerOtp: string; playerCount: number; tableCount: number };
 }) {
   const lines = [
     '',
@@ -329,6 +569,11 @@ function report(data: {
     '',
     '  참가 OTP (태블릿 입장용)',
     ...data.players.map((p) => `    ${p.nickname.padEnd(22)}${p.otp}`),
+    '',
+    '  정산 무대 (두 번째 대회 — 마무리 촬영용)',
+    `    ${'대회'.padEnd(20)}${data.settlement.tournament}  (PENDING)`,
+    `    ${'딜러 OTP'.padEnd(20)}${data.settlement.dealerOtp}  ← 테이블 ${data.settlement.tableCount}개 공용`,
+    `    ${'참가자'.padEnd(20)}${data.settlement.playerCount}명 (A1~D8). 참가 OTP는 매니페스트에 있다`,
     '',
     `  같은 내용이 ${MANIFEST_PATH} 에도 있다 (촬영 스크립트가 읽는다).`,
     '',
