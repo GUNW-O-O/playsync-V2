@@ -591,12 +591,20 @@ test.describe('데모 — 정산', () => {
 
     // ── 둘째 판 — 열이 더 나간다 ────────────────────────────────────
     //
-    // 등록은 이미 마감이라 리바인을 묻지 않는다 — 여기서 나가는 사람은
-    // 그대로 등수를 받는다.
+    // 순서를 바꾸면서 이 판이 마감 **앞**으로 왔다 — 그래서 리바인을 묻는다.
+    // 거절도 사람이 하는 대답이라 소켓으로 보낸다(참가 행을 손으로 고치면
+    // 등수와 상금이 촬영이 지어낸 값이 된다, `declineRebuys` 참고). **이 판의
+    // 탈락자는 리바인하지 않아야 한다** — 여기서 되살아나면 파이널 테이블이
+    // 여섯이 아니게 되고 바로 다음 `병합 2` 뒤의 `expect`가 깨진다.
+    //
+    // `declineRebuys`는 등록이 마감된 뒤에는 그냥 지나가므로, 촬영이 느려져
+    // 이 판이 마감 뒤로 밀려도 안전하다.
     mark('둘째 판 — 두 테이블에서 열이 나간다');
     await playHand(stages.get(FILMED_TABLE)!, '둘째 판');
+    await declineRebuys(stages.get(FILMED_TABLE)!);
     await settleToWaiting(stages.get(FILMED_TABLE)!, '둘째 판');
     await playHand(stages.get(2)!, '둘째 판');
+    await declineRebuys(stages.get(2)!);
     await settleToWaiting(stages.get(2)!, '둘째 판');
 
     // ── 병합 2 — 파이널 테이블 ──────────────────────────────────────
