@@ -29,14 +29,49 @@ import ffmpegPath from 'ffmpeg-static';
  * CI에서도 같은 바이너리다.
  */
 
+/**
+ * **바이너리가 있는지 먼저 본다.**
+ *
+ * `ffmpeg-static`은 postinstall로 실행 파일을 내려받는데, 그것이 막힌 환경에서는
+ * 패키지만 남고 `ffmpeg.exe`가 없다. 그러면 `spawnSync`가 조용히 실패하고
+ * 출력이 비는데, 슬레이트를 찾는 쪽은 그 빈 출력을 **「이 영상에 슬레이트가
+ * 없다」**로 읽어 "촬영을 다시 돌려라"라고 말한다 — 12분짜리 촬영을 다시
+ * 돌리게 만드는 오진이라 여기서 먼저 잡는다.
+ */
+function assertFfmpeg() {
+  if (ffmpegPath && existsSync(ffmpegPath)) return;
+  throw new Error(
+    [
+      `ffmpeg 실행 파일이 없다: ${ffmpegPath ?? '(경로 자체가 비었다)'}`,
+      '',
+      '  node node_modules/ffmpeg-static/install.js',
+      '',
+      '`ffmpeg-static`은 postinstall로 바이너리를 내려받는다. 그 단계가 막힌',
+      '환경에서는 패키지만 설치되고 실행 파일이 없다. 촬영 원본은 멀쩡하다.',
+    ].join('\n'),
+  );
+}
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '..');
 const RECORDINGS = join(ROOT, 'frontend', 'e2e', 'recordings');
 const SHOTS = join(ROOT, 'frontend', 'e2e', '.shots');
 const ASSETS = join(ROOT, 'img');
 
-/** 촬영 폴더 이름은 테스트 제목에서 나온다(`surfaces.ts`의 `slug`). */
+/**
+ * 촬영 폴더 이름은 테스트 제목에서 나온다(`surfaces.ts`의 `slug`).
+ *
+ * **촬영이 둘이다.** 장면 1~5(`demo/tournament.spec.ts`)와 정산
+ * (`demo/settlement.spec.ts`)이고, 정산은 마무리마다 따로 돈다 — 하나가
+ * 대회를 닫으면 나머지는 찍을 자리가 없어서다. 그래서 폴더도 마무리마다
+ * 하나씩 생긴다.
+ */
 const TAKE = '장면-1-5-한-대회';
+const SETTLEMENT_TAKE = {
+  complete: '마무리-최후-1인으로-닫는다',
+  chop: '마무리-ICM으로-닫는다',
+  abort: '마무리-중단하고-환불한다',
+};
 
 /**
  * 장면 다섯.
@@ -135,32 +170,150 @@ const SCENES = [
   },
 ];
 
+/**
+ * 정산 촬영의 장면 셋.
+ *
+ * **이름이 그 장면의 주장이다.** `s6`·`s7` 같은 번호만으로는 `img/`를 열어
+ * 봐도 무엇을 보여주는 그림인지 알 수 없고, README가 그림을 고를 때마다
+ * 영상을 다시 열어야 한다.
+ *
+ * 마무리 장면만 마무리마다 이름이 다르다 — **셋이 같은 자리에서 갈리므로
+ * 파일 이름이 유일한 구분**이고, 셋을 나란히 놓는 것이 이 촬영의 요점이다.
+ *
+ * `마감 대기`와 `마감` 사이는 어느 장면에도 안 들어간다. 등록 마감을
+ * 기다리는 몇 분이라 버릴 구간이고, 표시를 둘로 나눈 이유가 그것이다.
+ */
+const SETTLEMENT_CLOSE = {
+  complete: 's9-close-last-one',
+  chop: 's9-close-icm',
+  abort: 's9-close-abort',
+};
+
+function settlementScenes(ending) {
+  return [
+    {
+      /*
+        **한 판에 여섯이 올인해 다섯이 나간다.** 필드가 줄어드는 방식 자체가
+        이 촬영의 전제라 첫 판을 통째로 보여준다 — 진짜 올인이고 진짜 지명이다.
+
+        태블릿 둘을 나란히 두는 이유: 같은 판에서 하나는 폴드해 살아남고
+        하나는 올인해 나간다.
+      */
+      out: 's6-six-all-in',
+      from: '첫 판 — 한 판에 여섯이 올인한다',
+      to: '리바인 — 엔트리가 늘면 상금권도 는다',
+      rows: [
+        [tile('seat-rebuyer', 960, 540), tile('seat-survivor', 960, 540)],
+        [tile('dealer-final-table', 960, 540), tile('scoreboard', 960, 540)],
+      ],
+      fps: 8,
+      width: 1280,
+    },
+    {
+      /*
+        **엔트리와 사람 수가 갈리는 순간.** 탈락자 하나가 리바인을 수락하면
+        전광판의 엔트리만 36이 되고 상금 목록이 다섯 줄에서 여섯 줄로 는다 —
+        참가는 35명 그대로다.
+
+        면이 둘뿐인 이유: 주장이 「이 수락이 저 목록을 바꾼다」 하나라, 셋째
+        면은 그 인과를 흐린다.
+      */
+      out: 's7-entry-not-player',
+      from: '리바인 — 엔트리가 늘면 상금권도 는다',
+      to: '마감 대기 — 여기부터 버린다',
+      rows: [[tile('seat-rebuyer', 960, 540), tile('scoreboard', 960, 540)]],
+      fps: 5,
+      width: 1100,
+    },
+    {
+      /*
+        **테이블 넷이 하나가 된다.** 콘솔의 좌석 도식이 그 사실을 드러내는
+        유일한 화면이라 아래 행을 통째로 준다 — 사람이 칩을 들고 걸어가는
+        일이라 자동이 아니고, 상점이 좌석을 풀고 테이블을 닫는 손이 거기 있다.
+
+        콘솔을 1440×900 그대로 둔다. **원본보다 크게 잡지 않는다** — 키우면
+        화질만 잃고, `scale`이 비율을 지키느라 상자보다 커지는 순간 `pad`이
+        「입력보다 작다」로 죽는다. 실제로 1760×1100으로 잡았다가 그렇게 실패했다.
+
+        **여유는 높이에만 준다.** 폭은 `vstack`이 행끼리 맞추라고 요구하므로
+        건드릴 수 없고, `scale`의 반올림이 튀는 것은 어느 축에서든 일어난다.
+        높이 몇 px을 더 주면 `pad`이 언제나 입력보다 크다.
+      */
+      out: 's8-four-tables-to-one',
+      from: '마감 — 상금이 예상에서 확정으로 바뀐다',
+      to: '여섯째 — 상금이 처음 나간다',
+      rows: [
+        [tile('dealer-final-table', 720, 410), tile('seat-survivor', 720, 410)],
+        [tile('console', 1440, 906)],
+      ],
+      fps: 6,
+      width: 1100,
+    },
+    {
+      /*
+        **마무리.** 콘솔이 주인공이라 위 행을 통째로 준다 — 셋이 한 화면에
+        있고, 못 누르는 것은 왜 못 누르는지가 그 자리에 적혀 있고, 확인
+        대화의 마지막 줄이 걷은 돈이다.
+      */
+      out: SETTLEMENT_CLOSE[ending],
+      from: '여섯째 — 상금이 처음 나간다',
+      to: '끝',
+      rows: [
+        [tile('console', 1440, 906)],
+        [tile('dealer-final-table', 720, 410), tile('scoreboard', 720, 410)],
+      ],
+      fps: 6,
+      width: 1100,
+    },
+  ];
+}
+
 function tile(label, width, height) {
   return { label, width, height };
 }
 
+/**
+ * **실패하면 ffmpeg가 한 말을 남긴다.**
+ *
+ * `stdio: 'inherit'`로 흘려보내면 `execFileSync`가 던지는 예외의 `stderr`가
+ * `null`이라, 남는 것이 "status 4294967274"와 300줄짜리 필터 문자열뿐이다.
+ * 어느 필터가 무엇을 거부했는지가 그 안에 없어서 장면 하나를 고칠 때마다
+ * 손으로 명령을 다시 조립해야 했다. 필터 그래프가 틀리는 것은 흔한 일이라
+ * (행마다 폭이 다르다, 상자가 원본보다 크다) 여기가 첫 안내여야 한다.
+ */
 function ffmpeg(args) {
-  execFileSync(/** @type {string} */ (ffmpegPath), ['-hide_banner', '-loglevel', 'error', ...args], {
-    stdio: ['ignore', 'inherit', 'inherit'],
-  });
+  const run = spawnSync(
+    /** @type {string} */ (ffmpegPath),
+    ['-hide_banner', '-loglevel', 'error', ...args],
+    { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+  );
+  if (run.status === 0) return;
+  const said = `${run.stderr ?? ''}`.trim();
+  throw new Error(
+    [
+      `ffmpeg가 실패했다 (status ${run.status}).`,
+      said ? `\n${said}` : '\n(ffmpeg가 아무 말도 남기지 않았다)',
+    ].join(''),
+  );
 }
 
 function mib(path) {
   return (statSync(path).size / 1024 / 1024).toFixed(2);
 }
 
-function loadTimeline() {
-  const dir = join(RECORDINGS, TAKE);
+function loadTimeline(take) {
+  const dir = join(RECORDINGS, take);
   const path = join(dir, 'timeline.json');
   if (!existsSync(path)) {
     throw new Error(
       [
         `촬영 기록이 없다: ${path}`,
         '',
-        '  npm run demo      (시드 → 촬영)',
+        '  npm run demo              (시드 → 장면 1~5 촬영)',
+        '  npm run demo:settlement   (마무리 셋을 각각 시드부터 다시)',
         '',
         '촬영 폴더 이름은 테스트 제목에서 나온다. 제목을 바꿨으면 이 파일의',
-        'TAKE 상수도 같이 고친다.',
+        'TAKE · SETTLEMENT_TAKE 상수도 같이 고친다.',
       ].join('\n'),
     );
   }
@@ -379,9 +532,30 @@ const STILLS = [
  * 한다 — 영상 프레임을 뽑지 않는 이유는 webm이 손실 압축이라 글자가 뭉개져
  * 나오기 때문이다.
  */
-function copyShots() {
+/**
+ * 정산 촬영의 스틸. **이름이 그 사진의 주장이다.**
+ *
+ * 마무리 장부 둘(`console-chop-ledger` · `console-abort-ledger`)은 그
+ * 마무리를 실제로 돌린 촬영에만 있다. 확인 대화가 그때만 열리기 때문이고,
+ * 없는 것을 요구하면 다른 마무리 촬영이 통째로 실패한다.
+ */
+function settlementStills(ending) {
+  return [
+    'console-four-tables.png', // 무대 — 테이블 넷 · 상점 몫 10%
+    'seat-rebuy-raises-entry.png', // 리바인 — 이 수락이 엔트리를 36으로 만든다
+    'scoreboard-entry-not-player.png', // 엔트리 36 · 참가 35명 · 상금권 여섯 줄
+    'scoreboard-prize-final.png', // 마감 — 상금이 예상에서 확정으로
+    'console-final-table.png', // 여섯이 한 테이블에. 출신이 이름에 남는다
+    'console-finish-blocked.png', // 마무리 셋 · 못 누르는 이유가 그 자리에
+    ...(ending === 'chop' ? ['console-chop-ledger.png'] : []),
+    ...(ending === 'abort' ? ['console-abort-ledger.png'] : []),
+    `console-closed-${ending}.png`, // 닫힌 뒤 — 마무리 영역이 사라진다
+  ];
+}
+
+function copyShots(stills) {
   const missing = [];
-  for (const name of STILLS) {
+  for (const name of stills) {
     const from = join(SHOTS, name);
     if (!existsSync(from)) {
       missing.push(name);
@@ -396,10 +570,31 @@ function copyShots() {
   }
 }
 
-const { dir, timeline } = loadTimeline();
+/**
+ * 어느 촬영을 자를지. 기본값은 장면 1~5다 — `npm run assets`가 그대로 돈다.
+ *
+ * `--settlement=chop` 처럼 마무리를 골라 정산 촬영을 자른다. 셋을 한 번에
+ * 자르지 않는 이유는 **촬영이 셋이기 때문**이다. 하나가 대회를 닫으므로
+ * 마무리마다 시드를 다시 깔고 다시 찍고, 그때마다 이 스크립트를 부른다.
+ */
+const settlementArg = process.argv
+  .find((a) => a.startsWith('--settlement='))
+  ?.slice('--settlement='.length);
+
+if (settlementArg && !(settlementArg in SETTLEMENT_TAKE)) {
+  const had = Object.keys(SETTLEMENT_TAKE).join(' · ');
+  throw new Error(`--settlement은 ${had} 중 하나다. 받은 것: ${settlementArg}`);
+}
+
+const take = settlementArg ? SETTLEMENT_TAKE[settlementArg] : TAKE;
+const scenes = settlementArg ? settlementScenes(settlementArg) : SCENES;
+const stills = settlementArg ? settlementStills(settlementArg) : STILLS;
+
+assertFfmpeg();
+const { dir, timeline } = loadTimeline(take);
 mkdirSync(ASSETS, { recursive: true });
 
 console.log('움짤');
-for (const scene of SCENES) buildScene(dir, timeline, scene);
+for (const scene of scenes) buildScene(dir, timeline, scene);
 console.log('스틸');
-copyShots();
+copyShots(stills);

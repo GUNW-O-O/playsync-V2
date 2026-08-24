@@ -88,7 +88,9 @@ npm run test:int       # 통합 테스트 (컨테이너 기동부터 자동)
 npm run test:e2e       # 화면 회귀 (Playwright, 시드 필요)
 npm run seed           # 개발 시드 (= npm run seed -w backend)
 npm run demo           # 데모 촬영 (시드 → 프론트 빌드 → 장면 다섯)
-npm run assets         # 촬영본을 자르고 합쳐 img/ 로 (ffmpeg-static)
+npm run demo:settlement  # 정산 촬영. 마무리 셋을 각각 시드부터 다시 돈다
+npm run assets         # 장면 1~5 촬영본을 자르고 합쳐 img/ 로 (ffmpeg-static)
+npm run assets:settlement  # 정산 촬영을 자른다 (`--settlement=complete|chop|abort`)
 ```
 
 부하 명령(`load:up` · `load:ramp-a/b` · `load:metrics` · `load:logs` ·

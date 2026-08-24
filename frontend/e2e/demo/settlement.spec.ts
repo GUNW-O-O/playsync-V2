@@ -69,6 +69,19 @@ import { dealerToken, openWire, type Wire } from '../fixtures/wire';
 type Ending = 'complete' | 'chop' | 'abort';
 const ENDING = (process.env.DEMO_ENDING ?? 'chop') as Ending;
 
+/**
+ * 테스트 제목이 곧 **촬영 폴더 이름**이다(`surfaces.ts`의 `slug`).
+ *
+ * 그래서 제목에 **무엇을 찍은 촬영인지**를 적는다. `정산-chop` 같은 이름은
+ * 폴더를 열어 봐야 무엇인지 알 수 있고, `자르는 쪽`(`make-demo-assets.mjs`)이
+ * 그 폴더를 상수로 가리키므로 이름이 곧 계약이다.
+ */
+const TAKE_TITLE: Record<Ending, string> = {
+  complete: '마무리 — 최후 1인으로 닫는다',
+  chop: '마무리 — ICM으로 닫는다',
+  abort: '마무리 — 중단하고 환불한다',
+};
+
 /** 카메라가 보는 테이블. 병합의 종착지이자 파이널 테이블이 된다. */
 const FILMED_TABLE = 1;
 
@@ -164,7 +177,7 @@ test.describe('데모 — 정산', () => {
    * (앉은 자리는 그 태블릿의 쿠키다), 대회 하나가 시작부터 마감까지 한
    * 방향으로 흘러간다.
    */
-  test(`마무리 — 35명에서 파이널 테이블까지 (${ENDING})`, async ({
+  test(TAKE_TITLE[ENDING], async ({
     stage,
     mark,
     manifest,
@@ -190,9 +203,14 @@ test.describe('데모 — 정산', () => {
     let chipsInPlay = settlement.tournament.startStack * settlement.players.length;
 
     // ── 면을 연다 ───────────────────────────────────────────────────
+    //
+    // **두 번째 인자가 그대로 영상 파일 이름이다.** 면 이름만 적으면 태블릿
+    // 둘이 구분되지 않으므로 **그 면이 무엇을 보여주는가**를 적는다 — 딜러
+    // 태블릿은 병합의 종착지(=파이널 테이블이 되는 테이블)이고, 좌석 둘은
+    // 각각 살아남는 사람과 탈락했다 돌아오는 사람이다.
     const console_ = await stage('console', 'console');
     const board = await stage('scoreboard', 'scoreboard');
-    const dealerTablet = await stage('tablet', 'dealer');
+    const dealerTablet = await stage('tablet', 'dealer-final-table');
     const survivorTablet = await stage('tablet', 'seat-survivor');
     const rebuyerTablet = await stage('tablet', 'seat-rebuyer');
 
@@ -239,7 +257,7 @@ test.describe('데모 — 정산', () => {
     // 유일한 자리라 여기서 스틸을 찍는다.
     await console_.reload();
     await linger(console_, 1_500);
-    await shoot(console_, 'settlement-console-seats');
+    await shoot(console_, 'console-four-tables');
 
     // ── 대회 시작 ───────────────────────────────────────────────────
     mark('무대 — 대회가 열린다');
@@ -458,7 +476,7 @@ test.describe('데모 — 정산', () => {
 
     const rebuyButton = rebuyerTablet.getByRole('button', { name: '리바인', exact: true });
     await expect(rebuyButton).toBeVisible({ timeout: 30_000 });
-    await shoot(rebuyerTablet, 'settlement-rebuy-prompt');
+    await shoot(rebuyerTablet, 'seat-rebuy-raises-entry');
     await press(rebuyerTablet, rebuyButton);
     chipsInPlay += settlement.tournament.startStack;
     await declineRebuys(filmed);
@@ -469,7 +487,7 @@ test.describe('데모 — 정산', () => {
       })
       .toBe(beforeRebuy + 1);
     await linger(board, 2_500);
-    await shoot(board, 'settlement-scoreboard-itm');
+    await shoot(board, 'scoreboard-entry-not-player');
     await settleToWaiting(filmed, '첫 판');
 
     // 나머지 세 테이블도 같은 판을 돈다. 화면이 없을 뿐 같은 소켓 · 같은
@@ -514,7 +532,7 @@ test.describe('데모 — 정산', () => {
     // 그려졌다」가 아니라 「없어졌다」를 뜻한다.
     await expect(board.getByText('마감 전 · 예상')).toBeHidden({ timeout: 60_000 });
     await linger(board, 2_500);
-    await shoot(board, 'settlement-scoreboard-closed');
+    await shoot(board, 'scoreboard-prize-final');
 
     // ── 병합 1 — 넷에서 둘로 ────────────────────────────────────────
     //
@@ -610,7 +628,7 @@ test.describe('데모 — 정산', () => {
     const final = stages.get(FILMED_TABLE)!;
     await console_.reload();
     await linger(console_, 2_000);
-    await shoot(console_, 'settlement-final-table');
+    await shoot(console_, 'console-final-table');
 
     const atFinal = await stateOf(final);
     const seatedCount = atFinal.players.filter((p) => p).length;
@@ -638,7 +656,7 @@ test.describe('데모 — 정산', () => {
     await console_.reload();
     await linger(console_, 2_000);
     await expect(console_.getByText('대회 마무리 — 되돌릴 수 없습니다')).toBeVisible();
-    await shoot(console_, 'settlement-finish-rows');
+    await shoot(console_, 'console-finish-blocked');
     await linger(console_, 3_000);
 
     // ── 갈림목 ──────────────────────────────────────────────────────
@@ -650,7 +668,7 @@ test.describe('데모 — 정산', () => {
       // **합이 걷은 돈과 같다.** 확인 대화의 마지막 줄이 그것이고, 이
       // 화면의 핵심이 그 한 줄을 눈으로 확인하는 것이다.
       await linger(console_, 2_500);
-      await shoot(console_, 'settlement-chop-confirm');
+      await shoot(console_, 'console-chop-ledger');
       await press(console_, dialog.getByRole('button', { name: 'ICM 마무리' }));
     } else if (ENDING === 'abort') {
       mark('마무리 — 중단하고 환불한다');
@@ -660,7 +678,7 @@ test.describe('데모 — 정산', () => {
       // 환불은 사람마다가 아니라 **무리로** 접힌다 — 진행 중 · 탈락 · 이미
       // 상금을 받은 사람. 셋의 규칙이 다르다는 것이 표에 그대로 있다.
       await linger(console_, 2_500);
-      await shoot(console_, 'settlement-abort-confirm');
+      await shoot(console_, 'console-abort-ledger');
       await press(console_, dialog.getByRole('button', { name: '중단' }));
     } else {
       // 최후 1인까지 친다. 다섯이 남아 있으므로 한 판이면 된다 — 전원
@@ -695,7 +713,7 @@ test.describe('데모 — 정산', () => {
       timeout: 30_000,
     });
     await linger(console_, 2_500);
-    await shoot(console_, `settlement-closed-${ENDING}`);
+    await shoot(console_, `console-closed-${ENDING}`);
     await linger(board, 2_500);
 
     mark('끝');

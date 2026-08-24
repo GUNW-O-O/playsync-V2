@@ -19,7 +19,8 @@ cd backend && docker compose up -d   # 무대를 깐다 (DB를 지우고 다시 
 npm run test:e2e                     # 화면 회귀. 개발 서버는 떠 있으면 재사용한다
 npm run demo                         # 데모 촬영. 시드 → 프론트 빌드 → 장면 다섯
 npm run demo:settlement              # 정산 촬영. 마무리마다 시드를 다시 깔고 다시 돈다
-npm run assets                       # 촬영본을 자르고 합쳐 img/ 로
+npm run assets                       # 장면 1~5 촬영본을 자르고 합쳐 img/ 로
+npm run assets:settlement            # 정산 촬영(ICM)을 자른다. 다른 마무리는 --settlement=
 ```
 
 **프로젝트가 셋이다**(`playwright.config.ts`). `regression`은 `e2e/*.spec.ts`,
@@ -271,6 +272,25 @@ const board = await stage('scoreboard', '전광판');
 `toBeHidden`으로 보면 **없는 요소에도 통과한다** — 전광판은 주기적으로 다시
 그리므로 그 틈이 실제로 열리고, 12분짜리 레벨이 3분 25초 만에 「마감됐다」로
 통과했다. 게이트가 읽는 값(`GET /playsync/dashboard/:id`)을 직접 본다.
+
+### 파일 이름이 그 그림의 주장이다
+
+`s6`·`s7` 같은 번호만으로는 `img/`를 열어 봐도 무엇을 보여주는 그림인지 알 수
+없고, README가 그림을 고를 때마다 영상을 다시 열어야 한다. 그래서 **이름에
+내용을 적는다.**
+
+| 무엇 | 이름 |
+|---|---|
+| 촬영 폴더 | 테스트 제목에서 나온다 — `마무리-ICM으로-닫는다` · `마무리-최후-1인으로-닫는다` · `마무리-중단하고-환불한다` |
+| 영상(면) | `stage()`의 둘째 인자. `dealer-final-table`(병합의 종착지) · `seat-survivor` · `seat-rebuyer` · `console` · `scoreboard` |
+| 움짤(장면) | `s6-entry-not-player` · `s7-four-tables-to-one` · `s8-close-icm`/`-last-one`/`-abort` |
+| 스틸 | `scoreboard-entry-not-player` · `console-finish-blocked` · `console-chop-ledger` · `console-abort-ledger` … |
+
+**마무리 장면만 마무리마다 이름이 다르다.** 셋이 같은 자리에서 갈리므로
+**파일 이름이 유일한 구분**이고, 셋을 나란히 놓는 것이 이 촬영의 요점이다.
+
+자르는 것은 마무리마다 따로 부른다 — `node scripts/make-demo-assets.mjs
+--settlement=chop`. 셋을 한 번에 못 자르는 이유는 **촬영이 셋이기 때문**이다.
 
 ### 카메라가 넷인데 테이블이 넷이다
 
