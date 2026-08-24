@@ -82,6 +82,18 @@ const TAKE_TITLE: Record<Ending, string> = {
   abort: '마무리 — 중단하고 환불한다',
 };
 
+/**
+ * 닫힌 뒤의 스틸. **마무리마다 번호가 다르다.**
+ *
+ * 이름이 곧 README의 등장 순서라(`img/`의 규칙) 접미사 하나로 못 만든다.
+ * 셋을 나란히 놓는 것이 이 스틸들의 요점이므로 번호도 연달아 준다.
+ */
+const CLOSED_SHOT = {
+  complete: '22-closed-complete',
+  chop: '23-closed-chop',
+  abort: '24-closed-abort',
+} as const;
+
 /** 카메라가 보는 테이블. 병합의 종착지이자 파이널 테이블이 된다. */
 const FILMED_TABLE = 1;
 
@@ -257,7 +269,7 @@ test.describe('데모 — 정산', () => {
     // 유일한 자리라 여기서 스틸을 찍는다.
     await console_.reload();
     await linger(console_, 1_500);
-    await shoot(console_, 'console-four-tables');
+    await shoot(console_, '16-four-tables-rake-10');
 
     // ── 대회 시작 ───────────────────────────────────────────────────
     mark('무대 — 대회가 열린다');
@@ -476,7 +488,7 @@ test.describe('데모 — 정산', () => {
 
     const rebuyButton = rebuyerTablet.getByRole('button', { name: '리바인', exact: true });
     await expect(rebuyButton).toBeVisible({ timeout: 30_000 });
-    await shoot(rebuyerTablet, 'seat-rebuy-raises-entry');
+    await shoot(rebuyerTablet, '12-rebuy-accept-raises-entry');
     await press(rebuyerTablet, rebuyButton);
     chipsInPlay += settlement.tournament.startStack;
     await declineRebuys(filmed);
@@ -487,7 +499,7 @@ test.describe('데모 — 정산', () => {
       })
       .toBe(beforeRebuy + 1);
     await linger(board, 2_500);
-    await shoot(board, 'scoreboard-entry-not-player');
+    await shoot(board, '13-entry-36-players-35');
     await settleToWaiting(filmed, '첫 판');
 
     // 나머지 세 테이블도 같은 판을 돈다. 화면이 없을 뿐 같은 소켓 · 같은
@@ -532,7 +544,7 @@ test.describe('데모 — 정산', () => {
     // 그려졌다」가 아니라 「없어졌다」를 뜻한다.
     await expect(board.getByText('마감 전 · 예상')).toBeHidden({ timeout: 60_000 });
     await linger(board, 2_500);
-    await shoot(board, 'scoreboard-prize-final');
+    await shoot(board, '04-prize-table-locked');
 
     // ── 병합 1 — 넷에서 둘로 ────────────────────────────────────────
     //
@@ -628,7 +640,7 @@ test.describe('데모 — 정산', () => {
     const final = stages.get(FILMED_TABLE)!;
     await console_.reload();
     await linger(console_, 2_000);
-    await shoot(console_, 'console-final-table');
+    await shoot(console_, '17-final-table-origins');
 
     const atFinal = await stateOf(final);
     const seatedCount = atFinal.players.filter((p) => p).length;
@@ -656,7 +668,7 @@ test.describe('데모 — 정산', () => {
     await console_.reload();
     await linger(console_, 2_000);
     await expect(console_.getByText('대회 마무리 — 되돌릴 수 없습니다')).toBeVisible();
-    await shoot(console_, 'console-finish-blocked');
+    await shoot(console_, '18-finish-blocked-reasons');
     await linger(console_, 3_000);
 
     // ── 갈림목 ──────────────────────────────────────────────────────
@@ -668,7 +680,7 @@ test.describe('데모 — 정산', () => {
       // **합이 걷은 돈과 같다.** 확인 대화의 마지막 줄이 그것이고, 이
       // 화면의 핵심이 그 한 줄을 눈으로 확인하는 것이다.
       await linger(console_, 2_500);
-      await shoot(console_, 'console-chop-ledger');
+      await shoot(console_, '19-chop-ledger-sums');
       await press(console_, dialog.getByRole('button', { name: 'ICM 마무리' }));
     } else if (ENDING === 'abort') {
       mark('마무리 — 중단하고 환불한다');
@@ -678,7 +690,7 @@ test.describe('데모 — 정산', () => {
       // 환불은 사람마다가 아니라 **무리로** 접힌다 — 진행 중 · 탈락 · 이미
       // 상금을 받은 사람. 셋의 규칙이 다르다는 것이 표에 그대로 있다.
       await linger(console_, 2_500);
-      await shoot(console_, 'console-abort-ledger');
+      await shoot(console_, '21-abort-ledger-groups');
       await press(console_, dialog.getByRole('button', { name: '중단' }));
     } else {
       // 최후 1인까지 친다. 다섯이 남아 있으므로 한 판이면 된다 — 전원
@@ -713,7 +725,7 @@ test.describe('데모 — 정산', () => {
       timeout: 30_000,
     });
     await linger(console_, 2_500);
-    await shoot(console_, `console-closed-${ENDING}`);
+    await shoot(console_, CLOSED_SHOT[ENDING]);
     await linger(board, 2_500);
 
     mark('끝');

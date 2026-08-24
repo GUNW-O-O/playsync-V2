@@ -11,7 +11,7 @@ TypeScript · NestJS 11 · Next.js · PostgreSQL · Redis · zod contract · npm
 contract 62 · 백엔드 단위 198 · 프론트 100 · 통합 399(시나리오 11 스위트 포함) · e2e 13 · 타입 에러 0
 ```
 
-<img src="./img/s3-sidepot.webp" alt="올인으로 사이드팟이 갈리고, 딜러가 1등만 찍자 화면이 지급을 거부한다" width="100%">
+<img src="./img/02-sidepot-dealer-refused.webp" alt="올인으로 사이드팟이 갈리고, 딜러가 1등만 찍자 화면이 지급을 거부한다" width="100%">
 
 <sup>올인 셋이 팟을 둘로 가른다. 딜러가 1등만 찍자 **지급이 거부된다** —
 지명되지 않은 팟이 남았기 때문이다. 다시 순서대로 찍으면 층마다 알맞은
@@ -37,8 +37,8 @@ contract 62 · 백엔드 단위 198 · 프론트 100 · 통합 399(시나리오 
 
 <table>
 <tr>
-<td width="50%"><img src="./img/seat-game.png" alt="좌석 태블릿의 게임 화면. 딜러가 위에 있고 보드에 무늬가 없다"></td>
-<td width="50%"><img src="./img/dealer-felt.png" alt="딜러 태블릿의 같은 테이블. 딜러가 아래에 있다"></td>
+<td width="50%"><img src="./img/07-seat-view-of-table.png" alt="좌석 태블릿의 게임 화면. 딜러가 위에 있고 보드에 무늬가 없다"></td>
+<td width="50%"><img src="./img/08-dealer-view-of-table.png" alt="딜러 태블릿의 같은 테이블. 딜러가 아래에 있다"></td>
 </tr>
 </table>
 
@@ -61,7 +61,7 @@ contract 62 · 백엔드 단위 198 · 프론트 100 · 통합 399(시나리오 
 아무 단말이나 WS 엔드포인트를 직접 열 수 있다. 그래서 권한은 화면이 아니라
 게이트웨이에서 본다([`threat-model.md`](./docs/threat-model.md)).
 
-<img src="./img/s1-join.webp" alt="폰에서 참가비를 내고 참가 OTP를 받으면 상점 콘솔에 참가가 잡힌다" width="100%">
+<img src="./img/01-join-phone-to-console.webp" alt="폰에서 참가비를 내고 참가 OTP를 받으면 상점 콘솔에 참가가 잡힌다" width="100%">
 
 <sup>폰에서 참가비를 내고 **참가 OTP**를 받는다. 자리로 걸어가 태블릿에 그
 번호를 넣으면 좌석이 확정된다 — 결제가 아니라 **입장에서** 확정된다.
@@ -69,8 +69,8 @@ contract 62 · 백엔드 단위 198 · 프론트 100 · 통합 399(시나리오 
 
 <table>
 <tr>
-<td width="30%"><img src="./img/phone-me.png" alt="폰의 내 참가 화면. 참가 OTP 여섯 자리가 다시 떠 있다"></td>
-<td width="70%"><img src="./img/console-dealer-otp.png" alt="상점 콘솔 하단의 딜러 OTP 패널. 여섯 자리가 드러나 있다"></td>
+<td width="30%"><img src="./img/29-phone-entry-otp.png" alt="폰의 내 참가 화면. 참가 OTP 여섯 자리가 다시 떠 있다"></td>
+<td width="70%"><img src="./img/30-console-dealer-otp.png" alt="상점 콘솔 하단의 딜러 OTP 패널. 여섯 자리가 드러나 있다"></td>
 </tr>
 </table>
 
@@ -101,7 +101,7 @@ WAITING
   기다린다. 그동안 다음 핸드가 시작되지 않는 것은 `startPreFlop`이 `WAITING`만
   받기 때문이다.
 
-<img src="./img/s2-hand.webp" alt="좌석 태블릿 둘 · 딜러 · 전광판이 한 판을 동시에 그린다" width="100%">
+<img src="./img/06-one-click-four-surfaces.webp" alt="좌석 태블릿 둘 · 딜러 · 전광판이 한 판을 동시에 그린다" width="100%">
 
 <sup>좌석 둘 · 딜러 · 전광판. 콘솔에서 **대회 시작**을 누르면 전광판이 켜지고,
 딜러가 핸드를 열면 네 면이 같이 움직인다. **차례는 언제나 하나뿐이다** — 한쪽
@@ -127,7 +127,7 @@ WAITING
 버튼이 생존 전원을 한 그룹으로 채워 보내면 된다. **돈이 나가는 경로는 하나여야
 한다.** (chat-log #37)
 
-<img src="./img/dealer-winner.png" alt="승자 결정 화면. 팟이 두 층이고 층마다 자격자가 다르다" width="100%">
+<img src="./img/09-winner-pot-layers.png" alt="승자 결정 화면. 팟이 두 층이고 층마다 자격자가 다르다" width="100%">
 
 <sup>승자 결정 화면. **팟이 몇 층이고 누가 어느 층의 자격자인지는 시스템이
 책임진다** — 딜러는 그것을 보고 순서를 찍는다. 1층은 셋 다, 2층은 낼 돈이
@@ -158,7 +158,7 @@ WAITING
 마감도 "그 레벨을 밟았는가"가 아니라 **"지났는가"**로 판정한다. 건너뛴 대회가
 영영 열려 있으면 안 된다.
 
-<img src="./img/scoreboard.png" alt="전광판. 블라인드 레벨과 남은 시간, 남은 인원과 프라이즈풀" width="100%">
+<img src="./img/28-scoreboard-layout.png" alt="전광판. 블라인드 레벨과 남은 시간, 남은 인원과 프라이즈풀" width="100%">
 
 <sup>전광판은 10m 밖에서 읽힌다. 여기 뜨는 레벨과 남은 시간은 저장된 값이
 아니라 `startedAt`에서 매번 다시 계산한 값이다.</sup>
@@ -207,8 +207,8 @@ Redis의 `BlindField.startedAt`은 블라인드 시계의 기준점이라 **민�
 
 <table>
 <tr>
-<td width="55%"><img src="./img/seat-rebuy.png" alt="칩이 0이 된 사람의 태블릿에 리바인을 묻는 오버레이가 떴다"></td>
-<td width="45%"><img src="./img/phone-eliminated.png" alt="탈락한 사람의 폰. 지난 참가에 등수가 남았다"></td>
+<td width="55%"><img src="./img/25-rebuy-overlay.png" alt="칩이 0이 된 사람의 태블릿에 리바인을 묻는 오버레이가 떴다"></td>
+<td width="45%"><img src="./img/26-phone-shows-rank.png" alt="탈락한 사람의 폰. 지난 참가에 등수가 남았다"></td>
 </tr>
 </table>
 
@@ -224,7 +224,7 @@ Redis의 `BlindField.startedAt`은 블라인드 시계의 기준점이라 **민�
 세 걸음으로 나뉜다 — 상점이 좌석을 해제하고, 사람이 걸어가 **참가 OTP를
 다시 넣고**, 상점이 빈 테이블을 닫는다.
 
-<img src="./img/s5-table-merge.webp" alt="상점이 2번 테이블 좌석을 해제하면 사람이 1번 테이블로 옮겨 앉고, 옆자리 태블릿에 그가 나타난다" width="100%">
+<img src="./img/14-seat-move-closeup.webp" alt="상점이 2번 테이블 좌석을 해제하면 사람이 1번 테이블로 옮겨 앉고, 옆자리 태블릿에 그가 나타난다" width="100%">
 
 <sup>왼쪽 위가 옮겨 가는 사람의 태블릿, 오른쪽 위가 **가만히 앉아 있는
 사람**의 태블릿이다. 아무도 그 화면을 건드리지 않는데 옆자리가 찬다.
@@ -232,7 +232,7 @@ Redis의 `BlindField.startedAt`은 블라인드 시계의 기준점이라 **민�
 것과 같은 번호**다. 짝:
 [`table-move.int-spec.ts`](./backend/src/scenario/table-move.int-spec.ts)</sup>
 
-<img src="./img/seat-moved.png" alt="옮겨 앉은 사람의 태블릿. 1번 테이블 3번 자리이고 스택은 그대로다" width="100%">
+<img src="./img/15-stack-survives-move.png" alt="옮겨 앉은 사람의 태블릿. 1번 테이블 3번 자리이고 스택은 그대로다" width="100%">
 
 <sup>걸어온 사람이 다시 앉은 뒤. 자리는 **2번 테이블 어딘가에서 1번 테이블
 3번**으로 바뀌었는데 **스택 5,000은 그대로다** — 좌석 행이 사라졌다 새로
@@ -482,7 +482,7 @@ e2e            13  (4 files)       + 데모 촬영 1 (`npm run demo`)
 | **딜러 화면 머리글이 테이블 uuid였다** | uuid를 좌석 태블릿에서만 걷어냈던 것이다. 번호를 못 구하면 **uuid로 되돌아가지 않고** 테이블 쪽을 뺀다 |
 | **진행 중 탈락한 사람의 폰에 순위가 없었다** | `/me`가 **대회 상태**로만 갈랐다. 탈락은 대회가 끝나기 훨씬 전에 일어나니 가르는 기준은 "이 사람의 참가가 끝났는가"다 |
 
-<img src="./img/dealer-refused.png" alt="딜러 화면의 거절 배너. 지명되지 않은 팟과 그 자격자가 자리 번호와 닉네임으로 적혀 있다" width="100%">
+<img src="./img/10-unnamed-pot-refused.png" alt="딜러 화면의 거절 배너. 지명되지 않은 팟과 그 자격자가 자리 번호와 닉네임으로 적혀 있다" width="100%">
 
 <sup>고친 뒤의 거절 배너. **자격자가 자리 번호와 닉네임이다** — 여기에 uuid가
 둘 떠 있었고, 그 전에는 배너 자체가 없었다.</sup>
@@ -584,7 +584,7 @@ PostgreSQL** — 핸드당 수십 번 일어나는 상태 변경이 DB를 때리
 (아래 「상태를 어디에 두는가」). 게임 로직은 `game-engine` 하나에 모여 있고
 프레임워크 의존성이 없다.</sup>
 
-<img src="./img/console.png" alt="상점 콘솔 전체. 대회 머리글, 좌석 도식, 테이블 탭, 딜러 OTP 패널" width="100%">
+<img src="./img/27-console-layout.png" alt="상점 콘솔 전체. 대회 머리글, 좌석 도식, 테이블 탭, 딜러 OTP 패널" width="100%">
 
 <sup>소켓을 안 드는 면 중 하나 — **상점 콘솔**이다. 대회 시작 · 좌석 해제 ·
 테이블 닫기가 전부 서버 액션 한 번씩이라 실시간 채널을 들 이유가 없다.

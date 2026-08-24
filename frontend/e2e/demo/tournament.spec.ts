@@ -162,7 +162,7 @@ test.describe('데모 — 한 대회', () => {
     await press(phone, phone.getByRole('button', { name: '참가 OTP 조회' }), 600, 900);
     const heroOtp = (await phone.getByTestId('player-otp').innerText()).replace(/\s/g, '');
     expect(heroOtp).toMatch(/^\d+$/);
-    await shoot(phone, 'phone-me');
+    await shoot(phone, '29-phone-entry-otp');
     // 폰이 보여준 모양(자릿수만큼 칸)과 태블릿이 요구하는 모양(키패드)이
     // 같다는 것이 이 장면의 그림이다. **곧바로 자리로 간다** — 사이에 다른
     // 일을 끼우면 번호를 들고 걸어가는 흐름이 끊긴다.
@@ -182,7 +182,7 @@ test.describe('데모 — 한 대회', () => {
     await expect(console_.getByTestId(`console-seat-${SEATS.hero}`)).toContainText(
       manifest.unpaidPlayer,
     );
-    await shoot(console_, 'console');
+    await shoot(console_, '27-console-layout');
     await linger(console_, 1_500);
 
     // 6. **딜러 OTP를 여기서 꺼낸다.** 참가자의 번호와 딜러의 번호가 다른
@@ -195,7 +195,7 @@ test.describe('데모 — 한 대회', () => {
       '',
     );
     expect(shownDealerOtp).toMatch(/^\d+$/);
-    await shoot(console_, 'console-dealer-otp');
+    await shoot(console_, '30-console-dealer-otp');
     await linger(console_, 2_500);
 
     // =====================================================================
@@ -267,7 +267,7 @@ test.describe('데모 — 한 대회', () => {
     mark('장면 2 — 대회 시작 한 클릭이 세 면을 바꾼다');
     await press(console_, console_.getByRole('button', { name: '대회 시작' }), 700, 500);
     await expect(board.getByText('대기 중')).toBeHidden({ timeout: 30_000 });
-    await shoot(board, 'scoreboard');
+    await shoot(board, '28-scoreboard-layout');
     // 전광판 폴링이 1초라 여기서 더 기다릴 것이 없다.
     await expect(
       dealer
@@ -418,8 +418,8 @@ test.describe('데모 — 한 대회', () => {
     // 딜러 화면에도 층이 그대로 보인다(`Felt.tsx`). 스틸 `dealer-winner.png`가
     // 이 순간이다.
     await expect(dealer.getByTestId('side-pot-1')).toBeVisible();
-    await shoot(dealer, 'dealer-felt');
-    await shoot(heroPage, 'seat-game');
+    await shoot(dealer, '08-dealer-view-of-table');
+    await shoot(heroPage, '07-seat-view-of-table');
     await linger(dealer, 2_500);
 
     const shortId = layered.players[SEATS.hero]!.id;
@@ -438,7 +438,7 @@ test.describe('데모 — 한 대회', () => {
     await expect(dealer.getByTestId('dealer-action-error')).toContainText('지명되지 않은 팟');
     // **이 데모에서 가장 오래 머무는 화면이다.** 시스템이 사람의 실수를 막는
     // 순간이고, 나머지 장면은 전부 이 한 장면을 위한 무대다.
-    await shoot(dealer, 'dealer-refused');
+    await shoot(dealer, '10-unnamed-pot-refused');
     await linger(dealer, 3_500);
     // 딜러가 읽고 지운다. 모달이라 지우기 전까지는 다음 조작이 막힌다.
     await press(dealer, dealer.getByRole('button', { name: '확인' }));
@@ -457,7 +457,7 @@ test.describe('데모 — 한 대회', () => {
     await press(dealer, dealer.getByTestId(`winner-pick-${deepId}`));
     // 순위가 두 줄로 쌓인 상태가 화면 6이다. 층이 둘인 팟에 순위가 둘 —
     // 이 그림이 "부기는 시스템이 책임진다"의 전부다.
-    await shoot(dealer, 'dealer-winner');
+    await shoot(dealer, '09-winner-pot-layers');
     await linger(dealer, 2_000);
     await dealer.getByRole('button', { name: '배분' }).click();
 
@@ -482,7 +482,7 @@ test.describe('데모 — 한 대회', () => {
     // 구간에 같은 명령을 한 번 더 쏘는 셈이 된다.
     await expect(p1Page.getByRole('button', { name: '리바인' })).toBeVisible({ timeout: 30_000 });
     // 오버레이의 카운트다운이 도는 것이 보여야 한다. 15초 마감이라 짧게 쉰다.
-    await shoot(p1Page, 'seat-rebuy');
+    await shoot(p1Page, '25-rebuy-overlay');
     // 오래 끌지 않는다. 15초 마감이 도는 것을 보여주는 화면이지 기다리는
     // 화면이 아니고, 답은 이미 정해져 있다(거절 → 탈락).
     await linger(p1Page, 1_000);
@@ -526,7 +526,7 @@ test.describe('데모 — 한 대회', () => {
     mark('장면 4 — 폰에서 등수를 본다');
     await phone.reload();
     await expect(phone.getByText(/^\d+위$/)).toBeVisible();
-    await shoot(phone, 'phone-eliminated');
+    await shoot(phone, '26-phone-shows-rank');
     await linger(phone, 3_000);
 
     // =====================================================================
@@ -598,7 +598,7 @@ test.describe('데모 — 한 대회', () => {
     // B(딥스택)의 화면에서 그 자리가 찼는지 본다. 아무도 B의 태블릿을
     // 건드리지 않았다 — 소켓으로 온 것이다.
     await expect(p2Page.getByTestId(`seat-${MOVED_SEATS.p3}`)).toContainText(mover.nickname);
-    await shoot(moverPage, 'seat-moved');
+    await shoot(moverPage, '15-stack-survives-move');
     await shoot(p2Page, 'seat-joined');
     await linger(p2Page, 2_500);
 

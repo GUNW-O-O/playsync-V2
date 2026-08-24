@@ -29,6 +29,7 @@
     "assets:settlement": "node scripts/make-demo-assets.mjs --settlement=chop",
     "assets": "node scripts/make-demo-assets.mjs",
     "seed": "npm run seed -w backend",
-    "seed:load": "npm run seed:load -w backend"
+    "seed:load": "npm run seed:load -w backend",
+    "check:images": "node scripts/check-image-names.mjs"
   }
 }

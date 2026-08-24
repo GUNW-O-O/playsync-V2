@@ -93,7 +93,7 @@ const SCENES = [
     // **폰 → 태블릿 → 콘솔**이 한 사람을 가리키는 것이 이 장면이다. 폰과
     // 콘솔만 붙였더니 "그 번호가 어디로 들어갔는가"가 빠져 아무 말도 하지
     // 않는 그림이 됐다.
-    out: 's1-join',
+    out: '01-join-phone-to-console',
     from: '장면 1 — 상점을 찾는다',
     to: '장면 2 — 자리가 찬다',
     /*
@@ -112,7 +112,7 @@ const SCENES = [
     width: 1000,
   },
   {
-    out: 's2-hand',
+    out: '06-one-click-four-surfaces',
     from: '장면 2 — 대회가 열린다',
     to: '장면 3 — 올인',
     rows: [
@@ -130,10 +130,10 @@ const SCENES = [
 
       면 넷은 딜러와 좌석 셋이다. 미드스택 타일이 리바인 오버레이 → 탈락 →
       대기 화면으로 바뀌는 것이 **소켓으로 온 변화**이고, 등수는 움짤이
-      아니라 스틸(`phone-eliminated.png`)이 맡는다 — 폰은 이 순간 아무도
+      아니라 스틸(`26-phone-shows-rank.png`)이 맡는다 — 폰은 이 순간 아무도
       건드리지 않는 화면이라 타일을 하나 쓸 값어치가 없다.
     */
-    out: 's3-sidepot',
+    out: '02-sidepot-dealer-refused',
     from: '장면 3 — 올인',
     to: '장면 5 — 2번 테이블을 통째로 비운다',
     // 상자에 2px 여유를 준다. 1280×720을 880×495로 줄이면 계산상 딱 맞지만
@@ -152,7 +152,7 @@ const SCENES = [
       있는데 옆자리가 찬다), 아래가 콘솔(자리를 푸는 손)과 A의 폰(다시 넣을
       참가 OTP)이다.
     */
-    out: 's5-table-merge',
+    out: '14-seat-move-closeup',
     from: '장면 5 — 2번 테이블을 통째로 비운다',
     to: '끝',
     /*
@@ -511,20 +511,21 @@ function buildScene(dir, timeline, scene) {
  * 캡처가 그대로 남아 있다. 폴더째 옮기면 그것들까지 리포에 들어간다.
  */
 const STILLS = [
-  'console.png', // 화면 1 — 콘솔 대회 상세(좌석 도식)
-  'seat-waiting.png', // 화면 2 — 자리 고르기 · OTP 키패드
-  'seat-game.png', // 화면 3 — 좌석 펠트(딜러가 위)
-  'seat-rebuy.png', // 화면 4 — 리바인 오버레이
-  'dealer-felt.png', // 화면 5 — 딜러 펠트(사이드팟 층이 보인다)
-  'dealer-winner.png', // 화면 6 — 승자 결정
-  'dealer-refused.png', // 화면 6b — 지명되지 않은 팟을 거부한 순간
-  'scoreboard.png', // 화면 7 — 전광판
-  'phone-me.png', // 화면 8 — 폰의 참가 OTP
-  'seat-moved.png', // 장면 5 — 옮겨 앉아도 스택이 그대로다
-  'seat-joined.png', // 장면 5 — 가만히 있던 사람의 화면에 옆자리가 찬다
-  'console-dealer-otp.png', // 장면 1 — 상점이 딜러 OTP를 꺼낸다
-  'dealer-refused-before-start.png', // 장면 2 — 대회 전에는 핸드가 안 열린다
-  'phone-eliminated.png', // 장면 4 — 참가 OTP가 아니라 등수가 남는다
+  '07-seat-view-of-table.png',
+  '08-dealer-view-of-table.png', // 같은 테이블. 딜러가 아래에 있다
+  '09-winner-pot-layers.png',
+  '10-unnamed-pot-refused.png',
+  '15-stack-survives-move.png',
+  '25-rebuy-overlay.png',
+  '26-phone-shows-rank.png',
+  '27-console-layout.png',
+  '28-scoreboard-layout.png',
+  '29-phone-entry-otp.png',
+  '30-console-dealer-otp.png',
+  // 번호가 없는 것 — 지금 README가 안 쓴다. 촬영은 계속 남긴다.
+  'seat-waiting.png',
+  'seat-joined.png',
+  'dealer-refused-before-start.png',
 ];
 
 /**
@@ -535,21 +536,21 @@ const STILLS = [
 /**
  * 정산 촬영의 스틸. **이름이 그 사진의 주장이다.**
  *
- * 마무리 장부 둘(`console-chop-ledger` · `console-abort-ledger`)은 그
+ * 마무리 장부 둘(`19-chop-ledger-sums` · `21-abort-ledger-groups`)은 그
  * 마무리를 실제로 돌린 촬영에만 있다. 확인 대화가 그때만 열리기 때문이고,
  * 없는 것을 요구하면 다른 마무리 촬영이 통째로 실패한다.
  */
 function settlementStills(ending) {
   return [
-    'console-four-tables.png', // 무대 — 테이블 넷 · 상점 몫 10%
-    'seat-rebuy-raises-entry.png', // 리바인 — 이 수락이 엔트리를 36으로 만든다
-    'scoreboard-entry-not-player.png', // 엔트리 36 · 참가 35명 · 상금권 여섯 줄
-    'scoreboard-prize-final.png', // 마감 — 상금이 예상에서 확정으로
-    'console-final-table.png', // 여섯이 한 테이블에. 출신이 이름에 남는다
-    'console-finish-blocked.png', // 마무리 셋 · 못 누르는 이유가 그 자리에
-    ...(ending === 'chop' ? ['console-chop-ledger.png'] : []),
-    ...(ending === 'abort' ? ['console-abort-ledger.png'] : []),
-    `console-closed-${ending}.png`, // 닫힌 뒤 — 마무리 영역이 사라진다
+    '16-four-tables-rake-10.png',
+    '12-rebuy-accept-raises-entry.png',
+    '13-entry-36-players-35.png',
+    '04-prize-table-locked.png',
+    '17-final-table-origins.png',
+    '18-finish-blocked-reasons.png',
+    ...(ending === 'chop' ? ['19-chop-ledger-sums.png'] : []),
+    ...(ending === 'abort' ? ['21-abort-ledger-groups.png'] : []),
+    { complete: '22-closed-complete.png', chop: '23-closed-chop.png', abort: '24-closed-abort.png' }[ending],
   ];
 }
 
