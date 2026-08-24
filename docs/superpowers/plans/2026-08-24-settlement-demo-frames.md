@@ -1275,7 +1275,9 @@ git commit -m "chore: 자르는 쪽이 촬영 실행을 가로지르게 한다
 
 **Files:**
 - Modify: `img/` (새 움짤 넷 · 새 스틸 둘 추가, `s6`~`s9` 삭제)
-- Modify: `README.md` (새 그림 경로. **구조는 여전히 안 건드린다**)
+- Modify: `scripts/check-image-names.mjs` (`UNNUMBERED`에서 `s6`~`s9` 제거)
+
+**`README.md`는 안 건드린다.** 이 브랜치는 자산이 제대로 나오는 데까지다.
 
 - [ ] **Step 1: 새로 생긴 것을 확인한다**
 
@@ -1293,48 +1295,36 @@ git rm img/s6-six-all-in.webp img/s7-entry-not-player.webp img/s8-four-tables-to
 
 Modify: `scripts/check-image-names.mjs` — `UNNUMBERED`에서 그 넷을 뺀다.
 
-- [ ] **Step 3: README가 새 그림을 쓰게 한다**
+- [ ] **Step 3: 나온 그림이 쓸 만한지 본다**
 
-**구조는 안 건드린다.** 지금 `s3-sidepot`이 있는 최상단은 그대로 두고, 정산 그림을 쓰는 자리만 만든다. 지금 README에 정산 절이 없으므로 **§1 도메인 절의 「상금은 상점이 정하고 관리자가 닫는다」 뒤에 그림 셋을 붙인다.**
-
-```html
-<img src="./img/11-entry-not-player.webp" alt="배경 테이블 셋에서 다섯씩 사라지고, 리바인 하나가 전광판의 상금 목록을 다섯 줄에서 여섯 줄로 늘린다" width="100%">
-
-<img src="./img/03-four-tables-to-one.webp" alt="상점이 좌석을 풀면 두 사람이 폰에서 참가 OTP를 다시 보고 새 테이블에 앉는다" width="100%">
-
-<img src="./img/04-prize-table-locked.png" alt="등록이 마감된 순간 굳은 분배표. 자리마다 금액이 정해져 있다" width="100%">
-
-<img src="./img/05-two-doors-same-ledger.webp" alt="왼쪽은 ICM으로 닫고 오른쪽은 최후 1인까지 친다. 같은 셋의 폰에 다른 금액이 찍히는데 두 장부의 걷은 돈은 같다" width="100%">
-
-<img src="./img/20-abort-refunds-all.webp" alt="중단하면 상점 몫이 0이 되고 낸 돈이 무리별 규칙대로 돌아간다" width="100%">
-```
-
-나머지 새 스틸(`22-closed-complete.png` · `24-closed-abort.png`)도 `23-closed-chop.png`와 나란히 놓는다. 셋을 나란히 놓는 것이 그 스틸들의 요점이다.
-
-**3층 재구성은 여기서 하지 않는다**(설계 문서 §2). 이 태스크는 그림이 README에 **들어가 있게만** 한다.
-
-- [ ] **Step 4: 검사와 타입 체크**
+**README는 안 건드린다.** 이 브랜치의 목적은 **자산이 제대로 나오는 것**까지고, 어느 그림을 어느 층에 놓느냐는 그림을 다 보고 나야 서는 판단이라 별도 브랜치의 일이다(설계 문서 §2 · §5-6).
 
 Run:
 ```bash
+ls -la img/*.webp
 node scripts/check-image-names.mjs
+```
+
+Expected: 움짤이 여덟(장면 1~5의 넷 + 정산 넷). 정산 넷이 각각 2MB 안쪽. 검사 통과.
+
+그리고 **실제로 열어 본다.** 파일이 나온 것과 그림이 맞는 것은 다르다.
+
+| 그림 | 눈으로 확인할 것 |
+|---|---|
+| `11-entry-not-player.webp` | 딜러 셋에서 사람이 사라지고, 전광판의 상금 줄이 다섯에서 여섯으로 는다 |
+| `03-four-tables-to-one.webp` | 콘솔에서 좌석이 풀리고, 폰 둘이 참가 OTP를 다시 보이고, 두 사람이 다른 테이블에 앉는다 |
+| `05-two-doors-same-ledger.webp` | **좌우 폰 여섯에 서로 다른 금액.** 두 콘솔 장부의 「걷은」이 같다 |
+| `20-abort-refunds-all.webp` | 환불이 무리로 접히고 상점 몫이 0 |
+
+- [ ] **Step 4: 회귀를 돌린다**
+
+Run:
+```bash
 npm run typecheck
 npm run test
 ```
 
-Expected: 셋 다 통과.
-
-새 그림이 README에 실제로 들어갔는지는 검사가 안 본다(고아 번호는 일부러 안 잡는다). 직접 센다.
-
-```bash
-for f in 11-entry-not-player.webp 03-four-tables-to-one.webp 04-prize-table-locked.png 05-two-doors-same-ledger.webp 20-abort-refunds-all.webp 22-closed-complete.png 24-closed-abort.png; do
-  grep -q "img/$f" README.md || echo "README에 없다: $f"
-done
-```
-
-Expected: 출력 없음.
-
-- [ ] **Step 5: e2e 회귀를 돌린다**
+Expected: 타입 에러 0. 단위 전부 통과.
 
 Run: `npm run seed -w backend && npm run test:e2e`
 
@@ -1342,20 +1332,19 @@ Expected: 13건 통과.
 
 `shoot()` 이름이 바뀌었지만 회귀 프로젝트는 스틸을 안 찍는다. **그래도 돌린다** — Task 3이 `settlement.spec.ts`를 크게 고쳤고, 같은 픽스처(`screen.ts` · `surfaces.ts`)를 회귀가 쓴다.
 
-- [ ] **Step 6: 커밋**
+- [ ] **Step 5: 커밋**
 
 ```bash
-git add img README.md scripts/check-image-names.mjs
-git commit -m "docs: 설계대로 자른 그림으로 갈아 끼운다
+git add img scripts/check-image-names.mjs
+git commit -m "chore: 설계대로 자른 그림으로 갈아 끼운다
 
 s6~s9를 지운다. 설계 없이 흐름대로 마크를 찍은 뒤 타일을 짐작한
 것들이라 74초짜리 움짤에 5초짜리 주장이 들어 있었다. 11·03·05·20이
 그 자리를 대신한다.
 
-README는 경로와 새 그림만 넣었다. 세 층으로 나누는 재구성은 별도
-브랜치의 일이다 — 층을 나누는 판단이 그림을 보고 나야 선다."
+README는 손대지 않았다. 어느 그림을 어느 층에 놓느냐는 그림을 다 보고
+나야 서는 판단이라 별도 브랜치의 일이다."
 ```
-
 ---
 
 ## 남은 것 — 메인이 한다
