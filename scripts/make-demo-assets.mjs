@@ -287,6 +287,28 @@ function settlementScenes() {
       take: 'chop',
       from: '마무리 — 그 문을 누른다',
       to: '끝',
+      /*
+        **좌열만 한 마크 앞에서 연다.**
+
+        두 실행의 마무리 구간 길이가 같을 이유가 없다 — `complete`는 문을
+        누른 뒤 **최후의 판을 실제로 쳐야** 끝나고, `chop`은 확인 대화를
+        닫으면 바로 정산이다. 실측으로 chop 36.1초 대 complete 48.2초였고,
+        짧은 쪽은 `tpad`이 마지막 프레임을 복제하므로 **좌열이 12.2초를 정지
+        화면으로 버텼다** — 48초짜리 그림의 4분의 1이다.
+
+        좌열을 `마무리 — 셋이 한 화면에 있다`부터 열면 44.9초가 되어 정지가
+        3.3초로 준다. 내용도 나아진다: ICM 모달을 열기 전에 **마무리 카드 셋**
+        (종료 · ICM · 중단)이 좌열에 먼저 나오고, 그중 하나를 누르는 그림이
+        된다 — 「문이 셋인데 이 실행은 이 문으로 갔다」가 좌열에 들어간다.
+
+        **0으로는 안 맞춘다.** `끝`에서 48.220초를 역산하면 좌열 시작이
+        414.594초인데 `phone-final-3`의 슬레이트가 414.719초다. 0.13초 차라
+        프레임 하나만 어긋나도 자홍색이 샌다. 실행마다 달라지는 값에 그만한
+        여유를 걸 수 없다.
+      */
+      windowsByTake: {
+        chop: [['마무리 — 셋이 한 화면에 있다', '끝']],
+      },
       rows: [
         [tile('console', 882, 550), tile('dealer-t1', 882, 550, 'complete')],
         [
@@ -428,6 +450,56 @@ function markAt(timeline, name) {
 }
 
 /**
+ * 창의 경계 하나를 초로 옮긴다.
+ *
+ * 이름만 주면 그 마크의 시각이고, `{ at, plus }`를 주면 거기서 몇 초 밀거나
+ * 당긴 자리다. **마크가 없는 자리를 집어야 할 때가 있다** — 프레임 ③이
+ * 실행 둘을 좌우로 놓는데 두 실행의 마무리 구간 길이가 같을 이유가 없고,
+ * 그 차이는 마크 사이 어딘가에서 생긴다.
+ */
+function boundAt(timeline, bound) {
+  if (typeof bound === 'string') return markAt(timeline, bound);
+  return markAt(timeline, bound.at) + (bound.plus ?? 0);
+}
+
+/**
+ * 이 실행에서 잘라 낼 구간들. **하나가 아니라 목록이다.**
+ *
+ * 창을 하나만 낼 수 있으면 「가운데의 죽은 구간」을 버릴 방법이 없고, 실행이
+ * 둘인 프레임에서 한쪽 창만 넓힐 방법도 없다. 그래서 장면이 `windows`로
+ * 구간 목록을 주고, `windowsByTake`로 실행마다 다른 목록을 줄 수 있다.
+ *
+ * **도려내기는 그 실행의 모든 타일에서 같은 구간이어야 한다.** 한 타일만
+ * 잘라 내면 그 타일의 시계가 옆 타일보다 앞서 가고, 프레임 하나가 서로 다른
+ * 순간을 보여주게 된다. 그래서 목록이 타일이 아니라 **실행**에 붙는다.
+ *
+ * 실행이 다르면(프레임 ③의 좌우) 시계가 애초에 따로라 각자 잘라도 된다 —
+ * 맞춰야 하는 것은 **합계 길이** 하나뿐이다.
+ */
+function segmentsOf(scene, takeName, timeline) {
+  const windows =
+    scene.windowsByTake?.[takeName] ?? scene.windows ?? [[scene.from, scene.to]];
+  const segments = windows.map(([from, to]) => {
+    const start = boundAt(timeline, from);
+    const end = boundAt(timeline, to);
+    if (!(end > start)) {
+      throw new Error(
+        `${scene.out}: "${takeName}"의 구간이 거꾸로다 (${start.toFixed(3)} → ${end.toFixed(3)}).`,
+      );
+    }
+    return { start, end };
+  });
+  // 구간이 겹치거나 순서가 뒤바뀌면 같은 순간이 두 번 나오거나 시간이
+  // 거꾸로 흐른다. `concat`은 그것을 잡아 주지 않는다.
+  for (let i = 1; i < segments.length; i += 1) {
+    if (segments[i].start < segments[i - 1].end) {
+      throw new Error(`${scene.out}: "${takeName}"의 구간 ${i + 1}이 앞 구간과 겹친다.`);
+    }
+  }
+  return segments;
+}
+
+/**
  * 슬레이트가 나타나는 지점(초). 자홍색은 V(적색차) 성분이 극단으로 튀므로
  * `signalstats`의 `VAVG`가 가장 큰 프레임을 고른다.
  *
@@ -525,6 +597,10 @@ function toVideoTime(surface, wallSeconds) {
  * 이유가 없고, **`hstack`은 가장 짧은 입력에서 끝난다** — 채우지 않으면 긴
  * 쪽의 뒷부분이 통째로 잘린다.
  *
+ * **그 채움은 정지 화면이라 적을수록 좋다.** 실행마다 창을 따로 주는
+ * `windowsByTake`가 그것을 줄이는 자리다 — 짧은 쪽 실행의 창을 한 마크 앞에서
+ * 열면 정지가 그만큼 짧아진다.
+ *
  * @param takes 실행 이름 → `{ dir, timeline }`
  */
 function buildScene(scene, takes) {
@@ -535,14 +611,15 @@ function buildScene(scene, takes) {
   for (const name of used) {
     const entry = takes.get(name);
     if (!entry) throw new Error(`${scene.out}: "${name}" 촬영이 없다.`);
+    const segments = segmentsOf(scene, name, entry.timeline);
     spans.set(name, {
-      start: markAt(entry.timeline, scene.from),
-      end: markAt(entry.timeline, scene.to),
+      segments,
+      total: segments.reduce((sum, s) => sum + (s.end - s.start), 0),
     });
   }
 
   // 가장 긴 구간에 맞춘다. 짧은 쪽은 마지막 프레임을 늘려 채운다.
-  const longest = Math.max(...[...spans.values()].map((s) => s.end - s.start));
+  const longest = Math.max(...[...spans.values()].map((s) => s.total));
 
   const inputs = [];
   const filters = [];
@@ -563,7 +640,7 @@ function buildScene(scene, takes) {
     for (const t of row) {
       const takeName = t.take ?? scene.take;
       const { dir, timeline } = takes.get(takeName);
-      const { start, end } = spans.get(takeName);
+      const { segments, total } = spans.get(takeName);
 
       const file = join(dir, `${t.label}.webm`);
       if (!existsSync(file)) throw new Error(`영상이 없다: ${file}`);
@@ -572,21 +649,55 @@ function buildScene(scene, takes) {
       // 촬영 시각을 이 파일의 시각으로 옮긴다. 면이 그 장면 도중에 열렸으면
       // 앞부분은 검은 화면으로 채운다 — 그 순간의 그림이 아예 없다.
       const surface = surfaceEntry(timeline, t.label, file);
-      // **슬레이트보다 앞을 집지 않는다.** 그 면이 장면 도중에 열렸으면
-      // `toVideoTime`이 0을 주는데, 영상의 0초는 그림이 아니라 자홍색
-      // 마커다(`firstFrameAt`).
-      const from = Math.max(toVideoTime(surface, start), surface.firstFrameAt);
-      const to = Math.max(toVideoTime(surface, end), from);
       // 앞을 검게 채우는 만큼. 슬레이트를 건너뛴 만큼 그림이 늦게 시작하므로
       // 그 몫까지 채운다 — 아니면 이 타일만 옆 타일보다 앞서 간다.
-      const lead = Math.max(0, Math.min(surface.openedAt + surface.firstFrameAt, end) - start);
+      const first = segments[0];
+      const lead = Math.max(
+        0,
+        Math.min(surface.openedAt + surface.firstFrameAt, first.end) - first.start,
+      );
+      // **면이 창 도중에 열리는 것과 도려내기는 같이 못 쓴다.** 검게 채우는
+      // 몫은 첫 구간에만 붙는데, 뒤 구간이 아직 안 열린 면을 가리키면 그
+      // 구간이 길이 0으로 나와 `concat`이 프레임 없는 입력을 받는다. 그런
+      // 조합이 필요해지면 구간마다 채우도록 고쳐야 한다 — 지금은 조용히
+      // 깨지는 대신 여기서 멈춘다.
+      if (segments.length > 1 && lead > 0) {
+        throw new Error(
+          `${scene.out}: 면 "${t.label}"이 창 도중에 열리는데 구간이 여럿이다. ` +
+            '면을 더 일찍 열거나 구간을 하나로 둔다.',
+        );
+      }
       // 이 실행의 구간이 가장 긴 것보다 짧으면 뒤를 늘린다. `stop_mode=clone`
       // 은 마지막 프레임을 복제한다 — 마무리 구간의 끝은 대회가 닫힌 뒤라
       // 거의 정지 화면이고, 늘어난 몇 초가 그림을 바꾸지 않는다.
       // `stop_duration=0`은 아무 일도 안 하므로 가장 긴 실행에는 무해하다.
-      const tail = longest - (end - start);
+      const tail = longest - total;
+      // 구간마다 잘라 이어 붙인다. 하나면 `concat` 없이 그대로 간다 —
+      // 필터 그래프가 짧을수록 실패했을 때 읽기 쉽다.
+      let cut = `[${n}:v]`;
+      if (segments.length === 1) {
+        // **슬레이트보다 앞을 집지 않는다.** 그 면이 장면 도중에 열렸으면
+        // `toVideoTime`이 0을 주는데, 영상의 0초는 그림이 아니라 자홍색
+        // 마커다(`firstFrameAt`).
+        const from = Math.max(toVideoTime(surface, first.start), surface.firstFrameAt);
+        const to = Math.max(toVideoTime(surface, first.end), from);
+        cut += `trim=start=${from.toFixed(3)}:end=${to.toFixed(3)},setpts=PTS-STARTPTS,`;
+      } else {
+        filters.push(`[${n}:v]split=${segments.length}${segments.map((_, i) => `[s${n}_${i}]`).join('')}`);
+        for (const [i, seg] of segments.entries()) {
+          const from = Math.max(toVideoTime(surface, seg.start), surface.firstFrameAt);
+          const to = Math.max(toVideoTime(surface, seg.end), from);
+          filters.push(
+            `[s${n}_${i}]trim=start=${from.toFixed(3)}:end=${to.toFixed(3)},setpts=PTS-STARTPTS[c${n}_${i}]`,
+          );
+        }
+        filters.push(
+          `${segments.map((_, i) => `[c${n}_${i}]`).join('')}concat=n=${segments.length}:v=1:a=0[j${n}]`,
+        );
+        cut = `[j${n}]`;
+      }
       filters.push(
-        `[${n}:v]trim=start=${from.toFixed(3)}:end=${to.toFixed(3)},setpts=PTS-STARTPTS,` +
+        cut +
           `tpad=start_duration=${lead.toFixed(3)}:start_mode=add:color=black` +
           `:stop_duration=${tail.toFixed(3)}:stop_mode=clone,` +
           // `scale`이 비율을 지키느라 1px 넘길 때가 있다(폰 390×844를 높이
@@ -737,11 +848,6 @@ function copyShots(stills) {
 /**
  * 어느 촬영을 자를지. 기본값은 장면 1~5다 — `npm run assets`가 그대로 돈다.
  *
- * `--settlement=chop` 처럼 마무리를 골라 정산 촬영을 자른다. 셋을 한 번에
- * 자르지 않는 이유는 **촬영이 셋이기 때문**이다. 하나가 대회를 닫으므로
- * 마무리마다 시드를 다시 깔고 다시 찍고, 그때마다 이 스크립트를 부른다.
- */
-/**
  * `--settlement`은 **인자를 안 받는다.**
  *
  * 마무리 프레임이 `chop`과 `complete`를 좌우로 놓으므로 셋이 다 있어야
