@@ -631,7 +631,23 @@ test.describe('데모 — 정산', () => {
     const declineRebuys = async (s: Stage) => {
       await Promise.all(
         [...s.seats.values()].map(async (actor) => {
-          if (actor.kind !== 'wire') return;
+          // **화면에 앉은 사람은 화면에서 거절한다.** 좌석 태블릿에 리바인
+          // 오버레이가 뜨고(`RebuyOverlay`), 그것을 아무도 닫지 않으면 소켓
+          // 쪽만 대답해도 그 한 사람 때문에 15초가 그대로 흐른다 — 둘째 판의
+          // 탈락자에 화면 배역 둘이 들어 있어 실측으로 30초가 남아 있었다.
+          //
+          // 오버레이가 안 떴으면 파산하지 않은 것이라 누를 것도 없다.
+          if (actor.kind === 'screen') {
+            const decline = actor.page.getByRole('button', { name: '거절', exact: true });
+            // 소켓 쪽과 같은 이유로 **기다렸다가** 누른다. 오버레이는 서버가
+            // 묻는 순간 뜨는데, 그보다 먼저 보면 없다.
+            const shown = await decline
+              .waitFor({ state: 'visible', timeout: 3_000 })
+              .then(() => true)
+              .catch(() => false);
+            if (shown) await press(actor.page, decline);
+            return;
+          }
           // **물어본 소켓에만 대답한다.** 게이트웨이가 파산자에게만
           // `REBUY_PROMPT`를 보내므로(`ws.gateway.ts`), 그것이 도착했다는
           // 사실이 곧 「이 사람에게 묻고 있다」이다. 안 오면 파산하지 않은
@@ -680,19 +696,24 @@ test.describe('데모 — 정산', () => {
     // 배역을 다시 옮겨도 코드가 따라온다.
     mark('첫 판 — 한 판에 스물이 나간다');
     const rebuyerTableOrder = playerOf(ON_SCREEN.rebuyer).tableOrder;
-    const filmed = stages.get(FILMED_TABLE)!;
-    await playHand(filmed, '첫 판', FIRST_HAND_ALL_IN[filmed.tableOrder]);
-    await declineRebuys(filmed);
-    await settleToWaiting(filmed, '첫 판');
 
-    // 배경 테이블 중 rebuyer가 없는 것들. 화면이 없을 뿐 같은 소켓 · 같은
-    // 스키마 · 같은 딜러 명령이다.
-    for (const s of stages.values()) {
-      if (s.tableOrder === FILMED_TABLE || s.tableOrder === rebuyerTableOrder) continue;
-      await playHand(s, '첫 판', FIRST_HAND_ALL_IN[s.tableOrder]);
-      await declineRebuys(s);
-      await settleToWaiting(s, '첫 판');
-    }
+    // **세 테이블을 한꺼번에 돌린다.** 프레임 ①이 주장하는 것이
+    // 「세 테이블에서 동시에 사람이 사라진다」인데, 하나씩 돌리면 화면에는
+    // 같은 일이 세 번 차례로 일어나는 그림이 남는다 — 실측으로 그 구간이
+    // 57초였고 대기가 아니라 순서 때문이었다.
+    //
+    // 테이블마다 락이 따로이고(`table:{id}`) 운영에서도 넷이 동시에 돈다.
+    // 화면은 촬영 테이블 하나뿐이라 클릭이 엉킬 자리도 없다.
+    const together = [...stages.values()].filter(
+      (s) => s.tableOrder !== rebuyerTableOrder,
+    );
+    await Promise.all(
+      together.map(async (s) => {
+        await playHand(s, '첫 판', FIRST_HAND_ALL_IN[s.tableOrder]);
+        await declineRebuys(s);
+        await settleToWaiting(s, '첫 판');
+      }),
+    );
 
     // rebuyer의 테이블은 판만 돌리고 정리하지 않는다 — 그 사람의 탈락과
     // 리바인 오버레이가 뜨는 순간이 바로 다음 블록이라, 여기서 거절해
@@ -977,12 +998,16 @@ test.describe('데모 — 정산', () => {
     // `declineRebuys`는 등록이 마감된 뒤에는 그냥 지나가므로, 촬영이 느려져
     // 이 판이 마감 뒤로 밀려도 안전하다.
     mark('둘째 판 — 두 테이블에서 열이 나간다');
-    await playHand(stages.get(FILMED_TABLE)!, '둘째 판', SECOND_HAND_ALL_IN[FILMED_TABLE]);
-    await declineRebuys(stages.get(FILMED_TABLE)!);
-    await settleToWaiting(stages.get(FILMED_TABLE)!, '둘째 판');
-    await playHand(stages.get(2)!, '둘째 판', SECOND_HAND_ALL_IN[2]);
-    await declineRebuys(stages.get(2)!);
-    await settleToWaiting(stages.get(2)!, '둘째 판');
+    // 첫 판과 같은 이유로 **둘을 한꺼번에** 돌린다. 마크 이름이 「두
+    // 테이블에서 열이 나간다」인데 차례로 돌면 열이 아니라 다섯씩 두 번이다.
+    await Promise.all(
+      [FILMED_TABLE, 2].map(async (order) => {
+        const s = stages.get(order)!;
+        await playHand(s, '둘째 판', SECOND_HAND_ALL_IN[order]);
+        await declineRebuys(s);
+        await settleToWaiting(s, '둘째 판');
+      }),
+    );
 
     // ── 병합 2 — 파이널 테이블 ──────────────────────────────────────
     mark('파이널 테이블 — 아홉이 한 테이블에 앉는다');
