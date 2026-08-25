@@ -208,8 +208,8 @@ test.describe('데모 — 한 대회', () => {
 
     // 2번 테이블. **옮겨 갈 사람(A)에게는 자기 태블릿을 준다** — 장면 5가
     // "A의 자리가 바뀐다"를 보여주는 장면이라, A가 어느 화면에서 나와 어느
-    // 화면으로 들어가는지가 보여야 한다. 나머지 둘은 배경이라 API로 앉힌다
-    // (태블릿 하나가 컨텍스트당 131MB다).
+    // 화면으로 들어가는지가 보여야 한다. 나머지 둘은 **배경이라** API로
+    // 앉힌다 — 녹화 컨텍스트는 하나가 비싸고, 배경은 그릴 값이 없다.
     const moverPage = await stage('tablet', 'seat-mover');
     await sitDown(moverPage, manifest.store.id, table2.id, TABLE2_SEATS.p3, mover.otp);
     await seat(request, manifest.tournament.id, {

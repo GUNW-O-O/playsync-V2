@@ -176,17 +176,73 @@ export async function pressUntilEffective(
  * 핸드의 한순간에만 존재한다.
  *
  * `deviceScaleFactor`를 2로 올리지 않는다(명세 §7과 다르다). 그건 컨텍스트
- * 단위 설정이라 녹화 중인 면 일곱의 래스터가 통째로 4배가 되는데, 이 기계는
- * 여유 RAM이 0.93GB다. 1280×720 PNG가 README 폭(약 900px)에서 뭉개지지
- * 않는다.
+ * 단위 설정이라 **녹화 중인 면 전부의 래스터가 통째로 4배**가 된다. 얻는
+ * 것은 없다 — 1280×720 PNG가 README 폭(약 900px)에서 뭉개지지 않는다.
+ *
+ * 여유 메모리가 얼마인지는 **그때 재서 판단한다.** 여기에 숫자를 박아 두면
+ * 다른 기계에서 그 값이 거짓이 되고, 거짓인 줄 모르는 채로 판단의 근거가
+ * 된다.
  */
 export const SHOTS_DIR = resolve(__dirname, '../.shots');
-export async function shoot(page: Page, name: string) {
-  await page.screenshot({
-    path: join(SHOTS_DIR, `${name}.png`),
-    animations: 'disabled',
-    caret: 'hide',
-  });
+
+/**
+ * 찍는 동안만 가짜 커서를 지운다.
+ *
+ * 커서는 `position:fixed` DOM 노드라(`cursor.ts`) **마지막으로 움직인
+ * 자리에 그대로 남는다.** `press`가 목표 위로 옮겨 놓고 누르므로, 그 직후에
+ * 찍으면 점 28px이 **방금 누른 것 위에 얹힌다** — `19-chop-ledger-sums.png`
+ * 에서 「ICM 마무리」가 「ICM ●무리」로 찍혔다. `caret: 'hide'`는 텍스트
+ * 캐럿만 숨기고 이 노드는 못 건드린다.
+ *
+ * 영상에서는 커서가 있어야 조작이 읽히므로 **스틸에서만** 지운다. 지우는
+ * 구간이 100ms 미만이고 그 자리가 `linger`로 멈춰 있는 데다 움짤이 8~12fps로
+ * 내려가므로, 깜빡임이 프레임에 남지 않는다.
+ */
+async function withoutCursor<T>(page: Page, run: () => Promise<T>) {
+  const set = (visibility: string) =>
+    page
+      .evaluate((v) => {
+        const dot = document.getElementById('__demo_cursor__');
+        if (dot) dot.style.visibility = v;
+      }, visibility)
+      // 커서는 촬영 프로젝트에만 꽂힌다(`surfaces.ts`). 회귀에서 부르면
+      // 노드가 없을 뿐이고, 그건 실패가 아니다.
+      .catch(() => undefined);
+
+  await set('hidden');
+  try {
+    return await run();
+  } finally {
+    await set('visible');
+  }
+}
+
+/**
+ * @param focus 이 요소가 프레임 안에 들어오도록 먼저 굴린다.
+ *
+ * **뷰포트가 화면보다 짧다.** 상점 콘솔은 좌석 도식 · 딜러 OTP · 마무리
+ * 카드가 세로로 이어져 720px에 안 들어간다. `toBeVisible()`은 「DOM에 있고
+ * 안 숨겨졌다」라 스크롤 밖도 통과하므로, 그것만 믿고 찍으면 **그림이 제
+ * 이름을 못 지킨다** — `18-finish-blocked-reasons.png`에 정작 마무리 카드가
+ * 없었다.
+ */
+export async function shoot(
+  page: Page,
+  name: string,
+  focus?: ReturnType<Page['getByRole']>,
+) {
+  if (focus) {
+    await focus.scrollIntoViewIfNeeded();
+    // 스크롤은 부드럽게 움직인다. 굴리는 도중에 찍으면 흐른 프레임이 남는다.
+    await page.waitForTimeout(600);
+  }
+  await withoutCursor(page, () =>
+    page.screenshot({
+      path: join(SHOTS_DIR, `${name}.png`),
+      animations: 'disabled',
+      caret: 'hide',
+    }),
+  );
 }
 
 /**
