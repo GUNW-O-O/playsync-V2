@@ -615,19 +615,39 @@ test.describe('데모 — 정산', () => {
     /**
      * 탈락한 사람들의 리바인을 거절한다.
      *
-     * 응답하지 않아도 15초 뒤 자동 거절이지만, 스무 명분을 기다리면 촬영이
+     * 응답하지 않아도 15초 뒤 자동 거절이지만, 판마다 그것을 기다리면 촬영이
      * 그만큼 멈춘다. **거절도 사람이 하는 대답이라** 소켓으로 보낸다 —
      * 참가 행을 손으로 고치면 등수와 상금이 촬영이 지어낸 값이 된다.
      *
-     * 등록이 마감된 뒤에는 묻지도 않으므로 그냥 지나간다.
+     * **묻기를 기다렸다가 대답한다.** 전에는 좌석이 빈 소켓에만 보냈는데,
+     * 리바인을 묻는 대상은 「스택이 0인데 **아직 좌석에 있는** 사람」이라
+     * 조건이 정확히 반대였다. 거절이 아무에게도 안 가서 판마다 15초를
+     * 그대로 태웠다 — 실측으로 첫 판 구간 112초 중 **84초**가 그 대기였고,
+     * 그것이 통째로 움짤에 들어갔다.
+     *
+     * 등록이 마감된 뒤에는 묻지도 않으므로 `REBUY_PROMPT`가 안 오고, 그냥
+     * 지나간다.
      */
     const declineRebuys = async (s: Stage) => {
-      const now = await stateOf(s);
-      for (const [seatIndex, actor] of s.seats) {
-        if (actor.kind !== 'wire') continue;
-        if (now.players[seatIndex]) continue;
-        actor.wire.send('REBUY_RESPONSE', { accept: false });
-      }
+      await Promise.all(
+        [...s.seats.values()].map(async (actor) => {
+          if (actor.kind !== 'wire') return;
+          // **물어본 소켓에만 대답한다.** 게이트웨이가 파산자에게만
+          // `REBUY_PROMPT`를 보내므로(`ws.gateway.ts`), 그것이 도착했다는
+          // 사실이 곧 「이 사람에게 묻고 있다」이다. 안 오면 파산하지 않은
+          // 것이라 대답할 것도 없다.
+          //
+          // `waitFor`는 **이미 지나간 것도 잡는다**(`wire.ts`) — 서버는 묻고
+          // 나서 세기 시작하므로, 여기서 기다리기 시작한 때에는 이미 와
+          // 있을 수 있다.
+          const asked = await actor.wire
+            .waitFor('REBUY_PROMPT', 3_000)
+            .then(() => true)
+            .catch(() => false);
+          if (!asked) return;
+          actor.wire.send('REBUY_RESPONSE', { accept: false });
+        }),
+      );
     };
 
     /** 다음 판을 열 수 있는 상태까지 기다린다. 좌석 해제도 이 상태를 요구한다(T29). */
@@ -807,19 +827,69 @@ test.describe('데모 — 정산', () => {
     }
 
     /**
-     * 테이블 하나를 통째로 옮긴다.
+     * 화면 배역 하나의 자리를 **상점이 푼다.**
+     *
+     * 옮기는 일은 셋으로 갈라져 있다 — 상점이 자리를 풀고, 사람이 폰에서
+     * 번호를 다시 보고, 새 자리 태블릿에 넣는다. 그 셋을 한 함수에 묶으면
+     * **한 사람이 다 끝난 뒤에야 다음 사람이 시작한다.**
+     *
+     * 프레임 ②가 주장하는 것은 「이 사람이 옮겼다」가 아니라 **「테이블이
+     * 합쳐지는 중이다」**이고, 그러려면 둘이 같은 박자로 움직여야 한다.
+     * 그래서 푸는 것과 앉는 것을 갈라 두 사람 몫을 교차로 돌린다.
+     *
+     * @returns 그 사람이 있던 자리. 부르는 쪽이 `seatOnScreen`에 넘긴다.
+     */
+    const releaseOnScreen = async (from: Stage, nickname: string) => {
+      const state = await stateOf(from);
+      const seatIndex = state.players.findIndex((p) => p?.nickname === nickname);
+      if (seatIndex < 0) {
+        throw new Error(`${nickname}이 ${from.tableOrder}번 테이블에 없다.`);
+      }
+      const actor = from.seats.get(seatIndex);
+      if (actor?.kind === 'wire') await actor.wire.close();
+      from.seats.delete(seatIndex);
+
+      await console_.bringToFront();
+      await releaseSeatOnScreen(console_, from.tableId, seatIndex, nickname);
+      return { seatIndex, nickname };
+    };
+
+    /**
+     * 화면 배역 하나가 **새 자리에 앉는다.**
+     *
+     * 폰에서 참가 OTP를 다시 열고 그 번호를 태블릿에 넣는다. 처음 앉을 때 쓴
+     * 것과 **같은 번호**라는 것이 이 흐름의 요점이고, 그 사실은 폰이 화면에
+     * 있어야 보인다.
+     */
+    const seatOnScreen = async (
+      into: Stage,
+      tablet: Page,
+      phone: Page,
+      nickname: string,
+    ) => {
+      const taken = new Set((await stateOf(into)).players.map((p, i) => (p ? i : -1)));
+      const free = [0, 1, 2, 3, 4, 5, 6, 7, 8].find((i) => !taken.has(i));
+      if (free === undefined) throw new Error(`${into.tableOrder}번 테이블에 빈 자리가 없다.`);
+
+      await phone.bringToFront();
+      await phone.reload();
+      await revealOtp(phone);
+      await sitDown(tablet, storeId, into.tableId, free, playerOf(nickname).otp);
+      into.seats.set(free, { kind: 'screen', page: tablet });
+    };
+
+    /**
+     * 테이블에 남은 사람들을 **한꺼번에** 옮기고 그 테이블을 닫는다.
      *
      * 좌석을 풀면 그 사람의 소켓은 자리를 잃는다(`assertTableAccess`가
      * 스냅샷에서 좌석을 찾는다). 그래서 **닫고 다시 연다** — 재착석은 같은
-     * 참가 OTP다. 처음 앉을 때 쓴 것과 같은 번호라는 것이 이 흐름의 요점이다.
+     * 참가 OTP다.
      *
-     * @param onScreen 이 테이블에서 **화면으로** 옮길 사람. 없으면 전부 REST다.
+     * 여기는 **배경**이다. 열넷을 키패드로 태우면 촬영이 그만큼 늘어나고
+     * 보이는 것은 같은 조작의 반복이다. 화면에 남아야 하는 둘은 이 함수가
+     * 불리기 전에 `releaseOnScreen`·`seatOnScreen`이 이미 옮겼다.
      */
-    const mergeInto = async (
-      from: Stage,
-      into: Stage,
-      onScreen?: { nickname: string; tablet: Page; phone: Page },
-    ) => {
+    const mergeInto = async (from: Stage, into: Stage) => {
       // 좌석 해제는 `GamePhase.WAITING`을 요구한다(T29) — 판이 도는 중에
       // 자리를 빼면 그 사람의 칩이 팟에 남는다.
       await settleToWaiting(from, '병합');
@@ -828,28 +898,14 @@ test.describe('데모 — 정산', () => {
         .map((p, i) => (p ? { seatIndex: i, id: p.id, nickname: p.nickname } : null))
         .filter((v): v is { seatIndex: number; id: string; nickname: string } => v !== null);
 
-      // **화면 배역을 먼저 뗀다.** 상점이 콘솔에서 그 한 자리를 푸는 것이
-      // 이 장면의 첫 박자다. 벌크 해제에 섞으면 그 조작이 화면에 안 남는다.
-      const star = onScreen ? moving.find((m) => m.nickname === onScreen.nickname) : undefined;
-      if (onScreen && !star) {
-        throw new Error(`${onScreen.nickname}이 ${from.tableOrder}번 테이블에 없다.`);
-      }
-      if (onScreen && star) {
-        await console_.bringToFront();
-        await releaseSeatOnScreen(console_, from.tableId, star.seatIndex, star.nickname);
-      }
-
-      // 나머지는 REST로 한꺼번에. 열넷을 키패드로 태우면 촬영이 그만큼
-      // 늘어나고 보이는 것은 같은 조작의 반복이다.
-      const rest = moving.filter((m) => m.seatIndex !== star?.seatIndex);
-      if (rest.length > 0) {
+      if (moving.length > 0) {
         const res = await request.post(
           `http://localhost:3001/store/sessions/${tournamentId}/tables/${from.tableId}/seats/release`,
           {
             headers: { Authorization: `Bearer ${ownerToken}` },
             // `userId`를 같이 보낸다. 좌석 번호만 보내면, 그 사이 그 자리 사람이
             // 바뀌었을 때 엉뚱한 사람을 뗀다(`ReleaseSeatItem`).
-            data: { seats: rest.map((m) => ({ seatIndex: m.seatIndex, userId: m.id })) },
+            data: { seats: moving.map((m) => ({ seatIndex: m.seatIndex, userId: m.id })) },
           },
         );
         if (!res.ok()) {
@@ -858,25 +914,13 @@ test.describe('데모 — 정산', () => {
       }
 
       for (const m of moving) {
-        const actor = from.seats.get(m.seatIndex)!;
-        if (actor.kind === 'wire') await actor.wire.close();
+        const actor = from.seats.get(m.seatIndex);
+        if (actor?.kind === 'wire') await actor.wire.close();
         from.seats.delete(m.seatIndex);
 
         const taken = new Set((await stateOf(into)).players.map((p, i) => (p ? i : -1)));
         const free = [0, 1, 2, 3, 4, 5, 6, 7, 8].find((i) => !taken.has(i));
         if (free === undefined) throw new Error(`${into.tableOrder}번 테이블에 빈 자리가 없다.`);
-
-        if (onScreen && m.seatIndex === star?.seatIndex) {
-          // **폰을 보고 태블릿에 넣는다.** 처음 앉을 때 쓴 것과 같은 참가
-          // OTP라는 것이 이 흐름의 요점이고, 그 사실은 폰이 화면에 있어야
-          // 보인다.
-          await onScreen.phone.bringToFront();
-          await onScreen.phone.reload();
-          await revealOtp(onScreen.phone);
-          await sitDown(onScreen.tablet, storeId, into.tableId, free, playerOf(m.nickname).otp);
-          into.seats.set(free, { kind: 'screen', page: onScreen.tablet });
-          continue;
-        }
 
         await seat(request, tournamentId, {
           tableId: into.tableId,
@@ -903,16 +947,22 @@ test.describe('데모 — 정산', () => {
       if (from.dealer.kind === 'wire') await from.dealer.wire.close();
     };
 
-    await mergeInto(stages.get(3)!, stages.get(FILMED_TABLE)!, {
-      nickname: ON_SCREEN.rebuyer,
-      tablet: rebuyerTablet,
-      phone: rebuyerPhone,
-    });
-    await mergeInto(stages.get(4)!, stages.get(2)!, {
-      nickname: ON_SCREEN.mover,
-      tablet: moverTablet,
-      phone: moverPhone,
-    });
+    // **둘을 나란히 옮긴다.** 상점이 두 자리를 연달아 풀고, 둘이 각자 폰을
+    // 보고, 각자의 태블릿에서 서로 다른 테이블에 앉는다. 한 사람씩 끝까지
+    // 처리하면 같은 조작이 두 번 반복되는 그림이고, 이 프레임이 보여주려는
+    // 것은 **테이블이 합쳐지는 중**이라는 사실이다.
+    const t3 = stages.get(3)!;
+    const t4 = stages.get(4)!;
+    await settleToWaiting(t3, '병합');
+    await settleToWaiting(t4, '병합');
+    await releaseOnScreen(t3, ON_SCREEN.rebuyer);
+    await releaseOnScreen(t4, ON_SCREEN.mover);
+    await seatOnScreen(stages.get(FILMED_TABLE)!, rebuyerTablet, rebuyerPhone, ON_SCREEN.rebuyer);
+    await seatOnScreen(stages.get(2)!, moverTablet, moverPhone, ON_SCREEN.mover);
+
+    // 남은 배경은 REST로. 빈 테이블을 닫는 것까지 여기서 한다.
+    await mergeInto(t3, stages.get(FILMED_TABLE)!);
+    await mergeInto(t4, stages.get(2)!);
     await console_.reload();
     await linger(console_, 2_000);
 
@@ -1060,7 +1110,15 @@ test.describe('데모 — 정산', () => {
       await expect(dialog).toBeVisible();
       // **합이 걷은 돈과 같다.** 확인 대화의 마지막 줄이 그것이고, 이
       // 화면의 핵심이 그 한 줄을 눈으로 확인하는 것이다.
-      await linger(console_, 2_500);
+      //
+      // **오래 머문다.** 프레임 ③이 이 화면을 `complete`의 딜러 타일과 좌우로
+      // 놓는데, 그쪽은 최후 판을 치느라 15초를 더 쓴다. 짧은 쪽은 자르는
+      // 쪽이 마지막 프레임을 복제해 채우므로(`tpad`) 그 15초가 **좌열의 정지
+      // 화면**이 된다 — 실측으로 chop 20.9초 대 complete 35.9초였다.
+      //
+      // 채워야 한다면 정지가 아니라 **읽을 시간**이 낫다. 이 표가 이 프레임의
+      // 핵심이고, 다섯 줄과 합계를 눈으로 따라가려면 그만큼 걸린다.
+      await linger(console_, 14_500);
       await shoot(console_, '19-chop-ledger-sums');
       await press(console_, dialog.getByRole('button', { name: 'ICM 마무리' }));
     } else if (ENDING === 'abort') {
