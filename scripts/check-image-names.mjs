@@ -22,11 +22,6 @@ const UNNUMBERED = new Set([
   'seat-waiting.png',
   'seat-joined.png',
   'dealer-refused-before-start.png',
-  // 설계 없이 만든 정산 움짤. 새 그림이 자리를 대신한 뒤에 지운다.
-  's6-six-all-in.webp',
-  's7-entry-not-player.webp',
-  's8-four-tables-to-one.webp',
-  's9-close-icm.webp',
 ]);
 
 const problems = [];

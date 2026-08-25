@@ -66,6 +66,15 @@ const ASSETS = join(ROOT, 'img');
  * 대회를 닫으면 나머지는 찍을 자리가 없어서다. 그래서 폴더도 마무리마다
  * 하나씩 생긴다.
  */
+/**
+ * 슬레이트가 화면을 덮는 시간. `surfaces.ts`가 자홍색을 400ms 띄운다.
+ *
+ * 여기서 넉넉히 잡는 이유는 **경계를 밟지 않기 위해서**다. 자르는 쪽이
+ * 슬레이트 직후부터 붙이는데, 딱 400ms로 자르면 사라지는 프레임과 첫
+ * 그림 프레임 사이에 한 장이 낀다. 그 한 장이 곧 자홍색이다.
+ */
+const SLATE_SECONDS = 0.6;
+
 const TAKE = '장면-1-5-한-대회';
 const SETTLEMENT_TAKE = {
   complete: '마무리-최후-1인으로-닫는다',
@@ -136,11 +145,13 @@ const SCENES = [
     out: '02-sidepot-dealer-refused',
     from: '장면 3 — 올인',
     to: '장면 5 — 2번 테이블을 통째로 비운다',
-    // 상자에 2px 여유를 준다. 1280×720을 880×495로 줄이면 계산상 딱 맞지만
+    // 상자에 여유를 준다. 1280×720을 880×495로 줄이면 계산상 딱 맞지만
     // `scale`의 반올림이 위로 튀는 순간 `pad`이 "입력보다 작다"로 죽는다.
+    // 높이는 **짝수**여야 한다(`assertEvenTiles`) — 497로 두면 그 검사에
+    // 걸린다.
     rows: [
-      [tile('dealer', 882, 497), tile('seat-hero', 882, 497)],
-      [tile('seat-p1', 882, 497), tile('seat-p2', 882, 497)],
+      [tile('dealer', 882, 498), tile('seat-hero', 882, 498)],
+      [tile('seat-p1', 882, 498), tile('seat-p2', 882, 498)],
     ],
     fps: 8,
     width: 1200,
@@ -171,105 +182,166 @@ const SCENES = [
 ];
 
 /**
- * 정산 촬영의 장면 셋.
+ * 정산 촬영이 내놓는 움짤 넷.
  *
- * **이름이 그 장면의 주장이다.** `s6`·`s7` 같은 번호만으로는 `img/`를 열어
- * 봐도 무엇을 보여주는 그림인지 알 수 없고, README가 그림을 고를 때마다
- * 영상을 다시 열어야 한다.
+ * **실행마다 다시 만들지 않는다.** 갈림목 전까지 세 실행이 똑같으므로
+ * 프레임 ①·②는 `complete` 하나에서만 자른다 — 전에는 마무리마다 같은 그림을
+ * 셋씩 만들고 이름만 달랐다.
  *
- * 마무리 장면만 마무리마다 이름이 다르다 — **셋이 같은 자리에서 갈리므로
- * 파일 이름이 유일한 구분**이고, 셋을 나란히 놓는 것이 이 촬영의 요점이다.
- *
- * `마감 대기`와 `마감` 사이는 어느 장면에도 안 들어간다. 등록 마감을
- * 기다리는 몇 분이라 버릴 구간이고, 표시를 둘로 나눈 이유가 그것이다.
+ * 배치의 근거는 설계 문서에 있다
+ * (`docs/superpowers/specs/2026-08-24-settlement-demo-design.md`).
  */
-const SETTLEMENT_CLOSE = {
-  complete: 's9-close-last-one',
-  chop: 's9-close-icm',
-  abort: 's9-close-abort',
-};
-
-function settlementScenes(ending) {
+function settlementScenes() {
   return [
     {
       /*
-        **한 판에 여섯이 올인해 다섯이 나간다.** 필드가 줄어드는 방식 자체가
-        이 촬영의 전제라 첫 판을 통째로 보여준다 — 진짜 올인이고 진짜 지명이다.
+        **엔트리는 사람 수가 아니다.**
 
-        태블릿 둘을 나란히 두는 이유: 같은 판에서 하나는 폴드해 살아남고
-        하나는 올인해 나간다.
+        세 테이블에서 한꺼번에 올인하고 딜러가 지명하면 스물이 사라진다.
+        전광판의 남은 인원이 그 자리에서 35에서 15로 떨어진다. 이어서 T3의
+        한 자리가 0에서 5,000으로 되살아나고 **엔트리만** 36이 된다 — 사람은
+        15 그대로다.
+
+        원인(딜러 타일의 스택 부활)과 결과(전광판)가 한 프레임에 있어야
+        인과가 읽힌다. 그래서 리바인하는 사람이 T3에 있다.
+
+        T4가 아니라 T1을 넣는다. T1이 촬영 테이블이자 병합의 종착지라 여기서
+        본 펠트가 프레임 ②·③에 계속 나온다 — T1을 빼면 이 프레임에서 본
+        테이블 중 어느 것도 뒤에 안 나온다.
       */
-      out: 's6-six-all-in',
-      from: '첫 판 — 한 판에 여섯이 올인한다',
-      to: '리바인 — 엔트리가 늘면 상금권도 는다',
+      out: '11-entry-not-player',
+      take: 'complete',
+      from: '첫 판 — 한 판에 스물이 나간다',
+      to: '병합 — 네 테이블이 둘이 된다',
       rows: [
-        [tile('seat-rebuyer', 960, 540), tile('seat-survivor', 960, 540)],
-        [tile('dealer-final-table', 960, 540), tile('scoreboard', 960, 540)],
+        [tile('dealer-t1', 880, 496), tile('dealer-t2', 880, 496)],
+        [tile('dealer-t3', 880, 496), tile('scoreboard', 880, 496)],
+      ],
+      // **이 프레임만 길다** — 첫 판 넷이 도는 데 108초가 걸리고, 그중
+      // rebuyer의 테이블이 맨 뒤라 끝까지 가야 리바인이 나온다. 8fps로 두면
+      // 870프레임에 5MB가 넘어 README가 무거워진다. 5fps로도 펠트에서 사람이
+      // 사라지는 것과 전광판 숫자가 떨어지는 것은 그대로 읽힌다 — 이 프레임에
+      // 빠른 움직임이 없다.
+      fps: 5,
+      width: 1000,
+      quality: 72,
+    },
+    {
+      /*
+        **필드가 넷에서 하나로. 자동이 아니라 사람이 걸어간다.**
+
+        상점이 좌석을 풀고, 사람이 폰에서 참가 OTP를 다시 보고, 그 번호를 새
+        자리 태블릿에 넣는다. 셋이 각각 다른 손의 일이고, 온라인이면 서버가
+        재배치하고 끝날 것이 여기서는 세 조작이 된다.
+
+        **둘이 서로 다른 테이블로 흩어진다**(T3→T1, T4→T2). 폰이 둘인 것이
+        거기서 값을 한다 — 하나면 「이 사람이 옮겼다」이고, 둘이면 「테이블이
+        합쳐지는 중이다」가 된다.
+
+        칩은 좌석보다 오래 산다. 옮겨 앉아도 스택이 그대로인 것이 좌석 타일에
+        남는다.
+      */
+      out: '03-four-tables-to-one',
+      take: 'complete',
+      from: '병합 — 네 테이블이 둘이 된다',
+      to: '둘째 판 — 두 테이블에서 열이 나간다',
+      rows: [
+        [tile('seat-rebuyer', 880, 496), tile('seat-mover', 880, 496)],
+        [
+          tile('console', 1180, 738),
+          tile('phone-rebuyer', 290, 738),
+          tile('phone-mover', 290, 738),
+        ],
       ],
       fps: 8,
-      width: 1280,
-    },
-    {
-      /*
-        **엔트리와 사람 수가 갈리는 순간.** 탈락자 하나가 리바인을 수락하면
-        전광판의 엔트리만 36이 되고 상금 목록이 다섯 줄에서 여섯 줄로 는다 —
-        참가는 35명 그대로다.
-
-        면이 둘뿐인 이유: 주장이 「이 수락이 저 목록을 바꾼다」 하나라, 셋째
-        면은 그 인과를 흐린다.
-      */
-      out: 's7-entry-not-player',
-      from: '리바인 — 엔트리가 늘면 상금권도 는다',
-      to: '마감 대기 — 여기부터 버린다',
-      rows: [[tile('seat-rebuyer', 960, 540), tile('scoreboard', 960, 540)]],
-      fps: 5,
       width: 1100,
     },
     {
       /*
-        **테이블 넷이 하나가 된다.** 콘솔의 좌석 도식이 그 사실을 드러내는
-        유일한 화면이라 아래 행을 통째로 준다 — 사람이 칩을 들고 걸어가는
-        일이라 자동이 아니고, 상점이 좌석을 풀고 테이블을 닫는 손이 거기 있다.
+        **두 문, 같은 등식. 이 프레임만 실행을 가로지른다.**
 
-        콘솔을 1440×900 그대로 둔다. **원본보다 크게 잡지 않는다** — 키우면
-        화질만 잃고, `scale`이 비율을 지키느라 상자보다 커지는 순간 `pad`이
-        「입력보다 작다」로 죽는다. 실제로 1760×1100으로 잡았다가 그렇게 실패했다.
+        좌열이 `chop`, 우열이 `complete`다. 같은 시드라 파이널 테이블에 남는
+        셋이 두 실행에서 같고, 그래서 좌우가 **같은 사람의 다른 결말**이 된다.
+        그 동일성은 우연이 아니라 `settlement.spec.ts`의 `FIRST_HAND_ALL_IN`이
+        지킨다 — 첫 버튼이 무작위라 승자 스택이 300 흔들리는데, 첫 판 인원을
+        테이블마다 벌려 그 흔들림이 승자를 못 뒤집게 했다.
 
-        **여유는 높이에만 준다.** 폭은 `vstack`이 행끼리 맞추라고 요구하므로
-        건드릴 수 없고, `scale`의 반올림이 튀는 것은 어느 축에서든 일어난다.
-        높이 몇 px을 더 주면 `pad`이 언제나 입력보다 크다.
+        위아래가 다른 것을 말한다.
+
+        - **위** — 왼쪽은 콘솔에서 합의한 숫자를 적고, 오른쪽은 테이블에서
+          끝까지 쳐서 정한다. **딜은 콘솔의 일이고 승부는 펠트의 일이다.**
+          `complete`에는 확인 대화가 없다 — 「종료」가 `completeTournament`를
+          바로 부른다
+        - **아래** — 왼쪽 폰 셋은 칩 비율이 정한 금액, 오른쪽 폰 셋은 분배표가
+          정한 1·2·3위 금액. **같은 화면에 다른 숫자**다
+
+        전광판은 여기 없다. 넣으면 좌우 대칭이 깨지고, 「제도가 정한 표」는
+        README에서 이 움짤 바로 위에 스틸로 놓는다
+        (`04-prize-table-locked.png`).
+
+        설계의 880×550 · 293×634를 882×550 · 294×634로 올렸다. 폰 여섯의
+        폭이 짝수여야 하는데(`assertEvenTiles`) 293은 홀수고, 294×6은
+        1764라 위 행도 882×2로 맞춘 것이다. 잃는 것은 2px이다.
       */
-      out: 's8-four-tables-to-one',
-      from: '마감 — 상금이 예상에서 확정으로 바뀐다',
-      to: '여섯째 — 상금이 처음 나간다',
-      rows: [
-        [tile('dealer-final-table', 720, 410), tile('seat-survivor', 720, 410)],
-        [tile('console', 1440, 906)],
-      ],
-      fps: 6,
-      width: 1100,
-    },
-    {
-      /*
-        **마무리.** 콘솔이 주인공이라 위 행을 통째로 준다 — 셋이 한 화면에
-        있고, 못 누르는 것은 왜 못 누르는지가 그 자리에 적혀 있고, 확인
-        대화의 마지막 줄이 걷은 돈이다.
-      */
-      out: SETTLEMENT_CLOSE[ending],
-      from: '여섯째 — 상금이 처음 나간다',
+      out: '05-two-doors-same-ledger',
+      take: 'chop',
+      from: '마무리 — 그 문을 누른다',
       to: '끝',
       rows: [
-        [tile('console', 1440, 906)],
-        [tile('dealer-final-table', 720, 410), tile('scoreboard', 720, 410)],
+        [tile('console', 882, 550), tile('dealer-t1', 882, 550, 'complete')],
+        [
+          tile('phone-final-1', 294, 634),
+          tile('phone-final-2', 294, 634),
+          tile('phone-final-3', 294, 634),
+          tile('phone-final-1', 294, 634, 'complete'),
+          tile('phone-final-2', 294, 634, 'complete'),
+          tile('phone-final-3', 294, 634, 'complete'),
+        ],
       ],
       fps: 6,
-      width: 1100,
+      // **콘솔이 읽혀야 이 프레임이 성립한다.** 주장이 「두 장부의 걷은 돈이
+      // 같다」인데 1100폭에서는 콘솔 타일이 실질 550px이라 숫자가 뭉갠다.
+      width: 1500,
+    },
+    {
+      /*
+        **중단하면 상점 몫이 0이 된다.**
+
+        프레임 ③에 자리가 없어 따로 남긴다 — 문이 셋인데 좌우가 둘이다.
+        그래도 값이 있다: 상점 몫이 0이 되는 유일한 문이라 등식의 오른쪽 항
+        셋(상금 · 환불 · 상점 몫)이 한 화면에 다 나오고, 환불이 사람마다가
+        아니라 **무리로** 접히는 것이 확인 대화의 표에 그대로 있다.
+
+        **전광판을 뺐다.** 설계는 가로 둘이었는데, 대회가 닫히는 순간
+        전광판이 「대기 중」 검은 화면으로 돌아간다 — 20초 창에서 앞 5초만
+        말을 하고 나머지 15초는 프레임의 절반이 죽는다. 그 자리를 콘솔에
+        주면 확인 대화의 환불 표가 또렷해지고, 닫힌 뒤의 「상점 몫 0」도
+        같은 타일에서 읽힌다.
+      */
+      out: '20-abort-refunds-all',
+      take: 'abort',
+      from: '마무리 — 그 문을 누른다',
+      to: '끝',
+      rows: [[tile('console', 1440, 900)]],
+      fps: 6,
+      width: 1200,
     },
   ];
 }
 
-function tile(label, width, height) {
-  return { label, width, height };
+/**
+ * 타일 하나. **`take`를 주면 다른 촬영 실행에서 가져온다.**
+ *
+ * 마무리 프레임이 `chop`과 `complete`를 좌우로 놓는다. 같은 시드에서 돌아
+ * 갈림목 전까지 숫자가 같고 파이널 테이블에 남는 셋도 같다 — 그래서 좌우가
+ * **같은 사람의 다른 결말**이 된다. 그 그림을 만들려면 타일마다 다른 폴더와
+ * 다른 `timeline.json`을 봐야 한다.
+ *
+ * 안 주면 그 장면이 정한 기본 실행(`scene.take`)이다. 프레임 하나가 한
+ * 실행에서 나오는 것이 여전히 보통이다.
+ */
+function tile(label, width, height, take) {
+  return { label, width, height, take };
 }
 
 /**
@@ -299,6 +371,32 @@ function ffmpeg(args) {
 
 function mib(path) {
   return (statSync(path).size / 1024 / 1024).toFixed(2);
+}
+
+/**
+ * **타일 크기는 짝수여야 한다.** yuv420p의 색차가 가로세로 절반이라
+ * 홀수 크기를 담을 수 없다.
+ *
+ * `pad`은 그 정렬 때문에 홀수 입력을 한 칸 큰 것으로 보고, 상자가 딱 그
+ * 홀수면 「출력이 입력보다 작다」로 죽는다. 실제로 880×495 타일 넷이
+ * 그렇게 죽었다 — `scale`이 정확히 880×495를 내놓았는데도다.
+ *
+ * ffmpeg가 남기는 것은 `Parsed_pad_4` 같은 **필터 번호**뿐이라, 그 번호에서
+ * 어느 장면의 어느 타일인지 되짚어야 한다. 그래서 여기서 먼저 잡는다.
+ *
+ * 짝수라도 상자가 원본 비율과 정확히 같으면 `scale` 결과가 상자와 같아지는데,
+ * 그때는 `pad`이 그대로 통과한다 — 문제는 **홀수**이지 같은 크기가 아니다.
+ */
+function assertEvenTiles(scene) {
+  const odd = scene.rows
+    .flat()
+    .filter((t) => t.width % 2 || t.height % 2)
+    .map((t) => `${t.label} ${t.width}×${t.height}`);
+  if (odd.length === 0) return;
+  throw new Error(
+    `${scene.out}: 타일 크기가 홀수다 (${odd.join(' · ')}). ` +
+      'yuv420p는 짝수만 담는다 — 한 칸 올린다.',
+  );
 }
 
 function loadTimeline(take) {
@@ -390,7 +488,19 @@ function surfaceEntry(timeline, label, file) {
   }
   // 영상의 0초에 해당하는 촬영 시각. 슬레이트가 찍힌 프레임이 그 시각이므로
   // 거기서 빼면 된다.
-  return { openedAt: found.slateAtMs / 1000 - probeSlate(file) };
+  const slateAt = probeSlate(file);
+  return {
+    openedAt: found.slateAtMs / 1000 - slateAt,
+    // **슬레이트가 끝나는 지점.** 이 앞은 그림이 아니라 자홍색 마커다.
+    //
+    // 면이 장면 도중에 열리면 부르는 쪽이 앞을 검게 채우는데(`lead`), 그
+    // 바로 뒤에 붙는 것이 영상 0초 — 곧 **슬레이트 자체**다. 프레임 ②의
+    // 폰 둘이 그렇게 자홍색 한두 프레임을 결과물에 남겼다.
+    //
+    // 슬레이트는 자르는 쪽이 시각을 맞추려고 쓰는 마커지 그림이 아니다.
+    // 결과물에 새면 그건 촬영이 아니라 **여기의 버그**다.
+    firstFrameAt: slateAt + SLATE_SECONDS,
+  };
 }
 
 /**
@@ -403,10 +513,37 @@ function toVideoTime(surface, wallSeconds) {
   return Math.max(0, wallSeconds - surface.openedAt);
 }
 
-/** 장면 하나를 애니메이션 WebP로 만든다. */
-function buildScene(dir, timeline, scene) {
-  const start = markAt(timeline, scene.from);
-  const end = markAt(timeline, scene.to);
+/**
+ * 장면 하나를 애니메이션 WebP로 만든다.
+ *
+ * **타일마다 시계가 다르다.** 면마다 0초가 다르다는 것은 처음부터 그랬고
+ * (`surfaces.ts`의 슬레이트), 여기에 **실행마다 0초가 다르다**가 더해졌다.
+ * 그래서 `from`/`to`는 이름으로 두고, 그 이름이 몇 초인지는 **그 타일이 속한
+ * 실행의 `timeline.json`**에서 각자 읽는다.
+ *
+ * 길이가 어긋나면 `tpad`이 뒤를 채운다. 실행 둘의 마무리 구간이 같은 초일
+ * 이유가 없고, **`hstack`은 가장 짧은 입력에서 끝난다** — 채우지 않으면 긴
+ * 쪽의 뒷부분이 통째로 잘린다.
+ *
+ * @param takes 실행 이름 → `{ dir, timeline }`
+ */
+function buildScene(scene, takes) {
+  // 이 장면이 건드리는 실행마다 구간을 먼저 잰다. 타일이 여섯이어도 실행은
+  // 둘이므로, 타일마다 다시 재면 같은 값을 여러 번 읽는다.
+  const used = new Set(scene.rows.flat().map((t) => t.take ?? scene.take));
+  const spans = new Map();
+  for (const name of used) {
+    const entry = takes.get(name);
+    if (!entry) throw new Error(`${scene.out}: "${name}" 촬영이 없다.`);
+    spans.set(name, {
+      start: markAt(entry.timeline, scene.from),
+      end: markAt(entry.timeline, scene.to),
+    });
+  }
+
+  // 가장 긴 구간에 맞춘다. 짧은 쪽은 마지막 프레임을 늘려 채운다.
+  const longest = Math.max(...[...spans.values()].map((s) => s.end - s.start));
+
   const inputs = [];
   const filters = [];
 
@@ -417,11 +554,17 @@ function buildScene(dir, timeline, scene) {
     throw new Error(`${scene.out}: 행마다 폭이 다르다 (${rowWidths.join(' · ')}).`);
   }
 
+  assertEvenTiles(scene);
+
   let n = 0;
   const rowLabels = [];
   scene.rows.forEach((row, r) => {
     const cells = [];
     for (const t of row) {
+      const takeName = t.take ?? scene.take;
+      const { dir, timeline } = takes.get(takeName);
+      const { start, end } = spans.get(takeName);
+
       const file = join(dir, `${t.label}.webm`);
       if (!existsSync(file)) throw new Error(`영상이 없다: ${file}`);
       inputs.push('-i', file);
@@ -429,12 +572,23 @@ function buildScene(dir, timeline, scene) {
       // 촬영 시각을 이 파일의 시각으로 옮긴다. 면이 그 장면 도중에 열렸으면
       // 앞부분은 검은 화면으로 채운다 — 그 순간의 그림이 아예 없다.
       const surface = surfaceEntry(timeline, t.label, file);
-      const from = toVideoTime(surface, start);
-      const to = toVideoTime(surface, end);
-      const lead = Math.max(0, Math.min(surface.openedAt, end) - start);
+      // **슬레이트보다 앞을 집지 않는다.** 그 면이 장면 도중에 열렸으면
+      // `toVideoTime`이 0을 주는데, 영상의 0초는 그림이 아니라 자홍색
+      // 마커다(`firstFrameAt`).
+      const from = Math.max(toVideoTime(surface, start), surface.firstFrameAt);
+      const to = Math.max(toVideoTime(surface, end), from);
+      // 앞을 검게 채우는 만큼. 슬레이트를 건너뛴 만큼 그림이 늦게 시작하므로
+      // 그 몫까지 채운다 — 아니면 이 타일만 옆 타일보다 앞서 간다.
+      const lead = Math.max(0, Math.min(surface.openedAt + surface.firstFrameAt, end) - start);
+      // 이 실행의 구간이 가장 긴 것보다 짧으면 뒤를 늘린다. `stop_mode=clone`
+      // 은 마지막 프레임을 복제한다 — 마무리 구간의 끝은 대회가 닫힌 뒤라
+      // 거의 정지 화면이고, 늘어난 몇 초가 그림을 바꾸지 않는다.
+      // `stop_duration=0`은 아무 일도 안 하므로 가장 긴 실행에는 무해하다.
+      const tail = longest - (end - start);
       filters.push(
         `[${n}:v]trim=start=${from.toFixed(3)}:end=${to.toFixed(3)},setpts=PTS-STARTPTS,` +
-          `tpad=start_duration=${lead.toFixed(3)}:start_mode=add:color=black,` +
+          `tpad=start_duration=${lead.toFixed(3)}:start_mode=add:color=black` +
+          `:stop_duration=${tail.toFixed(3)}:stop_mode=clone,` +
           // `scale`이 비율을 지키느라 1px 넘길 때가 있다(폰 390×844를 높이
           // 기준으로 줄이면 반올림으로 상자보다 커진다). 그러면 `pad`이
           // "패딩이 입력보다 작다"로 죽는다. 그래서 넉넉히 채운 뒤 상자
@@ -484,8 +638,12 @@ function buildScene(dir, timeline, scene) {
     // 면에서 **잔상**이 남았다 — 숫자가 바뀐 자리에 앞 프레임의 획이 흐리게
     // 붙어 있는 것이다. 장면당 2MB 예산에 견줘 결과물이 0.2MB대라 올릴 여유가
     // 충분했다.
+    //
+    // **긴 장면만 내린다.** 프레임 ①은 108초짜리 4분할이라 85에서 5MB가
+    // 넘었다. 그 프레임에 빠른 움직임이 없어(사람이 사라지고 숫자가 떨어진다)
+    // 잔상이 생길 자리도 없다.
     '-q:v',
-    '85',
+    String(scene.quality ?? 85),
     // libwebp의 프리셋. 화면이 사진이 아니라 **글자와 선**이라 경계를 지키는
     // 쪽을 고른다. 기본값(`default`)은 사진 기준으로 고주파를 뭉갠다.
     '-preset',
@@ -500,7 +658,7 @@ function buildScene(dir, timeline, scene) {
   ]);
 
   console.log(
-    `  ${scene.out}.webp  ${(end - start).toFixed(1)}초 · 면 ${n} · ${scene.fps}fps · ${mib(out)}MB`,
+    `  ${scene.out}.webp  ${longest.toFixed(1)}초 · 면 ${n} · ${scene.fps}fps · ${mib(out)}MB`,
   );
 }
 
@@ -540,7 +698,7 @@ const STILLS = [
  * 마무리를 실제로 돌린 촬영에만 있다. 확인 대화가 그때만 열리기 때문이고,
  * 없는 것을 요구하면 다른 마무리 촬영이 통째로 실패한다.
  */
-function settlementStills(ending) {
+function settlementStills() {
   return [
     '16-four-tables-rake-10.png',
     '12-rebuy-accept-raises-entry.png',
@@ -548,9 +706,14 @@ function settlementStills(ending) {
     '04-prize-table-locked.png',
     '17-final-table-origins.png',
     '18-finish-blocked-reasons.png',
-    ...(ending === 'chop' ? ['19-chop-ledger-sums.png'] : []),
-    ...(ending === 'abort' ? ['21-abort-ledger-groups.png'] : []),
-    { complete: '22-closed-complete.png', chop: '23-closed-chop.png', abort: '24-closed-abort.png' }[ending],
+    // 확인 대화는 그 마무리를 실제로 돌린 실행에만 열린다. `.shots/`는 실행
+    // 사이에 안 지워지므로 셋을 다 돌고 나면 셋이 다 거기 있다 — 갈림목 전에
+    // 찍는 것들은 마지막 실행이 덮어쓰지만, 그 구간은 세 실행이 같다.
+    '19-chop-ledger-sums.png',
+    '21-abort-ledger-groups.png',
+    '22-closed-complete.png',
+    '23-closed-chop.png',
+    '24-closed-abort.png',
   ];
 }
 
@@ -578,24 +741,33 @@ function copyShots(stills) {
  * 자르지 않는 이유는 **촬영이 셋이기 때문**이다. 하나가 대회를 닫으므로
  * 마무리마다 시드를 다시 깔고 다시 찍고, 그때마다 이 스크립트를 부른다.
  */
-const settlementArg = process.argv
-  .find((a) => a.startsWith('--settlement='))
-  ?.slice('--settlement='.length);
-
-if (settlementArg && !(settlementArg in SETTLEMENT_TAKE)) {
-  const had = Object.keys(SETTLEMENT_TAKE).join(' · ');
-  throw new Error(`--settlement은 ${had} 중 하나다. 받은 것: ${settlementArg}`);
-}
-
-const take = settlementArg ? SETTLEMENT_TAKE[settlementArg] : TAKE;
-const scenes = settlementArg ? settlementScenes(settlementArg) : SCENES;
-const stills = settlementArg ? settlementStills(settlementArg) : STILLS;
+/**
+ * `--settlement`은 **인자를 안 받는다.**
+ *
+ * 마무리 프레임이 `chop`과 `complete`를 좌우로 놓으므로 셋이 다 있어야
+ * 자를 수 있다. 하나만 골라 자를 수 있게 두면 **반만 있는 그림이 조용히
+ * 나온다** — 없는 촬영을 가리키는 타일이 검게 채워질 뿐 실패하지 않는다.
+ */
+const settlement = process.argv.includes('--settlement');
 
 assertFfmpeg();
-const { dir, timeline } = loadTimeline(take);
 mkdirSync(ASSETS, { recursive: true });
 
+const scenes = settlement ? settlementScenes() : SCENES;
+const stills = settlement ? settlementStills() : STILLS;
+
+// 장면이 가리키는 실행을 다 읽는다. 정산은 셋, 장면 1~5는 하나다.
+const takes = new Map();
+if (settlement) {
+  for (const [ending, folder] of Object.entries(SETTLEMENT_TAKE)) {
+    takes.set(ending, loadTimeline(folder));
+  }
+} else {
+  takes.set(TAKE, loadTimeline(TAKE));
+  for (const scene of SCENES) scene.take = TAKE;
+}
+
 console.log('움짤');
-for (const scene of scenes) buildScene(dir, timeline, scene);
+for (const scene of scenes) buildScene(scene, takes);
 console.log('스틸');
 copyShots(stills);
