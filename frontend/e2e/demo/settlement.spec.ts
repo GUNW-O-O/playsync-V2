@@ -50,17 +50,23 @@ import { dealerToken, openWire, type Wire } from '../fixtures/wire';
  * 한 번에 하나씩 만들면 서른한 판이라 촬영이 불가능한데, 그렇다고 참가 행을
  * `ELIMINATED`로 바꾸면 화면에 뜨는 등수와 상금이 촬영이 지어낸 값이 된다.
  *
- * 그래서 **한 판에 여섯이 올인한다.** 딜러가 하나를 지명하면 다섯이 그
- * 자리에서 탈락한다 — 진짜 올인이고 진짜 지명이라 규칙을 어기지 않으면서
- * 서른한 번의 탈락이 세 판으로 접힌다.
+ * 그래서 **한 판에 여럿이 한꺼번에 올인한다.** 딜러가 하나를 지명하면
+ * 나머지가 그 자리에서 탈락한다 — 진짜 올인이고 진짜 지명이라 규칙을
+ * 어기지 않으면서 서른한 번의 탈락이 세 판으로 접힌다.
+ *
+ * 인원은 판마다 다르다. 둘째 판부터는 `ALL_IN_COUNT`(여섯)이고, **첫 판만
+ * 테이블마다 다르다** — 그 이유는 `FIRST_HAND_ALL_IN`에 있다(첫 버튼이
+ * 무작위라 실행마다 승자 스택이 300 흔들리고, 인원이 같으면 그 300이
+ * 둘째 판의 승자를 뒤집는다).
  *
  * ── 카메라가 열이고 테이블이 넷이다
  *
  * 면은 열을 연다(좌석 둘 · 딜러 넷 · 폰 둘 · 전광판 · 콘솔). 딜러 넷은
  * **붙어만 있고 누르지 않는다** — 셋은 여전히 소켓이 판을 돌린다. 좌석은
  * 화면 둘만 사람이 누르고, 나머지 서른셋은 **화면 없이 진짜 소켓으로**
- * 돈다(`fixtures/wire.ts`) — 브라우저 컨텍스트로 서른다섯을 다 열면 기계가
- * 먼저 죽고, 그렇다고 안 돌리면 필드가 줄어든 것이 가짜가 된다.
+ * 돈다(`fixtures/wire.ts`) — 서른다섯을 다 브라우저로 여는 것은 **그릴 값이
+ * 없는 것을 그리는** 일이고, 그렇다고 안 돌리면 필드가 줄어든 것이 가짜가
+ * 된다. 몇 개까지 버티는지는 기계마다 다르니 그때 재서 판단한다.
  *
  * 촬영 테이블(1번)이 **병합의 종착지**다. 카메라가 클라이맥스에 딴 테이블을
  * 보고 있으면 안 되므로, 합칠 때는 언제나 이쪽으로 걸어온다.
@@ -95,6 +101,19 @@ const CLOSED_SHOT = {
   abort: '24-closed-abort',
 } as const;
 
+/**
+ * 갈림목의 표시. **셋이 같은 이름을 쓴다.**
+ *
+ * 자르는 쪽이 「누르는 순간부터 끝까지」를 창으로 잡는데(`프레임 ③`·`abort`),
+ * 그 창의 이름이 실행마다 다르면 **한 장면이 두 실행을 좌우로 못 놓는다** —
+ * `markAt`은 이름으로 찾고, `chop`의 타임라인에 `마무리 — 최후 1인`은 없다.
+ *
+ * 무엇을 눌렀는지는 이름이 아니라 **화면과 파일 이름**이 말한다. 앞 촬영본은
+ * 창을 `마무리 — 셋이 한 화면에 있다`부터 잡을 수밖에 없었고, 그래서 확인
+ * 대화가 앞쪽에서 이미 닫힌 뒤 20~30초가 정지 화면으로 남았다.
+ */
+const BRANCH_MARK = '마무리 — 그 문을 누른다';
+
 /** 카메라가 보는 테이블. 병합의 종착지이자 파이널 테이블이 된다. */
 const FILMED_TABLE = 1;
 
@@ -112,8 +131,21 @@ const FILMED_TABLE = 1;
  * 다른 하나는 **D(4번)**다. 병합①이 `C→A`, `D→B`라 **둘이 서로 다른
  * 테이블로 흩어진다** — 하나면 「이 사람이 옮겼다」이고, 둘이면 「테이블이
  * 합쳐지는 중이다」가 된다.
+ *
+ * **둘의 운명이 반대다.** 리바인하는 사람은 첫 판에 **나가야** 하고, 옮기는
+ * 사람은 **남아야** 한다 — 좌석에 없는 사람은 옮길 수가 없다. 그것을 정하는
+ * 것은 닉네임이 아니라 좌석 번호다(`planHand`가 `slice(-ALL_IN_COUNT)`로
+ * 올인을 고른다).
+ *
+ * - `C5`는 9석 테이블의 좌석 4다. 올인 범위(`3`~`8`) 안이라 나간다.
+ * - `D1`은 좌석 0이다. 4번 테이블은 **8석**이라 올인이 `2`~`7`이고, 폴더는
+ *   `0`·`1` 둘뿐이다.
+ *
+ * 처음에 이름을 맞춰 `D5`로 뒀다가 촬영이 병합②에서 「D5이 4번 테이블에
+ * 없다」로 죽었다. 8석에서 좌석 4는 올인이다. **폴더를 고르면 생존이 규칙으로
+ * 보장되고**, 스택이 시작값 그대로라 이후 판의 승자 판정에 새 변수도 안 든다.
  */
-const ON_SCREEN = { rebuyer: 'C5', mover: 'D5' } as const;
+const ON_SCREEN = { rebuyer: 'C5', mover: 'D1' } as const;
 
 /**
  * 필드를 줄이는 판의 기본 인원. **여섯이 올인하면 다섯이 나간다.**
@@ -124,6 +156,79 @@ const ON_SCREEN = { rebuyer: 'C5', mover: 'D5' } as const;
  * 그 판에 최후 1인이 나와 **마무리를 고를 자리 자체가 사라진다.**
  */
 const ALL_IN_COUNT = 6;
+
+/**
+ * 첫 판만 테이블마다 인원을 다르게 준다. **결정성 때문이다.**
+ *
+ * 첫 버튼은 앉은 사람 중 **무작위**다(`RecoveryService.drawFirstButton`의
+ * 주석이 가리키는 `initializeGame`). 도메인으로 옳다 — 실제 토너먼트도 그렇게
+ * 뽑는다. 그런데 그 위치가 SB·BB를 **폴더 구역에 떨어뜨리느냐**를 정하고,
+ * 폴더가 낸 300이 팟을 거쳐 승자 스택에 남는다. 그래서 첫 판 승자는 실행마다
+ * 30000이거나 30300이다.
+ *
+ * 인원이 다 같으면 둘째 판에서 **첫 판 승자 둘이 그 300으로 다툰다.**
+ * `planHand`가 스택 최대를 이기게 하므로 승자가 뒤집히고, 파이널 테이블에
+ * 앉는 사람이 갈린다. 실측으로 `complete`·`abort`는 C4가, `chop`은 A4가
+ * 이겼다 — 같은 시드인데 남은 셋이 달라져 **프레임 ③의 「같은 사람의 다른
+ * 결말」이 거짓이 된다.**
+ *
+ * 인원을 벌리면 스택이 5000씩 벌어진다. 300은 그 사이를 못 넘는다.
+ *
+ * | 테이블 | 올인 | 승자 스택 | 생존 |
+ * |---|---|---|---|
+ * | 1 (9석) | 6 | 30000 | 4 |
+ * | 2 (9석) | 6 | 30000 | 4 |
+ * | 3 (9석) | 7 | 35000 | 3 |
+ * | 4 (8석) | 5 | 25000 | 4 |
+ *
+ * 병합 뒤 둘째 판이 `C3(35000) vs A4(30000)`과 `B4(30000) vs D4(25000)`가
+ * 되어 양쪽 다 갈리지 않는다.
+ *
+ * 배역도 유지된다 — rebuyer(`C5`, 좌석 4)는 3번의 올인 범위(`2`~`8`) 안이라
+ * 나가고, mover(`D1`, 좌석 0)는 4번의 폴더(`0`~`2`)라 남는다.
+ */
+const FIRST_HAND_ALL_IN: Record<number, number> = { 1: 6, 2: 6, 3: 7, 4: 5 };
+
+/**
+ * 둘째 판도 테이블마다 다르다. **파이널 셋의 스택 비율을 여기서 정한다.**
+ *
+ * 찹은 남은 상금을 **칩 비율로** 나눈다(`domain.md`의 「딜(ICM 찹)」). 그래서
+ * 파이널 셋의 스택 분포가 곧 **딜이 성립하는가**를 정한다 — 칩 비율이 상금
+ * 비율보다 고르면 숏스택이 이득이고, 한쪽으로 쏠리면 아무도 동의하지 않을
+ * 딜이 된다.
+ *
+ * 상금 비율은 `615,600 : 372,600 : 243,000` ≒ **50 : 30 : 20**이다. 칩을
+ * `4 : 3 : 2`(44 : 33 : 22)로 만들면 칩 리더만 양보하고 미들과 숏이 이득을
+ * 본다 — 실제 딜에서 벌어지는 협상 그대로다.
+ *
+ * | 테이블 | 인원 | 올인 | 승자 | 생존 |
+ * |---|---|---|---|---|
+ * | 1 | 8 | 5 (`A4·C1·C2·C3·C5`) | `C3` 35k+45k = **80k** | `A1·A2·A3`(5k) + `C3` |
+ * | 2 | 8 | 4 (`D1·D2·D3·D4`) | `D4` 25k+15k = **40k** | `B1·B2·B3`(5k) + `B4`(30k) + `D4` |
+ *
+ * 합이 **아홉**이라 파이널 테이블(9석)이 정확히 찬다. 열이면 앉을 자리가
+ * 없고, 여덟이면 숏들의 칩이 모자라 `FINAL_WATCHERS`가 만드는 셋째가 너무
+ * 작아진다.
+ */
+const SECOND_HAND_ALL_IN: Record<number, number> = { 1: 5, 2: 4 };
+
+/**
+ * 파이널 마지막 판에서 **지켜보는 인원.** 스택이 큰 둘이다.
+ *
+ * 나머지 일곱(숏 여섯과 미들 하나)이 올인하고, 그 칩이 미들에게 모여
+ * `30k → 60k`가 된다. 큰 둘은 손대지 않으므로 `80k`와 `40k`가 그대로 남는다.
+ *
+ * ```
+ * 파이널 9명   A1 A2 A3 B1 B2 B3(5k) · B4 30k · D4 40k · C3 80k
+ * 셋만 판      C3·D4가 지켜본다 → 일곱이 올인 → 승자 B4 = 30k + 30k = 60k
+ * 남는 셋      C3 80k · B4 60k · D4 40k        (4 : 3 : 2)
+ * ```
+ *
+ * 이 판만 `planHand`의 좌석 규칙(`slice`)을 안 쓴다. 지켜볼 사람을 좌석으로
+ * 고르면 병합이 앉히는 자리에 따라 달라지는데, **여기서 정해야 하는 것은
+ * 자리가 아니라 스택**이다.
+ */
+const FINAL_WATCHERS = 2;
 
 /**
  * 어느 좌석이 올인하고 어느 좌석이 폴드하나. 규칙 하나로 모든 판을 정한다.
@@ -144,7 +249,37 @@ const ALL_IN_COUNT = 6;
  * 같은 시드로 두 번 돌려도 스택 분포가 갈리고, ICM은 칩 비율로 나누는 것이라
  * 금액까지 갈린다.
  */
-function planHand(occupiedSeats: number[], count: number, state: DemoTableState) {
+function planHand(
+  occupiedSeats: number[],
+  count: number,
+  state: DemoTableState,
+  /**
+   * 스택이 큰 이 인원은 **지켜본다.** 주면 나머지 전원이 올인한다(`count`는
+   * 무시된다).
+   *
+   * 파이널 테이블의 마지막 판이 이것을 쓴다. 그냥 두면 큰 스택이 작은 것들을
+   * 다 먹어 `85,000 : 4,900 : 4,700` 같은 분포가 되는데, **그 분포에서는
+   * 찹이 성립하지 않는다** — 칩 비율로 나누면 숏스택이 4,900칩으로 34,200원을
+   * 받고, 딜을 안 하면 3위 상금 243,000원을 받는다. 아무도 동의하지 않을
+   * 딜을 화면에 띄우면 그 기능이 거짓말이 된다.
+   *
+   * 큰 둘을 빼고 숏들끼리 붙이면 그 칩이 한 사람에게 모여 **셋의 스택이
+   * 고르게** 남는다. 실제 토너먼트에서도 먼저 부딪치는 것은 숏스택이다.
+   */
+  foldTop = 0,
+) {
+  if (foldTop > 0) {
+    const byStack = [...occupiedSeats].sort(
+      (a, b) => state.players[b]!.stack - state.players[a]!.stack,
+    );
+    const folders = byStack.slice(0, foldTop);
+    const allIn = occupiedSeats.filter((i) => !folders.includes(i));
+    const winner = allIn.reduce(
+      (best, i) => (state.players[i]!.stack > state.players[best]!.stack ? i : best),
+      allIn[0],
+    );
+    return { folders: occupiedSeats.filter((i) => folders.includes(i)), allIn, winner };
+  }
   const allIn = occupiedSeats.slice(-count);
   const winner = allIn.reduce((best, seatIndex) => {
     const a = state.players[seatIndex]!.stack;
@@ -380,13 +515,31 @@ test.describe('데모 — 정산', () => {
      * 성공 조건은 「눌렀다」가 아니라 **「차례가 넘어갔다」**다. 소켓이 붙기
      * 전이나 끊긴 뒤에 누른 것은 아무 일도 일으키지 않고 사라진다.
      */
-    const playHand = async (s: Stage, step: string, allInCount = ALL_IN_COUNT) => {
+    const playHand = async (
+      s: Stage,
+      step: string,
+      allInCount = ALL_IN_COUNT,
+      foldTop = 0,
+    ) => {
       const before = await stateOf(s);
       const chips = chipsOnTable(before);
       const occupied = before.players
         .map((p, i) => (p ? i : -1))
         .filter((i) => i >= 0);
-      const plan = planHand(occupied, allInCount, before);
+      const plan = planHand(occupied, allInCount, before, foldTop);
+
+      // **판마다 좌석·스택·승자를 남긴다.** 세 실행이 갈림목 전까지 같아야
+      // 프레임 ③이 「같은 사람의 다른 결말」을 주장할 수 있는데, 마지막에
+      // 최종 순위만 보면 「어딘가에서 갈렸다」까지만 안다. 승자는 스택
+      // 최대이고(`planHand`) 첫 판 승자 둘의 스택은 사실상 동률이라,
+      // **틀어진 첫 판**을 잡으려면 그 자리의 값이 로그에 있어야 한다.
+      console.log(
+        `[판] ${step} · ${s.tableOrder}번 · ` +
+          occupied
+            .map((i) => `${i}:${before.players[i]!.nickname}=${before.players[i]!.stack}`)
+            .join(' ') +
+          ` → 승자 ${plan.winner}:${before.players[plan.winner]!.nickname}`,
+      );
 
       if (s.dealer.kind === 'screen') {
         await startHandOnScreen(s.dealer.page, () => stateOf(s));
@@ -505,10 +658,10 @@ test.describe('데모 — 정산', () => {
     // rebuyer의 테이블 번호를 박아 넣지 않는다. 시드(`SETTLEMENT_PLAYERS`)가
     // 정하는 값이라 `playerOf(ON_SCREEN.rebuyer).tableOrder`로 뽑는다 —
     // 배역을 다시 옮겨도 코드가 따라온다.
-    mark('첫 판 — 한 판에 여섯이 올인한다');
+    mark('첫 판 — 한 판에 스물이 나간다');
     const rebuyerTableOrder = playerOf(ON_SCREEN.rebuyer).tableOrder;
     const filmed = stages.get(FILMED_TABLE)!;
-    await playHand(filmed, '첫 판');
+    await playHand(filmed, '첫 판', FIRST_HAND_ALL_IN[filmed.tableOrder]);
     await declineRebuys(filmed);
     await settleToWaiting(filmed, '첫 판');
 
@@ -516,7 +669,7 @@ test.describe('데모 — 정산', () => {
     // 스키마 · 같은 딜러 명령이다.
     for (const s of stages.values()) {
       if (s.tableOrder === FILMED_TABLE || s.tableOrder === rebuyerTableOrder) continue;
-      await playHand(s, '첫 판');
+      await playHand(s, '첫 판', FIRST_HAND_ALL_IN[s.tableOrder]);
       await declineRebuys(s);
       await settleToWaiting(s, '첫 판');
     }
@@ -525,7 +678,7 @@ test.describe('데모 — 정산', () => {
     // 리바인 오버레이가 뜨는 순간이 바로 다음 블록이라, 여기서 거절해
     // 버리면 리바인을 물어볼 사람이 없어진다.
     const rebuyerStage = stages.get(rebuyerTableOrder)!;
-    await playHand(rebuyerStage, '첫 판');
+    await playHand(rebuyerStage, '첫 판', FIRST_HAND_ALL_IN[rebuyerStage.tableOrder]);
 
     // ── 리바인 — 엔트리가 36이 되고 상금권이 하나 는다 ──────────────
     //
@@ -563,8 +716,6 @@ test.describe('데모 — 정산', () => {
     //
     // **걸어오는 방향이 촬영 테이블 쪽이다.** 파이널 테이블이 카메라 앞에
     // 서야 한다.
-    mark('병합 — 네 테이블이 둘이 된다');
-
     // ── 폰 둘 ───────────────────────────────────────────────────────
     //
     // **병합 장면의 절반이 폰에 있다.** 좌석을 잃은 사람이 새 자리에 앉으려면
@@ -573,6 +724,11 @@ test.describe('데모 — 정산', () => {
     // 화면에 있어야 보인다.
     //
     // 둘을 여는 이유는 둘이 다른 테이블로 흩어지기 때문이다(`ON_SCREEN`).
+    //
+    // **마크보다 먼저 연다.** 면을 열면 슬레이트가 화면을 자홍색으로 덮는데
+    // (`surfaces.ts`), 마크 뒤에 열면 그 마커가 **자르는 창 안**으로 들어온다.
+    // 앞 촬영본의 프레임 ②에 폰 둘의 자홍색이 그대로 남았다. 자르는 쪽도
+    // 그것을 건너뛰지만(`firstFrameAt`), 애초에 창에 안 들어오는 것이 맞다.
     const rebuyerPhone = await stage('phone', 'phone-rebuyer');
     const moverPhone = await stage('phone', 'phone-mover');
     await openWithToken(
@@ -585,6 +741,42 @@ test.describe('데모 — 정산', () => {
       await login(request, ON_SCREEN.mover, manifest.password),
       '/me',
     );
+
+    mark('병합 — 네 테이블이 둘이 된다');
+
+    // **여기서 미리 연다.** 자리를 잃기 전의 번호가 프레임에 한 번 남아야,
+    // 옮겨 앉을 때 다시 여는 번호가 「같은 번호」로 읽힌다. 한쪽만 있으면
+    // 그냥 번호를 넣는 그림이다.
+    await revealOtp(rebuyerPhone);
+    await revealOtp(moverPhone);
+
+    /**
+     * 폰에서 참가 OTP를 **열어 보인다.**
+     *
+     * `/me`는 번호를 닫아 두고 「참가 OTP 조회」를 눌러야 연다(`OtpReveal`) —
+     * 홀은 사람이 붙어 앉는 곳이라 6자리가 내내 떠 있으면 옆에서 읽힌다.
+     * 그것이 화면의 설계이므로 촬영도 그 한 번을 눌러야 한다.
+     *
+     * **새로고침이 그 상태를 지운다.** `useState`가 초기값으로 돌아가므로,
+     * 다시 열지 않으면 프레임 ②에 「참가 OTP 조회」 버튼만 남는다 — 그
+     * 프레임이 주장하는 것이 「처음과 **같은 번호**를 다시 넣는다」인데
+     * 정작 번호가 화면에 없게 된다. 앞 촬영본이 그랬다.
+     */
+    async function revealOtp(page: Page) {
+      await press(page, page.getByRole('button', { name: '참가 OTP 조회' }));
+      // **누른 자리에 그 값이 나타난다.** 버튼이 있던 곳이 곧 번호 칸이라,
+      // 커서를 두고 찍으면 점 28px이 **한 자리를 통째로 덮는다** — 앞
+      // 촬영본의 프레임 ②에 `7 2 8 ● 1 2`로 남았다. 여섯 자리 중 하나가
+      // 없으면 「같은 번호」를 대조할 수가 없다.
+      //
+      // 스틸은 `shoot()`이 커서를 숨겨 해결하지만 여기는 움짤이다. 커서를
+      // 지우면 조작이 사라지므로 **비켜 놓는다** — 카드 아래 흰 여백이다.
+      const viewport = page.viewportSize();
+      if (viewport) {
+        await page.mouse.move(viewport.width / 2, viewport.height * 0.8);
+      }
+      await linger(page, 2_500);
+    }
 
     /**
      * 상점이 콘솔에서 좌석 하나를 뗀다.
@@ -680,7 +872,7 @@ test.describe('데모 — 정산', () => {
           // 보인다.
           await onScreen.phone.bringToFront();
           await onScreen.phone.reload();
-          await linger(onScreen.phone, 2_500);
+          await revealOtp(onScreen.phone);
           await sitDown(onScreen.tablet, storeId, into.tableId, free, playerOf(m.nickname).otp);
           into.seats.set(free, { kind: 'screen', page: onScreen.tablet });
           continue;
@@ -735,15 +927,15 @@ test.describe('데모 — 정산', () => {
     // `declineRebuys`는 등록이 마감된 뒤에는 그냥 지나가므로, 촬영이 느려져
     // 이 판이 마감 뒤로 밀려도 안전하다.
     mark('둘째 판 — 두 테이블에서 열이 나간다');
-    await playHand(stages.get(FILMED_TABLE)!, '둘째 판');
+    await playHand(stages.get(FILMED_TABLE)!, '둘째 판', SECOND_HAND_ALL_IN[FILMED_TABLE]);
     await declineRebuys(stages.get(FILMED_TABLE)!);
     await settleToWaiting(stages.get(FILMED_TABLE)!, '둘째 판');
-    await playHand(stages.get(2)!, '둘째 판');
+    await playHand(stages.get(2)!, '둘째 판', SECOND_HAND_ALL_IN[2]);
     await declineRebuys(stages.get(2)!);
     await settleToWaiting(stages.get(2)!, '둘째 판');
 
     // ── 병합 2 — 파이널 테이블 ──────────────────────────────────────
-    mark('파이널 테이블 — 여섯이 한 테이블에 앉는다');
+    mark('파이널 테이블 — 아홉이 한 테이블에 앉는다');
     await mergeInto(stages.get(2)!, stages.get(FILMED_TABLE)!);
     const final = stages.get(FILMED_TABLE)!;
     await console_.reload();
@@ -752,7 +944,7 @@ test.describe('데모 — 정산', () => {
 
     const atFinal = await stateOf(final);
     const seatedCount = atFinal.players.filter((p) => p).length;
-    expect(`파이널 테이블 인원 ${seatedCount}`).toBe('파이널 테이블 인원 6');
+    expect(`파이널 테이블 인원 ${seatedCount}`).toBe('파이널 테이블 인원 9');
     expect(`파이널 테이블 칩 ${chipsOnTable(atFinal)}`).toBe(`파이널 테이블 칩 ${chipsInPlay}`);
 
     // ── 등록 마감을 기다린다 ────────────────────────────────────────
@@ -813,10 +1005,11 @@ test.describe('데모 — 정산', () => {
     // 둘(헤즈업)로 줄이지 않는다. ICM은 「칩 비율대로 **나눈다**」인데 둘이면
     // 비율이 하나뿐이라 나눈 티가 안 난다.
     //
-    // 넷을 넘기지 않는 이유는 그대로다 — 여섯이 남은 자리에서 여섯이 올인하면
-    // 그 판에 최후 1인이 나와 마무리를 고를 자리 자체가 사라진다.
+    // **큰 둘은 지켜본다**(`FINAL_WATCHERS`). 전원 올인시키면 한 사람만 남아
+    // 마무리를 고를 자리 자체가 사라지고, 좌석 규칙으로 고르면 큰 스택이
+    // 작은 것들을 다 먹어 찹이 성립하지 않는 분포가 된다.
     mark('셋만 남는다 — 상금이 세 번 나간다');
-    await playHand(final, '셋만', 4);
+    await playHand(final, '셋만', 0, FINAL_WATCHERS);
     await settleToWaiting(final, '셋만');
 
     // ── 남은 셋의 폰 ────────────────────────────────────────────────
@@ -851,13 +1044,17 @@ test.describe('데모 — 정산', () => {
     mark('마무리 — 셋이 한 화면에 있다');
     await console_.reload();
     await linger(console_, 2_000);
-    await expect(console_.getByText('대회 마무리 — 되돌릴 수 없습니다')).toBeVisible();
-    await shoot(console_, '18-finish-blocked-reasons');
+    const finishCard = console_.getByText('대회 마무리 — 되돌릴 수 없습니다');
+    await expect(finishCard).toBeVisible();
+    // **그 카드로 굴리고 찍는다.** 콘솔은 720px보다 길어서 마무리 카드가
+    // 화면 밖에 있고, `toBeVisible()`은 스크롤 밖도 통과한다 — 앞 촬영본의
+    // `18-finish-blocked-reasons.png`에 정작 막힌 이유가 없었다.
+    await shoot(console_, '18-finish-blocked-reasons', finishCard);
     await linger(console_, 3_000);
 
     // ── 갈림목 ──────────────────────────────────────────────────────
     if (ENDING === 'chop') {
-      mark('마무리 — ICM으로 닫는다');
+      mark(BRANCH_MARK);
       await press(console_, console_.getByRole('button', { name: 'ICM 마무리' }));
       const dialog = console_.getByLabel('ICM으로 마무리할까요?');
       await expect(dialog).toBeVisible();
@@ -867,7 +1064,7 @@ test.describe('데모 — 정산', () => {
       await shoot(console_, '19-chop-ledger-sums');
       await press(console_, dialog.getByRole('button', { name: 'ICM 마무리' }));
     } else if (ENDING === 'abort') {
-      mark('마무리 — 중단하고 환불한다');
+      mark(BRANCH_MARK);
       await press(console_, console_.getByRole('button', { name: '중단' }));
       const dialog = console_.getByLabel('대회를 중단할까요?');
       await expect(dialog).toBeVisible();
@@ -880,7 +1077,7 @@ test.describe('데모 — 정산', () => {
       // 최후 1인까지 친다. **셋이 남아 있으므로 한 판이면 된다** — 전원
       // 올인하고 딜러가 **순위를 끝까지 찍는다.** 층이 남으면 서버가 한 칩도
       // 움직이기 전에 거부하는데, 여기서는 그 층이 곧 2·3위 상금이다.
-      mark('마무리 — 최후 1인');
+      mark(BRANCH_MARK);
       await playHand(final, '최후', 3);
       await settleToWaiting(final, '최후');
       await console_.reload();
@@ -918,6 +1115,26 @@ test.describe('데모 — 정산', () => {
     for (const page of finalPhones) {
       await page.bringToFront();
       await page.reload();
+      // **값이 뜬 것을 보고 넘어간다.** 「지난 참가」가 그 증거다 — 대회가
+      // 열려 있는 동안은 「진행 중」이고, 닫혀서 등수와 상금이 박힌 뒤에야
+      // 이 제목으로 바뀐다.
+      //
+      // 시간으로만 재면 **마지막 폰이 빈 채로 남는다.** 앞 촬영본의 프레임
+      // ③에서 `complete` 쪽 1위 폰이 끝까지 「진행 중」이었고, 그 자리가
+      // 비면 「ICM은 우승자에게 몰아주고 분배표는 나눈다」의 대비가 반쪽이
+      // 된다 — 좌우로 견주는 그림에서 가장 큰 금액이 없는 것이다.
+      //
+      // **중단은 예외다.** `/me`가 참가를 가르는 기준이 「이 사람의 참가가
+      // 끝났는가」인데(`FINISHED` · `ELIMINATED` · `AWARDED`), 중단은 대회를
+      // `CANCELLED`로 만들고 남은 사람의 참가 상태를 그 셋 중 어디에도
+      // 넣지 않는다. 그래서 환불을 받고도 「진행 중」에 남는다 — 여기서
+      // 기다리면 30초를 버리고 죽는다.
+      //
+      // 그 자체가 제품의 사실이고 이 촬영이 고칠 것은 아니다. abort 프레임은
+      // 콘솔 하나뿐이라(`20-abort-refunds-all`) 폰이 그림에 쓰이지도 않는다.
+      if (ENDING !== 'abort') {
+        await expect(page.getByText('지난 참가')).toBeVisible({ timeout: 30_000 });
+      }
       await linger(page, 2_000);
     }
 
