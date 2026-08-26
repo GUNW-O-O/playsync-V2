@@ -1,5 +1,11 @@
 # 정산 촬영 프레임 설계 적용 (T84) Implementation Plan
 
+> **이 계획은 촬영 전의 것이다.** 실제로 찍고 바뀐 자리는 설계 문서의
+> 「구현이 이 설계를 바꾼 자리」에 모아 두었다
+> ([`../specs/2026-08-24-settlement-demo-design.md`](../specs/2026-08-24-settlement-demo-design.md)).
+> 특히 `s6`~`s9`를 **「지우지 않는 것」**으로 적은 대목은 낡았다 — 이미 지웠다
+> (`39530b8`).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 정산 촬영이 설계된 프레임 넷을 내놓게 하고, `img/`의 파일 이름만으로 그 그림이 무엇을 주장하는지 알 수 있게 만든다.

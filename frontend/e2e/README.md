@@ -20,7 +20,7 @@ npm run test:e2e                     # 화면 회귀. 개발 서버는 떠 있�
 npm run demo                         # 데모 촬영. 시드 → 프론트 빌드 → 장면 다섯
 npm run demo:settlement              # 정산 촬영. 마무리마다 시드를 다시 깔고 다시 돈다
 npm run assets                       # 장면 1~5 촬영본을 자르고 합쳐 img/ 로
-npm run assets:settlement            # 정산 촬영(ICM)을 자른다. 다른 마무리는 --settlement=
+npm run assets:settlement            # 정산 촬영을 자른다. 셋이 다 있어야 돈다
 ```
 
 **프로젝트가 셋이다**(`playwright.config.ts`). `regression`은 `e2e/*.spec.ts`,
@@ -282,20 +282,26 @@ const board = await stage('scoreboard', '전광판');
 | 무엇 | 이름 |
 |---|---|
 | 촬영 폴더 | 테스트 제목에서 나온다 — `마무리-ICM으로-닫는다` · `마무리-최후-1인으로-닫는다` · `마무리-중단하고-환불한다` |
-| 영상(면) | `stage()`의 둘째 인자. `dealer-final-table`(병합의 종착지) · `seat-survivor` · `seat-rebuyer` · `console` · `scoreboard` |
-| 움짤(장면) | `s6-entry-not-player` · `s7-four-tables-to-one` · `s8-close-icm`/`-last-one`/`-abort` |
-| 스틸 | `scoreboard-entry-not-player` · `console-finish-blocked` · `console-chop-ledger` · `console-abort-ledger` … |
+| 영상(면) | `stage()`의 둘째 인자. `dealer-t1`~`dealer-t4` · `seat-mover` · `seat-rebuyer` · `phone-mover` · `phone-rebuyer` · `phone-final-1`~`3` · `console` · `scoreboard` |
+| 움짤(장면) | `11-entry-not-player` · `03-four-tables-to-one` · `05-two-doors-same-ledger` · `20-abort-refunds-all` |
+| 스틸 | `13-entry-36-players-35` · `18-finish-blocked-reasons` · `19-chop-ledger-sums` · `21-abort-ledger-groups` … |
 
-**마무리 장면만 마무리마다 이름이 다르다.** 셋이 같은 자리에서 갈리므로
-**파일 이름이 유일한 구분**이고, 셋을 나란히 놓는 것이 이 촬영의 요점이다.
+**이름 앞의 번호는 README에 놓이는 순서다.** 마무리마다 파일을 따로 두지
+않는다 — 갈림목 전까지 세 실행이 똑같으므로 프레임 ①·②는 `complete` 하나에서만
+자르고, 마무리는 `05`가 조각 둘로 `chop`과 `complete`를 **시간축에** 세운다.
 
-자르는 것은 마무리마다 따로 부른다 — `node scripts/make-demo-assets.mjs
---settlement=chop`. 셋을 한 번에 못 자르는 이유는 **촬영이 셋이기 때문**이다.
+자르는 것은 한 번에 부른다 — `npm run assets:settlement`. **인자를 안 받는다**:
+하나만 골라 자를 수 있게 두면 반만 있는 그림이 조용히 나온다.
 
 ### 카메라가 넷인데 테이블이 넷이다
 
-면은 다섯을 연다(좌석 둘 · 딜러 하나 · 전광판 · 콘솔). 나머지 세 테이블은
-**화면 없이 진짜 소켓으로** 돈다(`fixtures/wire.ts`).
+면은 열둘을 연다(좌석 둘 · 딜러 넷 · 폰 둘 · 파이널 폰 셋 · 전광판 · 콘솔).
+나머지 서른셋은 **화면 없이 진짜 소켓으로** 돈다(`fixtures/wire.ts`).
+
+**딜러 넷이 다 브라우저로 붙지만 조작이 화면인 것은 둘이다**(`FILMED_TABLE` ·
+`MODAL_TABLE`). 프레임 ①에 드는 두 타일에서 승자 결정 모달이 **둘 다** 떠야
+「딜러가 지명하니 사람이 사라진다」가 읽힌다 — 하나만 화면이면 나머지는 펠트가
+저절로 바뀌는 그림이 된다.
 
 서른다섯을 브라우저로 여는 것은 **그릴 필요가 없는 것을 그리는** 일이고, 그렇다고
 안 돌리면 필드가 줄어든 것이 가짜가 된다. 몇 개까지 버티는지는 기계마다 다르므로
