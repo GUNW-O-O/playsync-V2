@@ -327,4 +327,59 @@ describe('SeatGameClient', () => {
       errorSpy.mockRestore();
     });
   });
+
+  /**
+   * **좌석도 같은 구멍이었다.** 대회를 닫는 경로가 소켓에 아무것도 쓰지 않아서
+   * 이 태블릿은 끝난 대회의 마지막 스냅샷을 계속 그렸다. 탈락한 사람은
+   * `EliminatedOverlay`가 덮어 주지만, **끝까지 남아 상금을 받은 사람은 그
+   * 덮개가 안 뜬다** — 우승자가 앉은 자리가 다음 손님을 못 받는다.
+   */
+  describe('대회가 닫히면', () => {
+    const CLOSED = { tournamentId: 'trn-1', status: 'FINISHED' as const, closedAt: 1 };
+
+    it('덮개가 뜬다', async () => {
+      const { socket } = await renderWithSocket();
+
+      socket.emitServerEvent('tournamentClosed', CLOSED);
+
+      expect(screen.getByTestId('seat-tournament-closed')).toHaveTextContent('대회가 끝났습니다');
+    });
+
+    it('중단이면 환불이라고 적는다', async () => {
+      const { socket } = await renderWithSocket();
+
+      socket.emitServerEvent('tournamentClosed', { ...CLOSED, status: 'CANCELLED' });
+
+      expect(screen.getByTestId('seat-tournament-closed')).toHaveTextContent('중단');
+    });
+
+    /**
+     * 알림과 종료 사이에 이미 큐에 있던 프레임이 도착할 수 있다. 그것이 덮개를
+     * 걷으면 끝난 대회의 펠트가 다시 나온다.
+     */
+    it('늦게 온 renderGame이 덮개를 걷지 않는다', async () => {
+      const { socket } = await renderWithSocket();
+
+      socket.emitServerEvent('tournamentClosed', CLOSED);
+      socket.emitServerEvent('renderGame', BASE_STATE);
+
+      expect(screen.getByTestId('seat-tournament-closed')).toBeInTheDocument();
+    });
+
+    /**
+     * **서버가 알린 뒤 소켓을 닫는다**(`WsGateway.closeTable`). 코드 1000이라
+     * `onclose`가 그대로 넘어가고, 화면에는 종료 덮개만 남아야 한다.
+     */
+    it('서버가 소켓을 닫아도 덮개만 남는다', async () => {
+      const { socket } = await renderWithSocket();
+
+      socket.emitServerEvent('tournamentClosed', CLOSED);
+      act(() => socket.close());
+
+      const banner = screen.queryByText(/연결이 끊어졌습니다/);
+      const closed = screen.queryByTestId('seat-tournament-closed');
+      expect(`배너 ${banner ? '있음' : '없음'} / 덮개 ${closed ? '있음' : '없음'}`)
+        .toBe('배너 없음 / 덮개 있음');
+    });
+  });
 });

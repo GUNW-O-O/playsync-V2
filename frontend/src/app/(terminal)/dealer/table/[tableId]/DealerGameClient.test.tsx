@@ -5,6 +5,13 @@ import { http, HttpResponse } from 'msw';
 import { server } from '@/mocks/server';
 import { GamePhase, type TableState } from '@playsync/contract';
 
+// 종료 덮개가 대기 화면으로 돌아간다(`TournamentClosedOverlay`). 좌석 쪽
+// `SeatGameClient.test.tsx`와 같은 배선이다.
+const push = vi.fn();
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push }),
+}));
+
 const DealerGameClient = (await import('./DealerGameClient')).default;
 
 /**
@@ -269,6 +276,101 @@ describe('DealerGameClient', () => {
       socket.emitServerEvent('renderGame', baseState({ phase: GamePhase.WAITING }));
 
       expect(screen.queryByTestId('dealer-action-error')).toBeNull();
+    });
+  });
+
+  /**
+   * **대회가 닫히면 그 사실이 화면에 있어야 한다.**
+   *
+   * 이 알림이 없는 동안 딜러 화면은 마지막 스냅샷을 계속 그렸다. 그 상태에서
+   * 무엇을 누르든 `Table` 행도 스냅샷도 없어 돌아오는 것은 「명령이
+   * 거절되었습니다」뿐이었다 — 끝났다는 사실이 아니라 정체불명의 에러다.
+   */
+  describe('대회가 닫히면', () => {
+    const CLOSED = { tournamentId: 'trn-1', status: 'FINISHED' as const, closedAt: 1 };
+
+    it('덮개가 뜨고 종료라고 적는다', async () => {
+      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.HAND_END }));
+
+      socket.emitServerEvent('tournamentClosed', CLOSED);
+
+      expect(screen.getByTestId('dealer-tournament-closed')).toHaveTextContent('대회가 끝났습니다');
+    });
+
+    /**
+     * **종료와 중단은 다른 문장이다.** 종료는 걷은 돈이 상금과 상점 몫으로
+     * 다 나간 것이고, 중단은 환불하고 무른 것이다. 같은 문구로 덮으면 딜러가
+     * 참가자에게 무엇을 안내해야 하는지가 화면에서 사라진다.
+     */
+    it('중단이면 환불이라고 적는다', async () => {
+      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.HAND_END }));
+
+      socket.emitServerEvent('tournamentClosed', { ...CLOSED, status: 'CANCELLED' });
+
+      expect(screen.getByTestId('dealer-tournament-closed')).toHaveTextContent('중단');
+    });
+
+    /**
+     * **덮개가 조작을 가린다.** 끝난 대회의 「핸드 시작」은 거절만 부른다.
+     * 버튼을 비활성으로 두는 것으로는 부족하다 — 딜러가 보는 것은 펠트이고,
+     * 왜 안 눌리는지가 어디에도 안 적힌다.
+     */
+    it('덮개 아래의 조작은 닿지 않는다', async () => {
+      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.WAITING }));
+      expect(screen.getByRole('button', { name: '핸드 시작' })).not.toBeDisabled();
+
+      socket.emitServerEvent('tournamentClosed', CLOSED);
+
+      expect(screen.getByRole('button', { name: '핸드 시작' })).toBeDisabled();
+    });
+
+    /**
+     * **닫힌 뒤의 renderGame이 덮개를 걷지 않는다.** 서버가 소켓을 끊지 않으므로
+     * 늦게 도착한 프레임이 있을 수 있고, 그것이 덮개를 지우면 딜러는 끝난 대회의
+     * 펠트를 다시 만지게 된다.
+     */
+    it('늦게 온 renderGame이 덮개를 걷지 않는다', async () => {
+      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.HAND_END }));
+
+      socket.emitServerEvent('tournamentClosed', CLOSED);
+      socket.emitServerEvent('renderGame', baseState({ phase: GamePhase.WAITING }));
+
+      expect(screen.getByTestId('dealer-tournament-closed')).toBeInTheDocument();
+    });
+
+    /**
+     * **끝난 것과 끊긴 것은 다른 사건이다.** 연결 끊김 배너가 같이 뜨면 딜러는
+     * 망을 의심하고 새로고침한다 — 그러면 대회가 끝났다는 문장도 사라진다.
+     */
+    it('연결 끊김 배너를 대신 그리지 않는다', async () => {
+      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.HAND_END }));
+
+      socket.emitServerEvent('tournamentClosed', CLOSED);
+
+      // **둘을 같이 본다.** 배너가 없다는 것만 보면 덮개를 통째로 지워도
+      // 초록이다 — 지금 배선에서 배너는 `onclose`가 띄우고, 이 이벤트는
+      // 소켓을 닫지 않기 때문이다.
+      const banner = screen.queryByText(/연결이 끊어졌습니다/);
+      const closed = screen.queryByTestId('dealer-tournament-closed');
+      expect(`배너 ${banner ? '있음' : '없음'} / 덮개 ${closed ? '있음' : '없음'}`)
+        .toBe('배너 없음 / 덮개 있음');
+    });
+
+    /**
+     * **서버가 알린 뒤 소켓을 닫는다**(`WsGateway.closeTable`). 코드 1000이라
+     * `onclose`가 그대로 넘어가고, 화면에는 종료 덮개만 남아야 한다 — 배너가
+     * 겹쳐 뜨면 딜러는 망을 의심하고 새로고침한다.
+     */
+    it('서버가 소켓을 닫아도 덮개만 남는다', async () => {
+      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.HAND_END }));
+
+      socket.emitServerEvent('tournamentClosed', CLOSED);
+      act(() => socket.close());
+
+      const banner = screen.queryByText(/연결이 끊어졌습니다/);
+      const closed = screen.queryByTestId('dealer-tournament-closed');
+      expect(`배너 ${banner ? '있음' : '없음'} / 덮개 ${closed ? '있음' : '없음'}`)
+        .toBe('배너 없음 / 덮개 있음');
     });
   });
 });

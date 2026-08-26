@@ -4,8 +4,14 @@ import { useEffect, useRef, useState } from 'react';
 import { DealerAction } from '@playsync/contract';
 import Felt from '@/component/felt/Felt';
 import { apiFetch } from '@/lib/api';
-import { GamePhase, TableState } from '@playsync/contract';
+import {
+  GamePhase,
+  TableState,
+  TournamentClosedSchema,
+  type ClosedTournamentStatus,
+} from '@playsync/contract';
 import WinnerOverlay, { type WinnerCandidate } from './WinnerOverlay';
+import TournamentClosedOverlay from '@/component/TournamentClosedOverlay';
 
 // 서버·소켓이 문구를 안 줄 때의 최후 안내. WS 배선(티켓 요청·정리·배너)은
 // `SeatGameClient`에서 그대로 옮겨 왔다 — T24가 세운 규칙이고, 액세스 토큰이
@@ -45,11 +51,17 @@ export default function DealerGameClient({
   tableId,
   initialData,
   tableOrder,
+  storeId,
 }: {
   tableId: string;
   initialData?: TableState;
   /** 눈앞의 테이블에 붙은 번호. 없으면 머리글에서 테이블을 뺀다. */
   tableOrder?: number;
+  /**
+   * 대회가 닫힌 뒤 돌아갈 대기 화면(`/dealer?store=`). 없으면 덮개가 그
+   * 안내를 빼고 머문다 — 좌석 쪽 `EliminatedOverlay`와 같은 판단이다.
+   */
+  storeId?: string;
 }) {
   const socketRef = useRef<WebSocket | null>(null);
   const [gameState, setGameState] = useState<TableState | null>(initialData || null);
@@ -57,6 +69,12 @@ export default function DealerGameClient({
   const [actionError, setActionError] = useState<string | null>(null);
   const [kickTarget, setKickTarget] = useState<KickTarget | null>(null);
   const [showWinnerOverlay, setShowWinnerOverlay] = useState(false);
+  /**
+   * 대회가 닫혔다는 사실. **한 번 서면 되돌리지 않는다** — 서버가 소켓을
+   * 끊지 않으므로 늦게 도착한 `renderGame`이 있을 수 있고, 그것이 이 값을
+   * 지우면 딜러가 끝난 대회의 펠트를 다시 만지게 된다.
+   */
+  const [closed, setClosed] = useState<ClosedTournamentStatus | null>(null);
 
   useEffect(() => {
     let socket: WebSocket | null = null;
@@ -90,6 +108,18 @@ export default function DealerGameClient({
             // 새 상태가 왔다는 것은 앞의 명령이 먹었다는 뜻이다. 지난 거절
             // 사유를 남겨 두면 성공한 화면 위에 붙어 있게 된다.
             setActionError(null);
+          } else if (serverEvent === 'tournamentClosed') {
+            // **계약을 읽는다.** 손으로 필드를 꺼내면 백엔드가 모양을 바꿔도
+            // 컴파일이 통과하고 화면만 조용히 어긋난다.
+            const parsed = TournamentClosedSchema.safeParse(data);
+            if (parsed.success) {
+              setClosed(parsed.data.status);
+              // 끝난 대회의 거절 사유는 이제 읽을 값이 없다. 덮개 뒤에 남겨
+              // 두면 대기 화면으로 돌아간 뒤에도 붙어 있다.
+              setActionError(null);
+            } else {
+              console.error('tournamentClosed 계약 위반 — 무시한다.', parsed.error);
+            }
           } else if (serverEvent === 'error') {
             // 거절은 브로드캐스트가 아니라 **누른 사람에게만** 오는 ack다
             // (`ws.gateway.ts`). 상태가 그대로인 거절 — 승자 결정에서 팟
@@ -171,8 +201,15 @@ export default function DealerGameClient({
   }
 
   const seatedCount = gameState?.players.filter((p) => p !== null).length ?? 0;
-  const canStartHand = gameState?.phase === GamePhase.WAITING;
-  const canResolveWinners = gameState?.phase === GamePhase.SHOWDOWN;
+  /*
+    **닫힌 대회에서는 아무 조작도 뜻이 없다.** 같은 트랜잭션이 `Table` 행과
+    Redis 스냅샷을 지웠으므로 무엇을 눌러도 돌아오는 것은 거절뿐이다.
+
+    덮개가 화면을 가리지만 게이팅도 같이 끈다 — 덮개는 그리는 것이고 이쪽은
+    누를 수 있는가라서, 하나만 두면 다른 하나를 지웠을 때 조용히 통과한다.
+  */
+  const canStartHand = gameState?.phase === GamePhase.WAITING && closed === null;
+  const canResolveWinners = gameState?.phase === GamePhase.SHOWDOWN && closed === null;
 
   // 폴드는 베팅 라운드에서만 뜻이 있다. `TableEngine.act`가 그 밖의 페이즈를
   // 통째로 던지므로, 거절을 받고 나서 알게 하지 않고 여기서 미리 끈다.
@@ -366,6 +403,15 @@ export default function DealerGameClient({
           onSubmit={submitWinners}
           onCancel={() => setShowWinnerOverlay(false)}
         />
+      )}
+
+      {/*
+        **맨 뒤에 그린다.** 승자 결정 오버레이가 열린 채로 대회가 닫힐 수
+        있고(마지막 판을 찍는 순간이 곧 정산의 시작이다), 그때 딜러가 봐야
+        하는 것은 이미 뜻이 없어진 승자 목록이 아니라 끝났다는 사실이다.
+      */}
+      {closed !== null && (
+        <TournamentClosedOverlay status={closed} storeId={storeId} terminal="dealer" />
       )}
     </div>
   );
