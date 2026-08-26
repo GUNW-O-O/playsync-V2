@@ -398,6 +398,70 @@ describe('DealerService 동시성', () => {
       expect(phaseDuringRebuy).toBe(GamePhase.HAND_END);
     });
 
+    /**
+     * **판이 멈춘 이유가 스냅샷에 있어야 한다.**
+     *
+     * 이 15초 동안 테이블 전원이 아무 설명 없는 정지를 봤다 — 딜러 화면은
+     * 「쇼다운」 배지에 「승자 결정」이 활성인 채로 남아 다시 누르면 거절당했고,
+     * 남은 좌석들은 마지막 펠트를 그대로 들고 있었다. 스냅샷 필드로 두는 이유는
+     * `dbSyncStatus`와 같다 — 그 15초 안에 재접속한 단말도 같은 것을 봐야 한다.
+     */
+    it('리바인을 기다리는 동안 스냅샷에 그 사실이 남는다', async () => {
+      await seedMeta(true);
+      await redis.set(stateKey, JSON.stringify(showdownState()));
+
+      let pendingDuringRebuy: TableState['rebuyPending'];
+      jest.spyOn(playsync, 'processRebuy').mockImplementation(async () => {
+        const mid: TableState = JSON.parse((await redis.get(stateKey))!);
+        pendingDuringRebuy = mid.rebuyPending;
+        return 0;
+      });
+
+      await dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
+
+      // carol이 파산자다(`showdownState`에서 스택 0, 좌석 2). 마감은 서버가
+      // 정하므로 값 자체가 아니라 **미래인가**를 본다.
+      expect(pendingDuringRebuy?.seatIndexes).toEqual([2]);
+      expect(pendingDuringRebuy!.deadline).toBeGreaterThan(Date.now());
+    });
+
+    /**
+     * **끝나면 지운다.** 남아 있으면 다음 핸드가 도는 내내 화면이 「리바인을
+     * 기다립니다」를 띄운다 — 아무도 안 기다리는데.
+     */
+    it('리바인이 끝나면 표시가 사라진다', async () => {
+      await seedMeta(true);
+      await redis.set(stateKey, JSON.stringify(showdownState()));
+      jest.spyOn(playsync, 'processRebuy').mockResolvedValue(0);
+
+      await dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
+
+      const after: TableState = JSON.parse((await redis.get(stateKey))!);
+      expect(after.rebuyPending).toBeUndefined();
+    });
+
+    /**
+     * **물어볼 사람이 없으면 표시하지 않는다.** 등록이 마감된 뒤에는 리바인
+     * 자체가 없으므로(`resolveWinners`의 `isRegistrationOpen` 가드) 기다리는
+     * 구간도 없다.
+     */
+    it('등록이 마감됐으면 표시하지 않는다', async () => {
+      await seedMeta(false);
+      await redis.set(stateKey, JSON.stringify(showdownState()));
+
+      const seen: (TableState['rebuyPending'])[] = [];
+      const spy = jest.spyOn(redis, 'set');
+
+      await dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
+
+      for (const call of spy.mock.calls) {
+        if (call[0] !== stateKey) continue;
+        seen.push((JSON.parse(String(call[1])) as TableState).rebuyPending);
+      }
+      spy.mockRestore();
+      expect(seen.filter(Boolean)).toEqual([]);
+    });
+
     it('정산이 끝나면 WAITING으로 돌아간다', async () => {
       await redis.set(stateKey, JSON.stringify(showdownState()));
 

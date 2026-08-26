@@ -280,6 +280,53 @@ describe('DealerGameClient', () => {
   });
 
   /**
+   * **판이 멈춘 이유가 화면에 있어야 한다.**
+   *
+   * 리바인 답을 기다리는 15초 동안 딜러는 아무 설명 없는 정지를 봤다.
+   * 스냅샷이 이미 `HAND_END`인데 그 전이가 전파되지 않아 배지는 「쇼다운」이었고,
+   * 「승자 결정」이 활성인 채로 남아 다시 누르면 거절당했다.
+   */
+  describe('리바인을 기다리는 동안', () => {
+    const waiting = (seatIndexes: number[]) =>
+      baseState({
+        phase: GamePhase.HAND_END,
+        rebuyPending: { seatIndexes, deadline: Date.now() + 15_000 },
+      });
+
+    it('무엇을 기다리는지 적는다', async () => {
+      await renderWithSocket(waiting([3]));
+
+      expect(screen.getByTestId('rebuy-pending')).toHaveTextContent('리바인');
+    });
+
+    /** 딜러가 안내할 대상은 눈앞의 **자리**다. */
+    it('기다리는 자리를 짚는다', async () => {
+      await renderWithSocket(waiting([2, 5]));
+
+      expect(screen.getByTestId('rebuy-pending')).toHaveTextContent('3·6번');
+    });
+
+    /**
+     * **누를 수 있으면 누른다.** 이 구간의 「승자 결정」은 서버의 페이즈 가드에
+     * 걸려 거절만 부르는데, 딜러가 보는 것은 펠트라 그 이유가 화면에 없다.
+     */
+    it('승자 결정을 막는다', async () => {
+      await renderWithSocket(waiting([3]));
+
+      expect(screen.getByRole('button', { name: '승자 결정' })).toBeDisabled();
+    });
+
+    /** 기다림이 끝나면 표시도 사라진다. */
+    it('표시가 없으면 그리지 않는다', async () => {
+      const { socket } = await renderWithSocket(waiting([3]));
+
+      socket.emitServerEvent('renderGame', baseState({ phase: GamePhase.WAITING }));
+
+      expect(screen.queryByTestId('rebuy-pending')).toBeNull();
+    });
+  });
+
+  /**
    * **대회가 닫히면 그 사실이 화면에 있어야 한다.**
    *
    * 이 알림이 없는 동안 딜러 화면은 마지막 스냅샷을 계속 그렸다. 그 상태에서

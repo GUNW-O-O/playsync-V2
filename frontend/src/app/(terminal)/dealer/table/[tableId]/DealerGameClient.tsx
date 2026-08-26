@@ -208,8 +208,17 @@ export default function DealerGameClient({
     덮개가 화면을 가리지만 게이팅도 같이 끈다 — 덮개는 그리는 것이고 이쪽은
     누를 수 있는가라서, 하나만 두면 다른 하나를 지웠을 때 조용히 통과한다.
   */
+  /*
+    리바인 답을 기다리는 중. 서버가 스냅샷에 적어 보낸다
+    (`PlaysyncService.markRebuyPending`).
+  */
+  const rebuyPending = gameState?.rebuyPending;
   const canStartHand = gameState?.phase === GamePhase.WAITING && closed === null;
-  const canResolveWinners = gameState?.phase === GamePhase.SHOWDOWN && closed === null;
+  // **기다리는 동안은 승자 결정을 막는다.** 스냅샷은 이미 `HAND_END`라 이
+  // 조건이 대개 거짓이지만, 늦게 도착한 쇼다운 프레임 하나면 버튼이 다시
+  // 켜지고 그것을 누른 딜러는 「쇼다운 상태가 아닙니다」만 받는다.
+  const canResolveWinners =
+    gameState?.phase === GamePhase.SHOWDOWN && closed === null && !rebuyPending;
 
   // 폴드는 베팅 라운드에서만 뜻이 있다. `TableEngine.act`가 그 밖의 페이즈를
   // 통째로 던지므로, 거절을 받고 나서 알게 하지 않고 여기서 미리 끈다.
@@ -353,6 +362,19 @@ export default function DealerGameClient({
       </div>
 
       <div className="shrink-0 border-t border-tb-line p-3">
+        {/*
+          **왜 멈췄는지를 적는다.** 이 15초 동안 화면에는 아무 설명이 없었고,
+          딜러가 할 수 있는 것은 거절당하는 버튼을 다시 누르는 것뿐이었다.
+
+          자리 번호를 짚는 이유는 딜러가 보는 것이 눈앞의 테이블이라서다 —
+          그 자리에 앉은 사람에게 말을 건네면 된다.
+        */}
+        {rebuyPending && (
+          <p data-testid="rebuy-pending" className="mb-2 text-xs text-tb-act">
+            {rebuyPending.seatIndexes.map((i) => i + 1).join('·')}번 자리의 리바인을
+            기다립니다 — 답이 오거나 시간이 지나면 다음 핸드로 갑니다.
+          </p>
+        )}
         {isCheckpointStuck && (
           <p data-testid="db-sync-status" className="mb-2 text-xs text-err">
             {dbSyncStatus === 'FAILED'

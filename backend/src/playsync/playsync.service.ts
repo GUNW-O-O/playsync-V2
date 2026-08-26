@@ -375,6 +375,44 @@ export class PlaysyncService {
     }
   }
 
+  /**
+   * 리바인을 기다리는 중임을 스냅샷에 적고 테이블 전원에게 쏜다.
+   * 끝나면 `null`로 지운다. `markDbSyncStatus`와 같은 모양이다.
+   *
+   * **사람이 아니라 자리를 싣는다.** 딜러가 보는 것은 눈앞의 테이블이라
+   * 「3번 자리」가 곧 안내할 대상이고, 화면도 그 자리를 짚을 수 있다.
+   * 그래서 여기서 id를 좌석으로 옮긴다 — 화면이 다시 찾게 두면 스냅샷의
+   * 사람이 그사이 바뀌었을 때 엉뚱한 자리를 짚는다.
+   *
+   * **자리를 못 찾으면 적지 않는다.** 파산자가 이미 스냅샷에서 빠졌다는
+   * 뜻인데, 그때 빈 배열을 적으면 계약이 거부해(`seatIndexes`는 `.min(1)`)
+   * 그 프레임이 통째로 안 나간다.
+   */
+  public async markRebuyPending(tableId: string, playerIds: string[] | null) {
+    const state = await this.redis.mutateSnapshot(tableId, async (snapshot) => {
+      if (!snapshot) return null;
+      if (playerIds === null) {
+        delete snapshot.rebuyPending;
+        return snapshot;
+      }
+      const seatIndexes = snapshot.players
+        .map((p, seatIndex) => (p && playerIds.includes(p.id) ? seatIndex : -1))
+        .filter((seatIndex) => seatIndex >= 0);
+      if (seatIndexes.length === 0) {
+        delete snapshot.rebuyPending;
+        return snapshot;
+      }
+      // **마감을 여기서 잰다.** `waitForRebuyResponse`가 쓰는 것과 같은
+      // `rebuyTimeoutMs()`라, 그 상수를 부르는 쪽으로 올리지 않는다 — 두
+      // 자리가 각자 계산하면 화면의 카운트다운과 서버의 타임아웃이 갈린다.
+      snapshot.rebuyPending = { seatIndexes, deadline: Date.now() + rebuyTimeoutMs() };
+      return snapshot;
+    });
+    if (state) {
+      this.eventEmitter.emit('game.state.updated', { tableId, state });
+    }
+  }
+
 
   /**
    * 탈락을 확정하고 등수와 상금을 매긴다.

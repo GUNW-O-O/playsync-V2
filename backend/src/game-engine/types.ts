@@ -111,6 +111,16 @@ export interface TableState {
    * 정상 진행 중에는 없다(`undefined`). 재시도에 들어갈 때만 나타난다.
    */
   dbSyncStatus?: 'RETRYING' | 'FAILED';
+  /**
+   * 지금 리바인 답을 기다리는 중. 기다릴 사람이 없으면 없다.
+   *
+   * `dbSyncStatus`와 같은 이유로 스냅샷 필드다 — 그 15초가 테이블 전원에게
+   * 아무 설명 없는 정지였고, 그동안 재접속한 단말은 지나간 이벤트를 못 받는다.
+   *
+   * 계약은 `packages/contract`의 `TableStateSchema.rebuyPending`이다. 여기
+   * 없는 필드는 `WsGateway.toWireState`가 조용히 지운다.
+   */
+  rebuyPending?: { seatIndexes: number[]; deadline: number };
   tournamentId: string;
 }
 

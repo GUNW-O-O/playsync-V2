@@ -256,6 +256,28 @@ export default function SeatGameClient({
         </div>
       )}
 
+      {/*
+        **판이 왜 멈췄는지 앉은 사람도 알아야 한다.**
+
+        리바인을 묻는 팝업은 파산한 본인에게만 간다(`sendToTableUser`). 나머지
+        좌석은 최대 15초 동안 마지막 펠트를 든 채였고, 화면에는 아무 설명이
+        없었다. 서버가 스냅샷에 적어 보내는 것을 여기서 읽는다.
+
+        **내가 답할 차례면 그리지 않는다.** 팝업(`RebuyOverlay`)이 이미 같은
+        말을 하고 있고, 배너까지 겹치면 정작 눌러야 할 버튼에서 눈이 갈린다.
+
+        띠로 둔다 — 덮개로 만들면 자기 자리의 스택과 팟이 가려지는데, 남을
+        기다리는 동안 그것을 못 볼 이유가 없다.
+      */}
+      {gameState?.rebuyPending && !rebuyData && (
+        <div
+          data-testid="rebuy-pending"
+          className="absolute inset-x-0 top-0 z-40 bg-tb-panel px-4 py-2 text-center text-sm text-tb-act"
+        >
+          리바인을 기다립니다 — 답이 오거나 시간이 지나면 다음 핸드로 갑니다.
+        </div>
+      )}
+
       <div className="flex shrink-0 items-center justify-between border-b border-tb-line bg-tb-panel px-4 py-2 text-xs text-tb-sub">
         {/*
           예전에는 여기에 `tableId`(UUID)가 그대로 떴다. 앉은 사람에게는
