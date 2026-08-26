@@ -433,6 +433,19 @@ export async function resolveWinnersOnScreen(
       await press(dealer, dealer.getByTestId(`winner-pick-${userId}`));
     }
   }
+  /*
+    **찍은 것을 읽을 시간을 준다.**
+
+    이 화면이 프레임 ①의 인과 그 자체다 — 「딜러가 지명하니 사람이 사라진다」.
+    그런데 층이 하나인 판은 자리를 **한 번** 누르고 끝이라(T15 이후 순위를
+    층 수만큼만 채운다) 모달이 2초를 못 버티고 닫힌다. 4분할 중 한 타일이라
+    시선이 다른 곳에 있으면 그대로 놓치고, 남는 그림은 **조작 없이 결과만
+    바뀌는** 화면이다.
+
+    실제 딜러도 찍은 자리를 확인하고 누른다. 그 시간이 여기 없으면 촬영이
+    사람보다 빠른 것이다.
+  */
+  await linger(dealer, 1_600);
   await pressUntilEffective(
     dealer,
     '배분',

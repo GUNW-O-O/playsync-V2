@@ -721,29 +721,38 @@ test.describe('데모 — 정산', () => {
     mark('첫 판 — 한 판에 스물이 나간다');
     const rebuyerTableOrder = playerOf(ON_SCREEN.rebuyer).tableOrder;
 
-    // **세 테이블을 한꺼번에 돌린다.** 프레임 ①이 주장하는 것이
-    // 「세 테이블에서 동시에 사람이 사라진다」인데, 하나씩 돌리면 화면에는
-    // 같은 일이 세 번 차례로 일어나는 그림이 남는다 — 실측으로 그 구간이
-    // 57초였고 대기가 아니라 순서 때문이었다.
-    //
-    // 테이블마다 락이 따로이고(`table:{id}`) 운영에서도 넷이 동시에 돈다.
-    // 화면은 촬영 테이블 하나뿐이라 클릭이 엉킬 자리도 없다.
-    const together = [...stages.values()].filter(
-      (s) => s.tableOrder !== rebuyerTableOrder,
-    );
+    /*
+      **넷을 한꺼번에 돌린다.** 프레임 ①이 주장하는 것이 「여러 테이블에서
+      동시에 사람이 사라진다」인데, 하나씩 돌리면 화면에는 같은 일이 차례로
+      일어나는 그림이 남는다 — 실측으로 그 구간이 57초였고 대기가 아니라
+      순서 때문이었다.
+
+      **rebuyer의 테이블만 빼지 않는다.** 전에는 그 하나를 맨 뒤로 돌렸다.
+      리바인 물음이 영원히 떠 있지 않아서고(`waitForRebuyResponse`가 최대
+      15초), 그 테이블을 먼저 돌리면 나머지를 도는 동안 창이 닫힌다는
+      판단이었다.
+
+      그런데 그 판단이 **넷을 차례로 돈다**를 전제한다. 동시에 돌면 넷이
+      같이 끝나므로 리바인을 누르기까지 남이 도는 시간이 아예 없다 — 창을
+      덜 쓴다. 그리고 늦게 도는 쪽의 대가는 화면에 그대로 남았다: 프레임
+      ①의 4분할에서 T3만 앞 절반을 멈춰 있었다.
+
+      테이블마다 락이 따로이고(`table:{id}`) 운영에서도 넷이 동시에 돈다.
+      화면은 촬영 테이블 하나뿐이라 클릭이 엉킬 자리도 없다.
+
+      rebuyer의 테이블은 **판만 돌리고 정리하지 않는다** — 그 사람의 탈락과
+      리바인 오버레이가 뜨는 순간이 바로 다음 블록이라, 여기서 거절해
+      버리면 리바인을 물어볼 사람이 없어진다.
+    */
     await Promise.all(
-      together.map(async (s) => {
+      [...stages.values()].map(async (s) => {
         await playHand(s, '첫 판', FIRST_HAND_ALL_IN[s.tableOrder]);
+        if (s.tableOrder === rebuyerTableOrder) return;
         await declineRebuys(s);
         await settleToWaiting(s, '첫 판');
       }),
     );
-
-    // rebuyer의 테이블은 판만 돌리고 정리하지 않는다 — 그 사람의 탈락과
-    // 리바인 오버레이가 뜨는 순간이 바로 다음 블록이라, 여기서 거절해
-    // 버리면 리바인을 물어볼 사람이 없어진다.
     const rebuyerStage = stages.get(rebuyerTableOrder)!;
-    await playHand(rebuyerStage, '첫 판', FIRST_HAND_ALL_IN[rebuyerStage.tableOrder]);
 
     // ── 리바인 — 엔트리가 36이 되고 상금권이 하나 는다 ──────────────
     //
@@ -1019,10 +1028,22 @@ test.describe('데모 — 정산', () => {
     const t4 = stages.get(4)!;
     await settleToWaiting(t3, '병합');
     await settleToWaiting(t4, '병합');
+    /*
+      **둘이 같은 박자로 움직인다.** 예전에는 단계 순서만 나란히 두고
+      (해제 둘 → 착석 둘) 각 단계 **안은 `await`로 순차**였다 — 그래서
+      태블릿 하나가 끝나야 다음 하나가 움직였고, 화면에는 여전히 같은 조작이
+      두 번 차례로 일어나는 그림이 남았다.
+
+      면마다 `BrowserContext`가 따로라(`surfaces.ts`) 두 태블릿을 동시에
+      굴려도 클릭이 엉키지 않는다. 상점 콘솔은 한 화면이므로 해제는 여전히
+      한 번에 하나씩이지만, **착석 둘은 서로 다른 손의 일**이라 겹쳐야 한다.
+    */
     await releaseOnScreen(t3, ON_SCREEN.rebuyer);
     await releaseOnScreen(t4, ON_SCREEN.mover);
-    await seatOnScreen(stages.get(FILMED_TABLE)!, rebuyerTablet, rebuyerPhone, ON_SCREEN.rebuyer);
-    await seatOnScreen(stages.get(2)!, moverTablet, moverPhone, ON_SCREEN.mover);
+    await Promise.all([
+      seatOnScreen(stages.get(FILMED_TABLE)!, rebuyerTablet, rebuyerPhone, ON_SCREEN.rebuyer),
+      seatOnScreen(stages.get(2)!, moverTablet, moverPhone, ON_SCREEN.mover),
+    ]);
 
     // 남은 배경은 REST로. 빈 테이블을 닫는 것까지 여기서 한다.
     await mergeInto(t3, stages.get(FILMED_TABLE)!);
@@ -1178,7 +1199,9 @@ test.describe('데모 — 정산', () => {
     // 화면 밖에 있고, `toBeVisible()`은 스크롤 밖도 통과한다 — 앞 촬영본의
     // `18-finish-blocked-reasons.png`에 정작 막힌 이유가 없었다.
     await shoot(console_, '18-finish-blocked-reasons', finishCard);
-    await linger(console_, 3_000);
+    // 마무리 카드 셋을 보여주는 시간. **`BRANCH_MARK` 앞이라** 프레임 ④의
+    // 창 길이에는 영향이 없다 — 창의 시작도 `끝`도 같이 앞당겨진다.
+    await linger(console_, 1_500);
 
     // ── 갈림목 ──────────────────────────────────────────────────────
     if (ENDING === 'chop') {
@@ -1189,15 +1212,16 @@ test.describe('데모 — 정산', () => {
       // **합이 걷은 돈과 같다.** 확인 대화의 마지막 줄이 그것이고, 이
       // 화면의 핵심이 그 한 줄을 눈으로 확인하는 것이다.
       //
-      // **오래 머문다.** 이 표가 프레임 ③ 좌열의 핵심이고, 다섯 줄과 합계를
-      // 눈으로 따라가려면 그만큼 걸린다.
+      // **이 표를 읽는 것은 스틸의 일이다.** 바로 아래에서 찍는
+      // `19-chop-ledger-sums.png`가 네 줄과 합계를 정지된 채로 들고 있고,
+      // 움짤이 보여줄 것은 「문을 누르니 정산된다」의 흐름이다. 여기서 오래
+      // 머물면 그만큼이 그대로 정지 화면이 된다.
       //
-      // 길이를 맞추려고 넣은 것이 **아니다.** 프레임 ③이 이 화면을
-      // `complete`의 딜러 타일과 좌우로 놓는데 그쪽은 최후 판을 치느라 더
-      // 오래 걸리고, 그 차이는 자르는 쪽이 좌열의 창을 한 마크 앞에서 여는
-      // 것으로 줄인다(`make-demo-assets.mjs`의 `windowsByTake`). 여기서
-      // 기다려 메우려 들면 촬영만 길어지고 실행마다 달라지는 값을 좇게 된다.
-      await linger(console_, 14_500);
+      // 14.5초였다가 7초였다. 앞의 값은 프레임 ③이 이 화면을 `complete`의
+      // 딜러 타일과 **좌우로** 놓던 시절의 것이고 — 그쪽이 최후 판을 치느라
+      // 더 오래 걸려서 좌열이 기다리는 것을 늦추려던 값이다. 둘을 시간축에
+      // 세운 뒤로(`make-demo-assets.mjs`의 `parts`) 그 근거가 사라졌다.
+      await linger(console_, 3_000);
       await shoot(console_, '19-chop-ledger-sums');
       await press(console_, dialog.getByRole('button', { name: 'ICM 마무리' }));
     } else if (ENDING === 'abort') {
@@ -1249,31 +1273,43 @@ test.describe('데모 — 정산', () => {
     // **닫힌 뒤에 다시 읽는다.** `/me`의 지난 참가는 폴링이 아니라 한 번
     // 받아 그린 값이라, 대회가 닫히기 전에 연 폰은 등수도 상금도 비어 있다.
     // 상금은 `awardPrize`가 그 자리에서 `finalPlace`를 박을 때 생긴다.
-    for (const page of finalPhones) {
-      await page.bringToFront();
-      await page.reload();
-      // **값이 뜬 것을 보고 넘어간다.** 「지난 참가」가 그 증거다 — 대회가
-      // 열려 있는 동안은 「진행 중」이고, 닫혀서 등수와 상금이 박힌 뒤에야
-      // 이 제목으로 바뀐다.
-      //
-      // 시간으로만 재면 **마지막 폰이 빈 채로 남는다.** 앞 촬영본의 프레임
-      // ③에서 `complete` 쪽 1위 폰이 끝까지 「진행 중」이었고, 그 자리가
-      // 비면 「ICM은 우승자에게 몰아주고 분배표는 나눈다」의 대비가 반쪽이
-      // 된다 — 좌우로 견주는 그림에서 가장 큰 금액이 없는 것이다.
-      //
-      // **중단은 예외다.** `/me`가 참가를 가르는 기준이 「이 사람의 참가가
-      // 끝났는가」인데(`FINISHED` · `ELIMINATED` · `AWARDED`), 중단은 대회를
-      // `CANCELLED`로 만들고 남은 사람의 참가 상태를 그 셋 중 어디에도
-      // 넣지 않는다. 그래서 환불을 받고도 「진행 중」에 남는다 — 여기서
-      // 기다리면 30초를 버리고 죽는다.
-      //
-      // 그 자체가 제품의 사실이고 이 촬영이 고칠 것은 아니다. abort 프레임은
-      // 콘솔 하나뿐이라(`20-abort-refunds-all`) 폰이 그림에 쓰이지도 않는다.
-      if (ENDING !== 'abort') {
-        await expect(page.getByText('지난 참가')).toBeVisible({ timeout: 30_000 });
-      }
-      await linger(page, 2_000);
+    /*
+      **셋이 한꺼번에 바뀐다.** 하나씩 돌면 폰 셋이 차례로 값을 받는 그림이
+      되는데, 실제로는 대회가 닫히는 **한 순간**에 세 사람의 상금이 동시에
+      정해진다. 순차로 보이면 「먼저 받은 사람이 있다」로 읽힌다.
+
+      면마다 `BrowserContext`가 따로라 `bringToFront`가 없어도 각자 활성
+      창이다 — 그것이 있어서 순차였다.
+    */
+    await Promise.all(finalPhones.map((page) => page.reload()));
+
+    // **값이 뜬 것을 보고 넘어간다.** 「지난 참가」가 그 증거다 — 대회가
+    // 열려 있는 동안은 「진행 중」이고, 닫혀서 등수와 상금이 박힌 뒤에야
+    // 이 제목으로 바뀐다.
+    //
+    // 시간으로만 재면 **마지막 폰이 빈 채로 남는다.** 앞 촬영본의 프레임
+    // ③에서 `complete` 쪽 1위 폰이 끝까지 「진행 중」이었고, 그 자리가
+    // 비면 「ICM은 우승자에게 몰아주고 분배표는 나눈다」의 대비가 반쪽이
+    // 된다 — 좌우로 견주는 그림에서 가장 큰 금액이 없는 것이다.
+    //
+    // **중단은 예외다.** `/me`가 참가를 가르는 기준이 「이 사람의 참가가
+    // 끝났는가」인데(`FINISHED` · `ELIMINATED` · `AWARDED`), 중단은 대회를
+    // `CANCELLED`로 만들고 남은 사람의 참가 상태를 그 셋 중 어디에도
+    // 넣지 않는다. 그래서 환불을 받고도 「진행 중」에 남는다 — 여기서
+    // 기다리면 30초를 버리고 죽는다.
+    //
+    // 그 자체가 제품의 사실이고 이 촬영이 고칠 것은 아니다. abort 프레임은
+    // 콘솔 하나뿐이라(`20-abort-refunds-all`) 폰이 그림에 쓰이지도 않는다.
+    if (ENDING !== 'abort') {
+      await Promise.all(
+        finalPhones.map((page) =>
+          expect(page.getByText('지난 참가')).toBeVisible({ timeout: 30_000 }),
+        ),
+      );
     }
+    // 셋이 같이 갱신됐으므로 머무는 시간도 한 번이다. 폰마다 2초씩 세면
+    // 그림은 그대로인데 6초가 흐른다 — 그 6초가 곧 정지 화면이다.
+    await linger(finalPhones[0], 2_500);
 
     mark('끝');
 

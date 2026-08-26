@@ -197,7 +197,7 @@ function settlementScenes() {
       /*
         **엔트리는 사람 수가 아니다.**
 
-        세 테이블에서 한꺼번에 올인하고 딜러가 지명하면 스물이 사라진다.
+        네 테이블에서 한꺼번에 올인하고 딜러가 지명하면 스물이 사라진다.
         전광판의 남은 인원이 그 자리에서 35에서 15로 떨어진다. 이어서 T3의
         한 자리가 0에서 5,000으로 되살아나고 **엔트리만** 36이 된다 — 사람은
         15 그대로다.
@@ -205,11 +205,18 @@ function settlementScenes() {
         원인(딜러 타일의 스택 부활)과 결과(전광판)가 한 프레임에 있어야
         인과가 읽힌다. 그래서 리바인하는 사람이 T3에 있다.
 
+        **넷이 같은 순간에 돈다.** 전에는 rebuyer의 테이블(T3)만 맨 뒤로
+        돌렸고, 그래서 이 4분할에서 T3만 앞 절반을 멈춰 있었다 — 「한꺼번에」가
+        화면에서 반만 성립했다. 늦게 돌린 이유는 리바인 창 15초였는데, 그
+        창을 쓰는 것은 오히려 남이 도는 시간이라 동시에 도는 편이 덜 쓴다
+        (`settlement.spec.ts`의 첫 판 블록).
+
         T4가 아니라 T1을 넣는다. T1이 촬영 테이블이자 병합의 종착지라 여기서
         본 펠트가 프레임 ②·③에 계속 나온다 — T1을 빼면 이 프레임에서 본
         테이블 중 어느 것도 뒤에 안 나온다.
       */
       out: '11-entry-not-player',
+      caption: '스무 명 나가고 한 명 다시 샀는데 엔트리는 36',
       take: 'complete',
       from: '첫 판 — 한 판에 스물이 나간다',
       to: '병합 — 네 테이블이 둘이 된다',
@@ -217,12 +224,18 @@ function settlementScenes() {
         [tile('dealer-t1', 880, 496), tile('dealer-t2', 880, 496)],
         [tile('dealer-t3', 880, 496), tile('scoreboard', 880, 496)],
       ],
-      // **이 프레임만 길다** — 첫 판 넷이 도는 데 108초가 걸리고, 그중
-      // rebuyer의 테이블이 맨 뒤라 끝까지 가야 리바인이 나온다. 8fps로 두면
-      // 870프레임에 5MB가 넘어 README가 무거워진다. 5fps로도 펠트에서 사람이
-      // 사라지는 것과 전광판 숫자가 떨어지는 것은 그대로 읽힌다 — 이 프레임에
-      // 빠른 움직임이 없다.
-      fps: 5,
+      /*
+        **5fps는 이 프레임이 108초였을 때의 값이다.** 첫 판에서 딜러가 등수를
+        올인한 인원 수만큼 찍던 시절이고, 8fps면 870프레임에 5MB가 넘어
+        README가 무거워졌다.
+
+        지금은 36초다 — 층이 하나인 판은 1등 한 명만 찍는다. 그리고 이
+        프레임이 보여줄 것 중 **가장 빠른 것이 그 조작**이라, 자리를 누르고
+        「배분」을 누르는 2초를 열 프레임으로 그리면 커서가 뚝뚝 끊긴다.
+        「딜러가 지명하니 사람이 사라진다」가 이 그림의 인과인데 그 손이
+        안 읽힌다.
+      */
+      fps: 8,
       width: 1000,
       quality: 72,
     },
@@ -242,6 +255,7 @@ function settlementScenes() {
         남는다.
       */
       out: '03-four-tables-to-one',
+      caption: '네 테이블을 둘로 합친다. 폰의 번호로 다시 앉는다',
       take: 'complete',
       from: '병합 — 네 테이블이 둘이 된다',
       to: '둘째 판 — 두 테이블에서 열이 나간다',
@@ -312,7 +326,7 @@ function settlementScenes() {
           take: 'chop',
           from: '마무리 — 셋이 한 화면에 있다',
           to: '끝',
-          caption: '① 딜 · 남은 셋이 상금을 칩 비율로 나눈다 — 콘솔의 일',
+          caption: '① 딜로 끝낸다. 남은 셋이 합의하고 상금은 칩 비율대로 나눈다',
           rows: [
             [
               tile('console', 1180, 738),
@@ -326,7 +340,7 @@ function settlementScenes() {
           take: 'complete',
           from: '마무리 — 그 문을 누른다',
           to: '끝',
-          caption: '② 승부 · 같은 셋이 끝까지 쳐서 정한다 — 펠트의 일',
+          caption: '② 끝까지 친다. 같은 셋인데 이번엔 상금표가 1·2·3위를 정한다',
           rows: [
             [
               tile('dealer-t1', 1180, 738),
@@ -358,9 +372,20 @@ function settlementScenes() {
         같은 타일에서 읽힌다.
       */
       out: '20-abort-refunds-all',
+      caption: '중단하면 낸 돈을 무리로 묶어 돌려준다. 상점 몫은 없다',
       take: 'abort',
       from: '마무리 — 그 문을 누른다',
-      to: '끝',
+      /*
+        **`끝`까지 가지 않는다.** 그 마크는 참가자 폰 셋이 갱신되기를 기다린
+        뒤에 찍히는데, 콘솔은 대회가 닫히는 순간 할 일이 끝난다(폴링이 없다).
+        그래서 창을 거기까지 열면 20초 중 6.3초가 **같은 그림**이었다 —
+        움짤의 3분의 1이다.
+
+        잘라도 잃는 것이 없다. 이 프레임이 마지막에 주장하는 「상점 몫 0」은
+        정지가 시작되기 전에 이미 떠 있고, 그 화면은 `24-closed-abort.png`가
+        스틸로 따로 든다.
+      */
+      to: { at: '끝', plus: -8 },
       rows: [[tile('console', 1440, 900)]],
       fps: 6,
       width: 1200,
@@ -627,7 +652,9 @@ function partsOf(scene) {
     windows: part.windows ?? scene.windows,
     windowsByTake: part.windowsByTake ?? scene.windowsByTake,
     rows: part.rows ?? scene.rows,
-    caption: part.caption,
+    // 조각이 여럿이면 조각마다 다른 말을 하지만(프레임 ③의 「① 딜」·「② 승부」),
+    // 하나뿐인 장면은 장면이 곧 조각이라 위에서 물려받는다.
+    caption: part.caption ?? scene.caption,
   }));
 }
 
@@ -636,6 +663,9 @@ function partsOf(scene) {
  * 그 순간의 숫자를 못 읽는데, 이 그림들의 주장이 전부 숫자다.
  */
 const CAPTION_BAND = 56;
+
+/** 자막 글자 크기(px). **결과물에서의** 크기다 — 아래에서 축소율만큼 키운다. */
+const CAPTION_SIZE = 30;
 
 /**
  * 자막에 쓰는 폰트. 한글이 있어야 하므로 후보를 훑는다.
@@ -837,13 +867,44 @@ function buildScene(scene, takes) {
     // 어긋난다.
     let chain = `${grid}fps=${scene.fps}`;
     if (part.caption) {
+      /*
+        **자막 크기는 결과물 기준이다.**
+
+        자막은 합쳐진 원본 해상도에 그려지고 그 뒤 `scene.width`로 줄어드는데,
+        그 축소율이 프레임마다 다르다 — 1760→1000(0.57)과 1440→1200(0.83)이
+        같이 있다. 고정 크기로 그리면 최종 글자가 17px과 25px로 갈리고,
+        **읽으라고 넣은 문구가 프레임에 따라 안 읽힌다.**
+
+        그래서 축소율만큼 미리 키운다. 띠 높이도 같이 키워야 글자와 여백의
+        비율이 유지된다.
+      */
+      const shrink = partSizes[p][0] / scene.width;
+      const band = Math.round(CAPTION_BAND * shrink);
+      const size = Math.round(CAPTION_SIZE * shrink);
+      /*
+        **넘치면 조용히 잘린다.** `drawtext`는 폭을 벗어난 글자를 그냥 안
+        그리고 아무 말도 하지 않는다 — 실제로 44자짜리 문구가 「…엔트리만」
+        에서 끊긴 채 나갔고, 그것이 결과물을 열어 보기 전까지 안 보였다.
+
+        한글은 글자 폭이 `fontsize`와 거의 같다. 자간과 여백까지 보수적으로
+        잡아 **결과물 기준 글자 수**로 센다 — 여기서 재는 것은 원본 폭이
+        아니라 「1000px 그림에 30px 글자가 몇 개 들어가는가」다.
+      */
+      const fits = Math.floor((scene.width - 48) / CAPTION_SIZE);
+      if ([...part.caption].length > fits) {
+        throw new Error(
+          `${scene.out}: 자막이 ${[...part.caption].length}자라 잘린다 (최대 ${fits}자). ` +
+            `「${part.caption}」`,
+        );
+      }
       // 그림 **위로 덧붙인다.** 얹으면 그 순간의 숫자를 가리는데, 이 그림들이
       // 주장하는 것이 전부 숫자다.
-      partSizes[p][1] += CAPTION_BAND;
+      partSizes[p][1] += band;
       chain +=
-        `,pad=w=iw:h=ih+${CAPTION_BAND}:x=0:y=${CAPTION_BAND}:color=0x141414` +
+        `,pad=w=iw:h=ih+${band}:x=0:y=${band}:color=0x141414` +
         `,drawtext=fontfile='${captionFont()}':text='${part.caption}'` +
-        `:fontcolor=0xf0f0f0:fontsize=30:x=24:y=${Math.round((CAPTION_BAND - 30) / 2)}`;
+        `:fontcolor=0xf0f0f0:fontsize=${size}:x=${Math.round(24 * shrink)}` +
+        `:y=${Math.round((band - size) / 2)}`;
     }
     filters.push(`${chain}[p${p}]`);
     partLabels.push(`[p${p}]`);
