@@ -329,6 +329,58 @@ describe('SeatGameClient', () => {
   });
 
   /**
+   * **기다리는 쪽에도 설명이 있어야 한다.**
+   *
+   * 리바인을 묻는 팝업은 파산한 **본인에게만** 간다(`sendToTableUser`). 같은
+   * 테이블의 나머지는 왜 판이 멈췄는지 모른 채 마지막 펠트를 들고 있었다.
+   */
+  describe('남이 리바인을 고민하는 동안', () => {
+    const waiting = {
+      ...BASE_STATE,
+      rebuyPending: { seatIndexes: [5], deadline: Date.now() + 15_000 },
+    };
+
+    it('무엇을 기다리는지 적는다', async () => {
+      const { socket } = await renderWithSocket();
+
+      socket.emitServerEvent('renderGame', waiting);
+
+      expect(screen.getByTestId('rebuy-pending')).toHaveTextContent('리바인');
+    });
+
+    /**
+     * **내가 답할 차례면 그쪽이 먼저다.** 팝업을 받은 사람에게 배너까지 겹치면
+     * 같은 말이 두 번이고, 정작 눌러야 할 버튼에서 눈이 갈린다.
+     */
+    it('내가 묻는 대상이면 배너 대신 팝업만 뜬다', async () => {
+      const { socket } = await renderWithSocket({ seatIndex: 3 });
+
+      socket.emitServerEvent('REBUY_PROMPT', {
+        deadline: Date.now() + 15_000,
+        userPoints: { points: 50_000 },
+        entryFee: 10_000,
+        tournamentName: '테스트 대회',
+      });
+      socket.emitServerEvent('renderGame', {
+        ...BASE_STATE,
+        rebuyPending: { seatIndexes: [3], deadline: Date.now() + 15_000 },
+      });
+
+      expect(screen.getByRole('button', { name: '리바인' })).toBeInTheDocument();
+      expect(screen.queryByTestId('rebuy-pending')).toBeNull();
+    });
+
+    it('기다림이 끝나면 사라진다', async () => {
+      const { socket } = await renderWithSocket();
+
+      socket.emitServerEvent('renderGame', waiting);
+      socket.emitServerEvent('renderGame', BASE_STATE);
+
+      expect(screen.queryByTestId('rebuy-pending')).toBeNull();
+    });
+  });
+
+  /**
    * **좌석도 같은 구멍이었다.** 대회를 닫는 경로가 소켓에 아무것도 쓰지 않아서
    * 이 태블릿은 끝난 대회의 마지막 스냅샷을 계속 그렸다. 탈락한 사람은
    * `EliminatedOverlay`가 덮어 주지만, **끝까지 남아 상금을 받은 사람은 그

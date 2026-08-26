@@ -67,6 +67,16 @@ describe("TableStateSchema", () => {
       // 재접속한 단말도 같은 것을 보도록 스냅샷 필드로 설계돼 있다.
       expect(TableStateSchema.parse(snapshot({ dbSyncStatus: status })).dbSyncStatus).toBe(status);
     });
+
+    /**
+     * `dbSyncStatus`와 같은 이유로 스냅샷 필드다 — 판이 멈춘 이유를 **테이블
+     * 전원**이 알아야 하고, 그동안 재접속한 단말도 같은 것을 봐야 한다.
+     */
+    it("rebuyPending은 누가 얼마나 남았는지까지 남는다", () => {
+      const pending = { seatIndexes: [2, 5], deadline: 1_700_000_015_000 };
+      expect(TableStateSchema.parse(snapshot({ rebuyPending: pending })).rebuyPending)
+        .toEqual(pending);
+    });
   });
 
   describe("스트립", () => {
@@ -99,6 +109,21 @@ describe("TableStateSchema", () => {
 
     it("모르는 dbSyncStatus를 거부한다", () => {
       expect(TableStateSchema.safeParse(snapshot({ dbSyncStatus: "OK" })).success).toBe(false);
+    });
+
+    /**
+     * **비어 있는 대기는 대기가 아니다.** 아무도 안 기다리는데 필드가 서 있으면
+     * 화면이 「리바인을 기다립니다」를 띄운 채 아무 일도 일어나지 않는다.
+     */
+    it("기다리는 자리가 없는 rebuyPending을 거부한다", () => {
+      const input = snapshot({ rebuyPending: { seatIndexes: [], deadline: 1_700_000_015_000 } });
+      expect(TableStateSchema.safeParse(input).success).toBe(false);
+    });
+
+    /** 마감이 없으면 카운트다운을 그릴 수 없다. */
+    it("마감 없는 rebuyPending을 거부한다", () => {
+      const input = snapshot({ rebuyPending: { seatIndexes: [2] } });
+      expect(TableStateSchema.safeParse(input).success).toBe(false);
     });
 
     it("칩이 소수면 거부한다", () => {
