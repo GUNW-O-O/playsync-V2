@@ -131,7 +131,7 @@ export const test = base.extend<{
 
     // 커서는 **촬영 프로젝트에만** 꽂는다. 회귀는 사람이 보는 영상이 아니라
     // 판정이고, 없는 DOM 노드를 하나 더 얹으면 그만큼 다른 것을 본다.
-    const filming = testInfo.project.name === 'demo';
+    const filming = testInfo.project.name !== 'regression';
 
     const opened: { label: string; context: BrowserContext; page: Page }[] = [];
 
@@ -154,9 +154,13 @@ export const test = base.extend<{
       if (film.startedAt === null) film.startedAt = openedAt;
 
       /*
-        **슬레이트(딱딱이).** 면을 열자마자 화면 전체를 0.15초 동안 자홍색으로
-        덮고 그 시각을 적어 둔다. 자르는 쪽은 영상에서 그 색이 나타나는
-        프레임을 찾아 "이 프레임이 그 시각"으로 못 박는다.
+        **슬레이트(딱딱이).** 면을 열자마자 화면 전체를 자홍색으로 덮고 그
+        시각을 적어 둔다. 자르는 쪽은 영상에서 그 색이 나타나는 프레임을 찾아
+        "이 프레임이 그 시각"으로 못 박는다.
+
+        **길이를 바꾸면 자르는 쪽의 `SLATE_SECONDS`도 같이 고친다.** 거기서
+        이 구간만큼을 건너뛰고 붙인다 — 짧게 잡으면 자홍색 한 장이 결과물에
+        남는다.
 
         시각을 **계산**하지 않고 영상 안에서 **읽는** 것이 요점이다. 컨텍스트를
         연 시각도, `닫힌 시각 − 파일 길이`도 인코더 사정만큼 흔들렸고, 그

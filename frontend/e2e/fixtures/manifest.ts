@@ -27,6 +27,29 @@ export type DemoManifest = {
   players: { nickname: string; otp: string }[];
   /** 폰 흐름(참가 → OTP 수령)을 찍기 위해 결제하지 않은 계정. */
   unpaidPlayer: string;
+  /**
+   * 두 번째 무대 — **마무리 촬영용**(`demo/settlement.spec.ts`).
+   *
+   * 장면 1~5의 대회와 나누는 이유는 규모다. 종료 · ICM · 중단은 파이널
+   * 테이블에 도달해야 문이 열리고, 일곱 명짜리 무대에서는 첫 핸드가 곧
+   * 파이널 테이블이라 「필드가 줄어든다」가 사라진다.
+   */
+  settlement: {
+    tournament: {
+      id: string;
+      name: string;
+      entryFee: number;
+      startStack: number;
+      rebuyUntil: number;
+      /** 상점 몫(%). 0이면 걷은 돈 전부가 상금으로 나간다. */
+      rakePercent: number;
+      blindStructure: { lv: number; sb: number; ante: boolean; duration: number }[];
+    };
+    dealerOtp: string;
+    tables: { id: string; tableOrder: number }[];
+    /** 앉을 자리까지 시드가 정한다. 촬영과 시드가 배치를 두 벌로 들면 어긋난다. */
+    players: { nickname: string; otp: string; tableOrder: number; seatIndex: number }[];
+  };
 };
 
 const MANIFEST_PATH = resolve(__dirname, '../../../.demo-seed.json');

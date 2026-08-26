@@ -88,7 +88,9 @@ npm run test:int       # 통합 테스트 (컨테이너 기동부터 자동)
 npm run test:e2e       # 화면 회귀 (Playwright, 시드 필요)
 npm run seed           # 개발 시드 (= npm run seed -w backend)
 npm run demo           # 데모 촬영 (시드 → 프론트 빌드 → 장면 다섯)
-npm run assets         # 촬영본을 자르고 합쳐 img/ 로 (ffmpeg-static)
+npm run demo:settlement  # 정산 촬영. 마무리 셋을 각각 시드부터 다시 돈다
+npm run assets         # 장면 1~5 촬영본을 자르고 합쳐 img/ 로 (ffmpeg-static)
+npm run assets:settlement  # 정산 촬영을 자른다 (셋이 다 있어야 돈다)
 ```
 
 부하 명령(`load:up` · `load:ramp-a/b` · `load:metrics` · `load:logs` ·
@@ -105,23 +107,33 @@ npm run assets         # 촬영본을 자르고 합쳐 img/ 로 (ffmpeg-static)
 타입 에러 0건, 테스트 전부 통과가 정상이다. CI(`.github/workflows/ci.yml`)가
 타입 체크 · 테스트 · 빌드를 돌린다.
 
-현재 기준선 (#96 완료 시점):
+현재 기준선 (T84·T85·T86 완료 시점):
 
 ```
-contract       67  (5 suites)
+contract       76  (6 suites)
 백엔드 단위   374  (34 suites)
-프론트 단위   187  (32 files)
-통합          584  (38 suites)
+프론트 단위   206  (31 files)
+통합          599  (38 suites)
 e2e            13  (4 files, regression 프로젝트)
+데모 촬영       1  (`npm run demo`)
+정산 촬영       1  (`npm run demo:settlement`, 마무리마다 한 번씩 셋)
 부하 하네스    12  (1 file, `cd load && npm test`)
 타입 에러       0
 ```
 
-다섯 다 **이 브랜치에서 실제로 돌린 값**이다 — PR들이 각자 잰 숫자를 합산한
-것이 아니다. **e2e도 #96에서 다시 돌렸다**(13건 통과, 1.7분) — 계약의
-`BlindLevelSchema.ante`가 boolean에서 금액이 되어 전광판이 실제로 바뀌었기
-때문이다. 화면이 바뀐 PR에서는 e2e를 물려받지 않는다. e2e와 부하 하네스는
-CI가 아니라 사람이 돌린다.
+**이 브랜치에서 실제로 돌린 값**이다 — PR들이 각자 잰 숫자를 합산한 것이
+아니다. contract가 아홉, 프론트가 열아홉, 통합이 열다섯 는 것은 T85·T86이
+새 계약과 그 화면을 세웠기 때문이다(#97 · #98).
+
+e2e · 촬영 · 부하 하네스는 CI가 아니라 사람이 돌린다. **정산 촬영은 마무리
+셋(`DEMO_ENDING`)을 각각 한 번씩 돌린다** — 하나가 대회를 닫으면 나머지는
+찍을 자리가 없어서고, 그래서 매번 시드를 다시 깐다. 하나가 6~7분이고 셋
+합쳐 20분 남짓이다. 마감 대기는 30초대다 — 예전에 「12~13분이고 그중 10분이
+마감 대기」로 적혀 있던 것은 **중단된 실행에서 읽은 값**이었다.
+
+**e2e는 다시 돌리지 않았다** — 회귀 프로젝트(`e2e/*.spec.ts`)가 보는 화면이
+바뀌지 않았다. 바뀐 것은 딜러·좌석의 새 표시(T85의 종료 덮개, T86의 리바인 대기)
+이고 그것은 프론트 단위가 든다. 대신 정산 촬영 셋이 실제로 돌았다.
 
 플레이키는 없다. `EntryService.enterSeat`의 「다른 좌석에 동시에 앉으면 서로를
 지우지 않는다」가 간헐 실패했는데, 원인은 제품이 아니라 **스펙이 프로덕션에 없는

@@ -54,7 +54,7 @@ export default defineConfig({
     { name: 'regression', testMatch: /e2e[\\/][^\\/]+\.spec\.ts$/ },
     {
       name: 'demo',
-      testMatch: /e2e[\\/]demo[\\/].*\.spec\.ts$/,
+      testMatch: /e2e[\\/]demo[\\/]tournament\.spec\.ts$/,
       // 사람이 보는 영상이다. 클릭이 즉시 끝나면 무슨 일이 일어났는지
       // 안 보인다. 회귀에는 걸지 않는다 — 거기서는 느린 것이 손해다.
       use: { launchOptions: { slowMo: 220 } },
@@ -62,6 +62,37 @@ export default defineConfig({
       // 붙은 키패드 입력만으로도 회귀용 2분을 넘는다. 촬영은 사람이
       // 돌리는 일이라 오래 걸리는 것 자체는 문제가 아니다.
       timeout: 900_000,
+    },
+    /**
+     * 정산 촬영. **`demo`와 프로젝트를 가른다.**
+     *
+     * 둘이 한 프로젝트에 있으면 `npm run demo`가 시드 한 벌 위에서 둘을
+     * 잇달아 돌린다. 그러면 뒤에 오는 쪽이 앞의 대회가 남긴 상태에서
+     * 시작하는데, 정산은 **대회를 닫는** 스펙이라 그 순서가 곧 결과를 바꾼다.
+     *
+     * 마무리 셋(`DEMO_ENDING`)도 같은 이유로 한 실행에 못 넣는다 — 하나가
+     * 대회를 닫으면 나머지 둘은 문이 없다. 그래서 **같은 시드를 다시 깔고
+     * 다시 돈다**(`scripts/demo-settlement.mjs`).
+     *
+     * 서른다섯을 앉히고 판 넷을 도는 촬영이라 `demo`보다 오래 걸린다.
+     */
+    {
+      name: 'settlement',
+      testMatch: /e2e[\\/]demo[\\/]settlement\.spec\.ts$/,
+      use: {
+        launchOptions: { slowMo: 220 },
+        /*
+          **조작에 상한을 둔다.** 기본값은 0(무한)이라, 없는 요소를 누르려 들면
+          테스트 제한시간이 다 될 때까지 조용히 기다린다 — 30분짜리 촬영에서는
+          그것이 곧 "실패를 30분 뒤에 안다"가 된다. 실제로 전광판 URL 하나가
+          틀렸을 때 그렇게 잡아먹었다.
+
+          `slowMo` 220ms에 판을 몰 때의 대기를 더해도 여유 있는 값이다. 상태를
+          기다리는 자리는 전부 `expect.poll`이라 이 값을 안 쓴다.
+        */
+        actionTimeout: 30_000,
+      },
+      timeout: 1_800_000,
     },
   ],
   use: {

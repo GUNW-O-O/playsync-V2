@@ -70,8 +70,12 @@ export async function dealerBearerToken(page: Page): Promise<string> {
  *
  * 이것이 여기 있는 이유: 촬영에서 자리에 앉는 것은 장면이지만, **한 번만**
  * 장면이다. 태블릿 넷을 띄워 네 번 찍는 것은 영상에 아무것도 더하지 않으면서
- * 실행 시간과 메모리만 늘린다(녹화 컨텍스트 하나가 131MB다). 카메라 앞에
- * 서는 착석은 데모 스펙이 브라우저로 하고, 나머지 배경은 여기로 온다.
+ * 실행 시간과 메모리만 늘린다 — 녹화 컨텍스트는 하나가 수백 MB를 쓴다.
+ * 카메라 앞에 서는 착석은 데모 스펙이 브라우저로 하고, 나머지 배경은 여기로
+ * 온다.
+ *
+ * 몇 개까지 띄울 수 있는지는 **그때 재서 판단한다.** 기계마다 다르고, 숫자를
+ * 박아 두면 다른 기계에서 거짓이 된다.
  */
 export async function seat(
   request: APIRequestContext,
@@ -149,4 +153,44 @@ export async function tableState(
  */
 export function chipsOnTable(state: DemoTableState): number {
   return state.players.reduce((sum, p) => sum + (p?.stack ?? 0), 0) + state.pot;
+}
+
+/**
+ * 전광판이 읽는 대회 대시보드. `GET /playsync/dashboard/:tournamentId`.
+ *
+ * 촬영이 **등록 마감을 기다릴 때** 쓴다. 화면으로 판정하지 않는 이유는
+ * 「마감 전 · 예상」이 사라졌는지를 `toBeHidden`으로 보면 **없는 요소에도
+ * 통과하기** 때문이다 — 전광판은 주기적으로 다시 그리므로 그 틈이 실제로
+ * 열린다. 실측에서 12분짜리 레벨이 3분 25초 만에 「마감됐다」로 통과했다.
+ *
+ * 마감은 컬럼이 아니라 파생값이다(`registration-gate.ts`). 컬럼은 누군가
+ * 그 대회를 건드릴 때 게으르게 닫히므로 DB를 봐도 답이 아니다. 이 응답이
+ * 게이트가 실제로 읽는 값과 같은 규칙에서 나온다.
+ */
+export type DemoDashboard = {
+  isRegistrationOpen: boolean;
+  /** 남은 인원. **단수형이다** — 전광판이 읽는 이름 그대로 쓴다. */
+  activePlayer: number;
+  entryCount: number;
+  itmCount: number;
+  prizePool: number;
+};
+
+export async function dashboard(
+  request: APIRequestContext,
+  tournamentId: string,
+): Promise<DemoDashboard> {
+  const res = await request.get(`${BACKEND_URL}/playsync/dashboard/${tournamentId}`);
+  if (!res.ok()) {
+    throw new Error(`대시보드 조회 실패 (${tournamentId}): ${res.status()}`);
+  }
+  // **봉투를 벗긴다.** 응답은 `{ dashboard, blindField }`이고 앤티가 금액이
+  // 되는 자리가 `blindField` 쪽이다(`getFullTournamentInfo`). 벗기지 않으면
+  // 모든 필드가 `undefined`가 되는데, `expect.poll`은 그것을 「아직 아니다」로
+  // 읽어 제한시간을 다 쓴다 — 실제로 15분을 그렇게 썼다.
+  const body = (await res.json()) as { dashboard?: DemoDashboard } | null;
+  if (!body?.dashboard) {
+    throw new Error(`대시보드가 비었다 (${tournamentId}) — 대회가 시작됐는지 확인할 것.`);
+  }
+  return body.dashboard;
 }
