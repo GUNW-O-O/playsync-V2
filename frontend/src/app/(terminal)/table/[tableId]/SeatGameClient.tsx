@@ -4,10 +4,11 @@ import { useEffect, useRef, useState } from 'react';
 import { PlayerAction } from '@playsync/contract';
 import Felt from '@/component/felt/Felt';
 import { apiFetch } from '@/lib/api';
-import { TableState } from '@playsync/contract';
+import { TableState, TournamentClosedSchema, type ClosedTournamentStatus } from '@playsync/contract';
 import SeatActionPanel from './SeatActionPanel';
 import RebuyOverlay, { type RebuyPrompt } from './RebuyOverlay';
 import EliminatedOverlay from './EliminatedOverlay';
+import TournamentClosedOverlay from '@/component/TournamentClosedOverlay';
 
 // 서버·소켓이 문구를 안 줄 때의 최후 안내. WS 배선(티켓 요청·정리·배너)은
 // 옛 GameClient에서 그대로 옮겨 왔다 — T24가 세운 규칙이고, 액세스 토큰이
@@ -72,6 +73,16 @@ export default function SeatGameClient({
   const [rebuyData, setRebuyData] = useState<RebuyPrompt | null>(null);
   const rebuyDataRef = useRef<RebuyPrompt | null>(null);
   const [eliminated, setEliminated] = useState(false);
+  /**
+   * 대회가 닫혔다는 사실. **한 번 서면 되돌리지 않는다** — 서버가 소켓을
+   * 끊지 않으므로 늦게 도착한 `renderGame`이 있을 수 있고, 그것이 이 값을
+   * 지우면 끝난 대회의 펠트가 다시 나온다.
+   *
+   * `eliminated`와 따로 둔다. 탈락은 **이 사람**이 빠진 것이고 이쪽은
+   * **대회**가 끝난 것이라, 끝까지 남아 상금을 받은 사람에게는 탈락 덮개가
+   * 영영 안 뜬다 — 우승자가 앉은 자리가 다음 손님을 못 받는다.
+   */
+  const [closed, setClosed] = useState<ClosedTournamentStatus | null>(null);
   /*
     실패가 갈래 둘이고, 참가자가 할 수 있는 일이 다르다.
 
@@ -133,6 +144,15 @@ export default function SeatGameClient({
             // 탈락으로 보지 않는다 — 리바인 구간에도 좌석이 잠깐 빈다.
             if (!rebuyDataRef.current && mySeatIndex !== null && data.players[mySeatIndex] === null) {
               setEliminated(true);
+            }
+          } else if (serverEvent === 'tournamentClosed') {
+            // **계약을 읽는다.** 손으로 필드를 꺼내면 백엔드가 모양을 바꿔도
+            // 컴파일이 통과하고 화면만 조용히 어긋난다.
+            const parsed = TournamentClosedSchema.safeParse(data);
+            if (parsed.success) {
+              setClosed(parsed.data.status);
+            } else {
+              console.error('tournamentClosed 계약 위반 — 무시한다.', parsed.error);
             }
           } else if (serverEvent === 'REBUY_PROMPT') {
             setRebuyError(null);
@@ -345,6 +365,15 @@ export default function SeatGameClient({
         <RebuyOverlay rebuyData={rebuyData} error={rebuyError} onRespond={handleRebuyResponse} />
       )}
       {eliminated && <EliminatedOverlay storeId={storeId} />}
+
+      {/*
+        **탈락 덮개보다 뒤에 그린다.** 마지막 판의 패자는 두 사건을 거의
+        동시에 겪는데(탈락하고 곧 대회가 닫힌다), 그때 읽어야 하는 것은
+        「이 자리에서 나왔습니다」가 아니라 대회가 끝났다는 사실이다.
+      */}
+      {closed !== null && (
+        <TournamentClosedOverlay status={closed} storeId={storeId} terminal="seat" />
+      )}
     </div>
   );
 }

@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PlayerStatus, Prisma, TournamentStatus } from '@prisma/client';
-import type { FinishPreview } from '@playsync/contract';
+import type { ClosedTournamentStatus, FinishPreview } from '@playsync/contract';
 import { CreateBlindStructureDto } from 'shared/dto/blind-structure.dto';
 import { CreateTournamentDto, UpdateTournamentDto } from 'shared/dto/tournament.dto';
 import { generateDealerOtp, hashDealerOtp } from 'src/dealer/dealer-otp';
@@ -787,6 +787,36 @@ export class SessionService {
       throw new ConflictException('이미 닫힌 세션입니다.');
     }
     await this.redis.deleteTournament(id, tableIds);
+    this.announceClosed(id, tableIds, TournamentStatus.FINISHED);
+  }
+
+  /**
+   * 대회가 닫혔다고 단말에 알린다. **닫는 세 문이 전부 여기를 지난다**
+   * (`completeSession` · `abortSession` · `cancelSession`. `chopSession`은
+   * `completeSession`을 부른다).
+   *
+   * 이 알림이 없는 동안 딜러 화면은 끝난 줄 모르고 마지막 스냅샷을 계속
+   * 그렸다. 그 상태에서 「핸드 시작」을 누르면 `Table` 행도 Redis 스냅샷도
+   * 없어 서비스가 던지고, 딜러가 보는 것은 「명령이 거절되었습니다」 하나였다
+   * — 끝났다는 사실이 아니라 정체불명의 에러다.
+   *
+   * **`tableIds`를 실어 보낸다.** 부르는 쪽의 트랜잭션이 `Table` 행을 이미
+   * 지웠으므로, 게이트웨이가 나중에 조회해서는 어느 방에 쏠지 알 길이 없다.
+   *
+   * **문지기를 지난 뒤에만 부른다.** 거절된 종료(정산 미완, 이미 닫힘)는
+   * 대회가 그대로 도는 것인데 단말이 「끝났습니다」를 그리면 딜러가 판을
+   * 세운다. 그래서 세 자리 모두 `deleteTournament` 뒤다 — 거기까지 왔다면
+   * 조건부 `updateMany`를 이긴 호출 하나뿐이다.
+   */
+  private announceClosed(
+    tournamentId: string,
+    tableIds: string[],
+    // 계약의 좁은 형을 그대로 받는다 — 살아 있는 상태를 넘기는 길이 타입에서
+    // 막힌다. 게이트웨이가 다시 한 번 스키마로 태우지만, 거기까지 가면
+    // 로그만 남고 단말은 아무것도 못 받는다.
+    status: ClosedTournamentStatus,
+  ) {
+    this.eventEmitter.emit('TOURNAMENT_CLOSED', { tournamentId, tableIds, status });
   }
 
   /**
@@ -1193,6 +1223,7 @@ export class SessionService {
     }
 
     await this.redis.deleteTournament(tournamentId, tables.map((t) => t.id));
+    this.announceClosed(tournamentId, tables.map((t) => t.id), TournamentStatus.CANCELLED);
     return settled;
   }
 
@@ -1280,6 +1311,7 @@ export class SessionService {
     });
 
     await this.redis.deleteTournament(tournamentId, tables.map((t) => t.id));
+    this.announceClosed(tournamentId, tables.map((t) => t.id), TournamentStatus.CANCELLED);
   }
 
   /**

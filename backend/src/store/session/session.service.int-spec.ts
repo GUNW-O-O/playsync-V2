@@ -1951,8 +1951,10 @@ describe('SessionService.cancelSession', () => {
   let prisma: PrismaClient;
   let redis: Redis;
   let sessionService: SessionService;
+  let emitter: EventEmitter2;
   let tournamentId: string;
   let ownerId: string;
+  let tableId: string;
 
   const ENTRY_FEE = 10000;
   const START_POINTS = 50000;
@@ -2005,14 +2007,32 @@ describe('SessionService.cancelSession', () => {
     await truncateAll(prisma);
     await flushTestRedis(redis);
 
+    emitter = new EventEmitter2();
     sessionService = new SessionService(
       prisma as unknown as PrismaService,
       new RedisService(redis),
       new OtpAttempts(redis),
-      new EventEmitter2(),
+      emitter,
     );
 
-    ({ ownerId, tournamentId } = await seedTournamentWithTable(prisma));
+    ({ ownerId, tournamentId, tableId } = await seedTournamentWithTable(prisma));
+  });
+
+  /**
+   * **시작 전 취소도 알린다.** 딜러가 이미 태블릿을 붙여 놓고 첫 판을 기다리는
+   * 중일 수 있고, 그때 상점이 대회를 무르면 딜러는 영영 오지 않을 참가자를
+   * 기다린다.
+   */
+  it('취소하면 CANCELLED로 TOURNAMENT_CLOSED를 낸다', async () => {
+    await seedPaidPlayer('player1');
+    const heard: unknown[] = [];
+    emitter.on('TOURNAMENT_CLOSED', (payload) => heard.push(payload));
+
+    await sessionService.cancelSession(tournamentId, ownerId);
+
+    expect(heard).toEqual([
+      { tournamentId, tableIds: [tableId], status: TournamentStatus.CANCELLED },
+    ]);
   });
 
   it('취소하면 참가비가 포인트로 돌아오고 REFUND 내역이 남는다', async () => {
@@ -2528,8 +2548,10 @@ describe('SessionService.abortSession', () => {
   let prisma: PrismaClient;
   let redis: Redis;
   let sessionService: SessionService;
+  let emitter: EventEmitter2;
   let tournamentId: string;
   let ownerId: string;
+  let tableId: string;
 
   const ENTRY_FEE = 10000;
   const START_POINTS = 50000;
@@ -2595,14 +2617,33 @@ describe('SessionService.abortSession', () => {
     await truncateAll(prisma);
     await flushTestRedis(redis);
 
+    emitter = new EventEmitter2();
     sessionService = new SessionService(
       prisma as unknown as PrismaService,
       new RedisService(redis),
       new OtpAttempts(redis),
-      new EventEmitter2(),
+      emitter,
     );
 
-    ({ ownerId, tournamentId } = await seedTournamentWithTable(prisma));
+    ({ ownerId, tournamentId, tableId } = await seedTournamentWithTable(prisma));
+  });
+
+  /**
+   * 중단도 같은 문으로 알린다. **상태가 다르다** — 종료는 걷은 돈이 상금과
+   * 상점 몫으로 다 나간 것이고 중단은 환불하고 무른 것이라, 딜러 화면이 적을
+   * 문장이 다르다.
+   */
+  it('대회를 중단하면 CANCELLED로 TOURNAMENT_CLOSED를 낸다', async () => {
+    await seedPaidPlayer('alive');
+    await start();
+    const heard: unknown[] = [];
+    emitter.on('TOURNAMENT_CLOSED', (payload) => heard.push(payload));
+
+    await sessionService.abortSession(tournamentId, ownerId);
+
+    expect(heard).toEqual([
+      { tournamentId, tableIds: [tableId], status: TournamentStatus.CANCELLED },
+    ]);
   });
 
   /**
@@ -2845,8 +2886,10 @@ describe('SessionService.completeSession — 상점 몫', () => {
   let prisma: PrismaClient;
   let redis: Redis;
   let sessionService: SessionService;
+  let emitter: EventEmitter2;
   let tournamentId: string;
   let ownerId: string;
+  let tableId: string;
 
   const ENTRY_FEE = 10000;
 
@@ -2905,14 +2948,57 @@ describe('SessionService.completeSession — 상점 몫', () => {
     await truncateAll(prisma);
     await flushTestRedis(redis);
 
+    emitter = new EventEmitter2();
     sessionService = new SessionService(
       prisma as unknown as PrismaService,
       new RedisService(redis),
       new OtpAttempts(redis),
-      new EventEmitter2(),
+      emitter,
     );
 
-    ({ ownerId, tournamentId } = await seedTournamentWithTable(prisma));
+    ({ ownerId, tournamentId, tableId } = await seedTournamentWithTable(prisma));
+  });
+
+  /**
+   * **닫는 순간 단말에 알린다.**
+   *
+   * 이 알림이 없는 동안 딜러 화면은 끝난 줄 모르고 마지막 스냅샷을 계속
+   * 그렸다. 그 상태에서 「핸드 시작」을 누르면 `Table` 행도 스냅샷도 없어
+   * 서비스가 던지고, 딜러가 보는 것은 「명령이 거절되었습니다」 하나였다 —
+   * 끝났다는 사실이 아니라 정체불명의 에러다.
+   *
+   * **`tableIds`를 페이로드에 싣는 것이 요건이다.** 같은 트랜잭션이 `Table`
+   * 행을 지우고 끝나므로, 게이트웨이가 나중에 조회해서는 어느 테이블 방에
+   * 쏠지 알 길이 없다.
+   */
+  it('대회를 닫으면 TOURNAMENT_CLOSED를 낸다', async () => {
+    await seedSettled({ rakePercent: 10, players: 5 });
+    const heard: unknown[] = [];
+    emitter.on('TOURNAMENT_CLOSED', (payload) => heard.push(payload));
+
+    await sessionService.completeSession(tournamentId, ownerId);
+
+    expect(heard).toEqual([
+      { tournamentId, tableIds: [tableId], status: TournamentStatus.FINISHED },
+    ]);
+  });
+
+  /**
+   * **거절된 종료는 알리지 않는다.** 대회가 그대로 도는데 단말이 「끝났습니다」를
+   * 그리면 딜러가 판을 세운다. 게이트에 걸린 것은 닫은 것이 아니다.
+   */
+  it('정산이 안 끝나 거절되면 아무것도 알리지 않는다', async () => {
+    await seedSettled({ rakePercent: 10, players: 5 });
+    await prisma.tournamentParticipation.updateMany({
+      where: { tournamentId },
+      data: { prizeAmount: 1000 },
+    });
+    const heard: unknown[] = [];
+    emitter.on('TOURNAMENT_CLOSED', (payload) => heard.push(payload));
+
+    await expect(sessionService.completeSession(tournamentId, ownerId)).rejects.toThrow();
+
+    expect(heard).toEqual([]);
   });
 
   /**
@@ -3031,6 +3117,7 @@ describe('SessionService.chopSession', () => {
   let redis: Redis;
   let redisService: RedisService;
   let sessionService: SessionService;
+  let emitter: EventEmitter2;
   let tournamentId: string;
   let ownerId: string;
   let tableId: string;
@@ -3104,11 +3191,12 @@ describe('SessionService.chopSession', () => {
     await flushTestRedis(redis);
 
     redisService = new RedisService(redis);
+    emitter = new EventEmitter2();
     sessionService = new SessionService(
       prisma as unknown as PrismaService,
       redisService,
       new OtpAttempts(redis),
-      new EventEmitter2(),
+      emitter,
     );
 
     ({ ownerId, tournamentId, tableId } = await seedTournamentWithTable(prisma));
@@ -3264,6 +3352,26 @@ describe('SessionService.chopSession', () => {
     const t = await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } });
     const tables = await prisma.table.count({ where: { tournamentId } });
     expect(`${t.status} / 테이블 ${tables}`).toBe('FINISHED / 테이블 0');
+  });
+
+  /**
+   * **딜도 단말에 알린다.** 이 경로는 `completeSession`을 불러 닫으므로 알림이
+   * 딸려 오는데, 그 사실이 여기 고정돼 있지 않으면 나중에 자기 트랜잭션으로
+   * 닫도록 바꾸는 날 조용히 사라진다 — 딜은 파이널 테이블의 흔한 마무리라
+   * 그때 딜러 화면이 가장 자주 멈춰 있게 된다.
+   */
+  it('딜로 닫아도 TOURNAMENT_CLOSED가 나간다', async () => {
+    await seatPlayer('big', 30000);
+    await seatPlayer('small', 10000);
+    await makeFinalTable();
+    const heard: unknown[] = [];
+    emitter.on('TOURNAMENT_CLOSED', (payload) => heard.push(payload));
+
+    await sessionService.chopSession(tournamentId, ownerId);
+
+    expect(heard).toEqual([
+      { tournamentId, tableIds: [tableId], status: TournamentStatus.FINISHED },
+    ]);
   });
 
   /** 돈은 두 번 나가면 되돌릴 근거가 없다. */
