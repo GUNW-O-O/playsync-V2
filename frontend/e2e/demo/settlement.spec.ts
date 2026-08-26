@@ -593,13 +593,32 @@ test.describe('데모 — 정산', () => {
         await expectTableChips(s, `${step} ${seatIndex}번 액션 후`, chips);
       }
 
-      // 딜러가 승자를 찍는다. **순위를 끝까지 채운다** — 지명되지 않은 팟이
-      // 하나라도 남으면 서버가 한 칩도 움직이기 전에 거부한다(T15).
+      // 딜러가 승자를 찍는다. **층마다 임자가 생길 때까지만 찍는다.**
+      //
+      // 지명되지 않은 팟이 하나라도 남으면 서버가 한 칩도 움직이기 전에
+      // 거부하므로(T15) 예전에는 올인한 전원을 순위로 채웠다. 그런데 그 판단이
+      // **층 수를 안 봤다** — 첫 판은 전원이 같은 스택에서 올인해 층이 하나이고,
+      // 거기서 여섯 명을 줄 세우면 딜러가 등수를 여섯 번 누르는 그림이 나온다.
+      // 홀덤이 매 판 순위를 매기는 것처럼 읽히는데 그렇지 않다.
+      //
+      // 서버가 보는 것은 「상위 몇 명」이 아니라 **모든 층이 덮였는가**다
+      // (`TableEngine.resolveWinner`의 `claims`). 그래서 같은 것을 여기서 센다.
+      // 쇼다운 스냅샷에 층이 이미 있다 — `nextPhase`가 진입할 때
+      // `calculateSidePots`를 부른다.
       const showdown = await stateOf(s);
       const ranked = [plan.winner, ...plan.allIn.filter((i) => i !== plan.winner)];
-      const groups = ranked
-        .filter((i) => showdown.players[i] && !showdown.players[i]!.hasFolded)
-        .map((i) => [showdown.players[i]!.id]);
+      const groups: string[][] = [];
+      const allPotsClaimed = () =>
+        showdown.sidePots.every((pot) =>
+          groups.some((tier) => tier.some((id) => pot.relevantPlayerIds.includes(id))),
+        );
+      for (const seatIndex of ranked) {
+        const player = showdown.players[seatIndex];
+        if (!player || player.hasFolded) continue;
+        // 한 명은 반드시 찍는다. 비면 서버가 「유효한 승자가 없습니다」로 막는다.
+        if (groups.length > 0 && allPotsClaimed()) break;
+        groups.push([player.id]);
+      }
 
       if (s.dealer.kind === 'screen') {
         await resolveWinnersOnScreen(s.dealer.page, groups, () => stateOf(s));
