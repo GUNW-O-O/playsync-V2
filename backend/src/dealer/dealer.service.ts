@@ -459,18 +459,42 @@ export class DealerService {
     // 2. 리바인 — 락 밖. 전원에게 동시에 묻고 같은 마감을 준다.
     //    수락한 사람은 남을 기다리지 않고 그 즉시 반영·전파된다.
     if (tournamentInfo.isRegistrationOpen && brokePlayerIds.length > 0) {
-      await Promise.all(
-        brokePlayerIds.map(playerId =>
-          this.playsync.processRebuy(
-            tournamentId,
-            tableId,
-            playerId,
-            tournamentInfo.entryFee,
-            tournamentInfo.startStack,
-            tournamentInfo.tournamentName,
+      /*
+        **판이 멈춘 이유를 스냅샷에 남긴다.**
+
+        이 대기는 최대 15초이고 그동안 아무것도 전파되지 않았다 — 1단계가
+        `SHOWDOWN → HAND_END`로 넘겨 놓고도 `mutateSnapshot`은 브로드캐스트를
+        하지 않기 때문이다. 그래서 테이블 전원이 낡은 쇼다운 화면을 들고
+        멈춰 있었고, 딜러 화면은 「승자 결정」이 활성인 채로 남아 다시 누르면
+        `TableEngine.resolveWinner`의 페이즈 가드에 걸려 거절당했다.
+
+        **표시를 남기는 것이 그 전이까지 함께 실어 보낸다** — 딜러 배지가
+        「핸드 종료」로 먼저 바뀐다.
+
+        묻는 대상과 마감을 `processRebuy`보다 **먼저** 정한다. 그쪽은 사람마다
+        따로 도는데, 화면이 보여줄 것은 「이 테이블이 누군가를 기다린다」
+        하나라서 마감이 하나여야 한다.
+      */
+      await this.playsync.markRebuyPending(tableId, brokePlayerIds);
+      try {
+        await Promise.all(
+          brokePlayerIds.map(playerId =>
+            this.playsync.processRebuy(
+              tournamentId,
+              tableId,
+              playerId,
+              tournamentInfo.entryFee,
+              tournamentInfo.startStack,
+              tournamentInfo.tournamentName,
+            ),
           ),
-        ),
-      );
+        );
+      } finally {
+        // **어떻게 끝나든 지운다.** 수락·거절·시간초과가 각각 다른 자리에서
+        // 끝나고(`processRebuy`), 그중 하나가 던져도 표시가 남으면 다음 핸드가
+        // 도는 내내 화면이 「리바인을 기다립니다」를 띄운다.
+        await this.playsync.markRebuyPending(tableId, null);
+      }
     }
 
     // 3. 탈락 확정 — 락 안. 스냅샷은 아직 HAND_END다.
