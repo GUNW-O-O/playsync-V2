@@ -9,6 +9,7 @@ import {
   RebuyResponseSchema,
   TableStateSchema,
   TableState as WireTableState,
+  TournamentClosedSchema,
 } from '@playsync/contract';
 import { DealerService } from 'src/dealer/dealer.service';
 import { TableState } from 'src/game-engine/types';
@@ -400,6 +401,40 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @OnEvent('SEAT_LIST_UPDATED')
   handleSeatListUpdated(payload: { tournamentId: string; state: any }) {
     this.broadcastToTournament(payload.tournamentId, 'renderSeatList', payload.state);
+  }
+
+  /**
+   * 대회가 닫혔다고 단말에 알린다(`SessionService.announceClosed`).
+   *
+   * **테이블 방으로 간다.** 딜러와 좌석 태블릿이 거기 있고, 그들이 이 사실을
+   * 모르면 끝난 대회의 마지막 스냅샷을 계속 그린다 — 그 상태에서 무엇을
+   * 누르든 돌아오는 것은 「명령이 거절되었습니다」뿐이다.
+   *
+   * **`tableIds`가 페이로드에 실려 온다.** 부르는 쪽의 트랜잭션이 `Table`
+   * 행을 이미 지웠으므로 여기서 조회할 수 없다.
+   *
+   * **소켓을 닫지는 않는다.** 단말이 「끝났습니다」를 읽고 스스로 대기 화면으로
+   * 돌아가는데, 서버가 먼저 끊으면 화면은 연결 끊김 배너를 그린다 — 대회가
+   * 끝난 것과 망이 끊긴 것은 딜러에게 전혀 다른 사건이다.
+   */
+  @OnEvent('TOURNAMENT_CLOSED')
+  handleTournamentClosed(payload: { tournamentId: string; tableIds: string[]; status: string }) {
+    // **계약을 태운다.** 여기 실리는 값이 그대로 화면의 문장을 고르므로,
+    // 살아 있는 상태가 새어 나가면 대회가 도는 채로 「끝났습니다」가 뜬다.
+    // `toWireState`와 같은 이유로 던지지 않는다 — `@OnEvent` 안의 거부는
+    // 처리되지 않은 채로 남는다.
+    const parsed = TournamentClosedSchema.safeParse({
+      tournamentId: payload.tournamentId,
+      status: payload.status,
+      closedAt: Date.now(),
+    });
+    if (!parsed.success) {
+      this.logger.error(`tournamentClosed 계약 위반 — 전파하지 않는다: ${parsed.error.message}`);
+      return;
+    }
+    for (const tableId of payload.tableIds) {
+      this.broadcastToTable(tableId, 'tournamentClosed', parsed.data);
+    }
   }
 
   @OnEvent('rebuy.request.sent')

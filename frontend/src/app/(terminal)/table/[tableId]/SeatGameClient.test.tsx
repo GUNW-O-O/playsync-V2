@@ -327,4 +327,40 @@ describe('SeatGameClient', () => {
       errorSpy.mockRestore();
     });
   });
+
+  /**
+   * **좌석도 같은 구멍이었다.** 대회를 닫는 경로가 소켓에 아무것도 쓰지 않아서
+   * 이 태블릿은 끝난 대회의 마지막 스냅샷을 계속 그렸다. 탈락한 사람은
+   * `EliminatedOverlay`가 덮어 주지만, **끝까지 남아 상금을 받은 사람은 그
+   * 덮개가 안 뜬다** — 우승자가 앉은 자리가 다음 손님을 못 받는다.
+   */
+  describe('대회가 닫히면', () => {
+    const CLOSED = { tournamentId: 'trn-1', status: 'FINISHED' as const, closedAt: 1 };
+
+    it('덮개가 뜬다', async () => {
+      const { socket } = await renderWithSocket();
+
+      socket.emitServerEvent('tournamentClosed', CLOSED);
+
+      expect(screen.getByTestId('seat-tournament-closed')).toHaveTextContent('대회가 끝났습니다');
+    });
+
+    it('중단이면 환불이라고 적는다', async () => {
+      const { socket } = await renderWithSocket();
+
+      socket.emitServerEvent('tournamentClosed', { ...CLOSED, status: 'CANCELLED' });
+
+      expect(screen.getByTestId('seat-tournament-closed')).toHaveTextContent('중단');
+    });
+
+    /** 서버가 소켓을 끊지 않으므로 늦게 온 프레임이 덮개를 걷으면 안 된다. */
+    it('늦게 온 renderGame이 덮개를 걷지 않는다', async () => {
+      const { socket } = await renderWithSocket();
+
+      socket.emitServerEvent('tournamentClosed', CLOSED);
+      socket.emitServerEvent('renderGame', BASE_STATE);
+
+      expect(screen.getByTestId('seat-tournament-closed')).toBeInTheDocument();
+    });
+  });
 });

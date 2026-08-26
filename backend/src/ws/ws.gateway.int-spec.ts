@@ -753,4 +753,86 @@ describe('WsGateway 인바운드 경계', () => {
       expect(closed.send).not.toHaveBeenCalled();
     });
   });
+
+  /**
+   * 대회가 닫혔다는 알림.
+   *
+   * **테이블 방으로 간다.** 딜러와 좌석 태블릿이 거기 있고, 그들이 이 사실을
+   * 모르면 끝난 대회의 마지막 스냅샷을 계속 그린다.
+   *
+   * 페이로드가 `tableIds`를 들고 오는 이유는 **부르는 쪽이 이미 `Table` 행을
+   * 지웠기 때문**이다(`completeSession`의 트랜잭션). 게이트웨이가 나중에
+   * 조회해서는 어느 방에 쏠지 알 길이 없다.
+   */
+  describe('대회가 닫히면 테이블 단말에 알린다', () => {
+    it('그 대회의 테이블 소켓 전부가 받는다', async () => {
+      const dealerClient = await connect(await dealerTicket(TABLE));
+      const player = await connect(await playerTicket('alice'));
+      jest.clearAllMocks();
+
+      gateway.handleTournamentClosed({
+        tournamentId: TOURNAMENT,
+        tableIds: [TABLE],
+        status: TournamentStatus.FINISHED,
+      });
+
+      const seen = [dealerClient, player].map((c) => JSON.parse(c.send.mock.calls[0][0]));
+      expect(seen.map((s) => `${s.event}/${s.data.status}/${s.data.tournamentId}`)).toEqual([
+        `tournamentClosed/FINISHED/${TOURNAMENT}`,
+        `tournamentClosed/FINISHED/${TOURNAMENT}`,
+      ]);
+    });
+
+    /**
+     * **다른 테이블은 안 받는다.** 상점 하나가 대회를 둘 열 수 있고, 옆
+     * 대회의 딜러가 「끝났습니다」를 보면 돌던 판이 선다.
+     */
+    it('다른 테이블 소켓은 받지 않는다', async () => {
+      const mine = await connect(await dealerTicket(TABLE), TABLE);
+      const other = await connect(await dealerTicket(OTHER_TABLE), OTHER_TABLE);
+      jest.clearAllMocks();
+
+      gateway.handleTournamentClosed({
+        tournamentId: TOURNAMENT,
+        tableIds: [TABLE],
+        status: TournamentStatus.FINISHED,
+      });
+
+      expect(`내 ${mine.send.mock.calls.length} / 남 ${other.send.mock.calls.length}`)
+        .toBe('내 1 / 남 0');
+    });
+
+    /**
+     * **계약을 태운다.** 여기 실리는 값이 그대로 화면의 문장을 고르므로,
+     * 살아 있는 상태가 새어 나가면 대회가 도는 채로 「끝났습니다」가 뜬다.
+     * 스키마가 그 조합을 거부하고, 거부되면 아무것도 안 나간다.
+     */
+    it('닫힌 상태가 아니면 전파하지 않는다', async () => {
+      const dealerClient = await connect(await dealerTicket(TABLE));
+      jest.clearAllMocks();
+
+      gateway.handleTournamentClosed({
+        tournamentId: TOURNAMENT,
+        tableIds: [TABLE],
+        status: TournamentStatus.ONGOING,
+      });
+
+      expect(dealerClient.send).not.toHaveBeenCalled();
+    });
+
+    /** 테이블이 여럿인 대회는 방마다 한 번씩 간다. */
+    it('테이블이 여럿이면 각 방에 간다', async () => {
+      const first = await connect(await dealerTicket(TABLE), TABLE);
+      const second = await connect(await dealerTicket(OTHER_TABLE), OTHER_TABLE);
+      jest.clearAllMocks();
+
+      gateway.handleTournamentClosed({
+        tournamentId: TOURNAMENT,
+        tableIds: [TABLE, OTHER_TABLE],
+        status: TournamentStatus.CANCELLED,
+      });
+
+      expect(`${first.send.mock.calls.length} / ${second.send.mock.calls.length}`).toBe('1 / 1');
+    });
+  });
 });
