@@ -284,41 +284,58 @@ function settlementScenes() {
         1764라 위 행도 882×2로 맞춘 것이다. 잃는 것은 2px이다.
       */
       out: '05-two-doors-same-ledger',
-      take: 'chop',
-      from: '마무리 — 그 문을 누른다',
-      to: '끝',
       /*
-        **좌열만 한 마크 앞에서 연다.**
+        **좌우가 아니라 앞뒤다.**
 
-        두 실행의 마무리 구간 길이가 같을 이유가 없다 — `complete`는 문을
-        누른 뒤 **최후의 판을 실제로 쳐야** 끝나고, `chop`은 확인 대화를
-        닫으면 바로 정산이다. 실측으로 chop 36.1초 대 complete 48.2초였고,
-        짧은 쪽은 `tpad`이 마지막 프레임을 복제하므로 **좌열이 12.2초를 정지
-        화면으로 버텼다** — 48초짜리 그림의 4분의 1이다.
+        처음에는 좌우로 놓았다. 그런데 나란히 놓는 것은 「이 둘에 공통 시계가
+        있다」는 주장이고, 두 실행에는 그런 것이 없다 — `chop`은 확인 대화를
+        닫으면 바로 정산이고 `complete`는 문을 누른 뒤 **최후의 판을 실제로
+        쳐야** 끝난다. 그래서 짧은 쪽이 `tpad`의 정지 화면으로 긴 쪽을
+        기다렸다(12.2초 → 창을 옮겨 3.3초 → 실행이 흔들리자 3.0초가 반대쪽에).
 
-        좌열을 `마무리 — 셋이 한 화면에 있다`부터 열면 44.9초가 되어 정지가
-        3.3초로 준다. 내용도 나아진다: ICM 모달을 열기 전에 **마무리 카드 셋**
-        (종료 · ICM · 중단)이 좌열에 먼저 나오고, 그중 하나를 누르는 그림이
-        된다 — 「문이 셋인데 이 실행은 이 문으로 갔다」가 좌열에 들어간다.
+        **창을 어떻게 잡아도 길이는 실행마다 달라진다.** 고칠 자리는 창이
+        아니라 배치였다.
 
-        **0으로는 안 맞춘다.** `끝`에서 48.220초를 역산하면 좌열 시작이
-        414.594초인데 `phone-final-3`의 슬레이트가 414.719초다. 0.13초 차라
-        프레임 하나만 어긋나도 자홍색이 샌다. 실행마다 달라지는 값에 그만한
-        여유를 걸 수 없다.
+        대조는 진행이 아니라 **끝 상태**에서 선다. 폰 여섯이 각각 무엇을
+        받았는가 — `548,568 / 408,348 / 274,284` 대 `615,600 / 372,600 /
+        243,000` — 가 이 프레임의 주장이고, 그것을 보려고 두 실행의 중간을
+        동시에 굴릴 필요가 없다. 순서대로 보여주고 조각마다 무엇인지 적는다.
+
+        `chop`은 `마무리 — 셋이 한 화면에 있다`부터 연다. ICM 모달을 열기
+        전에 **마무리 카드 셋**(종료 · ICM · 중단)이 먼저 나오고, 그중 하나를
+        누르는 그림이 된다 — 「문이 셋인데 이 실행은 이 문으로 갔다」가 조각
+        안에 들어간다. `complete`는 그 카드가 이미 지나갔으므로 문을 누르는
+        자리부터다.
       */
-      windowsByTake: {
-        chop: [['마무리 — 셋이 한 화면에 있다', '끝']],
-      },
-      rows: [
-        [tile('console', 882, 550), tile('dealer-t1', 882, 550, 'complete')],
-        [
-          tile('phone-final-1', 294, 634),
-          tile('phone-final-2', 294, 634),
-          tile('phone-final-3', 294, 634),
-          tile('phone-final-1', 294, 634, 'complete'),
-          tile('phone-final-2', 294, 634, 'complete'),
-          tile('phone-final-3', 294, 634, 'complete'),
-        ],
+      parts: [
+        {
+          take: 'chop',
+          from: '마무리 — 셋이 한 화면에 있다',
+          to: '끝',
+          caption: '① 딜 · 남은 셋이 상금을 칩 비율로 나눈다 — 콘솔의 일',
+          rows: [
+            [
+              tile('console', 1180, 738),
+              tile('phone-final-1', 290, 738),
+              tile('phone-final-2', 290, 738),
+              tile('phone-final-3', 290, 738),
+            ],
+          ],
+        },
+        {
+          take: 'complete',
+          from: '마무리 — 그 문을 누른다',
+          to: '끝',
+          caption: '② 승부 · 같은 셋이 끝까지 쳐서 정한다 — 펠트의 일',
+          rows: [
+            [
+              tile('dealer-t1', 1180, 738),
+              tile('phone-final-1', 290, 738),
+              tile('phone-final-2', 290, 738),
+              tile('phone-final-3', 290, 738),
+            ],
+          ],
+        },
       ],
       fps: 6,
       // **콘솔이 읽혀야 이 프레임이 성립한다.** 주장이 「두 장부의 걷은 돈이
@@ -586,6 +603,71 @@ function toVideoTime(surface, wallSeconds) {
 }
 
 /**
+ * 이 장면이 **시간축으로** 이어 붙일 조각들. 안 주면 장면 자체가 조각 하나다.
+ *
+ * `rows`는 공간이고 `parts`는 시간이다. 나란히 놓는 것(`hstack`)은 두 타일에
+ * **공통 시계가 있다**는 주장이라, 시계가 없는 것을 나란히 놓으면 짧은 쪽이
+ * 긴 쪽을 기다린다 — `tpad`의 정지 화면이 그 기다림이다.
+ *
+ * 프레임 ③이 그것이었다. `chop`은 확인 대화를 닫으면 바로 정산이고
+ * `complete`는 문을 누른 뒤 **최후의 판을 실제로 쳐야** 끝난다. 두 실행은
+ * 서로를 기다릴 이유가 없는데 좌우로 붙어 있어서 매번 한쪽이 정지했다
+ * (12.2초 → 창을 옮겨 3.3초 → 실행이 흔들리자 다시). **창을 어떻게 잡아도
+ * 길이는 실행마다 달라지므로 정지는 다시 생긴다** — 고칠 자리는 배치였다.
+ *
+ * 대조는 진행이 아니라 **끝 상태**에서 선다(폰 여섯의 금액). 그래서 순서대로
+ * 보여주고 각 조각에 무엇인지 적는다.
+ */
+function partsOf(scene) {
+  return (scene.parts ?? [scene]).map((part) => ({
+    out: scene.out,
+    take: part.take ?? scene.take,
+    from: part.from ?? scene.from,
+    to: part.to ?? scene.to,
+    windows: part.windows ?? scene.windows,
+    windowsByTake: part.windowsByTake ?? scene.windowsByTake,
+    rows: part.rows ?? scene.rows,
+    caption: part.caption,
+  }));
+}
+
+/**
+ * 자막 띠의 높이(px). 그림 **위에** 얹지 않고 위로 덧붙인다 — 화면을 가리면
+ * 그 순간의 숫자를 못 읽는데, 이 그림들의 주장이 전부 숫자다.
+ */
+const CAPTION_BAND = 56;
+
+/**
+ * 자막에 쓰는 폰트. 한글이 있어야 하므로 후보를 훑는다.
+ *
+ * **없으면 멈춘다.** 조용히 자막을 빼면 조각의 경계가 사라져 「이게 어느
+ * 문인가」를 읽을 수 없는 그림이 나가는데, 그것은 실패가 아니라 **다른
+ * 그림**이라 아무도 못 잡는다.
+ */
+function captionFont() {
+  const candidates = [
+    'C:/Windows/Fonts/malgun.ttf',
+    '/System/Library/Fonts/AppleSDGothicNeo.ttc',
+    '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
+    '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+  ];
+  const found = candidates.find((p) => existsSync(p));
+  if (!found) {
+    throw new Error(
+      [
+        '자막에 쓸 한글 폰트를 못 찾았다. 찾아본 자리:',
+        ...candidates.map((p) => `  ${p}`),
+        '',
+        '이 목록에 이 기계의 폰트를 더한다.',
+      ].join('\n'),
+    );
+  }
+  // ffmpeg 필터 문법에서 `:`는 인자 구분자이고 `\`는 escape다. Windows
+  // 경로가 둘 다 들고 있어서 그대로 넣으면 필터 그래프가 깨진다.
+  return found.replace(/\\/g, '/').replace(/:/g, '\\:');
+}
+
+/**
  * 장면 하나를 애니메이션 WebP로 만든다.
  *
  * **타일마다 시계가 다르다.** 면마다 0초가 다르다는 것은 처음부터 그랬고
@@ -599,46 +681,63 @@ function toVideoTime(surface, wallSeconds) {
  *
  * **그 채움은 정지 화면이라 적을수록 좋다.** 실행마다 창을 따로 주는
  * `windowsByTake`가 그것을 줄이는 자리다 — 짧은 쪽 실행의 창을 한 마크 앞에서
- * 열면 정지가 그만큼 짧아진다.
+ * 열면 정지가 그만큼 짧아진다. **애초에 기다릴 이유가 없는 둘이면 `parts`로
+ * 시간축에 세운다** — 그때는 `tpad`이 0이 된다.
  *
  * @param takes 실행 이름 → `{ dir, timeline }`
  */
 function buildScene(scene, takes) {
-  // 이 장면이 건드리는 실행마다 구간을 먼저 잰다. 타일이 여섯이어도 실행은
-  // 둘이므로, 타일마다 다시 재면 같은 값을 여러 번 읽는다.
-  const used = new Set(scene.rows.flat().map((t) => t.take ?? scene.take));
-  const spans = new Map();
-  for (const name of used) {
-    const entry = takes.get(name);
-    if (!entry) throw new Error(`${scene.out}: "${name}" 촬영이 없다.`);
-    const segments = segmentsOf(scene, name, entry.timeline);
-    spans.set(name, {
-      segments,
-      total: segments.reduce((sum, s) => sum + (s.end - s.start), 0),
-    });
-  }
-
-  // 가장 긴 구간에 맞춘다. 짧은 쪽은 마지막 프레임을 늘려 채운다.
-  const longest = Math.max(...[...spans.values()].map((s) => s.total));
-
+  const parts = partsOf(scene);
   const inputs = [];
   const filters = [];
-
-  // 행마다 폭이 같아야 `vstack`이 붙는다. 어긋나면 ffmpeg가 실패하는데,
-  // 그 메시지로는 어느 장면의 어느 행인지 알 수 없어 여기서 먼저 본다.
-  const rowWidths = scene.rows.map((row) => row.reduce((w, t) => w + t.width, 0));
-  if (new Set(rowWidths).size > 1) {
-    throw new Error(`${scene.out}: 행마다 폭이 다르다 (${rowWidths.join(' · ')}).`);
-  }
-
-  assertEvenTiles(scene);
-
+  const partLabels = [];
+  // 조각끼리 크기가 다르면 `concat`이 거부한다. 어느 조각이 어긋났는지는
+  // ffmpeg가 말해 주지 않으므로 여기서 먼저 본다.
+  const partSizes = [];
+  // 조각 길이의 **합**이 결과물의 길이다. 조각끼리는 서로를 기다리지 않으므로
+  // 가장 긴 것이 아니라 이어 붙인 값이다.
+  const partSeconds = [];
   let n = 0;
-  const rowLabels = [];
-  scene.rows.forEach((row, r) => {
+
+  parts.forEach((part, p) => {
+    // 이 조각이 건드리는 실행마다 구간을 먼저 잰다. 타일이 여섯이어도 실행은
+    // 둘이므로, 타일마다 다시 재면 같은 값을 여러 번 읽는다.
+    const used = new Set(part.rows.flat().map((t) => t.take ?? part.take));
+    const spans = new Map();
+    for (const name of used) {
+      const entry = takes.get(name);
+      if (!entry) throw new Error(`${scene.out}: "${name}" 촬영이 없다.`);
+      const segments = segmentsOf(part, name, entry.timeline);
+      spans.set(name, {
+        segments,
+        total: segments.reduce((sum, s) => sum + (s.end - s.start), 0),
+      });
+    }
+
+    // 가장 긴 구간에 맞춘다. 짧은 쪽은 마지막 프레임을 늘려 채운다.
+    // **조각 하나 안에서만** 맞춘다 — 조각끼리는 시간축이 이어지므로 서로를
+    // 기다릴 이유가 없고, 그것이 `parts`를 만든 이유다.
+    const longest = Math.max(...[...spans.values()].map((s) => s.total));
+    partSeconds.push(longest);
+
+    // 행마다 폭이 같아야 `vstack`이 붙는다. 어긋나면 ffmpeg가 실패하는데,
+    // 그 메시지로는 어느 장면의 어느 행인지 알 수 없어 여기서 먼저 본다.
+    const rowWidths = part.rows.map((row) => row.reduce((w, t) => w + t.width, 0));
+    if (new Set(rowWidths).size > 1) {
+      throw new Error(`${scene.out}: 행마다 폭이 다르다 (${rowWidths.join(' · ')}).`);
+    }
+
+    assertEvenTiles(part);
+    partSizes.push([
+      rowWidths[0],
+      part.rows.reduce((h, row) => h + row[0].height, 0),
+    ]);
+
+    const rowLabels = [];
+    part.rows.forEach((row, r) => {
     const cells = [];
     for (const t of row) {
-      const takeName = t.take ?? scene.take;
+      const takeName = t.take ?? part.take;
       const { dir, timeline } = takes.get(takeName);
       const { segments, total } = spans.get(takeName);
 
@@ -723,16 +822,49 @@ function buildScene(scene, takes) {
       rowLabels.push(cells[0]);
       return;
     }
-    filters.push(`${cells.join('')}hstack=inputs=${cells.length}[r${r}]`);
-    rowLabels.push(`[r${r}]`);
+    filters.push(`${cells.join('')}hstack=inputs=${cells.length}[r${p}_${r}]`);
+    rowLabels.push(`[r${p}_${r}]`);
+    });
+
+    let grid = rowLabels[0];
+    if (rowLabels.length > 1) {
+      filters.push(`${rowLabels.join('')}vstack=inputs=${rowLabels.length}[g${p}]`);
+      grid = `[g${p}]`;
+    }
+
+    // **fps는 조각마다 건다.** `concat`은 프레임을 이어 붙일 뿐 시간 축을
+    // 다시 재지 않으므로, 조각끼리 레이트가 다르면 뒤 조각의 재생 속도가
+    // 어긋난다.
+    let chain = `${grid}fps=${scene.fps}`;
+    if (part.caption) {
+      // 그림 **위로 덧붙인다.** 얹으면 그 순간의 숫자를 가리는데, 이 그림들이
+      // 주장하는 것이 전부 숫자다.
+      partSizes[p][1] += CAPTION_BAND;
+      chain +=
+        `,pad=w=iw:h=ih+${CAPTION_BAND}:x=0:y=${CAPTION_BAND}:color=0x141414` +
+        `,drawtext=fontfile='${captionFont()}':text='${part.caption}'` +
+        `:fontcolor=0xf0f0f0:fontsize=30:x=24:y=${Math.round((CAPTION_BAND - 30) / 2)}`;
+    }
+    filters.push(`${chain}[p${p}]`);
+    partLabels.push(`[p${p}]`);
   });
 
-  let grid = rowLabels[0];
-  if (rowLabels.length > 1) {
-    filters.push(`${rowLabels.join('')}vstack=inputs=${rowLabels.length}[g]`);
-    grid = '[g]';
+  const [w0, h0] = partSizes[0];
+  const mismatch = partSizes.findIndex(([w, h]) => w !== w0 || h !== h0);
+  if (mismatch > 0) {
+    throw new Error(
+      `${scene.out}: 조각 ${mismatch + 1}의 크기가 첫 조각과 다르다 ` +
+        `(${partSizes[mismatch].join('×')} ≠ ${w0}×${h0}). ` +
+        'concat은 같은 크기만 잇는다.',
+    );
   }
-  filters.push(`${grid}fps=${scene.fps},scale=${scene.width}:-2:flags=lanczos[out]`);
+
+  let joined = partLabels[0];
+  if (partLabels.length > 1) {
+    filters.push(`${partLabels.join('')}concat=n=${partLabels.length}:v=1:a=0[j]`);
+    joined = '[j]';
+  }
+  filters.push(`${joined}scale=${scene.width}:-2:flags=lanczos[out]`);
 
   const out = join(ASSETS, `${scene.out}.webp`);
   ffmpeg([
@@ -769,7 +901,11 @@ function buildScene(scene, takes) {
   ]);
 
   console.log(
-    `  ${scene.out}.webp  ${longest.toFixed(1)}초 · 면 ${n} · ${scene.fps}fps · ${mib(out)}MB`,
+    `  ${scene.out}.webp  ${partSeconds.reduce((a, b) => a + b, 0).toFixed(1)}초` +
+      (partSeconds.length > 1
+        ? ` (조각 ${partSeconds.map((v) => v.toFixed(1)).join(' + ')})`
+        : '') +
+      ` · 면 ${n} · ${scene.fps}fps · ${mib(out)}MB`,
   );
 }
 
