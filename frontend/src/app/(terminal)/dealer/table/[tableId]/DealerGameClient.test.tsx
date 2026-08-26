@@ -355,5 +355,22 @@ describe('DealerGameClient', () => {
       expect(`배너 ${banner ? '있음' : '없음'} / 덮개 ${closed ? '있음' : '없음'}`)
         .toBe('배너 없음 / 덮개 있음');
     });
+
+    /**
+     * **서버가 알린 뒤 소켓을 닫는다**(`WsGateway.closeTable`). 코드 1000이라
+     * `onclose`가 그대로 넘어가고, 화면에는 종료 덮개만 남아야 한다 — 배너가
+     * 겹쳐 뜨면 딜러는 망을 의심하고 새로고침한다.
+     */
+    it('서버가 소켓을 닫아도 덮개만 남는다', async () => {
+      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.HAND_END }));
+
+      socket.emitServerEvent('tournamentClosed', CLOSED);
+      act(() => socket.close());
+
+      const banner = screen.queryByText(/연결이 끊어졌습니다/);
+      const closed = screen.queryByTestId('dealer-tournament-closed');
+      expect(`배너 ${banner ? '있음' : '없음'} / 덮개 ${closed ? '있음' : '없음'}`)
+        .toBe('배너 없음 / 덮개 있음');
+    });
   });
 });

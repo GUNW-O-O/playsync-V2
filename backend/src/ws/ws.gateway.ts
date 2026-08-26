@@ -413,9 +413,18 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
    * **`tableIds`가 페이로드에 실려 온다.** 부르는 쪽의 트랜잭션이 `Table`
    * 행을 이미 지웠으므로 여기서 조회할 수 없다.
    *
-   * **소켓을 닫지는 않는다.** 단말이 「끝났습니다」를 읽고 스스로 대기 화면으로
-   * 돌아가는데, 서버가 먼저 끊으면 화면은 연결 끊김 배너를 그린다 — 대회가
-   * 끝난 것과 망이 끊긴 것은 딜러에게 전혀 다른 사건이다.
+   * **알린 뒤 끊는다.** 닫힌 대회의 소켓은 받을 것도 보낼 것도 없다 —
+   * 스냅샷이 지워져 밀어줄 프레임이 없고, 무엇을 눌러도 돌아오는 것은
+   * 거절뿐이다. 열어 두면 게이트웨이가 죽은 방을 들고 있게 된다.
+   *
+   * **코드 1000(정상 종료)이라야 한다.** 단말의 `onclose`는 그 값만 정상으로
+   * 보고 넘어간다(`DealerGameClient` · `SeatGameClient`). 다른 코드로 닫으면
+   * 화면이 연결 끊김 배너를 그리는데, **대회가 끝난 것과 망이 끊긴 것은
+   * 딜러에게 전혀 다른 사건**이라 그 배너가 종료 덮개와 겹쳐 뜬다.
+   *
+   * **순서가 요건이다.** 보내는 것이 먼저고 닫는 것이 나중이다. 뒤집히면
+   * 단말은 왜 끊겼는지 모른 채 마지막 스냅샷을 그리고 있게 된다 — 고치기
+   * 전의 그 상태다.
    */
   @OnEvent('TOURNAMENT_CLOSED')
   handleTournamentClosed(payload: { tournamentId: string; tableIds: string[]; status: string }) {
@@ -434,7 +443,30 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
     for (const tableId of payload.tableIds) {
       this.broadcastToTable(tableId, 'tournamentClosed', parsed.data);
+      this.closeTable(tableId);
     }
+  }
+
+  /**
+   * 한 테이블 방의 소켓을 전부 정상 종료로 닫고 방을 버린다.
+   *
+   * **`close`가 던져도 나머지를 닫는다.** `broadcast`가 죽은 소켓 하나에
+   * 루프를 멈추지 않게 만든 것과 같은 이유다 — 하나가 이미 끊겨 있다고 옆
+   * 단말이 열린 채로 남으면, 그 태블릿만 끝난 대회를 그리고 있게 된다.
+   */
+  private closeTable(tableId: string) {
+    const sessions = this.tableSessions.get(tableId);
+    if (!sessions) return;
+    for (const socket of sessions) {
+      try {
+        // 이유 문자열은 단말이 읽지 않는다(코드 1000이면 `onclose`가 그대로
+        // 넘어간다). 로그와 프록시가 읽는 자리라 남긴다.
+        socket.close(1000, '대회가 종료되었습니다.');
+      } catch {
+        // 이미 닫힌 소켓. 아래에서 방째로 버리므로 따로 지울 것이 없다.
+      }
+    }
+    this.tableSessions.delete(tableId);
   }
 
   @OnEvent('rebuy.request.sent')

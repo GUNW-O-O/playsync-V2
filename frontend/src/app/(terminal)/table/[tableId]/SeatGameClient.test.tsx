@@ -353,7 +353,10 @@ describe('SeatGameClient', () => {
       expect(screen.getByTestId('seat-tournament-closed')).toHaveTextContent('중단');
     });
 
-    /** 서버가 소켓을 끊지 않으므로 늦게 온 프레임이 덮개를 걷으면 안 된다. */
+    /**
+     * 알림과 종료 사이에 이미 큐에 있던 프레임이 도착할 수 있다. 그것이 덮개를
+     * 걷으면 끝난 대회의 펠트가 다시 나온다.
+     */
     it('늦게 온 renderGame이 덮개를 걷지 않는다', async () => {
       const { socket } = await renderWithSocket();
 
@@ -361,6 +364,22 @@ describe('SeatGameClient', () => {
       socket.emitServerEvent('renderGame', BASE_STATE);
 
       expect(screen.getByTestId('seat-tournament-closed')).toBeInTheDocument();
+    });
+
+    /**
+     * **서버가 알린 뒤 소켓을 닫는다**(`WsGateway.closeTable`). 코드 1000이라
+     * `onclose`가 그대로 넘어가고, 화면에는 종료 덮개만 남아야 한다.
+     */
+    it('서버가 소켓을 닫아도 덮개만 남는다', async () => {
+      const { socket } = await renderWithSocket();
+
+      socket.emitServerEvent('tournamentClosed', CLOSED);
+      act(() => socket.close());
+
+      const banner = screen.queryByText(/연결이 끊어졌습니다/);
+      const closed = screen.queryByTestId('seat-tournament-closed');
+      expect(`배너 ${banner ? '있음' : '없음'} / 덮개 ${closed ? '있음' : '없음'}`)
+        .toBe('배너 없음 / 덮개 있음');
     });
   });
 });
