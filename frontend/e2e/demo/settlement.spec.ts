@@ -123,6 +123,13 @@ const BRANCH_MARK = '마무리 — 그 문을 누른다';
 const FILMED_TABLE = 1;
 
 /**
+ * 촬영 테이블과 **나란히 프레임 ①에 드는** 테이블. 여기도 딜러가 화면으로
+ * 조작한다 — 그 프레임의 주장이 「딜러가 지명하니 사람이 사라진다」인데,
+ * 한 타일에서만 모달이 뜨면 나머지는 펠트가 저절로 바뀌는 그림이 된다.
+ */
+const MODAL_TABLE = 2;
+
+/**
  * 화면으로 앉는 둘. **서로 다른 테이블이다.**
  *
  * 둘 다 촬영 테이블에 두면 병합 장면에서 **아무도 걸어오지 않는다** — 이
@@ -465,8 +472,22 @@ test.describe('데모 — 정산', () => {
         otp: settlement.dealerOtp,
       });
       let dealer: Actor;
-      if (tableOrder === FILMED_TABLE) {
-        dealer = { kind: 'screen', page: dealerTablet };
+      /*
+        **화면으로 조작하는 딜러가 둘이다.**
+
+        넷 다 브라우저로 붙어 있는데(`dealerTablets`) 조작은 촬영 테이블만
+        화면이었고 나머지는 소켓이었다. 그래서 프레임 ①의 4분할에서 **딜러가
+        승자를 찍는 모달이 한 타일에만 떴다** — 나머지는 펠트가 저절로 바뀌는
+        그림이라 「딜러가 지명하니 사람이 사라진다」의 인과가 반만 읽혔다.
+
+        T2를 화면으로 돌리는 데 드는 것은 없다. 컨텍스트는 이미 열려 있고
+        (녹화도 되고 있다) 바뀌는 것은 그 페이지로 누르느냐 소켓으로 쏘느냐뿐이다.
+
+        T4는 소켓으로 둔다 — 프레임에 안 들어가는 타일이라 화면으로 눌러도
+        아무 데도 안 나오고, 조작마다 붙는 대기만큼 촬영이 길어진다.
+      */
+      if (tableOrder === FILMED_TABLE || tableOrder === MODAL_TABLE) {
+        dealer = { kind: 'screen', page: dealerTablets.get(tableOrder)! };
       } else {
         const wire = await openWire(request, {
           accessToken: token,
@@ -837,11 +858,19 @@ test.describe('데모 — 정산', () => {
 
     mark('병합 — 네 테이블이 둘이 된다');
 
-    // **여기서 미리 연다.** 자리를 잃기 전의 번호가 프레임에 한 번 남아야,
-    // 옮겨 앉을 때 다시 여는 번호가 「같은 번호」로 읽힌다. 한쪽만 있으면
-    // 그냥 번호를 넣는 그림이다.
-    await revealOtp(rebuyerPhone);
-    await revealOtp(moverPhone);
+    /*
+      **여기서 미리 열지 않는다.**
+
+      「자리를 잃기 전의 번호가 프레임에 한 번 남아야 같은 번호로 읽힌다」는
+      이유로 창이 열리자마자 폰 둘이 OTP를 열었다. 각각 2.5초라 **창의 첫
+      5초를 폰만 움직이고 상점 콘솔은 서 있었다** — 순서가 거꾸로다. 이
+      프레임의 이야기는 「상점이 자리를 풀면 사람이 폰을 본다」이고, 폰이
+      먼저 열려 있으면 그 인과가 뒤집힌다.
+
+      그리고 그 한 번은 **불필요하다.** 좌석이 풀리면 그 사람의 폰은 어차피
+      참가 OTP 화면으로 돌아온다. 옮겨 앉을 때 여는 번호와 대조할 「앞의
+      번호」는 프레임 ②가 아니라 장면 1의 `01-join-phone-to-console`이 든다.
+    */
 
     /**
      * 폰에서 참가 OTP를 **열어 보인다.**
@@ -1221,7 +1250,7 @@ test.describe('데모 — 정산', () => {
       // 딜러 타일과 **좌우로** 놓던 시절의 것이고 — 그쪽이 최후 판을 치느라
       // 더 오래 걸려서 좌열이 기다리는 것을 늦추려던 값이다. 둘을 시간축에
       // 세운 뒤로(`make-demo-assets.mjs`의 `parts`) 그 근거가 사라졌다.
-      await linger(console_, 3_000);
+      await linger(console_, 1_500);
       await shoot(console_, '19-chop-ledger-sums');
       await press(console_, dialog.getByRole('button', { name: 'ICM 마무리' }));
     } else if (ENDING === 'abort') {
@@ -1261,6 +1290,24 @@ test.describe('데모 — 정산', () => {
         { timeout: 60_000, intervals: [2_000] },
       )
       .toBe(ENDING === 'abort' ? 'CANCELLED' : 'FINISHED');
+
+    /*
+      **폰은 여기서 읽는다. 콘솔을 기다리지 않는다.**
+
+      전에는 콘솔 조작(재읽기 · 스틸 · 전광판 머무르기)이 다 끝난 뒤에야
+      폰 셋을 갱신했다. 그래서 정산이 확정된 뒤로도 폰 타일 셋이 「진행 중」인
+      채 **8초 넘게 멍하니 서 있었고**, 프레임 ③의 `chop` 조각은 그 갱신
+      **전에** 끝나 「ICM으로 나눴는데 아무도 못 받은」 그림이 됐다.
+
+      기다릴 이유가 없다. 위의 `expect`가 대회가 닫힌 것을 이미 확인했고,
+      `/me`의 등수·상금은 그 순간 `awardPrize`가 박아 둔 값이다. 폰과 콘솔은
+      서로 다른 손이라 겹쳐 돌아야 한다.
+
+      `await`하지 않고 프라미스만 잡아 둔다 — 아래 콘솔 조작이 도는 동안
+      폰이 각자 갱신되고, `끝` 마크 앞에서 한 번만 만난다.
+    */
+    const phonesSettled = Promise.all(finalPhones.map((page) => page.reload()));
+
     await console_.reload();
     await linger(console_, 1_500);
     await expect(console_.getByText('대회 마무리 — 되돌릴 수 없습니다')).toBeHidden({
@@ -1270,18 +1317,10 @@ test.describe('데모 — 정산', () => {
     await shoot(console_, CLOSED_SHOT[ENDING]);
     await linger(board, 2_500);
 
-    // **닫힌 뒤에 다시 읽는다.** `/me`의 지난 참가는 폴링이 아니라 한 번
-    // 받아 그린 값이라, 대회가 닫히기 전에 연 폰은 등수도 상금도 비어 있다.
-    // 상금은 `awardPrize`가 그 자리에서 `finalPlace`를 박을 때 생긴다.
-    /*
-      **셋이 한꺼번에 바뀐다.** 하나씩 돌면 폰 셋이 차례로 값을 받는 그림이
-      되는데, 실제로는 대회가 닫히는 **한 순간**에 세 사람의 상금이 동시에
-      정해진다. 순차로 보이면 「먼저 받은 사람이 있다」로 읽힌다.
-
-      면마다 `BrowserContext`가 따로라 `bringToFront`가 없어도 각자 활성
-      창이다 — 그것이 있어서 순차였다.
-    */
-    await Promise.all(finalPhones.map((page) => page.reload()));
+    // 위에서 걸어 둔 폰 갱신이 이쯤이면 끝나 있다. **셋이 한꺼번에 바뀐다** —
+    // 하나씩 돌면 차례로 값을 받는 그림이 되는데, 실제로는 대회가 닫히는 한
+    // 순간에 세 사람의 상금이 동시에 정해진다.
+    await phonesSettled;
 
     // **값이 뜬 것을 보고 넘어간다.** 「지난 참가」가 그 증거다 — 대회가
     // 열려 있는 동안은 「진행 중」이고, 닫혀서 등수와 상금이 박힌 뒤에야
