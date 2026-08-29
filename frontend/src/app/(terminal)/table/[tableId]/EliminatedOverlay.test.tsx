@@ -36,7 +36,7 @@ describe('EliminatedOverlay', () => {
 
   it('상점 id가 있으면 카운트다운 뒤 그 상점의 대기 화면으로 돌아간다', async () => {
     vi.useFakeTimers();
-    render(<EliminatedOverlay storeId="store-9" />);
+    render(<EliminatedOverlay storeId="store-9" reason="eliminated" />);
 
     await runCountdown();
 
@@ -54,7 +54,7 @@ describe('EliminatedOverlay', () => {
    */
   it('상점 id가 없으면 막다른 주소로 자동 이동하지 않는다', async () => {
     vi.useFakeTimers();
-    render(<EliminatedOverlay />);
+    render(<EliminatedOverlay reason="eliminated" />);
 
     await runCountdown();
 
@@ -62,17 +62,38 @@ describe('EliminatedOverlay', () => {
   });
 
   it('상점 id가 없으면 카운트다운 대신 운영자 안내를 보여준다', async () => {
-    render(<EliminatedOverlay />);
+    render(<EliminatedOverlay reason="eliminated" />);
 
     expect(screen.getByText(/운영자/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /지금 돌아가기/ })).not.toBeInTheDocument();
   });
 
   it('상점 id가 있으면 지금 돌아가기 버튼이 그 주소로 보낸다', async () => {
-    render(<EliminatedOverlay storeId="store-9" />);
+    render(<EliminatedOverlay storeId="store-9" reason="eliminated" />);
 
     await userEvent.click(screen.getByRole('button', { name: /지금 돌아가기/ }));
 
     expect(push).toHaveBeenCalledWith('/table?store=store-9');
+  });
+
+  /**
+   * 두 사유는 사람이 할 일이 정반대다 — 한쪽은 폰을 열어 등수를 보는 것이고
+   * 다른 쪽은 **일어나 걸어가는 것**이다. 그래서 서로 상대의 문장이 없는
+   * 것까지 본다: 한 문구만 확인하면 둘 다 그리는 구현도 통과한다.
+   */
+  it('탈락이면 칩이 0이 됐다고 적고 자리 이동 안내는 안 한다', () => {
+    render(<EliminatedOverlay storeId="store-9" reason="eliminated" />);
+
+    expect(screen.getByText(/칩이 0이 되어/)).toBeInTheDocument();
+    expect(screen.getByText('탈락')).toBeInTheDocument();
+    expect(screen.queryByText(/새 자리로 가서/)).not.toBeInTheDocument();
+  });
+
+  it('좌석 해제면 칩이 그대로임을 적고 탈락이라 말하지 않는다', () => {
+    render(<EliminatedOverlay storeId="store-9" reason="seat-released" />);
+
+    expect(screen.getByText(/자리를 이동해 주세요/)).toBeInTheDocument();
+    expect(screen.getByText(/칩은 그대로입니다/)).toBeInTheDocument();
+    expect(screen.queryByText(/칩이 0이 되어/)).not.toBeInTheDocument();
   });
 });

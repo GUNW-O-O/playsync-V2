@@ -86,26 +86,35 @@ export default function TournamentClosedOverlay({
       className="fixed inset-0 z-50 flex items-center justify-center bg-tb-bg/90 p-6"
     >
       <div className="w-full max-w-[430px] border border-tb-line bg-tb-panel p-6 text-center">
-        <p className="text-xs tracking-[0.14em] text-tb-act">수고하셨습니다</p>
+        {/*
+          **머리글이 곧 「왜 떴는가」다.** 여기에 "수고하셨습니다"가 있었고,
+          가장 먼저 읽히는 줄을 인사말이 차지하는 동안 사유는 본문 안쪽으로
+          밀려 있었다(`EliminatedOverlay`와 같은 결함).
+        */}
+        <p className="text-xs tracking-[0.14em] text-tb-act">
+          {aborted ? '대회 중단' : '대회 종료'}
+        </p>
         <div className="mb-3.5 mt-2 text-2xl font-light leading-snug text-tb-ink">
-          대회가 끝났습니다
+          {aborted ? '대회가 중단되었습니다' : '대회가 끝났습니다'}
         </div>
+        {/*
+          **딜러에게는 딜러가 할 일만 적는다.** 전에는 양쪽 다 "순위·상금은
+          참가자 폰에 있습니다"를 읽었는데, 그건 딜러가 할 일이 아니라 남의
+          일이다. 마무리가 어떻게 났는지도 딜러의 다음 동작을 바꾸지 않는다 —
+          제목 한 줄이 이미 종료와 중단을 가른다.
+        */}
         <p className="text-sm leading-relaxed text-tb-muted">
-          {aborted ? (
-            <>
-              운영이 대회를 <strong className="text-tb-ink">중단</strong>했습니다. 참가비는
-              환불되었습니다.
-            </>
-          ) : (
-            <>정산이 끝나 대회가 닫혔습니다.</>
-          )}{' '}
           {terminal === 'dealer' ? (
+            <>테이블을 정리해 주세요.</>
+          ) : aborted ? (
             <>
-              순위·상금은 <strong className="text-tb-ink">참가자 폰</strong>에 있습니다.
+              낸 돈을 <strong className="text-tb-ink">모두 돌려드렸습니다.</strong> 폰에서
+              확인하세요.
             </>
           ) : (
             <>
-              순위·상금은 <strong className="text-tb-ink">폰에서 확인</strong>하세요.
+              폰의 <strong className="text-tb-ink">「지난 참가」</strong>에서 순위와 상금을
+              확인하세요.
             </>
           )}
         </p>

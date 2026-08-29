@@ -64,7 +64,7 @@ const FINISHED = {
 /**
  * 대회는 아직 도는데 이 사람만 나간 경우. 탈락은 대회가 끝나기 훨씬 전에
  * 일어나고(`prize.ts`의 `awardPrize`가 그 자리에서 `finalPlace`를 박는다),
- * 좌석 태블릿은 "순위·상금은 폰에서 확인하세요"라고 적고 대기 화면으로
+ * 좌석 태블릿은 "폰의 「지난 참가」에서 확인하세요"라고 적고 대기 화면으로
  * 돌아간다(`EliminatedOverlay.tsx`).
  */
 const ELIMINATED_MIDWAY = {
