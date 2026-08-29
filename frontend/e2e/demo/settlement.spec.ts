@@ -407,6 +407,7 @@ test.describe('데모 — 정산', () => {
     await sitDown(
       moverTablet,
       storeId,
+      tournamentId,
       tableOf(mover.tableOrder).id,
       mover.seatIndex,
       mover.otp,
@@ -414,6 +415,7 @@ test.describe('데모 — 정산', () => {
     await sitDown(
       rebuyerTablet,
       storeId,
+      tournamentId,
       tableOf(rebuyer.tableOrder).id,
       rebuyer.seatIndex,
       rebuyer.otp,
@@ -450,7 +452,7 @@ test.describe('데모 — 정산', () => {
     const dealerTablets = new Map<number, Page>();
     for (const { tableOrder, id } of settlement.tables) {
       const page = await stage('tablet', `dealer-t${tableOrder}`);
-      await enterDealer(page, storeId, id, settlement.dealerOtp);
+      await enterDealer(page, storeId, tournamentId, id, settlement.dealerOtp);
       dealerTablets.set(tableOrder, page);
     }
     const dealerTablet = dealerTablets.get(FILMED_TABLE)!;
@@ -741,6 +743,9 @@ test.describe('데모 — 정산', () => {
     // 배역을 다시 옮겨도 코드가 따라온다.
     mark('첫 판 — 한 판에 스물이 나간다');
     const rebuyerTableOrder = playerOf(ON_SCREEN.rebuyer).tableOrder;
+    // **엔트리는 탈락으로 바뀌지 않는다.** 판을 돌리기 전에 읽어 두면
+    // 리바인 창 안에서 쓸 일이 한 줄 줄어든다.
+    const beforeRebuy = Number(await board.getByTestId('entry-count').innerText());
 
     /*
       **넷을 한꺼번에 돌린다.** 프레임 ①이 주장하는 것이 「여러 테이블에서
@@ -761,14 +766,35 @@ test.describe('데모 — 정산', () => {
       테이블마다 락이 따로이고(`table:{id}`) 운영에서도 넷이 동시에 돈다.
       화면은 촬영 테이블 하나뿐이라 클릭이 엉킬 자리도 없다.
 
-      rebuyer의 테이블은 **판만 돌리고 정리하지 않는다** — 그 사람의 탈락과
-      리바인 오버레이가 뜨는 순간이 바로 다음 블록이라, 여기서 거절해
-      버리면 리바인을 물어볼 사람이 없어진다.
+      **리바인 수락도 여기서 한다.** 전에는 이 블록이 끝난 뒤에 눌렀는데,
+      rebuyer의 테이블은 판만 돌리고 곧바로 빠지는 반면 나머지 셋은 그
+      뒤로도 거절 처리(`declineRebuys`가 화면 배역마다 최대 3초를 기다리고
+      누른다)와 정리를 계속한다. 그동안 rebuyer의 15초가 흐른다.
+
+      **오버레이는 마감이 지나도 화면에 남는다.** `RebuyOverlay`는 창을
+      직접 재지 않고 `ActionTimer`는 표시용이라, 죽은 프롬프트에도
+      `toBeVisible`이 곧바로 통과한다 — 그래서 대기 시간을 줄이는 것으로는
+      아무것도 안 고쳐졌다. 눌린 것이 조용히 사라지고, 죽는 자리는 한참
+      뒤의 「엔트리가 안 올랐다」였다(서버 로그의 「리바인 응답 시간초과」가
+      여섯 명 전원이었다 — 하나라도 눌렸으면 다섯이다).
+
+      고칠 자리는 대기 시간이 아니라 **누르는 시점**이었다.
     */
+    const acceptRebuy = async () => {
+      const rebuyButton = rebuyerTablet.getByRole('button', { name: '리바인', exact: true });
+      // 자기 판이 방금 끝난 자리라 프롬프트는 곧 온다. 여기서 오래 기다리는
+      // 것은 창을 쓰는 것이므로 짧게 잡고, 늦으면 시끄럽게 죽는다.
+      await expect(rebuyButton).toBeVisible({ timeout: 8_000 });
+      await press(rebuyerTablet, rebuyButton);
+    };
+
     await Promise.all(
       [...stages.values()].map(async (s) => {
         await playHand(s, '첫 판', FIRST_HAND_ALL_IN[s.tableOrder]);
-        if (s.tableOrder === rebuyerTableOrder) return;
+        if (s.tableOrder === rebuyerTableOrder) {
+          await acceptRebuy();
+          return;
+        }
         await declineRebuys(s);
         await settleToWaiting(s, '첫 판');
       }),
@@ -782,13 +808,10 @@ test.describe('데모 — 정산', () => {
     // 여섯 줄로 그 자리에서 늘어난다. 분모가 사람 수였으면 아무 일도
     // 일어나지 않는다 — 그것이 `itm-scaling.int-spec.ts`가 값으로 보는
     // 성질이고, 여기서는 화면이 같은 것을 본다.
+    // 수락은 위 블록에서 이미 눌렸다(`acceptRebuy`). 마크는 그것이 화면에
+    // 반영되는 자리에 둔다 — 움짤 `11-entry-not-player`의 끝 경계이고, 그
+    // 뒤 8초 동안 전광판의 엔트리가 오르고 딜러 타일의 스택이 되살아난다.
     mark('리바인 — 엔트리가 늘면 상금권도 는다');
-    const beforeRebuy = Number(await board.getByTestId('entry-count').innerText());
-
-    const rebuyButton = rebuyerTablet.getByRole('button', { name: '리바인', exact: true });
-    await expect(rebuyButton).toBeVisible({ timeout: 30_000 });
-    await shoot(rebuyerTablet, '12-rebuy-accept-raises-entry');
-    await press(rebuyerTablet, rebuyButton);
     chipsInPlay += settlement.tournament.startStack;
     // 거절도 rebuyer의 테이블에 준다 — 촬영 테이블(filmed)은 이미 정리가
     // 끝났고, 리바인을 물어볼 파산자는 rebuyer의 테이블에 있다.
@@ -976,7 +999,7 @@ test.describe('데모 — 정산', () => {
       await phone.bringToFront();
       await phone.reload();
       await revealOtp(phone);
-      await sitDown(tablet, storeId, into.tableId, free, playerOf(nickname).otp);
+      await sitDown(tablet, storeId, tournamentId, into.tableId, free, playerOf(nickname).otp);
       into.seats.set(free, { kind: 'screen', page: tablet });
     };
 

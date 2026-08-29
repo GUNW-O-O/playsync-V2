@@ -110,12 +110,12 @@ test.describe('데모 — 한 대회', () => {
     const board = await stage('scoreboard', 'scoreboard');
     await openWithToken(board, ownerToken, `${consoleUrl}/display`);
     const dealer = await stage('tablet', 'dealer');
-    await openDealerTablet(dealer, manifest.store.id);
+    await openDealerTablet(dealer, manifest.store.id, manifest.tournament.id);
 
     // 0. 옆자리에는 이미 사람이 앉아 있다. 배경이라 카메라가 폰으로 가기
     //    전에 끝내 둔다 — 폰이 번호를 보여준 뒤에 이걸 하면 "번호를 받았는데
     //    한참 딴짓하다 자리로 간다"가 된다.
-    await sitDown(p1Page, manifest.store.id, table1.id, SEATS.p1, mid.otp);
+    await sitDown(p1Page, manifest.store.id, manifest.tournament.id, table1.id, SEATS.p1, mid.otp);
 
     // mid는 이 시점부터 table1에 실제로 앉아 있다. 딜러가 아직 안 들어와
     // 딜러 토큰이 없는 장면 1의 유일한 `tableState` 조회(아래 `seated`)가
@@ -170,7 +170,15 @@ test.describe('데모 — 한 대회', () => {
 
     // 4. **폰의 번호를 자리의 태블릿에 넣는다.** 장면 1의 한가운데다.
     mark('장면 1 — 태블릿에 그 번호를 넣는다');
-    await sitDown(heroPage, manifest.store.id, table1.id, SEATS.hero, heroOtp, 'seat-waiting');
+    await sitDown(
+      heroPage,
+      manifest.store.id,
+      manifest.tournament.id,
+      table1.id,
+      SEATS.hero,
+      heroOtp,
+      'seat-waiting',
+    );
     await linger(heroPage, 1_200);
 
     // 5. 콘솔의 좌석 도식에 그 사람이 뜬다. 콘솔은 좌석을 폴링하지 않는다 —
@@ -204,14 +212,14 @@ test.describe('데모 — 한 대회', () => {
     mark('장면 2 — 자리가 찬다');
 
     const p2Page = await stage('tablet', 'seat-p2');
-    await sitDown(p2Page, manifest.store.id, table1.id, SEATS.p2, deep.otp);
+    await sitDown(p2Page, manifest.store.id, manifest.tournament.id, table1.id, SEATS.p2, deep.otp);
 
     // 2번 테이블. **옮겨 갈 사람(A)에게는 자기 태블릿을 준다** — 장면 5가
     // "A의 자리가 바뀐다"를 보여주는 장면이라, A가 어느 화면에서 나와 어느
     // 화면으로 들어가는지가 보여야 한다. 나머지 둘은 **배경이라** API로
     // 앉힌다 — 녹화 컨텍스트는 하나가 비싸고, 배경은 그릴 값이 없다.
     const moverPage = await stage('tablet', 'seat-mover');
-    await sitDown(moverPage, manifest.store.id, table2.id, TABLE2_SEATS.p3, mover.otp);
+    await sitDown(moverPage, manifest.store.id, manifest.tournament.id, table2.id, TABLE2_SEATS.p3, mover.otp);
     await seat(request, manifest.tournament.id, {
       tableId: table2.id,
       seatIndex: TABLE2_SEATS.p4,
@@ -240,7 +248,7 @@ test.describe('데모 — 한 대회', () => {
     //
     // 시드가 알려준 번호가 아니라 **콘솔 화면에서 읽은 번호**를 넣는다.
     // 재발급을 눌렀으므로 시드의 값은 이미 지난 번호다.
-    await enterDealer(dealer, manifest.store.id, table1.id, shownDealerOtp);
+    await enterDealer(dealer, manifest.store.id, manifest.tournament.id, table1.id, shownDealerOtp);
     await expect(dealer.getByTestId(`seat-${SEATS.hero}`)).toBeVisible();
     await linger(dealer, 1_200);
 
@@ -490,7 +498,12 @@ test.describe('데모 — 한 대회', () => {
 
     // 거절은 탈락이다. 태블릿은 순위를 그리지 않고 **다음 사람의 자리**로
     // 돌아간다 — 순위·상금은 사람에게 붙는 정보라 폰이 들고 있다.
-    await expect(p1Page.getByText('이 자리에서 나왔습니다')).toBeVisible();
+    //
+    // **덮개가 사유를 적는다.** 여기는 리바인을 거절한 자리라 탈락이고,
+    // 장면 5의 좌석 해제(아래)는 같은 덮개가 「자리를 이동해 주세요」를
+    // 적는다. 두 단언이 서로 다른 문구를 요구하는 것이 그 판정의 증거다 —
+    // 한 문구로 덮던 시절에는 촬영이 둘을 구분하지 못했다.
+    await expect(p1Page.getByText('칩이 0이 되어 대회에서 나왔습니다')).toBeVisible();
     await linger(p1Page, 2_500);
 
     await expect
@@ -572,13 +585,14 @@ test.describe('데모 — 한 대회', () => {
     await linger(console_, 1_200);
 
     // 4. 해제한다. **A의 태블릿이 그 자리에서 나온다** — 탈락과 같은
-    //    오버레이지만 탈락이 아니다(칩은 그대로고, 문구도 중립이다).
+    //    오버레이지만 탈락이 아니다 — 칩은 그대로고, 문구가 그렇게 적힌다.
     mark('장면 5 — 좌석을 해제한다');
     await press(console_, console_.getByRole('button', { name: /고른 자리 해제/ }), 700, 1_200);
     await expect(console_.getByTestId(`console-seat-${TABLE2_SEATS.p3}`)).not.toContainText(
       mover.nickname,
     );
-    await expect(moverPage.getByText('이 자리에서 나왔습니다')).toBeVisible({ timeout: 20_000 });
+    // 칩을 든 채 자리만 잃은 것이라 덮개가 탈락이 아니라 **이동**을 적는다.
+    await expect(moverPage.getByText('자리를 이동해 주세요')).toBeVisible({ timeout: 20_000 });
     await linger(moverPage, 1_800);
     await press(moverPage, moverPage.getByRole('button', { name: '지금 돌아가기' }));
     await moverPage.waitForURL(/\/table\?store=/);
@@ -586,7 +600,7 @@ test.describe('데모 — 한 대회', () => {
     // 5. **A가 1번 테이블로 걸어가 같은 번호를 다시 넣는다.** B의 태블릿은
     //    아무도 건드리지 않는데, 그 화면의 빈 자리에 A가 나타난다.
     mark('장면 5 — 1번 테이블에 합석한다');
-    await sitDown(moverPage, manifest.store.id, table1.id, MOVED_SEATS.p3, mover.otp);
+    await sitDown(moverPage, manifest.store.id, manifest.tournament.id, table1.id, MOVED_SEATS.p3, mover.otp);
 
     // **칩이 좌석보다 오래 산다.** 옮겨 앉아도 스택이 그대로다.
     total += 5_000;
