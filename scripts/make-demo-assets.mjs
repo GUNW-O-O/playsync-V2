@@ -103,6 +103,7 @@ const SCENES = [
     // 콘솔만 붙였더니 "그 번호가 어디로 들어갔는가"가 빠져 아무 말도 하지
     // 않는 그림이 됐다.
     out: '01-join-phone-to-console',
+    caption: '폰에서 받은 번호를 자리 태블릿에 넣으면 콘솔에 뜬다',
     from: '장면 1 — 상점을 찾는다',
     to: '장면 2 — 자리가 찬다',
     /*
@@ -122,6 +123,7 @@ const SCENES = [
   },
   {
     out: '06-one-click-four-surfaces',
+    caption: '대회를 열어야 딜러가 핸드를 시작할 수 있다',
     from: '장면 2 — 대회가 열린다',
     to: '장면 3 — 올인',
     rows: [
@@ -143,6 +145,7 @@ const SCENES = [
       건드리지 않는 화면이라 타일을 하나 쓸 값어치가 없다.
     */
     out: '02-sidepot-dealer-refused',
+    caption: '팟이 둘로 갈린다. 사이드팟을 빠뜨리면 지급이 거부된다',
     from: '장면 3 — 올인',
     to: '장면 5 — 2번 테이블을 통째로 비운다',
     // 상자에 여유를 준다. 1280×720을 880×495로 줄이면 계산상 딱 맞지만
@@ -156,29 +159,17 @@ const SCENES = [
     fps: 8,
     width: 1200,
   },
-  {
-    /*
-      **자리가 바뀌는 것은 A인데, 그 사실이 네 화면에 각각 다르게 나타난다.**
-      위가 A의 태블릿(자리에서 나와 1번 테이블로 간다)과 B의 태블릿(가만히
-      있는데 옆자리가 찬다), 아래가 콘솔(자리를 푸는 손)과 A의 폰(다시 넣을
-      참가 OTP)이다.
-    */
-    out: '14-seat-move-closeup',
-    from: '장면 5 — 2번 테이블을 통째로 비운다',
-    to: '끝',
-    /*
-      **열을 위아래로 맞춘다.** 콘솔과 폰을 1360:400으로 두었더니 아래 행의
-      경계가 위 행과 어긋나 한 화면처럼 읽혔다. 콘솔을 위 태블릿과 같은 폭
-      (880)으로 두고, 폰은 남은 880 안에서 제 비율대로 레터박스를 갖는다 —
-      손 안의 화면이 태블릿만 한 폭을 차지할 이유도 없다.
-    */
-    rows: [
-      [tile('seat-mover', 880, 500), tile('seat-p2', 880, 500)],
-      [tile('console', 880, 560), tile('phone', 880, 560)],
-    ],
-    fps: 8,
-    width: 1280,
-  },
+  /*
+    `14-seat-move-closeup`이 여기 있었다. 장면 5의 좌석 이동을 네 면으로
+    담은 것인데, **정산의 `03-four-tables-to-one`이 같은 것을 더 크게
+    말한다** — 이쪽은 두 테이블이 하나가 되고 폰이 하나라 「이 사람이
+    옮겼다」로 읽히지만, 저쪽은 네 테이블이 둘이 되고 폰이 둘이라
+    「필드가 줄어드는 중이다」가 된다.
+
+    잃는 것이 없다. 이 장면의 스틸 `15-stack-survives-move.png`는 촬영이
+    계속 남기고, README에서 이 움짤이 있던 자리는 `03`이 받는다 — 그
+    자막이 이미 그 절의 제목과 같은 문장이다.
+  */
 ];
 
 /**
@@ -216,7 +207,7 @@ function settlementScenes() {
         테이블 중 어느 것도 뒤에 안 나온다.
       */
       out: '11-entry-not-player',
-      caption: '스무 명 나가고 한 명 다시 샀는데 엔트리는 36',
+      caption: '남은 인원은 줄고, 리바인하면 엔트리가 오른다',
       take: 'complete',
       from: '첫 판 — 한 판에 스물이 나간다',
       /*
@@ -278,7 +269,7 @@ function settlementScenes() {
         남는다.
       */
       out: '03-four-tables-to-one',
-      caption: '네 테이블을 둘로 합친다. 폰의 번호로 다시 앉는다',
+      caption: '테이블을 합치는 것은 사람이 걸어가는 일이다',
       take: 'complete',
       from: '병합 — 네 테이블이 둘이 된다',
       to: '둘째 판 — 두 테이블에서 열이 나간다',
@@ -359,7 +350,7 @@ function settlementScenes() {
             있고, 그 화면은 `23-closed-chop.png`가 스틸로 따로 든다.
           */
           to: { at: '끝', plus: -4 },
-          caption: '① 딜로 끝낸다. 남은 셋이 합의하고 상금은 칩 비율대로 나눈다',
+          caption: '① 합의로 끝낸다 — 상금은 남은 칩만큼 나눈다',
           rows: [
             [
               tile('console', 1180, 738),
@@ -373,7 +364,7 @@ function settlementScenes() {
           take: 'complete',
           from: '마무리 — 그 문을 누른다',
           to: '끝',
-          caption: '② 끝까지 친다. 같은 셋인데 이번엔 상금표가 1·2·3위를 정한다',
+          caption: '② 승자를 지정해 끝낸다 — 상금은 상점이 짜 둔 표대로 나눈다',
           rows: [
             [
               tile('dealer-t1', 1180, 738),
@@ -405,7 +396,7 @@ function settlementScenes() {
         같은 타일에서 읽힌다.
       */
       out: '20-abort-refunds-all',
-      caption: '중단하면 낸 돈을 무리로 묶어 돌려준다. 상점 몫은 없다',
+      caption: '중단하면 낸 돈을 전부 돌려준다. 상점 몫도 0이다',
       take: 'abort',
       from: '마무리 — 그 문을 누른다',
       /*
@@ -701,6 +692,20 @@ const CAPTION_BAND = 56;
 const CAPTION_SIZE = 30;
 
 /**
+ * 재생 배속. 장면이 `speed`로 덮어쓸 수 있다.
+ *
+ * **프레임을 버리는 것이 아니라 시간축을 줄인다.** 커서가 목표로 옮겨 가고
+ * 눌리는 궤적은 그대로 남고 빨라지기만 한다 — 잘라 내는 것(`from`/`to`)과
+ * 다른 손잡이다. 프레임 수가 같은 비율로 줄어 용량도 같이 준다.
+ *
+ * 2.0이 상한이다. 조작 하나가 `press`의 `hover 450 + 450 + click + 700`에
+ * `slowMo` 220 둘을 더해 약 1.6초인데, 2.0배면 0.8초로 남는다. 3.0배(0.53초)
+ * 부터는 무엇을 눌렀는지가 프레임에 안 남는다 — `press`를 만든 이유가
+ * 그것이라(`e2e/fixtures/screen.ts`) 배속으로 되돌리면 뜻이 없다.
+ */
+const SPEED = 2;
+
+/**
  * 자막에 쓰는 폰트. 한글이 있어야 하므로 후보를 훑는다.
  *
  * **없으면 멈춘다.** 조용히 자막을 빼면 조각의 경계가 사라져 「이게 어느
@@ -760,6 +765,7 @@ function buildScene(scene, takes) {
   // 조각 길이의 **합**이 결과물의 길이다. 조각끼리는 서로를 기다리지 않으므로
   // 가장 긴 것이 아니라 이어 붙인 값이다.
   const partSeconds = [];
+  const speed = scene.speed ?? SPEED;
   let n = 0;
 
   parts.forEach((part, p) => {
@@ -781,7 +787,9 @@ function buildScene(scene, takes) {
     // **조각 하나 안에서만** 맞춘다 — 조각끼리는 시간축이 이어지므로 서로를
     // 기다릴 이유가 없고, 그것이 `parts`를 만든 이유다.
     const longest = Math.max(...[...spans.values()].map((s) => s.total));
-    partSeconds.push(longest);
+    // 보고에만 배속을 먹인다. `longest` 자체는 **촬영에서의** 길이라야
+    // 아래 `tail`(짧은 쪽을 늘려 채우는 양)이 같은 시간축에서 계산된다.
+    partSeconds.push(longest / speed);
 
     // 행마다 폭이 같아야 `vstack`이 붙는다. 어긋나면 ffmpeg가 실패하는데,
     // 그 메시지로는 어느 장면의 어느 행인지 알 수 없어 여기서 먼저 본다.
@@ -898,7 +906,13 @@ function buildScene(scene, takes) {
     // **fps는 조각마다 건다.** `concat`은 프레임을 이어 붙일 뿐 시간 축을
     // 다시 재지 않으므로, 조각끼리 레이트가 다르면 뒤 조각의 재생 속도가
     // 어긋난다.
-    let chain = `${grid}fps=${scene.fps}`;
+    //
+    // 배속은 **`fps` 앞**이다. 뒤에 두면 이미 목표 레이트로 고른 프레임의
+    // 타임스탬프만 줄어들어 출력 레이트 메타가 어긋난다. 앞에 두면 `fps`가
+    // 줄어든 시간축 위에서 다시 고른다. 격자를 쌓은 **뒤**에 한 번만 거는
+    // 이유는, 입력마다 걸면 `tpad`으로 맞춰 둔 조각 안의 정렬이 깨지기
+    // 때문이다.
+    let chain = `${grid}setpts=PTS/${speed},fps=${scene.fps}`;
     if (part.caption) {
       /*
         **자막 크기는 결과물 기준이다.**
@@ -1042,7 +1056,11 @@ const STILLS = [
 function settlementStills() {
   return [
     '16-four-tables-rake-10.png',
-    '12-rebuy-accept-raises-entry.png',
+    // `12-rebuy-accept-raises-entry.png`이 여기 있었다. 그 스틸을 찍는
+    // 자리가 **서버의 리바인 창 15초 안**이라 스크린샷 한 장이 예산을
+    // 갉았고, 늦게 누른 리바인이 조용히 사라져 촬영이 죽었다
+    // (`settlement.spec.ts`의 리바인 블록). 리바인 오버레이는 움짤
+    // `11-entry-not-player`가 이미 담는다.
     '13-entry-36-players-35.png',
     '04-prize-table-locked.png',
     '17-final-table-origins.png',
