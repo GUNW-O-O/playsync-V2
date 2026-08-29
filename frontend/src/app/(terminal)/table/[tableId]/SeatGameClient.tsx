@@ -7,7 +7,7 @@ import { apiFetch } from '@/lib/api';
 import { TableState, TournamentClosedSchema, type ClosedTournamentStatus } from '@playsync/contract';
 import SeatActionPanel from './SeatActionPanel';
 import RebuyOverlay, { type RebuyPrompt } from './RebuyOverlay';
-import EliminatedOverlay from './EliminatedOverlay';
+import EliminatedOverlay, { type ExitReason } from './EliminatedOverlay';
 import TournamentClosedOverlay from '@/component/TournamentClosedOverlay';
 
 // 서버·소켓이 문구를 안 줄 때의 최후 안내. WS 배선(티켓 요청·정리·배너)은
@@ -72,7 +72,21 @@ export default function SeatGameClient({
   const mySeatIndex: number | null = seatIndex ?? null;
   const [rebuyData, setRebuyData] = useState<RebuyPrompt | null>(null);
   const rebuyDataRef = useRef<RebuyPrompt | null>(null);
-  const [eliminated, setEliminated] = useState(false);
+  /**
+   * **리바인 프롬프트를 한 번이라도 받았나.** `rebuyDataRef`와 달리 참이
+   * 되면 되돌리지 않는다.
+   *
+   * 이것이 좌석이 사라진 사유를 가르는 유일한 단서다. 프롬프트는 칩이
+   * 0이 됐을 때만 오므로, 본 적이 있으면 탈락이고 없으면 상점이 자리를
+   * 푼 것이다(T29 — 칩은 남고 자리만 잃는다).
+   *
+   * **서버가 준 사실이 아니라 화면이 본 것에서 세운 추론이다.** 프롬프트가
+   * 소켓 문제로 안 왔는데 탈락한 경우, 화면은 「자리 이동」이라고 잘못
+   * 말한다. 옳은 해법은 좌석을 지우는 경로가 사유를 실어 보내는 것이고
+   * (`releaseSeat` · 탈락 처리), 이건 그 전까지의 근사다.
+   */
+  const sawRebuyPromptRef = useRef(false);
+  const [exitReason, setExitReason] = useState<ExitReason | null>(null);
   /**
    * 대회가 닫혔다는 사실. **한 번 서면 되돌리지 않는다** — 서버가 소켓을
    * 끊지 않으므로 늦게 도착한 `renderGame`이 있을 수 있고, 그것이 이 값을
@@ -103,6 +117,9 @@ export default function SeatGameClient({
 
   function updateRebuyData(next: RebuyPrompt | null) {
     rebuyDataRef.current = next;
+    // 한 번 뜬 사실은 지우지 않는다. 프롬프트가 닫힌 **뒤에** 좌석이
+    // 사라지는 것이 탈락의 정상 순서라, 현재값만 보면 그때는 이미 늦다.
+    if (next) sawRebuyPromptRef.current = true;
     setRebuyData(next);
   }
 
@@ -140,10 +157,10 @@ export default function SeatGameClient({
           const { event: serverEvent, data } = JSON.parse(event.data);
           if (serverEvent === 'renderGame') {
             setGameState(data);
-            // 탈락 판정 (b): 리바인 프롬프트가 떠 있는 동안에는 좌석 소멸을
-            // 탈락으로 보지 않는다 — 리바인 구간에도 좌석이 잠깐 빈다.
+            // 판정 (b): 리바인 프롬프트가 떠 있는 동안에는 좌석 소멸을
+            // 나온 것으로 보지 않는다 — 리바인 구간에도 좌석이 잠깐 빈다.
             if (!rebuyDataRef.current && mySeatIndex !== null && data.players[mySeatIndex] === null) {
-              setEliminated(true);
+              setExitReason(sawRebuyPromptRef.current ? 'eliminated' : 'seat-released');
             }
           } else if (serverEvent === 'tournamentClosed') {
             // **계약을 읽는다.** 손으로 필드를 꺼내면 백엔드가 모양을 바꿔도
@@ -234,10 +251,11 @@ export default function SeatGameClient({
     }
     setRebuyError(null);
     updateRebuyData(null);
-    // 탈락 판정 (a): 리바인 거절을 보낸 직후. 서버 응답을 기다리지 않는다 —
+    // 판정 (a): 리바인 거절을 보낸 직후. 서버 응답을 기다리지 않는다 —
     // 거절은 이미 확정된 의사고, 잃는 것은 화면 전환 타이밍뿐이다.
+    // 여기는 사유가 확실하다 — 프롬프트를 받고 거절했으니 탈락이다.
     if (!accept) {
-      setEliminated(true);
+      setExitReason('eliminated');
     }
   }
 
@@ -386,12 +404,12 @@ export default function SeatGameClient({
       {rebuyData && (
         <RebuyOverlay rebuyData={rebuyData} error={rebuyError} onRespond={handleRebuyResponse} />
       )}
-      {eliminated && <EliminatedOverlay storeId={storeId} />}
+      {exitReason && <EliminatedOverlay storeId={storeId} reason={exitReason} />}
 
       {/*
         **탈락 덮개보다 뒤에 그린다.** 마지막 판의 패자는 두 사건을 거의
         동시에 겪는데(탈락하고 곧 대회가 닫힌다), 그때 읽어야 하는 것은
-        「이 자리에서 나왔습니다」가 아니라 대회가 끝났다는 사실이다.
+        자기 자리가 어떻게 됐는가가 아니라 대회가 끝났다는 사실이다.
       */}
       {closed !== null && (
         <TournamentClosedOverlay status={closed} storeId={storeId} terminal="seat" />

@@ -55,10 +55,32 @@ export async function press(
   await page.waitForTimeout(after);
 }
 
+/**
+ * 대기 화면에서 **대회를 고른다.** 좌석 태블릿과 딜러 태블릿이 같이 쓴다.
+ *
+ * 두 화면 다 기본 선택이 `tournaments[0]`이고(`table/page.tsx` ·
+ * `dealer/page.tsx`), 그 목록은 `PaymentService.getStoreAvailableSessions`가
+ * `createdAt` 내림차순으로 준다 — **가장 최근에 만든 대회**다. 시드가 상점
+ * 하나에 무대 둘을 깔면서(장면 1~5의 일곱 명짜리 · 정산의 35명짜리) 그
+ * 기본이 정산 무대로 넘어갔고, 장면 1~5는 자기 테이블 id를 15분 기다리다
+ * 죽었다. 기본이 무엇인지에 기대지 않는다.
+ *
+ * 장면 1의 폰은 처음부터 대회를 골랐다(`pick-tournament-*`). 태블릿 쪽만
+ * "상점에 대회 하나"를 암묵으로 깔고 있었다 — 촬영이 실제 운영과 어긋나
+ * 있던 자리다.
+ *
+ * 이미 골라진 대회를 눌러도 `selectTournament`가 곧바로 돌아오므로
+ * (`if (id === tournamentId) return`) 무대가 하나뿐인 화면에서도 안전하다.
+ */
+export async function pickTournament(page: Page, tournamentId: string) {
+  await press(page, page.getByTestId(`pick-tournament-${tournamentId}`));
+}
+
 /** 좌석 태블릿 하나를 열어 자리에 앉힌다. 컨텍스트가 새로 열릴 때마다 필요하다. */
 export async function sitDown(
   page: Page,
   storeId: string,
+  tournamentId: string,
   tableId: string,
   seatIndex: number,
   otp: string,
@@ -67,6 +89,7 @@ export async function sitDown(
 ) {
   await page.goto(`/table?store=${storeId}`);
   await linger(page, 900);
+  await pickTournament(page, tournamentId);
   await press(page, page.getByTestId(`pick-table-${tableId}`));
   await press(page, page.getByTestId(`pick-seat-${seatIndex}`));
   if (shotName) await shoot(page, shotName);
@@ -85,7 +108,7 @@ export async function sitDown(
  * 딜러 태블릿을 켠다. 딜러가 오기 전에도 이 기기는 테이블 고르는 화면을
  * 띄우고 있다 — 좌석 태블릿이 대기 화면을 띄우고 있는 것과 같다.
  */
-export async function openDealerTablet(page: Page, storeId: string) {
+export async function openDealerTablet(page: Page, storeId: string, tournamentId: string) {
   // 소켓이 안 열린 채로 누른 딜러 조작은 **조용히 사라진다**
   // (`sendDealerAction`이 `console.error`만 찍는다). 그 사실이 촬영에서
   // 보이도록 콘솔을 걷어 둔다.
@@ -96,11 +119,21 @@ export async function openDealerTablet(page: Page, storeId: string) {
     }
   });
   await page.goto(`/dealer?store=${storeId}`);
+  // 딜러가 오기 전의 배경 화면이라 조작은 없지만, 대회는 여기서 맞춰 둔다.
+  // 안 그러면 이 기기가 촬영 내내 **다른 무대의 테이블 목록**을 띄우고 있다.
+  await pickTournament(page, tournamentId);
 }
 
 /** 딜러가 와서 OTP로 그 테이블의 딜러 화면까지 들어간다. */
-export async function enterDealer(page: Page, storeId: string, tableId: string, dealerOtp: string) {
+export async function enterDealer(
+  page: Page,
+  storeId: string,
+  tournamentId: string,
+  tableId: string,
+  dealerOtp: string,
+) {
   await page.goto(`/dealer?store=${storeId}`);
+  await pickTournament(page, tournamentId);
   await press(page, page.getByTestId(`pick-table-${tableId}`));
   await typeOtp(page, dealerOtp);
   // 소켓은 딜러 화면에 들어간 뒤에 열린다. 그 화면으로 넘어가는 클릭보다

@@ -175,8 +175,24 @@ export const test = base.extend<{
       // 슬레이트는 영상에 아예 없다 — 실제로 늦게 연 좌석 태블릿 하나가
       // 그렇게 통째로 놓쳤다. 한 박자 기다렸다가 넉넉히 친다.
       await page.waitForTimeout(800);
-      const slateAt = Date.now();
-      await page.evaluate(async () => {
+      /*
+        **시각은 페이지 안에서, 칠해진 뒤에 읽는다.**
+
+        여기(노드 쪽)에서 `Date.now()`를 먼저 찍고 `evaluate`를 부르면, 그
+        사이의 CDP 왕복과 첫 페인트까지의 지연이 **면마다 다른 만큼** 오차로
+        남는다. 자르는 쪽은 「이 자홍 프레임이 그 시각」으로 못 박으므로,
+        지연이 큰 면은 그만큼 **미래를 보여준다**.
+
+        실측으로 그것이 잡혔다. 굼뜬 좌석 태블릿 하나가 자홍색을 0.4초가
+        아니라 1.76초 띄웠고(그 페이지의 `setTimeout`이 1.36초 늦게 터졌다),
+        같은 사건에서 다른 면보다 0.1~0.25초 앞서 있었다 — 8fps 결과물에서
+        두 프레임이고, 「누르기도 전에 옆 화면이 먼저 바뀐다」로 보인다.
+
+        `requestAnimationFrame`을 두 번 겹치는 이유는 첫 번째가 **그리기
+        직전**에 불리기 때문이다. 두 번째 콜백은 그 프레임이 나간 뒤라, 그때
+        읽은 시각이 곧 자홍색이 화면에 있는 시각이다.
+      */
+      const slateAt = await page.evaluate(async () => {
         const flash = document.createElement('div');
         flash.setAttribute('aria-hidden', 'true');
         flash.style.cssText = [
@@ -186,8 +202,12 @@ export const test = base.extend<{
           'z-index:2147483647',
         ].join(';');
         document.documentElement.appendChild(flash);
+        const paintedAt = await new Promise<number>((done) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => done(Date.now())));
+        });
         await new Promise((done) => setTimeout(done, 400));
         flash.remove();
+        return paintedAt;
       });
 
       /*

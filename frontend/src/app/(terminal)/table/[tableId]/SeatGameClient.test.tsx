@@ -184,29 +184,64 @@ describe('SeatGameClient', () => {
     });
   });
 
-  // 서버는 "너 탈락했다"를 보내지 않는다. 받는 것은 renderGame과
+  // 서버는 "너 나갔다"를 보내지 않는다. 받는 것은 renderGame과
   // REBUY_PROMPT뿐이라 프론트가 두 신호로 유추한다 — 아래 세 테스트가 그
   // 판정을 검증한다. 세 번째가 핵심: 두 트리거가 서로를 가리지 않아야 한다.
-  describe('탈락 트리거', () => {
-    it('리바인을 거절하면 탈락 오버레이가 뜬다', async () => {
+  //
+  // **여기서는 덮개가 떴는지만 본다.** 어떤 문구가 뜨는지는 사유가 정하고,
+  // 그것은 아래 「나온 사유」가 든다 — 문구로 덮개의 존재를 확인하면 사유가
+  // 바뀔 때마다 이 셋도 같이 고쳐야 한다.
+  describe('덮개 트리거', () => {
+    it('리바인을 거절하면 덮개가 뜬다', async () => {
       const { socket } = await renderWithSocket();
       socket.emitServerEvent('REBUY_PROMPT', { deadline: Date.now() + 30_000 });
       await userEvent.click(await screen.findByRole('button', { name: /거절/ }));
-      expect(await screen.findByText(/폰에서 확인/)).toBeInTheDocument();
+      expect(await screen.findByRole('button', { name: /지금 돌아가기/ })).toBeInTheDocument();
     });
 
-    it('내 좌석이 스냅샷에서 사라지면 탈락 오버레이가 뜬다', async () => {
+    it('내 좌석이 스냅샷에서 사라지면 덮개가 뜬다', async () => {
       const { socket } = await renderWithSocket({ seatIndex: 3 });
       const players = Array(9).fill(null);
       socket.emitServerEvent('renderGame', { ...BASE_STATE, players });
-      expect(await screen.findByText(/폰에서 확인/)).toBeInTheDocument();
+      expect(await screen.findByRole('button', { name: /지금 돌아가기/ })).toBeInTheDocument();
     });
 
-    it('리바인 프롬프트 중에는 탈락 오버레이가 뜨지 않는다', async () => {
+    it('리바인 프롬프트 중에는 덮개가 뜨지 않는다', async () => {
       const { socket } = await renderWithSocket({ seatIndex: 3 });
       socket.emitServerEvent('REBUY_PROMPT', { deadline: Date.now() + 30_000 });
       socket.emitServerEvent('renderGame', { ...BASE_STATE, players: Array(9).fill(null) });
-      expect(screen.queryByText(/폰에서 확인/)).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /지금 돌아가기/ })).not.toBeInTheDocument();
+    });
+  });
+
+  /**
+   * **왜 떴는지가 화면에 적혀야 한다.**
+   *
+   * 좌석이 사라지는 계기가 둘인데 서버는 어느 쪽인지 말해 주지 않는다 —
+   * 둘 다 `renderGame`의 내 자리가 `null`로만 온다. 그런데 사람에게
+   * 일어난 일은 정반대다: 탈락은 대회가 끝난 것이고, 좌석 해제는 **칩을
+   * 든 채 다른 자리로 걸어가는 것**이다(T29).
+   *
+   * 화면이 아는 것으로 가른다. 리바인 프롬프트는 칩이 0이 됐을 때만 오므로,
+   * **그것을 본 적이 있으면 탈락**이고 없으면 좌석 해제다.
+   *
+   * 아래 둘은 **서로 갈리는 입력**이다. 같은 방향만 먹이면 판정을 통째로
+   * 지워도 둘 다 초록이 된다(T29에서 실제로 그랬다).
+   */
+  describe('나온 사유', () => {
+    it('리바인 프롬프트를 본 뒤 좌석이 사라지면 탈락으로 적는다', async () => {
+      const { socket } = await renderWithSocket({ seatIndex: 3 });
+      socket.emitServerEvent('REBUY_PROMPT', { deadline: Date.now() + 30_000 });
+      await userEvent.click(await screen.findByRole('button', { name: /거절/ }));
+      expect(await screen.findByText(/칩이 0이 되어/)).toBeInTheDocument();
+      expect(screen.queryByText(/자리를 이동해 주세요/)).not.toBeInTheDocument();
+    });
+
+    it('프롬프트 없이 좌석만 사라지면 자리 이동으로 적는다', async () => {
+      const { socket } = await renderWithSocket({ seatIndex: 3 });
+      socket.emitServerEvent('renderGame', { ...BASE_STATE, players: Array(9).fill(null) });
+      expect(await screen.findByText(/자리를 이동해 주세요/)).toBeInTheDocument();
+      expect(screen.queryByText(/칩이 0이 되어/)).not.toBeInTheDocument();
     });
   });
 
