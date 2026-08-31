@@ -7,8 +7,8 @@
 > 이 문서는 **그 다음에 할 일**이다. 방향을 적고, 이미 깨져 있는 것은
 > [`tickets-audit.md`](./tickets-audit.md)에 적는다.
 >
-> **완료 항목의 판단 과정은 `chat-log2.md`(T22~T36)와 `chat-log3.md`(T37~)에
-> 있다.** 예전에는 항목마다 `tickets-next.md`의 티켓 번호를 달았는데, 그 문서를
+> **완료 항목의 판단 과정은 `chat-log2.md`(T22~T36) · `chat-log3.md`(T37~T55) ·
+> `chat-log4.md`(T58~T86)에 있다.** 예전에는 항목마다 `tickets-next.md`의 티켓 번호를 달았는데, 그 문서를
 > 폐기하면서(2026-08-20) 포인터를 여기 한 번만 둔다 — 번호를 줄마다 달면 그것도
 > 위치의 사본이라 어긋난다.
 
@@ -1388,7 +1388,7 @@ T85가 대회 종료를 단말에 알리게 만들었다(#97). **그 이벤트�
 |---|---|
 | [`tickets-audit.md`](./tickets-audit.md) | **이미 깨져 있는 것**(T58~). 방향이 아니라 결함 |
 | [`domain.md`](./domain.md) | 지금 코드의 규칙과 좌표 |
-| [`chat-log2.md`](./chat-log2.md) · [`chat-log3.md`](./chat-log3.md) | 완료 항목의 판단 과정 |
+| [`chat-log2.md`](./chat-log2.md) · [`chat-log3.md`](./chat-log3.md) · [`chat-log4.md`](./chat-log4.md) | 완료 항목의 판단 과정 |
 | [`../README.md`](../README.md) | 도메인 전제와 구조 |
 | [`fixlist.md`](./fixlist.md) | 1단계 발견 대장 (완료) |
 | [`tickets.md`](./tickets.md) | 1단계 작업 기록 T1~T21 (완료) |
