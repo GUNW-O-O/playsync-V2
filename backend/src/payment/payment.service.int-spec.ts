@@ -920,6 +920,24 @@ describe('PaymentService.getStoreAvailableSessions — 등록 마감', () => {
     const t = await prisma.tournament.findUniqueOrThrow({ where: { id: STAYS_OPEN } });
     expect(`컬럼 ${t.isRegistrationOpen}`).toBe('컬럼 true');
   });
+
+  /**
+   * T91. **키 집합을 통째로 비교한다** — 없어야 할 키를 몇 개 집어 부정
+   * 단언하면 스키마에 컬럼이 늘 때 이 검사가 조용히 계속 통과한다. 일곱은
+   * 참가자 대회 목록·딜러 대기·좌석 대기 세 화면이 실제로 읽는 필드의
+   * 합집합이다(`getStoreAvailableSessions`의 주석).
+   *
+   * 블라인드 구조는 이 키 집합에 없다는 사실 자체가 "판정에만 쓰고 응답에는
+   * 안 싣는다"를 증명한다 — T90이 이 조회에 붙인 조인이라 이름으로 남긴다.
+   */
+  it('목록 조회는 화면이 읽는 필드만 내보낸다 — 블라인드 구조는 판정에만 쓰고 새지 않는다', async () => {
+    const rows = await service.getStoreAvailableSessions(STORE);
+    const row = rows.find((r) => r.id === STAYS_OPEN);
+
+    expect(Object.keys(row!).sort()).toEqual(
+      ['entryFee', 'id', 'isRegistrationOpen', 'name', 'startStack', 'status', 'totalPlayers'].sort(),
+    );
+  });
 });
 
 /**
