@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { cookies } from 'next/headers';
+import { ClosedTournamentStatusSchema } from '@playsync/contract';
 import OtpReveal from './OtpReveal';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
@@ -82,9 +83,18 @@ export default async function MyPage() {
   // 돌아간다(`EliminatedOverlay.tsx`) — 그 약속이 지켜지는 자리가 여기다.
   //
   // `playerOtp`의 null 여부로 가르지 않는다. 서버가 그 값을 지우는 조건
-  // (`FINISHED`)을 화면이 한 번 더 추측하게 된다.
+  // (`isClosedTournament`)을 화면이 한 번 더 추측하게 된다.
+  //
+  // 대회 쪽 조건은 `FINISHED` 하나가 아니라 `ClosedTournamentStatusSchema`로
+  // 판정한다 — 상태를 목록으로 직접 적으면 닫힌 상태가 늘 때 조용히 빠진다
+  // (`tournament-status.ts`가 같은 이유로 그 목록을 들고 있다). 참가 쪽
+  // 조건(`ELIMINATED`·`AWARDED`)은 대회가 도는 중의 탈락을 잡는 것이라 그대로
+  // 둔다.
+  const closedTournamentStatuses: readonly string[] = ClosedTournamentStatusSchema.options;
   const isOver = (r: Participation) =>
-    r.tournament.status === 'FINISHED' || r.status === 'ELIMINATED' || r.status === 'AWARDED';
+    closedTournamentStatuses.includes(r.tournament.status) ||
+    r.status === 'ELIMINATED' ||
+    r.status === 'AWARDED';
   const ongoing = rows.filter((r) => !isOver(r));
   const past = rows.filter(isOver);
 
@@ -169,7 +179,9 @@ export default async function MyPage() {
                 <div className="flex shrink-0 flex-col items-end gap-0.5">
                   {row.finalPlace === null ? (
                     <span className="text-[14px] tracking-[0.16px] text-[var(--ink-subtle)]">
-                      탈락
+                      {/* 대회가 CANCELLED로 닫혔으면 이 사람은 탈락한 것이
+                          아니라 환불을 받은 것이다 — 문구를 가른다. */}
+                      {row.tournament.status === 'CANCELLED' ? '중단' : '탈락'}
                     </span>
                   ) : (
                     <>

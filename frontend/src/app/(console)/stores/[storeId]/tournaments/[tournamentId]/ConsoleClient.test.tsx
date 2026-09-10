@@ -256,4 +256,69 @@ describe('ConsoleClient — 등록 마감', () => {
     renderConsole();
     expect(screen.getByText('등록 열림')).toBeInTheDocument();
   });
+
+  /**
+   * 대회를 닫으면(`abortSession`·`cancelSession`) Redis가 지워져 `dashboard`가
+   * `null`로 온다. 그런데 `isRegistrationOpen` 컬럼은 닫기 전 값 그대로
+   * 남는다 — 열어 둔 채로 닫힌 대회면 컬럼 폴백이 「등록 열림」을 그린다.
+   * 닫힌 대회는 컬럼도 전광판 값도 보지 않고 무조건 「등록 마감」이어야 한다.
+   */
+  it('닫힌 대회는 컬럼이 열려 있어도 「등록 마감」이다', () => {
+    render(
+      <ConsoleClient
+        storeId="store-1"
+        tournamentId="trn-1"
+        tournament={{ ...TOURNAMENT, status: 'CANCELLED', isRegistrationOpen: true }}
+        dashboard={null}
+        tables={[{ id: 'tbl-1', tableOrder: 1 }]}
+        seatOccupants={[{ tableId: 'tbl-1', tableOrder: 1, players: [] }]}
+        seatError={null}
+        startTournament={vi.fn(async () => ({ ok: true as const }))}
+        openTable={vi.fn(async () => ({ ok: true as const }))}
+        closeTable={vi.fn(async () => ({ ok: true as const }))}
+        releaseSeats={vi.fn(async () => ({ ok: true as const }))}
+        reissueDealerOtp={vi.fn(async () => ({ ok: true as const, dealerOtp: '920576' }))}
+        preview={null}
+        completeTournament={vi.fn(async () => ({ ok: true as const }))}
+        chopTournament={vi.fn(async () => ({ ok: true as const }))}
+        abortTournament={vi.fn(async () => ({ ok: true as const }))}
+        fetchFinishPreview={vi.fn(async () => ({ error: '없음' }))}
+      />,
+    );
+
+    expect(screen.getByText('등록 마감')).toBeInTheDocument();
+    expect(screen.queryByText('등록 열림')).not.toBeInTheDocument();
+  });
+
+  /**
+   * 평균 스택도 같은 문제다. `numbers`가 없을 때 `tournament.startStack`으로
+   * 떨어지는 것은 시작 전 대회를 위한 폴백(T77)인데, 닫힌 대회에 그대로
+   * 적용하면 이미 끝난 대회가 시작 스택을 스택인 양 계속 보여준다.
+   */
+  it('닫힌 대회는 평균 스택도 값이 남지 않는다', () => {
+    render(
+      <ConsoleClient
+        storeId="store-1"
+        tournamentId="trn-1"
+        tournament={{ ...TOURNAMENT, status: 'CANCELLED', isRegistrationOpen: true }}
+        dashboard={null}
+        tables={[{ id: 'tbl-1', tableOrder: 1 }]}
+        seatOccupants={[{ tableId: 'tbl-1', tableOrder: 1, players: [] }]}
+        seatError={null}
+        startTournament={vi.fn(async () => ({ ok: true as const }))}
+        openTable={vi.fn(async () => ({ ok: true as const }))}
+        closeTable={vi.fn(async () => ({ ok: true as const }))}
+        releaseSeats={vi.fn(async () => ({ ok: true as const }))}
+        reissueDealerOtp={vi.fn(async () => ({ ok: true as const, dealerOtp: '920576' }))}
+        preview={null}
+        completeTournament={vi.fn(async () => ({ ok: true as const }))}
+        chopTournament={vi.fn(async () => ({ ok: true as const }))}
+        abortTournament={vi.fn(async () => ({ ok: true as const }))}
+        fetchFinishPreview={vi.fn(async () => ({ error: '없음' }))}
+      />,
+    );
+
+    expect(screen.getByText('평균 스택').nextElementSibling).toHaveTextContent('-');
+    expect(screen.queryByText('5,000')).not.toBeInTheDocument();
+  });
 });

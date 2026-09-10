@@ -87,6 +87,33 @@ const ELIMINATED_MIDWAY = {
   },
 };
 
+/**
+ * 대회가 중단된 경우(`abortSession`). 참가 행 자신의 `status`는 원장이라
+ * 손대지 않고 그대로 `PLAYING`으로 남지만(`session.service.ts`), 대회
+ * 쪽은 `CANCELLED`이고 서버가 `isClosedTournament`로 `playerOtp`를 이미
+ * `null`로 지운다(`user.service.ts`의 `getMyParticipations`). 등수도 없다
+ * — 탈락이 아니라 환불이라 매길 등수가 없다.
+ */
+const ABORTED = {
+  id: 'p3',
+  tournamentId: 't2',
+  userId: 'u1',
+  status: 'PLAYING',
+  buyInCount: 1,
+  finalPlace: null,
+  prizeAmount: 0,
+  currentStack: 3000,
+  playerOtp: null,
+  createdAt: '2026-08-10T09:00:00.000Z',
+  tournament: {
+    id: 't2',
+    name: '중단된 토너먼트',
+    status: 'CANCELLED',
+    entryFee: 50000,
+    startedAt: '2026-08-10T10:00:00.000Z',
+  },
+};
+
 describe('/me — 내 참가', () => {
   beforeEach(() => {
     cookieStore.get.mockReturnValue({ value: 'jwt-value' });
@@ -155,6 +182,35 @@ describe('/me — 내 참가', () => {
 
     expect(screen.getByText('5위')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '참가 OTP 조회' })).not.toBeInTheDocument();
+  });
+
+  it('중단된 대회는 「지난 참가」로 간다', async () => {
+    server.use(
+      http.get('http://backend.test/user/me/participations', () =>
+        HttpResponse.json([ABORTED]),
+      ),
+    );
+
+    render(await MyPage());
+
+    expect(screen.getByText('중단된 토너먼트')).toBeInTheDocument();
+    expect(screen.queryByText('진행 중')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('참가 OTP가 없습니다. 상점에 문의하세요.'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('중단된 대회는 「탈락」이 아니라 「중단」으로 적는다', async () => {
+    server.use(
+      http.get('http://backend.test/user/me/participations', () =>
+        HttpResponse.json([ABORTED]),
+      ),
+    );
+
+    render(await MyPage());
+
+    expect(screen.getByText('중단')).toBeInTheDocument();
+    expect(screen.queryByText('탈락')).not.toBeInTheDocument();
   });
 
   it('참가가 없으면 빈 안내를 그린다', async () => {

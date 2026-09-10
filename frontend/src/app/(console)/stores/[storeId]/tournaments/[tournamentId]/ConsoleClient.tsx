@@ -2,7 +2,11 @@
 
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
-import type { FinishPreview, FullTournamentInfo } from '@playsync/contract';
+import {
+  ClosedTournamentStatusSchema,
+  type FinishPreview,
+  type FullTournamentInfo,
+} from '@playsync/contract';
 
 /**
  * 대회 메타. `GET /tournaments/:id`가 주는 `{ tournament, seatStatus }`
@@ -301,6 +305,15 @@ export default function ConsoleClient({
 
   const numbers = dashboard?.dashboard ?? null;
   const displayUrl = `/stores/${storeId}/tournaments/${tournamentId}/display`;
+  /*
+    대회를 닫으면(`abortSession`·`cancelSession`) 테이블과 Redis가 지워져
+    `dashboard`가 `null`로 온다 — 그런데 `isRegistrationOpen`·`startStack`
+    컬럼은 닫기 전 값 그대로 남는다. 닫힌 대회는 전광판 값도 컬럼도 보지 않고
+    무조건 마감·값없음으로 그린다(아래 배지·평균 스택).
+  */
+  const isClosed = (ClosedTournamentStatusSchema.options as readonly string[]).includes(
+    tournament.status,
+  );
 
   return (
     <div className="bg-[var(--canvas)] text-[var(--ink)]" style={{ letterSpacing: '0.16px' }}>
@@ -328,10 +341,16 @@ export default function ConsoleClient({
                   전광판 값이 없으면 컬럼이 곧 답이다 — 시작 전 대회에는
                   레벨이 없어 파생할 재료가 없고, `isRegistrationOpenLive`도
                   같은 자리에서 컬럼으로 떨어진다.
+
+                  닫힌 대회는 그 폴백보다 먼저 걸린다 — 컬럼이 아직 열린
+                  값으로 남아 있어도(`isClosed` 주석) 문 닫힌 대회에
+                  「등록 열림」을 그리면 안 된다.
                 */}
-                {(numbers?.isRegistrationOpen ?? tournament.isRegistrationOpen)
-                  ? '등록 열림'
-                  : '등록 마감'}
+                {isClosed
+                  ? '등록 마감'
+                  : (numbers?.isRegistrationOpen ?? tournament.isRegistrationOpen)
+                    ? '등록 열림'
+                    : '등록 마감'}
               </span>
               <span className="text-[13px] text-[var(--ink-subtle)]">
                 레벨 {tournament.rebuyUntil}까지 리바인
@@ -405,7 +424,20 @@ export default function ConsoleClient({
           <Stat label="참가비" value={tournament.entryFee.toLocaleString()} small />
           <Stat
             label="평균 스택"
-            value={(numbers ? numbers.avgStack : tournament.startStack).toLocaleString()}
+            /*
+              닫힌 대회에는 `startStack` 폴백을 쓰지 않는다. 그 폴백은
+              레벨이 아직 없는 시작 전 대회를 위한 것(T77)인데, 닫힌 대회에
+              그대로 적용하면 이미 끝난 대회가 시작 스택을 지금 스택인 양
+              계속 보여준다 — 여기서만 끄는 이유가 없으면 다음 사람이
+              폴백 자체를 지운다.
+            */
+            value={
+              numbers
+                ? numbers.avgStack.toLocaleString()
+                : isClosed
+                  ? '-'
+                  : tournament.startStack.toLocaleString()
+            }
             small
           />
         </div>
