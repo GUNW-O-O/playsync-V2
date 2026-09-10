@@ -26,14 +26,21 @@ import { classify, firstLimitIndex, isClean } from '../lib/door.js';
  *
  * 실행 (README의 "문(door) — 상한이 실제로 몇 개에서 닫히는가" 절):
  *
- *   LOAD_THROTTLE_LIMIT=600 LOAD_THROTTLE_AUTH_LIMIT=120 \
- *     docker compose -f backend/docker-compose.test.yml --profile load up -d --build
+ *   # 이 둘은 셸 세션 내내 켜 둔다 — 아래 `run --rm k6 run` 두 줄도
+ *   # depends_on으로 backend-load를 다시 조정하므로, 그 호출에 없으면
+ *   # 보간이 기본값(100000)으로 풀려 문이 도로 열린다.
+ *   export LOAD_THROTTLE_LIMIT=600
+ *   export LOAD_THROTTLE_AUTH_LIMIT=120
+ *
+ *   docker compose -f backend/docker-compose.test.yml --profile load up -d --build
  *   npm run seed:load
  *   docker compose -f backend/docker-compose.test.yml --profile load --profile k6 \
- *     run --rm k6 run -e DOOR_PHASE=boundary /load/scenarios/door.js
- *   # 60초 이상 쉰 뒤
+ *     run --rm k6 run -e DOOR_PHASE=boundary /load/scenarios/door.js \
+ *     2>&1 | tee load/results/door-boundary-console.log
+ *   # 60초 이상 쉰 뒤 — 창이 안 비면 앞 단계가 쓴 버킷이 다음 단계에 섞인다
  *   docker compose -f backend/docker-compose.test.yml --profile load --profile k6 \
- *     run --rm k6 run -e DOOR_PHASE=arrival /load/scenarios/door.js
+ *     run --rm k6 run -e DOOR_PHASE=arrival /load/scenarios/door.js \
+ *     2>&1 | tee load/results/door-arrival-console.log
  */
 
 /**
@@ -104,6 +111,13 @@ function poolNickname(i) {
  * `lib/api.js`의 `login()`을 쓰지 않는다. 그 함수는 `must()`로 2xx가 아니면
  * `fail()`로 VU를 죽이는데, 이 시나리오는 정확히 그 429를 보려는 것이라
  * 상태 코드와 본문을 그대로 돌려받아야 한다 — 죽이면 다음 요청을 못 쏜다.
+ *
+ * **카운터를 여기서 올리지 않는다.** 도착률 단계는 정착 구간(꼬리가 섞인
+ * 구간)을 뺀 응답만 판정에 써야 하는데, 여기서 무조건 올리면 지표
+ * (`door_limited{stage:rate-N}`)에는 정착 구간의 응답까지 들어간다 —
+ * 콘솔에 찍는 로컬 판정(`signal`)과 JSON에 남는 판정(`thresholds`)이
+ * 서로 다른 데이터를 보고 어긋나게 된다. 그래서 응답만 돌려주고, 셀 것인지는
+ * 호출한 쪽이 `recordCount`로 정한다.
  */
 function attemptLogin(i, stage) {
   const res = http.post(
@@ -111,21 +125,25 @@ function attemptLogin(i, stage) {
     JSON.stringify({ nickname: poolNickname(i), password: manifest.password }),
     { headers: { 'Content-Type': 'application/json' }, tags: { step: 'door-login', stage } },
   );
-  const response = { status: res.status, body: res.body };
+  return { status: res.status, body: res.body };
+}
 
+/** 응답 하나를 분류해 그 갈래의 카운터를 올린다. */
+function recordCount(response, stage) {
   const kind = classify(response);
   if (kind === 'pass') doorPass.add(1, { stage });
   else if (kind === 'limited') doorLimited.add(1, { stage });
   else doorOther.add(1, { stage });
-
-  return response;
+  return kind;
 }
 
 /** 경계 단계 — 60초 창 안에 순차로 쏴 첫 429를 찾는다. */
 function runBoundary() {
   const responses = [];
   for (let i = 0; i < BOUNDARY_REQUESTS; i++) {
-    responses.push(attemptLogin(i, 'boundary'));
+    const res = attemptLogin(i, 'boundary');
+    recordCount(res, 'boundary');
+    responses.push(res);
   }
 
   const dist = {};
@@ -159,6 +177,10 @@ function runArrival() {
     const settleEnd = stageStart + ARRIVAL_SETTLE_S * 1000;
 
     // 정착 구간(이전 구간의 슬라이딩 윈도 꼬리) 뒤에 온 응답만 판정에 쓴다.
+    // **카운터도 같은 조건으로 가른다.** `door_limited{stage:rate-N}`이
+    // JSON에 남는 유일한 판정이므로, 여기서 안 가르면 콘솔은 깨끗하다고
+    // 찍는데 JSON은 상한에 걸렸다고 남는 어긋남이 생긴다 — 정착 구간의
+    // 꼬리 429가 지표에는 그대로 들어가기 때문이다.
     const signal = [];
     let n = 0;
     while (Date.now() < stageEnd) {
@@ -170,7 +192,10 @@ function runArrival() {
       const res = attemptLogin(i, stage);
       i += 1;
       n += 1;
-      if (Date.now() >= settleEnd) signal.push(res);
+      if (Date.now() >= settleEnd) {
+        recordCount(res, stage);
+        signal.push(res);
+      }
     }
 
     const clean = isClean(signal);
@@ -221,11 +246,14 @@ export function handleSummary(data) {
     thresholds,
   };
 
+  // "stdout 로그"라고 안 적는다 — k6는 console.log를 표준 에러로 낸다.
+  // `2>&1`을 안 붙이고 `tee`한 사람이 "봤는데 없다"로 헤매지 않도록
+  // 정확히 가리킨다.
   const line =
     PHASE === 'arrival'
-      ? `door-arrival · 구간별 판정 ${JSON.stringify(thresholds)} · 상세는 stdout 로그`
+      ? `door-arrival · 구간별 판정 ${JSON.stringify(thresholds)} · 상세는 콘솔 로그(표준 에러)`
       : `door-boundary · 통과 ${summary.pass} · 상한 ${summary.limited} · 그 외 ${summary.other}` +
-        ' · 첫 429 순번과 본문은 stdout 로그를 본다';
+        ' · 첫 429 순번과 본문은 콘솔 로그(표준 에러)를 본다';
 
   const stamp = at.replace(/[:.]/g, '-');
   return {

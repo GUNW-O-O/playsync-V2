@@ -138,14 +138,29 @@ IP당 분당 600(인증 라우트 120)이라 램프가 자기 자신에게 막�
 잰다.
 
 ```bash
-LOAD_THROTTLE_LIMIT=600 LOAD_THROTTLE_AUTH_LIMIT=120 \
-  docker compose -f backend/docker-compose.test.yml --profile load up -d --build
+# 이 둘은 셸 세션이 끝날 때까지 켜 둬야 한다. 아래 `run --rm k6 run` 두
+# 줄도 `depends_on`으로 backend-load를 다시 조정하는데, 그 호출에 이
+# 값이 없으면 보간이 기본값(100000)으로 풀려 backend-load가 조용히
+# 다시 열린 문으로 재기동된다 — 실측으로 밟은 함정이다(문이 다시 열려
+# 있으면 두 단계 다 "429 없음"만 낸다). `VAR=x cmd` 접두사는 그 한 줄에만
+# 적용되고 다음 줄로 넘어가지 않으므로 `export`로 세션에 고정한다.
+export LOAD_THROTTLE_LIMIT=600
+export LOAD_THROTTLE_AUTH_LIMIT=120
+
+docker compose -f backend/docker-compose.test.yml --profile load up -d --build
 npm run seed:load
+
+# 429 본문·순번·구간 판정은 console.log뿐이고 k6는 그것을 표준 에러로
+# 낸다(아래 절 참고) — `2>&1`이 없으면 tee가 진행률 표시줄만 받고 정작
+# 찾는 내용은 놓친다. JSON 곁에 같은 이름으로 로그도 남긴다.
 docker compose -f backend/docker-compose.test.yml --profile load --profile k6 \
-  run --rm k6 run -e DOOR_PHASE=boundary /load/scenarios/door.js
+  run --rm k6 run -e DOOR_PHASE=boundary /load/scenarios/door.js \
+  2>&1 | tee load/results/door-boundary-console.log
+
 # 60초 이상 쉰 뒤 — 창이 안 비면 앞 단계가 쓴 버킷이 다음 단계에 섞인다
 docker compose -f backend/docker-compose.test.yml --profile load --profile k6 \
-  run --rm k6 run -e DOOR_PHASE=arrival /load/scenarios/door.js
+  run --rm k6 run -e DOOR_PHASE=arrival /load/scenarios/door.js \
+  2>&1 | tee load/results/door-arrival-console.log
 ```
 
 **단계 둘을 한 실행에 담지 않는다.** 창이 60초라 앞 단계가 다음 단계의
@@ -168,7 +183,13 @@ docker compose -f backend/docker-compose.test.yml --profile load --profile k6 \
 넘겨주지 않는다(실측: `teardown`이 채운 변수가 `handleSummary`에서 비어
 있었다). 문자열은 k6 지표에 못 담으므로 429 본문·상태 코드 분포는
 `console.log`로, 구간마다 몇 건을 세었는지 같은 숫자만 `door_pass` ·
-`door_limited` · `door_other` 카운터로 남긴다.
+`door_limited` · `door_other` 카운터로 남긴다. **이 실행이 내는 것 중
+가장 값진 것이 터미널에만(그것도 표준 에러로) 있다는 뜻이다** — 위 실행
+커맨드처럼 `2>&1 | tee load/results/door-<phase>-console.log`로 JSON 결과
+파일과 같은 이름 자리에 로그도 같이 남긴다. `2>&1`을 빼면 `tee`는 k6의
+진행률 표시줄 같은 표준 출력만 받고 `console.log`(표준 에러)는 놓친다 —
+실제로 그렇게 놓치는 것을 실행해서 확인했다. 안 남기면 터미널
+스크롤백이 사라지는 순간 본문도 같이 사라진다.
 
 `arrival` 단계의 구간 판정은 태그로 지정한 부분지표
 (`door_limited{stage:rate-N}`)에 `count==0` 상한을 걸어 k6가 자동으로
@@ -177,6 +198,12 @@ docker compose -f backend/docker-compose.test.yml --profile load --profile k6 \
 길게)는 판정에서 뺀다 — `ThrottlerStorageService.increment`가 고정 창이
 아니라 히트마다 개별로 60초 뒤 만료되는 타이머를 걸므로(진짜 슬라이딩
 윈도다), 도착률을 올린 직후에는 이전 구간의 꼬리가 섞여 있다.
+
+**정착 구간의 응답은 카운터도 안 올린다.** JSON에 남는 것이 이
+`door_limited{stage:rate-N}` 상한 하나뿐이라, 응답을 무조건 세면 콘솔은
+"깨끗함"을 찍는데 JSON에는 "FAIL"이 남는 어긋남이 생긴다 — 정착 구간의
+꼬리 429가 지표에는 그대로 들어가기 때문이다. 그래서 카운터를 올리는
+자리와 콘솔 판정에 쓰는 배열이 같은 조건(정착 구간을 지났는가)을 본다.
 
 ## VU 하나 = 테이블 하나
 
