@@ -8,10 +8,13 @@ lib/api.js         REST 체인. 회원가입부터 WS 티켓까지 제품 경로
 lib/table.js       VU 하나가 테이블 하나를 든다. 소켓 열 개
 lib/windows.js     지연 측정 창 큐. **순수 모듈이라 테스트가 붙는다**
 lib/windows.spec.js  `npm test -w`가 아니라 `cd load && npm test`
+lib/door.js        로그인 문 판정(통과·429·그 밖의 실패). **순수 모듈**
+lib/door.spec.js   위와 같은 자리에서 `cd load && npm test`
 lib/monitor.js     서버 지표를 주기적으로 읽어 시계열로. 경고·붕괴 판정
 lib/summary.js     결과를 results/에 파일로
 scenarios/smoke.js 테이블 하나로 "봇이 규칙대로 도는가"만 본다
 scenarios/ramp.js  성장 램프. 테이블을 계속 붙이며 정원과 피크 내성을 본다
+scenarios/door.js  로그인 문. 인증 상한이 실제로 몇 개에서 닫히는가
 results/           실행 결과 (git에 안 들어간다)
 .load-seed.json    시드가 떨어뜨리는 무대 좌표 (git에 안 들어간다)
 ```
@@ -120,6 +123,60 @@ T53). k6가 컨테이너 하나라 모든 VU가 한 주소에서 오는데, 제�
 IP당 분당 600(인증 라우트 120)이라 램프가 자기 자신에게 막힌다. **끄지 않고
 값만 올린다** — 끄면 부하가 제품과 다른 코드를 재게 된다. 근거는
 `backend/src/auth/throttle.ts`.
+
+값은 리터럴이 아니라 compose 보간이다(`${LOAD_THROTTLE_LIMIT:-100000}`).
+기본값이 지금 값과 같아 램프·스모크는 이 보간 전과 한 글자도 다르지 않게
+뜬다 — 아래 문(door) 시나리오만 예외로 이 env를 제품 기본값에 맞춰 낮춰서
+띄운다.
+
+### 문(door) — 상한이 실제로 몇 개에서 닫히는가
+
+램프·스모크가 도는 무대는 상한을 100000으로 올려 둔 무대다. 그 무대에서는
+"인증 라우트가 분당 몇 개에서 막히는가"라는 질문 자체가 성립하지 않는다 —
+`docs/results/`에 있는 모든 수치가 문이 열려 있는 세계의 값이다. 이
+시나리오(`scenarios/door.js`)만 상한을 **제품 기본값**으로 되돌려 그 문을
+잰다.
+
+```bash
+LOAD_THROTTLE_LIMIT=600 LOAD_THROTTLE_AUTH_LIMIT=120 \
+  docker compose -f backend/docker-compose.test.yml --profile load up -d --build
+npm run seed:load
+docker compose -f backend/docker-compose.test.yml --profile load --profile k6 \
+  run --rm k6 run -e DOOR_PHASE=boundary /load/scenarios/door.js
+# 60초 이상 쉰 뒤 — 창이 안 비면 앞 단계가 쓴 버킷이 다음 단계에 섞인다
+docker compose -f backend/docker-compose.test.yml --profile load --profile k6 \
+  run --rm k6 run -e DOOR_PHASE=arrival /load/scenarios/door.js
+```
+
+**단계 둘을 한 실행에 담지 않는다.** 창이 60초라 앞 단계가 다음 단계의
+버킷을 오염시킨다. `DOOR_PHASE`로 어느 쪽을 돌릴지 고른다.
+
+| 단계 | 무엇 | 답하는 질문 |
+|---|---|---|
+| `boundary`(기본) | 60초 창 안에 로그인을 순차로 상한의 두 배쯤 쏜다 | 첫 429가 몇 번째인가, 429 본문은 정확히 뭔가 |
+| `arrival` | 초당 도착률을 계단(기본 1~4)으로 올려 구간마다 유지한다 | 마지막으로 깨끗했던 도착률은 얼마인가 |
+
+계정은 시드 풀에서만 쓴다(`.load-seed.json`). **신규 가입을 섞지 않는다** —
+`POST /auth/join`도 같은 버킷이라 섞으면 무엇이 문을 채웠는지 갈리지 않는다.
+
+`lib/api.js`의 `login()`을 쓰지 않는다. 그 함수는 `must()`로 2xx가 아니면
+`fail()`로 VU를 죽이는데, 이 시나리오는 정확히 그 429를 보려는 것이라 상태
+코드와 본문을 그대로 받아야 한다.
+
+**429 본문은 `handleSummary`가 아니라 콘솔 로그에 남는다.** 창 큐(`windows.js`)
+때와 같은 벽이다 — k6는 `default()`가 쌓은 모듈 상태를 `handleSummary`에
+넘겨주지 않는다(실측: `teardown`이 채운 변수가 `handleSummary`에서 비어
+있었다). 문자열은 k6 지표에 못 담으므로 429 본문·상태 코드 분포는
+`console.log`로, 구간마다 몇 건을 세었는지 같은 숫자만 `door_pass` ·
+`door_limited` · `door_other` 카운터로 남긴다.
+
+`arrival` 단계의 구간 판정은 태그로 지정한 부분지표
+(`door_limited{stage:rate-N}`)에 `count==0` 상한을 걸어 k6가 자동으로
+`handleSummary`의 `data.metrics`에 올려 주게 한다 — 별도 저장소 없이 그
+자리에서 구간마다 `PASS`/`FAIL`을 읽는다. 각 구간의 앞 65초(창 60초보다
+길게)는 판정에서 뺀다 — `ThrottlerStorageService.increment`가 고정 창이
+아니라 히트마다 개별로 60초 뒤 만료되는 타이머를 걸므로(진짜 슬라이딩
+윈도다), 도착률을 올린 직후에는 이전 구간의 꼬리가 섞여 있다.
 
 ## VU 하나 = 테이블 하나
 
