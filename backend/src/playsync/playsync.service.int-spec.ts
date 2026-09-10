@@ -726,13 +726,18 @@ describe('PlaysyncService.syncTableInventoryToDb — 버튼 좌석', () => {
  * `getFullTournamentInfo`는 이미 파생값을 돌려준다 —
  * `checkAndSyncBlindLevel`이 동기화된 레벨로 판정을 다시 세운다. 안 따라가는
  * 것은 `Tournament.isRegistrationOpen` 컬럼뿐이다. 결제 게이트·딜러의 파이널
- * 테이블 게이트와 같은 이유로, 여기서도 파생이 닫힘이면 컬럼을 닫는다.
+ * 테이블 게이트와 같은 이유로, 여기서도 파생이 닫힘이면 컬럼을 닫는다 —
+ * **문지기 없이 파생이 닫힘일 때마다 부른다.**
  *
- * **다만 전광판은 폴링된다.** 결제·딜러 조작은 사람이 손으로 누르는 드문
- * 행동이라 매번 `closeRegistration`을 불러도 무해하지만, 대시보드는 초
- * 단위로 계속 불린다 — 마감 뒤에도 매 폴링마다 Postgres UPDATE가 나가면 안
- * 된다. `RedisService.isRegistrationClosedInCache`를 `getFullTournamentInfo`
- * **보다 먼저** 불러 문지기로 쓴다.
+ * 전에는 Redis 해시가 이미 마감을 반영했는지로 이 호출을 걸렀다(폴링마다
+ * Postgres UPDATE가 나가면 안 된다는 것이 그 근거였다). 그 문지기는 리뷰가
+ * 잡은 구멍이었다 — `checkAndSyncBlindLevel`을 부르는 다른 경로들
+ * (`DealerService.startPreFlop`·`RecoveryService`)이 Postgres는 안 건드리고
+ * 해시만 먼저 `'0'`으로 내릴 수 있어서, 대시보드가 한 번도 보기 전에 이미
+ * "닫힘"으로 보이면 문지기가 영영 열려 그 대회의 컬럼을 못 닫았다. 조용하고
+ * 재시도도 없는 구멍이라 문지기를 없앴다 — `closeRegistration`의
+ * `updateMany`가 이미 조건부(`WHERE isRegistrationOpen: true`)라 폴링마다
+ * 불러도 실제 쓰기는 최초 한 번뿐이다.
  */
 describe('PlaysyncService.getDashboardInfo — 등록 마감', () => {
   let redis: Redis;
@@ -838,22 +843,50 @@ describe('PlaysyncService.getDashboardInfo — 등록 마감', () => {
   });
 
   /**
-   * `updateMany`를 스파이한다 — `closeRegistration`은 조건부(WHERE
-   * isRegistrationOpen: true)라 두 번째 호출이 실제로 행을 바꾸지 않는 것만
-   * 봐서는 "그래도 매번 Postgres까지 왕복했다"를 놓친다. 왕복 자체가 없어야
-   * 한다는 것이 이 검사의 값어치다.
+   * **리뷰가 잡은 구멍.** `DealerService.startPreFlop`·`RecoveryService`도
+   * `checkAndSyncBlindLevel`을 부르지만 Postgres는 건드리지 않는다 — 마감
+   * 레벨을 지난 뒤 핸드가 먼저 시작되거나 복구가 먼저 돌면, 대시보드가 한
+   * 번도 보기 전에 해시의 `isRegistrationOpen`이 이미 `'0'`으로 내려가
+   * 있다. 폴링 문지기(`isRegistrationClosedInCache`, 삭제됨)는 그 값을
+   * "지난 폴링이 이미 컬럼도 닫았다"로 잘못 읽어, 이 대회의 컬럼을 영영
+   * 닫지 못했다 — 조용하고 재시도도 없는 구멍이었다.
+   *
+   * `redisService.checkAndSyncBlindLevel`을 직접 불러 그 경로를 흉내낸다.
    */
-  it('이미 닫힌 대회를 여러 번 읽어도 쓰기가 반복되지 않는다', async () => {
+  it('다른 경로가 이미 해시를 닫아 둔 뒤에도 대시보드 조회가 컬럼을 닫는다', async () => {
     await seedTournament();
     await seedRedisMeta();
-    const updateManySpy = jest.spyOn(prisma.tournament, 'updateMany');
+    // DealerService.startPreFlop·RecoveryService처럼 대시보드보다 먼저
+    // 해시만 마감으로 내리는 경로.
+    await redisService.checkAndSyncBlindLevel(TOURNAMENT);
 
     await service.getDashboardInfo(TOURNAMENT);
-    expect(updateManySpy).toHaveBeenCalledTimes(1);
+
+    const t = await prisma.tournament.findUniqueOrThrow({ where: { id: TOURNAMENT } });
+    expect(`컬럼 ${t.isRegistrationOpen}`).toBe('컬럼 false');
+  });
+
+  /**
+   * **트레이드오프를 여기 적는다.** 폴링 문지기가 있던 시절에는 이 성질이
+   * "`closeRegistration`이 정확히 한 번만 불린다"였다. 그 문지기가 바로 위
+   * 검사가 잡은 구멍의 원인이었다 — 해시가 대시보드 아닌 다른 경로로 먼저
+   * `'0'`이 되면 문지기가 영영 열려, 그 대회의 컬럼이 다시는 안 닫혔다.
+   *
+   * 지금은 파생이 닫힘이면 폴링마다 `closeRegistration`을 부른다. Postgres
+   * 왕복은 폴링마다 나가지만 `updateMany`가 조건부(`WHERE isRegistrationOpen:
+   * true`)라 실제 쓰기는 최초 한 번뿐이고, 그 대신 "닫힌 뒤에는 절대 다시
+   * 열리지 않는다"는 더 강한 성질을 얻는다. 이 검사를 "호출 횟수 1번"으로
+   * 되돌리면 그 트레이드오프를 되돌리는 것이다 — 그러지 않는다.
+   */
+  it('이미 닫힌 대회를 여러 번 읽어도 컬럼은 다시 열리지 않는다', async () => {
+    await seedTournament();
+    await seedRedisMeta();
 
     await service.getDashboardInfo(TOURNAMENT);
     await service.getDashboardInfo(TOURNAMENT);
+    await service.getDashboardInfo(TOURNAMENT);
 
-    expect(updateManySpy).toHaveBeenCalledTimes(1);
+    const t = await prisma.tournament.findUniqueOrThrow({ where: { id: TOURNAMENT } });
+    expect(`컬럼 ${t.isRegistrationOpen}`).toBe('컬럼 false');
   });
 });

@@ -45,7 +45,9 @@ export class PaymentService {
   }
 
   /**
-   * 해당 매장의 참가가능 토너먼트 정보.
+   * 해당 매장의 참가가능 토너먼트 정보. **참가자용 조회다 — 해시라도
+   * 응답에 실으면 안 된다**(`dealerOtpHash`는 `PrismaService`의 전역
+   * `omit`이 막는다).
    *
    * **등록 마감은 파생값이다**(`registration.ts`). `getTournamentInfo`(상세
    * 조회)만 그 파생을 태우고 이 목록은 컬럼을 그대로 내보냈다 — 참가자 목록
@@ -68,7 +70,6 @@ export class PaymentService {
       // 파생의 재료 하나. 응답에는 안 실린다 — 아래서 계산에만 쓰고 벗겨낸다
       // (화면은 이 필드를 읽지 않는다).
       include: { blindStructure: { select: { structure: true } } },
-      // 참가자용 조회다. 해시라도 응답에 실으면 안 된다.
       orderBy: {
         createdAt: 'desc',
       },
