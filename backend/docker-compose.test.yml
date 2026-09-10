@@ -107,8 +107,13 @@ services:
       # 램프가 자기 자신에게 막힌다. 끄는 스위치를 두지 않고 값만 올린 이유는,
       # 제한 코드가 부하에서도 그대로 실행돼야 "켜면 무너지는" 상태가 안
       # 생기기 때문이다. 근거는 `src/auth/throttle.ts`.
-      THROTTLE_LIMIT: 100000
-      THROTTLE_AUTH_LIMIT: 100000
+      #
+      # compose 보간으로 연다 — 기본값은 지금 값 그대로라 램프·스모크는 한 글자도
+      # 안 바뀐다. 문(door) 시나리오만 `LOAD_THROTTLE_LIMIT=600
+      # LOAD_THROTTLE_AUTH_LIMIT=120`으로 띄워 제품 기본값으로 상한이 실제로
+      # 몇 개에서 닫히는지를 잰다(`load/scenarios/door.js`).
+      THROTTLE_LIMIT: ${LOAD_THROTTLE_LIMIT:-100000}
+      THROTTLE_AUTH_LIMIT: ${LOAD_THROTTLE_AUTH_LIMIT:-100000}
       # `NEW_USER_RATIO`(load/lib/table.js) 분기가 실행 중에 만드는 신규 가입
       # 봇의 초기 포인트. 없으면 0으로 나와 `PaymentService.joinSession`의
       # `user.points < session.entryFee` 게이트가 409로 막는다(C-2). 값은
