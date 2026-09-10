@@ -852,6 +852,16 @@ describe('PlaysyncService.getDashboardInfo — 등록 마감', () => {
    * 닫지 못했다 — 조용하고 재시도도 없는 구멍이었다.
    *
    * `redisService.checkAndSyncBlindLevel`을 직접 불러 그 경로를 흉내낸다.
+   *
+   * **그 문지기를 되살리지 않는다.** "닫힌 대회를 여러 번 읽어도 컬럼이
+   * 다시 열리지 않는다"는 검사를 여기 두려던 적이 있었지만 지웠다 —
+   * `closeRegistration`은 `WHERE isRegistrationOpen: true`로만 쓰므로
+   * 구조적으로 컬럼을 다시 열 수 없고, 그 검사는 코드가 어길 수 없는
+   * 성질을 확인하는 셈이라 항상 초록일 뿐 아무것도 잡지 못했다(T29 — 실패할
+   * 수 없는 검사는 없는 검사보다 나쁘다). 폴링마다 `closeRegistration`을
+   * 다시 부르는 것은 "반복이 공짜"라는 근거(조건부 `updateMany`)가 이미
+   * 위쪽 주석(`getDashboardInfo`)에 있다 — 여기서 다시 검사로 확인할
+   * 대상이 아니다.
    */
   it('다른 경로가 이미 해시를 닫아 둔 뒤에도 대시보드 조회가 컬럼을 닫는다', async () => {
     await seedTournament();
@@ -860,30 +870,6 @@ describe('PlaysyncService.getDashboardInfo — 등록 마감', () => {
     // 해시만 마감으로 내리는 경로.
     await redisService.checkAndSyncBlindLevel(TOURNAMENT);
 
-    await service.getDashboardInfo(TOURNAMENT);
-
-    const t = await prisma.tournament.findUniqueOrThrow({ where: { id: TOURNAMENT } });
-    expect(`컬럼 ${t.isRegistrationOpen}`).toBe('컬럼 false');
-  });
-
-  /**
-   * **트레이드오프를 여기 적는다.** 폴링 문지기가 있던 시절에는 이 성질이
-   * "`closeRegistration`이 정확히 한 번만 불린다"였다. 그 문지기가 바로 위
-   * 검사가 잡은 구멍의 원인이었다 — 해시가 대시보드 아닌 다른 경로로 먼저
-   * `'0'`이 되면 문지기가 영영 열려, 그 대회의 컬럼이 다시는 안 닫혔다.
-   *
-   * 지금은 파생이 닫힘이면 폴링마다 `closeRegistration`을 부른다. Postgres
-   * 왕복은 폴링마다 나가지만 `updateMany`가 조건부(`WHERE isRegistrationOpen:
-   * true`)라 실제 쓰기는 최초 한 번뿐이고, 그 대신 "닫힌 뒤에는 절대 다시
-   * 열리지 않는다"는 더 강한 성질을 얻는다. 이 검사를 "호출 횟수 1번"으로
-   * 되돌리면 그 트레이드오프를 되돌리는 것이다 — 그러지 않는다.
-   */
-  it('이미 닫힌 대회를 여러 번 읽어도 컬럼은 다시 열리지 않는다', async () => {
-    await seedTournament();
-    await seedRedisMeta();
-
-    await service.getDashboardInfo(TOURNAMENT);
-    await service.getDashboardInfo(TOURNAMENT);
     await service.getDashboardInfo(TOURNAMENT);
 
     const t = await prisma.tournament.findUniqueOrThrow({ where: { id: TOURNAMENT } });
