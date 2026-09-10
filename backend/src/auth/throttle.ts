@@ -56,6 +56,24 @@ const DEFAULT_LIMIT = 600;
  */
 const AUTH_LIMIT = 120;
 
+/**
+ * 상한을 넘긴 키를 막아 두는 길이. 지정하지 않으면 라이브러리가 `ttl`로
+ * 떨어뜨려 60초가 된다(T92) — 브라우저가 전부 Next 프로세스 하나를 거치는
+ * 이 토폴로지에서는 한 사람이 걸어도 대기열 전체가 그 창을 그대로 문다.
+ * 30초로 짧게 잡아 피해 시간을 반으로 줄인다. 상한(120)은 그대로 둔다 —
+ * 막힌 뒤에도 카운터가 계속 늘면 막힌 채로 못 풀리므로, 상한을 만지는 건
+ * 다른 문제다.
+ */
+const BLOCK_MS = 30_000;
+
+/**
+ * 429 본문의 `message`. 기본값(`ThrottlerException: Too Many Requests`)은
+ * 라이브러리가 박아 둔 영어 문구라 참가자 화면에 그대로 뜬다. 초 단위 남은
+ * 시간은 여기 넣지 않는다 — 요청마다 다른 값이고 `Retry-After` 헤더가 이미
+ * 들고 있다. 화면이 그 헤더와 이 문구를 합친다(`frontend/src/app/auth/action.ts`).
+ */
+const ERROR_MESSAGE = '로그인 요청이 많아 잠시 제한되었습니다. 잠시 후 다시 시도해 주세요.';
+
 type Env = Record<string, string | undefined>;
 
 /**
@@ -83,9 +101,25 @@ export function authLimit(env: Env = process.env): number {
   return positiveInt(env.THROTTLE_AUTH_LIMIT, AUTH_LIMIT);
 }
 
-/** `ThrottlerModule.forRoot`에 그대로 넘긴다. */
+export function blockDurationMs(env: Env = process.env): number {
+  return positiveInt(env.THROTTLE_BLOCK_MS, BLOCK_MS);
+}
+
+/**
+ * `ThrottlerModule.forRoot`에 그대로 넘긴다.
+ *
+ * 배열이 아니라 `{ throttlers, errorMessage }` 객체 형태다 — `getErrorMessage`가
+ * 옵션이 배열이면 커스텀 `errorMessage`를 아예 안 보기 때문이다(T92,
+ * `throttler.guard.js`의 `if (!Array.isArray(this.options))`). 배열로
+ * 돌리던 시절에는 문구를 실어도 조용히 무시됐다.
+ */
 export function throttlerOptions(env: Env = process.env) {
-  return [{ ttl: throttleWindowMs(env), limit: defaultLimit(env) }];
+  return {
+    throttlers: [
+      { ttl: throttleWindowMs(env), limit: defaultLimit(env), blockDuration: blockDurationMs(env) },
+    ],
+    errorMessage: ERROR_MESSAGE,
+  };
 }
 
 /**
@@ -94,6 +128,13 @@ export function throttlerOptions(env: Env = process.env) {
  * 데코레이터는 클래스가 import될 때 한 번 평가되므로 여기서 읽는 env도 그
  * 시점의 값이다. `main.ts`가 첫 줄에서 `dotenv/config`를 부르고 그 뒤에
  * `AppModule`을 들이므로 순서는 맞다.
+ *
+ * **블록 길이는 여기서 안 준다.** 라이브러리의 해석 순서가 라우트 → 모듈 →
+ * ttl이라(`throttler.guard.js`의
+ * `routeOrClassBlockDuration || namedThrottler.blockDuration || ttl`),
+ * 이 데코레이터가 `blockDuration`을 비워 두면 모듈의 `throttlerOptions()`가
+ * 정한 값(30초)이 그대로 인증 라우트에도 내려온다. 여기서 따로 값을 실으면
+ * 다음 사람이 두 자리를 맞춰야 한다고 착각하게 된다.
  */
 export function authThrottle(env: Env = process.env) {
   return { default: { ttl: throttleWindowMs(env), limit: authLimit(env) } };

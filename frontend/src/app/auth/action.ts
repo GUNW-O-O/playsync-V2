@@ -27,6 +27,22 @@ function failureMessage(body: unknown, fallback: string): string {
   return fallback;
 }
 
+/**
+ * 요청율 상한(429) 전용 안내문. 백엔드 본문의 `message`는 라이브러리가 박은
+ * `ThrottlerException: Too Many Requests`류 영어 문구라(`backend/src/auth/throttle.ts`),
+ * `failureMessage`처럼 그대로 띄우면 참가자가 영어 예외 이름을 읽는다(T92).
+ *
+ * 남은 시간은 서버가 `Retry-After` 헤더로 이미 들고 있다 — 화면이 숫자를
+ * 지어내지 않고 그 헤더를 읽는다. 헤더가 없거나 숫자가 아니면(프록시가
+ * 걸러내는 경우 등) 안내 문장만 남긴다. 헤더 하나 때문에 이 함수가 죽으면
+ * 안 되니 `Number()`가 실패해도 조용히 기본 문구로 떨어진다.
+ */
+function throttleMessage(res: Response): string {
+  const retryAfter = Number(res.headers.get('Retry-After'));
+  const wait = Number.isFinite(retryAfter) && retryAfter > 0 ? `${retryAfter}초 뒤` : '잠시 후';
+  return `로그인 요청이 몰려 잠시 닫혔습니다. ${wait} 다시 시도해 주세요.`;
+}
+
 // [회원가입 Action]
 export async function handleRegister(formData: FormData) {
   const password = formData.get('password');
@@ -39,6 +55,7 @@ export async function handleRegister(formData: FormData) {
   });
 
   if (!res.ok) {
+    if (res.status === 429) return { error: throttleMessage(res) };
     const body = await res.json().catch(() => null);
     return { error: failureMessage(body, '회원가입에 실패했습니다.') };
   }
@@ -63,6 +80,7 @@ export async function handleLogin(formData: FormData) {
   const data = await res.json().catch(() => null);
 
   if (!res.ok) {
+    if (res.status === 429) return { error: throttleMessage(res) };
     return { error: failureMessage(data, '아이디 또는 비밀번호가 틀렸습니다.') };
   }
   if (!data) {
