@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { ClosedTournamentStatusSchema } from '@playsync/contract';
+import { ClosedTournamentStatusSchema, type ClosedTournamentStatus } from '@playsync/contract';
 import JoinPanel from './JoinPanel';
 import { joinTournament } from './action';
 
@@ -10,9 +10,10 @@ type BlindLevel = { lv: number; sb: number; ante: boolean; duration: number };
 
 /**
  * `GET /tournaments/:id`가 주는 `{ tournament, seatStatus }` 봉투
- * (`backend/src/payment/payment.service.ts:64`)의 `tournament` 쪽.
- * `SessionService.getGameSession`이 만드는 값이라 필드가 이보다 많고,
- * 화면이 쓰는 것만 추린다. `dealerOtpHash`는 그 쿼리의 `omit`이 이미 뺀다.
+ * (`PaymentService.getTournamentInfo`)의 `tournament` 쪽. 그 함수는
+ * `SessionService.getGameSession`을 재사용하지 않고 자체 `select`를 쓰므로
+ * 필드가 이보다 많고, 화면이 쓰는 것만 추린다. `dealerOtpHash`는 그
+ * `select`가 이미 빼서 아예 나오지 않는다.
  */
 type TournamentDetail = {
   id: string;
@@ -26,6 +27,15 @@ type TournamentDetail = {
   activePlayers: number;
   storeId: string;
   blindStructure: { name: string; structure: BlindLevel[] } | null;
+};
+
+// `Record<ClosedTournamentStatus, string>`로 둔다. 리터럴 분기였다면 계약에
+// 닫힌 상태가 늘어도 그냥 컴파일이 돼, 새 상태가 폴백(「등록 마감」)으로
+// 조용히 떨어진다 — 이 티켓이 없애려던 바로 그 오독이다. `Record`는 계약이
+// 상태를 늘리는 순간 이 객체에 키가 빠졌다는 컴파일 에러를 낸다.
+const CLOSED_STATUS_LABEL: Record<ClosedTournamentStatus, string> = {
+  CANCELLED: '취소된 대회',
+  FINISHED: '종료된 대회',
 };
 
 async function fetchTournament(id: string): Promise<TournamentDetail | null> {
@@ -99,14 +109,14 @@ export default async function TournamentDetailPage({
             }`}
           >
             {/* 취소·종료를 「등록 마감」 하나로 뭉치면 "등록만 닫혔고 대회는
-                돈다"로 읽힌다 — 취소된 대회에는 참가할 대회 자체가 없다. */}
-            {tournament.status === 'CANCELLED'
-              ? '취소된 대회'
-              : tournament.status === 'FINISHED'
-                ? '종료된 대회'
-                : closed
-                  ? '등록 마감'
-                  : '등록 열림'}
+                돈다"로 읽힌다 — 취소된 대회에는 참가할 대회 자체가 없다.
+                열린 쪽(「등록 열림」/「등록 마감」)은 상태가 아니라 `closed`에서
+                나오므로 `CLOSED_STATUS_LABEL`에 넣지 않는다. */}
+            {isClosedStatus
+              ? CLOSED_STATUS_LABEL[tournament.status as ClosedTournamentStatus]
+              : closed
+                ? '등록 마감'
+                : '등록 열림'}
           </p>
         </div>
       </div>

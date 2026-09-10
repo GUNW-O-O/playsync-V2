@@ -36,6 +36,20 @@ const CANCELLED = {
   blindStructure: null,
 };
 
+const FINISHED = {
+  id: 't3',
+  name: '지난주 토너먼트',
+  status: 'FINISHED',
+  isRegistrationOpen: false,
+  entryFee: 50000,
+  startStack: 20000,
+  rebuyUntil: 3,
+  totalPlayers: 8,
+  activePlayers: 0,
+  storeId: 's1',
+  blindStructure: null,
+};
+
 const OPEN = {
   id: 't2',
   name: '금요일 프리즈아웃',
@@ -78,6 +92,24 @@ describe('대회 상세', () => {
 
     expect(screen.getByText('취소된 대회')).toBeInTheDocument();
     expect(screen.queryByText('등록 열림')).not.toBeInTheDocument();
+  });
+
+  it('종료된 대회는 「종료된 대회」로 적는다', async () => {
+    // CANCELLED만 고정하면 「취소된 대회」·「종료된 대회」를 서로 바꿔 적어도
+    // 이 파일이 전부 초록이다 — FINISHED가 CANCELLED보다 훨씬 흔한 상태라
+    // 따로 고정한다.
+    server.use(
+      http.get('http://backend.test/tournaments/t3', () =>
+        HttpResponse.json({ tournament: FINISHED }),
+      ),
+    );
+
+    render(await renderPage('t3'));
+
+    expect(screen.getByText('종료된 대회')).toBeInTheDocument();
+    expect(screen.queryByText('취소된 대회')).not.toBeInTheDocument();
+    expect(screen.queryByText('등록 열림')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /참가/ })).toBeDisabled();
   });
 
   it('등록이 열린 대회는 참가 버튼이 살아 있다', async () => {

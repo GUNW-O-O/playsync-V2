@@ -164,6 +164,12 @@ async function StoreTournaments({ storeId, query }: { storeId: string; query: st
             // 리터럴(`t.status !== 'FINISHED'`)을 남기지 않는다. 그 조회가
             // 바뀌는 날, 리터럴은 늘어난 닫힌 상태를 조용히 놓쳐 대회 상세
             // (`[id]/page.tsx`)와 같은 결함이 된다. 판정은 같은 스키마로 한다.
+            //
+            // 상세처럼 「취소된 대회」/「종료된 대회」로 문구를 가르지 않는다.
+            // 이 카드가 적는 것은 대회가 어떻게 끝났는지가 아니라 **지금
+            // 고를 수 있는가**뿐이고, 그 답은 언제나 "아니오"라 「등록 마감」
+            // 하나로 충분하다 — 어떻게 끝났는지는 눌러 들어간 상세가 적는다.
+            // 상세의 라벨 맵을 여기로 끌어오면 같은 문구가 두 파일에 산다.
             const open =
               t.isRegistrationOpen &&
               !(ClosedTournamentStatusSchema.options as readonly string[]).includes(t.status);
