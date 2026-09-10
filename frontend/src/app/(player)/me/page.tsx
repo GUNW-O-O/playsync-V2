@@ -8,7 +8,7 @@ const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
 /**
  * `GET /user/me/participations`의 행 하나.
  *
- * 모양의 출처는 `backend/src/user/user.service.ts:66-81`이다 —
+ * 모양의 출처는 `backend/src/user/user.service.ts`의 `getMyParticipations`다 —
  * `TournamentParticipation` 행에 `tournament` 관계를
  * `select: { id, name, status, entryFee, startedAt }`로 붙인 것이고,
  * 대회가 닫히면(`isClosedTournament` — `FINISHED` 또는 `CANCELLED`) 서버가

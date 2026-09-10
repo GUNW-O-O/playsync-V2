@@ -345,12 +345,15 @@ export default function ConsoleClient({
                   닫힌 대회는 그 폴백보다 먼저 걸린다 — 컬럼이 아직 열린
                   값으로 남아 있어도(`isClosed` 주석) 문 닫힌 대회에
                   「등록 열림」을 그리면 안 된다.
+
+                  「등록 열림」이 되는 경우는 닫히지 않았고 **또한**
+                  전광판(우선)·컬럼(차선) 값이 열림인 경우 하나뿐이고, 나머지는
+                  전부 「등록 마감」이다 — 뒤 두 분기가 둘 다 같은 문구였던
+                  중첩 삼항 대신 그 하나의 조건으로 접는다.
                 */}
-                {isClosed
-                  ? '등록 마감'
-                  : (numbers?.isRegistrationOpen ?? tournament.isRegistrationOpen)
-                    ? '등록 열림'
-                    : '등록 마감'}
+                {!isClosed && (numbers?.isRegistrationOpen ?? tournament.isRegistrationOpen)
+                  ? '등록 열림'
+                  : '등록 마감'}
               </span>
               <span className="text-[13px] text-[var(--ink-subtle)]">
                 레벨 {tournament.rebuyUntil}까지 리바인

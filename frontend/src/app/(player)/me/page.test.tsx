@@ -14,7 +14,7 @@ process.env.BACKEND_URL = 'http://backend.test';
 const { default: MyPage } = await import('./page');
 
 /**
- * 응답 모양의 출처: `backend/src/user/user.service.ts:66-81`.
+ * 응답 모양의 출처: `backend/src/user/user.service.ts`의 `getMyParticipations`.
  * `tournamentParticipation.findMany`의 행에 `tournament` 관계를
  * `select: { id, name, status, entryFee, startedAt }`로 붙인 것이고,
  * `playerOtp`는 대회가 닫히면(`isClosedTournament` — `FINISHED` 또는
@@ -115,6 +115,33 @@ const ABORTED = {
   },
 };
 
+/**
+ * 대회는 살아 있는데(ONGOING) 이 참가만 등수 없이 지난 참가로 넘어간 경우.
+ * `finalPlace: null`인 픽스처가 ABORTED(취소된 대회) 하나뿐이면 `'중단' :
+ * '탈락'`을 `'중단'` 하나로 접어도 초록이다 — 「탈락」이 그려지는 경로 자체가
+ * 검사에 없기 때문이다. 이 픽스처와 ABORTED를 같은 화면에 먹여야 두 문구가
+ * 서로를 증명한다(T29, 검사가 둘이면 어긋나는 입력이 있어야 각각이 증명된다).
+ */
+const ELIMINATED_NO_PLACE = {
+  id: 'p4',
+  tournamentId: 't3',
+  userId: 'u1',
+  status: 'ELIMINATED',
+  buyInCount: 1,
+  finalPlace: null,
+  prizeAmount: 0,
+  currentStack: 0,
+  playerOtp: null,
+  createdAt: '2026-08-12T09:00:00.000Z',
+  tournament: {
+    id: 't3',
+    name: '금요일 프리즈아웃',
+    status: 'ONGOING',
+    entryFee: 50000,
+    startedAt: '2026-08-12T10:00:00.000Z',
+  },
+};
+
 describe('/me — 내 참가', () => {
   beforeEach(() => {
     cookieStore.get.mockReturnValue({ value: 'jwt-value' });
@@ -194,6 +221,9 @@ describe('/me — 내 참가', () => {
 
     render(await MyPage());
 
+    // 이름 단언만으로는 이 행이 어느 섹션에 들어갔는지 간접적으로만 보인다.
+    // 「지난 참가」 헤더를 직접 보는 편이 읽는 사람에게 더 분명하다.
+    expect(screen.getByText('지난 참가')).toBeInTheDocument();
     expect(screen.getByText('중단된 토너먼트')).toBeInTheDocument();
     expect(screen.queryByText('진행 중')).not.toBeInTheDocument();
     expect(
@@ -212,6 +242,22 @@ describe('/me — 내 참가', () => {
 
     expect(screen.getByText('중단')).toBeInTheDocument();
     expect(screen.queryByText('탈락')).not.toBeInTheDocument();
+  });
+
+  it('중단(대회 취소)과 탈락(대회는 살아 있음)이 같은 화면에서 갈린다', async () => {
+    // 대회가 CANCELLED인 것과 참가자가 ELIMINATED인 것은 서로 다른 이유로
+    // 「지난 참가」에 들어간다 — 하나만 먹이면 다른 쪽 문구가 그려지는 길이
+    // 검사에 없어, `'중단' : '탈락'`을 한쪽으로 접어도 들키지 않는다.
+    server.use(
+      http.get('http://backend.test/user/me/participations', () =>
+        HttpResponse.json([ABORTED, ELIMINATED_NO_PLACE]),
+      ),
+    );
+
+    render(await MyPage());
+
+    expect(screen.getByText('중단')).toBeInTheDocument();
+    expect(screen.getByText('탈락')).toBeInTheDocument();
   });
 
   it('참가가 없으면 빈 안내를 그린다', async () => {
