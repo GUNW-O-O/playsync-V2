@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { ClosedTournamentStatusSchema } from '@playsync/contract';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
 
@@ -158,7 +159,14 @@ async function StoreTournaments({ storeId, query }: { storeId: string; query: st
       ) : (
         <ul className="flex flex-col gap-4">
           {tournaments.map((t) => {
-            const open = t.isRegistrationOpen && t.status !== 'FINISHED';
+            // `getStoreAvailableSessions`가 PENDING·ONGOING만 걸러 주므로
+            // 지금은 CANCELLED·FINISHED가 이 목록에 오지 않는다 — 그래도
+            // 리터럴(`t.status !== 'FINISHED'`)을 남기지 않는다. 그 조회가
+            // 바뀌는 날, 리터럴은 늘어난 닫힌 상태를 조용히 놓쳐 대회 상세
+            // (`[id]/page.tsx`)와 같은 결함이 된다. 판정은 같은 스키마로 한다.
+            const open =
+              t.isRegistrationOpen &&
+              !(ClosedTournamentStatusSchema.options as readonly string[]).includes(t.status);
             return (
               <li key={t.id}>
                 <Link

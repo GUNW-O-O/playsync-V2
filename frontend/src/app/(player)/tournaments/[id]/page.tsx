@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { ClosedTournamentStatusSchema } from '@playsync/contract';
 import JoinPanel from './JoinPanel';
 import { joinTournament } from './action';
 
@@ -67,7 +68,14 @@ export default async function TournamentDetailPage({
   }
 
   const levels = tournament.blindStructure?.structure ?? [];
-  const closed = !tournament.isRegistrationOpen || tournament.status === 'FINISHED';
+  // 중단·취소(`abortSession`·`cancelSession`)는 `isRegistrationOpen` 컬럼을
+  // flip하지 않는다 — flip하는 곳은 `closeRegistration` 하나뿐이다. 그래서
+  // 컬럼만 보면 취소된 대회도 「등록 열림」으로 보여, 참가 버튼이 살아 있게
+  // 된다. 닫힌 상태(`ClosedTournamentStatusSchema`)를 컬럼과 함께 본다.
+  const isClosedStatus = (
+    ClosedTournamentStatusSchema.options as readonly string[]
+  ).includes(tournament.status);
+  const closed = !tournament.isRegistrationOpen || isClosedStatus;
 
   return (
     <div className="flex flex-col gap-6 p-6 pb-10">
@@ -90,7 +98,15 @@ export default async function TournamentDetailPage({
               closed ? 'text-[var(--ink-subtle)]' : 'text-[var(--ok)]'
             }`}
           >
-            {closed ? '등록 마감' : '등록 열림'}
+            {/* 취소·종료를 「등록 마감」 하나로 뭉치면 "등록만 닫혔고 대회는
+                돈다"로 읽힌다 — 취소된 대회에는 참가할 대회 자체가 없다. */}
+            {tournament.status === 'CANCELLED'
+              ? '취소된 대회'
+              : tournament.status === 'FINISHED'
+                ? '종료된 대회'
+                : closed
+                  ? '등록 마감'
+                  : '등록 열림'}
           </p>
         </div>
       </div>
