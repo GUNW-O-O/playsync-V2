@@ -19,6 +19,11 @@ type TournamentDetail = {
   id: string;
   name: string;
   status: string;
+  // 컬럼이 아니라 파생값이다(T90). `getTournamentInfo`는 컬럼이 열려 있으면
+  // `isRegistrationOpenLive`(registration-gate.ts)로 다시 판정해 그 결과로
+  // 덮어써 내보낸다 — 컬럼은 상점이 손으로 닫은 것만 담고, 블라인드가
+  // `rebuyUntil`을 지나 자동으로 닫힌 마감은 안 담아서 원시 컬럼을 그대로
+  // 믿으면 마감된 대회에도 「등록 열림」이 뜬다.
   isRegistrationOpen: boolean;
   entryFee: number;
   startStack: number;

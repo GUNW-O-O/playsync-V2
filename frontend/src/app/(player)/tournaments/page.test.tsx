@@ -34,6 +34,24 @@ const OPEN = {
   totalPlayers: 2,
 };
 
+/**
+ * 마감 레벨을 지났지만 대회는 여전히 진행 중인 경우다(T90). `open` 판정은
+ * `isRegistrationOpen && !isClosedStatus`인데 `ONGOING`은 닫힌 상태가
+ * 아니므로 판정은 오직 `isRegistrationOpen`에 달렸다. 이 화면은 상세와
+ * 달리 「취소된 대회」/「종료된 대회」로 문구를 가르지 않고 「등록 마감」
+ * 하나로 뭉친다(page.tsx의 `open` 판정 옆 주석) — 그래서 여기서 지키는
+ * 것은 그 두 갈래 문구뿐이다.
+ */
+const ONGOING_PAST_DEADLINE = {
+  id: 't4',
+  name: '진행 중 프리즈아웃',
+  status: 'ONGOING',
+  isRegistrationOpen: false,
+  entryFee: 50000,
+  startStack: 20000,
+  totalPlayers: 6,
+};
+
 function mockStore(tournaments: unknown[]) {
   server.use(
     http.get('http://backend.test/tournaments/stores', () =>
@@ -75,5 +93,14 @@ describe('대회 찾기 — 상점의 대회 목록', () => {
     render(await renderStore());
 
     expect(screen.getByText('등록 열림')).toBeInTheDocument();
+  });
+
+  it('진행 중이어도 마감 레벨을 지났으면 「등록 마감」으로 그린다', async () => {
+    mockStore([ONGOING_PAST_DEADLINE]);
+
+    render(await renderStore());
+
+    expect(screen.getByText('등록 마감')).toBeInTheDocument();
+    expect(screen.queryByText('등록 열림')).not.toBeInTheDocument();
   });
 });

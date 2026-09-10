@@ -64,6 +64,27 @@ const OPEN = {
   blindStructure: null,
 };
 
+/**
+ * 마감 레벨을 지났지만 대회는 여전히 진행 중인 경우다(T90). `ONGOING`은
+ * `ClosedTournamentStatusSchema`에 없으므로 `isClosedStatus`는 거짓이고,
+ * 오직 `isRegistrationOpen`(`getTournamentInfo`가 `isRegistrationOpenLive`로
+ * 다시 판정해 덮어쓴 값)만 마감을 안다. 이 검사가 지키는 것은 화면이 아니라
+ * 그 파생값이 응답에 실린다는 봉투의 뜻이다.
+ */
+const ONGOING_PAST_DEADLINE = {
+  id: 't4',
+  name: '진행 중 프리즈아웃',
+  status: 'ONGOING',
+  isRegistrationOpen: false,
+  entryFee: 50000,
+  startStack: 20000,
+  rebuyUntil: 3,
+  totalPlayers: 6,
+  activePlayers: 6,
+  storeId: 's1',
+  blindStructure: null,
+};
+
 function renderPage(id: string) {
   return TournamentDetailPage({ params: Promise.resolve({ id }) });
 }
@@ -125,5 +146,19 @@ describe('대회 상세', () => {
 
     expect(screen.getByRole('button', { name: /참가/ })).not.toBeDisabled();
     expect(screen.getByText('등록 열림')).toBeInTheDocument();
+  });
+
+  it('진행 중이어도 마감 레벨을 지났으면 「등록 마감」이고 참가 버튼이 죽어 있다', async () => {
+    server.use(
+      http.get('http://backend.test/tournaments/t4', () =>
+        HttpResponse.json({ tournament: ONGOING_PAST_DEADLINE }),
+      ),
+    );
+
+    render(await renderPage('t4'));
+
+    expect(screen.getByText('등록 마감')).toBeInTheDocument();
+    expect(screen.queryByText('등록 열림')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /참가/ })).toBeDisabled();
   });
 });
