@@ -60,6 +60,17 @@ export class PaymentService {
    * `isRegistrationOpenNow`는 DB 재료(`startedAt`·`pausedMs`·블라인드
    * 구조·컬럼·`rebuyUntil`)만으로 끝나는 순수 함수라, 쿼리 한 번으로 받은
    * 값들을 메모리에서 N번 다시 세는 것으로 충분하다.
+   *
+   * **이 라우트는 가드 없는 공개 조회이기도 하다.** `select` 없는 `findMany`는
+   * 스칼라를 전부 실어(T91) `payoutTable`·`totalBuyinAmount` 같은 남의 정산
+   * 정보와 `pausedMs` 같은 내부 상태까지 나갔다. 화면 셋이 실제로 읽는 필드만
+   * 남긴다:
+   *   - 참가자 대회 목록(`(player)/tournaments/page.tsx`): id·name·status·
+   *     isRegistrationOpen·entryFee·startStack·totalPlayers
+   *   - 딜러 대기(`(terminal)/dealer/page.tsx`의 `DealerWaitingClient`):
+   *     id·name·status
+   *   - 좌석 대기(`(terminal)/table/page.tsx`의 `WaitingClient`):
+   *     id·name·status
    */
   async getStoreAvailableSessions(storeId: string) {
     const tournaments = await this.prismaService.tournament.findMany({
@@ -67,18 +78,6 @@ export class PaymentService {
         storeId: storeId,
         status: NOT_CLOSED_TOURNAMENT_FILTER,
       },
-      // 이 라우트는 가드 없는 공개 조회다. select 없는 findMany는 스칼라를
-      // 전부 실어(T91) `payoutTable`·`totalBuyinAmount` 같은 남의 정산 정보와
-      // `pausedMs` 같은 내부 상태까지 나갔다. 화면 셋이 실제로 읽는 필드만
-      // 남긴다:
-      //   - 참가자 대회 목록(`(player)/tournaments/page.tsx`): id·name·status·
-      //     isRegistrationOpen·entryFee·startStack·totalPlayers
-      //   - 딜러 대기(`(terminal)/dealer/page.tsx`의 `DealerWaitingClient`):
-      //     id·name·status
-      //   - 좌석 대기(`(terminal)/table/page.tsx`의 `WaitingClient`):
-      //     id·name·status
-      // 그 아래 `startedAt`·`pausedMs`·`rebuyUntil`·`blindStructure`는 화면이
-      // 안 읽는 파생의 재료다 — 아래서 계산에만 쓰고 응답 전에 벗겨낸다.
       select: {
         id: true,
         name: true,
@@ -87,6 +86,8 @@ export class PaymentService {
         entryFee: true,
         startStack: true,
         totalPlayers: true,
+        // 위 화면 중 어느 것도 안 읽는 파생의 재료다 — 아래서 계산에만
+        // 쓰고 응답 전에 벗겨낸다.
         startedAt: true,
         pausedMs: true,
         rebuyUntil: true,
