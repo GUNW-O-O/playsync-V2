@@ -1,8 +1,9 @@
 import { TournamentStatus } from '@prisma/client';
+import { ClosedTournamentStatusSchema } from '@playsync/contract';
 import { PaymentService } from 'src/payment/payment.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { SessionService } from './session.service';
-import { isClosedTournament } from './tournament-status';
+import { CLOSED_TOURNAMENT_STATUSES, isClosedTournament } from './tournament-status';
 
 /**
  * 살아 있는 대회를 조회에서 빠뜨리지 않는지(T71 9-3).
@@ -63,5 +64,20 @@ describe('닫히지 않은 대회는 조회에서 빠지지 않는다', () => {
     await service.getGameSessionWithTables('trn-1');
 
     expectMatchesClosedRule(findUnique.mock.calls[0][0].where.status, 'getGameSessionWithTables');
+  });
+});
+
+/**
+ * 닫힘 목록이 두 벌이다 — 이 파일의 `CLOSED_TOURNAMENT_STATUSES`와
+ * `@playsync/contract`의 `ClosedTournamentStatusSchema`(`tournamentClosed`
+ * 이벤트가 딜러 화면에, `/me`가 참가자 화면에 각각 쓴다). 둘이 독립된 목록인
+ * 채로는 이 브랜치의 명분("상태가 하나 늘면 두 화면이 같이 따라간다")이
+ * 백엔드에서만 지켜지고 프론트 둘은 조용히 이 결함으로 되돌아간다.
+ */
+describe('닫힘 목록이 contract와 같다', () => {
+  it('CLOSED_TOURNAMENT_STATUSES와 ClosedTournamentStatusSchema가 같은 집합이다', () => {
+    const fromBackend = [...CLOSED_TOURNAMENT_STATUSES].sort();
+    const fromContract = [...ClosedTournamentStatusSchema.options].sort();
+    expect(fromBackend).toEqual(fromContract);
   });
 });

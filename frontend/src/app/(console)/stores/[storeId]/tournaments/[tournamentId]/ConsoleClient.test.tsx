@@ -17,13 +17,21 @@ const TOURNAMENT: TournamentMeta = {
   startStack: 5000,
 };
 
-function renderConsole(reissue = vi.fn(async () => ({ ok: true as const, dealerOtp: '920576' }))) {
+/**
+ * 딜러 OTP·좌석 선택 describe는 이 시그니처(첫 인자가 `reissue`)로 이미
+ * 부르고 있으므로 그대로 둔다. `tournament`·`dashboard`를 바꿔야 하는
+ * 검사(「등록 마감」)만 두 번째 인자로 override를 넘긴다.
+ */
+function renderConsole(
+  reissue = vi.fn(async () => ({ ok: true as const, dealerOtp: '920576' })),
+  overrides: { tournament?: TournamentMeta; dashboard?: unknown } = {},
+) {
   render(
     <ConsoleClient
       storeId="store-1"
       tournamentId="trn-1"
-      tournament={TOURNAMENT}
-      dashboard={null}
+      tournament={overrides.tournament ?? TOURNAMENT}
+      dashboard={(overrides.dashboard ?? null) as never}
       tables={[{ id: 'tbl-1', tableOrder: 1 }]}
       seatOccupants={[{ tableId: 'tbl-1', tableOrder: 1, players: [] }]}
       seatError={null}
@@ -221,28 +229,11 @@ describe('ConsoleClient — 등록 마감', () => {
   };
 
   it('컬럼이 열려 있어도 전광판 값이 닫혔으면 「등록 마감」이다', () => {
-    render(
-      <ConsoleClient
-        storeId="store-1"
-        tournamentId="trn-1"
-        // 컬럼은 아직 열려 있다. 게으른 flip이 아직 안 왔다.
-        tournament={{ ...TOURNAMENT, status: 'ONGOING', isRegistrationOpen: true }}
-        dashboard={{ dashboard: numbers, blindField: null } as never}
-        tables={[{ id: 'tbl-1', tableOrder: 1 }]}
-        seatOccupants={[{ tableId: 'tbl-1', tableOrder: 1, players: [] }]}
-        seatError={null}
-        startTournament={vi.fn(async () => ({ ok: true as const }))}
-        openTable={vi.fn(async () => ({ ok: true as const }))}
-        closeTable={vi.fn(async () => ({ ok: true as const }))}
-        releaseSeats={vi.fn(async () => ({ ok: true as const }))}
-        reissueDealerOtp={vi.fn(async () => ({ ok: true as const, dealerOtp: '920576' }))}
-        preview={null}
-        completeTournament={vi.fn(async () => ({ ok: true as const }))}
-        chopTournament={vi.fn(async () => ({ ok: true as const }))}
-        abortTournament={vi.fn(async () => ({ ok: true as const }))}
-        fetchFinishPreview={vi.fn(async () => ({ error: '없음' }))}
-      />,
-    );
+    renderConsole(undefined, {
+      // 컬럼은 아직 열려 있다. 게으른 flip이 아직 안 왔다.
+      tournament: { ...TOURNAMENT, status: 'ONGOING', isRegistrationOpen: true },
+      dashboard: { dashboard: numbers, blindField: null },
+    });
 
     expect(screen.getByText('등록 마감')).toBeInTheDocument();
     expect(screen.queryByText('등록 열림')).not.toBeInTheDocument();
@@ -251,9 +242,43 @@ describe('ConsoleClient — 등록 마감', () => {
   /**
    * **시작 전에는 컬럼이 곧 답이다.** 레벨이 없어서 파생할 재료가 없고,
    * `isRegistrationOpenLive`도 같은 자리에서 컬럼으로 떨어진다.
+   *
+   * 평균 스택도 같은 폴백을 탄다 — `numbers`가 없을 때 `tournament.startStack`
+   * (5,000)으로 떨어지는 것이 T77의 답이다. 이 단언이 없으면 그 폴백을 통째로
+   * 지워도(예: `numbers ? … : '-'`) 이 검사는 배지만 보고 초록으로 남는다.
    */
   it('전광판 값이 없으면 컬럼을 그대로 쓴다', () => {
     renderConsole();
     expect(screen.getByText('등록 열림')).toBeInTheDocument();
+    expect(screen.getByText('평균 스택').nextElementSibling).toHaveTextContent('5,000');
+  });
+
+  /**
+   * 대회를 닫으면(`abortSession`·`cancelSession`) Redis가 지워져 `dashboard`가
+   * `null`로 온다. 그런데 `isRegistrationOpen` 컬럼은 닫기 전 값 그대로
+   * 남는다 — 열어 둔 채로 닫힌 대회면 컬럼 폴백이 「등록 열림」을 그린다.
+   * 닫힌 대회는 컬럼도 전광판 값도 보지 않고 무조건 「등록 마감」이어야 한다.
+   */
+  it('닫힌 대회는 컬럼이 열려 있어도 「등록 마감」이다', () => {
+    renderConsole(undefined, {
+      tournament: { ...TOURNAMENT, status: 'CANCELLED', isRegistrationOpen: true },
+    });
+
+    expect(screen.getByText('등록 마감')).toBeInTheDocument();
+    expect(screen.queryByText('등록 열림')).not.toBeInTheDocument();
+  });
+
+  /**
+   * 평균 스택도 같은 문제다. `numbers`가 없을 때 `tournament.startStack`으로
+   * 떨어지는 것은 시작 전 대회를 위한 폴백(T77)인데, 닫힌 대회에 그대로
+   * 적용하면 이미 끝난 대회가 시작 스택을 스택인 양 계속 보여준다.
+   */
+  it('닫힌 대회는 평균 스택도 값이 남지 않는다', () => {
+    renderConsole(undefined, {
+      tournament: { ...TOURNAMENT, status: 'CANCELLED', isRegistrationOpen: true },
+    });
+
+    expect(screen.getByText('평균 스택').nextElementSibling).toHaveTextContent('-');
+    expect(screen.queryByText('5,000')).not.toBeInTheDocument();
   });
 });

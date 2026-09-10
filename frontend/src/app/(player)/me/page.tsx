@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { cookies } from 'next/headers';
+import { ClosedTournamentStatusSchema } from '@playsync/contract';
 import OtpReveal from './OtpReveal';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
@@ -7,11 +8,11 @@ const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
 /**
  * `GET /user/me/participations`의 행 하나.
  *
- * 모양의 출처는 `backend/src/user/user.service.ts:66-81`이다 —
+ * 모양의 출처는 `backend/src/user/user.service.ts`의 `getMyParticipations`다 —
  * `TournamentParticipation` 행에 `tournament` 관계를
  * `select: { id, name, status, entryFee, startedAt }`로 붙인 것이고,
- * 대회가 `FINISHED`면 서버가 `playerOtp`를 `null`로 지운 뒤 내려보낸다.
- * 화면이 쓰는 것만 추린다.
+ * 대회가 닫히면(`isClosedTournament` — `FINISHED` 또는 `CANCELLED`) 서버가
+ * `playerOtp`를 `null`로 지운 뒤 내려보낸다. 화면이 쓰는 것만 추린다.
  */
 type Participation = {
   id: string;
@@ -82,9 +83,18 @@ export default async function MyPage() {
   // 돌아간다(`EliminatedOverlay.tsx`) — 그 약속이 지켜지는 자리가 여기다.
   //
   // `playerOtp`의 null 여부로 가르지 않는다. 서버가 그 값을 지우는 조건
-  // (`FINISHED`)을 화면이 한 번 더 추측하게 된다.
+  // (`isClosedTournament`)을 화면이 한 번 더 추측하게 된다.
+  //
+  // 대회 쪽 조건은 `FINISHED` 하나가 아니라 `ClosedTournamentStatusSchema`로
+  // 판정한다 — 상태를 목록으로 직접 적으면 닫힌 상태가 늘 때 조용히 빠진다
+  // (`tournament-status.ts`가 같은 이유로 그 목록을 들고 있다). 참가 쪽
+  // 조건(`ELIMINATED`·`AWARDED`)은 대회가 도는 중의 탈락을 잡는 것이라 그대로
+  // 둔다.
+  const closedTournamentStatuses: readonly string[] = ClosedTournamentStatusSchema.options;
   const isOver = (r: Participation) =>
-    r.tournament.status === 'FINISHED' || r.status === 'ELIMINATED' || r.status === 'AWARDED';
+    closedTournamentStatuses.includes(r.tournament.status) ||
+    r.status === 'ELIMINATED' ||
+    r.status === 'AWARDED';
   const ongoing = rows.filter((r) => !isOver(r));
   const past = rows.filter(isOver);
 
@@ -131,9 +141,11 @@ export default async function MyPage() {
               {row.playerOtp ? (
                 <OtpReveal otp={row.playerOtp} />
               ) : (
-                /* 서버가 OTP를 지우는 조건은 FINISHED 하나뿐이라 여기까지
-                   오는 일은 없어야 한다. 그래도 버튼을 그려 두면 눌러도
-                   빈 칸이 뜨는 화면이 된다. */
+                /* 서버가 OTP를 지우는 조건은 대회가 닫힌 경우
+                   (`isClosedTournament`) 뿐이고, 닫힌 대회는 위 `isOver`가
+                   이미 「지난 참가」로 걸러 이 카드까지 오지 않는다 — 그래서
+                   진행 중 참가에서 playerOtp가 비는 일은 없어야 한다. 그래도
+                   버튼을 그려 두면 눌러도 빈 칸이 뜨는 화면이 된다. */
                 <p className="text-[14px] leading-[1.29] tracking-[0.16px] text-[var(--ink-muted)]">
                   참가 OTP가 없습니다. 상점에 문의하세요.
                 </p>
@@ -169,7 +181,9 @@ export default async function MyPage() {
                 <div className="flex shrink-0 flex-col items-end gap-0.5">
                   {row.finalPlace === null ? (
                     <span className="text-[14px] tracking-[0.16px] text-[var(--ink-subtle)]">
-                      탈락
+                      {/* 대회가 CANCELLED로 닫혔으면 이 사람은 탈락한 것이
+                          아니라 환불을 받은 것이다 — 문구를 가른다. */}
+                      {row.tournament.status === 'CANCELLED' ? '중단' : '탈락'}
                     </span>
                   ) : (
                     <>

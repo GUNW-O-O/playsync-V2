@@ -14,10 +14,11 @@ process.env.BACKEND_URL = 'http://backend.test';
 const { default: MyPage } = await import('./page');
 
 /**
- * 응답 모양의 출처: `backend/src/user/user.service.ts:66-81`.
+ * 응답 모양의 출처: `backend/src/user/user.service.ts`의 `getMyParticipations`.
  * `tournamentParticipation.findMany`의 행에 `tournament` 관계를
  * `select: { id, name, status, entryFee, startedAt }`로 붙인 것이고,
- * `playerOtp`는 대회가 `FINISHED`면 서버가 `null`로 지운다(같은 함수 79행).
+ * `playerOtp`는 대회가 닫히면(`isClosedTournament` — `FINISHED` 또는
+ * `CANCELLED`) 서버가 `null`로 지운다(같은 함수의 `getMyParticipations`).
  *
  * 지어내지 않는다 — 예전에 목이 봉투를 안 벗겨 그 경로에 닿지도 못한 적이 있다.
  */
@@ -84,6 +85,60 @@ const ELIMINATED_MIDWAY = {
     status: 'ONGOING',
     entryFee: 50000,
     startedAt: '2026-08-05T10:00:00.000Z',
+  },
+};
+
+/**
+ * 대회가 중단된 경우(`abortSession`). 참가 행 자신의 `status`는 원장이라
+ * 손대지 않고 그대로 `PLAYING`으로 남지만(`session.service.ts`), 대회
+ * 쪽은 `CANCELLED`이고 서버가 `isClosedTournament`로 `playerOtp`를 이미
+ * `null`로 지운다(`user.service.ts`의 `getMyParticipations`). 등수도 없다
+ * — 탈락이 아니라 환불이라 매길 등수가 없다.
+ */
+const ABORTED = {
+  id: 'p3',
+  tournamentId: 't2',
+  userId: 'u1',
+  status: 'PLAYING',
+  buyInCount: 1,
+  finalPlace: null,
+  prizeAmount: 0,
+  currentStack: 3000,
+  playerOtp: null,
+  createdAt: '2026-08-10T09:00:00.000Z',
+  tournament: {
+    id: 't2',
+    name: '중단된 토너먼트',
+    status: 'CANCELLED',
+    entryFee: 50000,
+    startedAt: '2026-08-10T10:00:00.000Z',
+  },
+};
+
+/**
+ * 대회는 살아 있는데(ONGOING) 이 참가만 등수 없이 지난 참가로 넘어간 경우.
+ * `finalPlace: null`인 픽스처가 ABORTED(취소된 대회) 하나뿐이면 `'중단' :
+ * '탈락'`을 `'중단'` 하나로 접어도 초록이다 — 「탈락」이 그려지는 경로 자체가
+ * 검사에 없기 때문이다. 이 픽스처와 ABORTED를 같은 화면에 먹여야 두 문구가
+ * 서로를 증명한다(T29, 검사가 둘이면 어긋나는 입력이 있어야 각각이 증명된다).
+ */
+const ELIMINATED_NO_PLACE = {
+  id: 'p4',
+  tournamentId: 't3',
+  userId: 'u1',
+  status: 'ELIMINATED',
+  buyInCount: 1,
+  finalPlace: null,
+  prizeAmount: 0,
+  currentStack: 0,
+  playerOtp: null,
+  createdAt: '2026-08-12T09:00:00.000Z',
+  tournament: {
+    id: 't3',
+    name: '금요일 프리즈아웃',
+    status: 'ONGOING',
+    entryFee: 50000,
+    startedAt: '2026-08-12T10:00:00.000Z',
   },
 };
 
@@ -155,6 +210,54 @@ describe('/me — 내 참가', () => {
 
     expect(screen.getByText('5위')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '참가 OTP 조회' })).not.toBeInTheDocument();
+  });
+
+  it('중단된 대회는 「지난 참가」로 간다', async () => {
+    server.use(
+      http.get('http://backend.test/user/me/participations', () =>
+        HttpResponse.json([ABORTED]),
+      ),
+    );
+
+    render(await MyPage());
+
+    // 이름 단언만으로는 이 행이 어느 섹션에 들어갔는지 간접적으로만 보인다.
+    // 「지난 참가」 헤더를 직접 보는 편이 읽는 사람에게 더 분명하다.
+    expect(screen.getByText('지난 참가')).toBeInTheDocument();
+    expect(screen.getByText('중단된 토너먼트')).toBeInTheDocument();
+    expect(screen.queryByText('진행 중')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('참가 OTP가 없습니다. 상점에 문의하세요.'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('중단된 대회는 「탈락」이 아니라 「중단」으로 적는다', async () => {
+    server.use(
+      http.get('http://backend.test/user/me/participations', () =>
+        HttpResponse.json([ABORTED]),
+      ),
+    );
+
+    render(await MyPage());
+
+    expect(screen.getByText('중단')).toBeInTheDocument();
+    expect(screen.queryByText('탈락')).not.toBeInTheDocument();
+  });
+
+  it('중단(대회 취소)과 탈락(대회는 살아 있음)이 같은 화면에서 갈린다', async () => {
+    // 대회가 CANCELLED인 것과 참가자가 ELIMINATED인 것은 서로 다른 이유로
+    // 「지난 참가」에 들어간다 — 하나만 먹이면 다른 쪽 문구가 그려지는 길이
+    // 검사에 없어, `'중단' : '탈락'`을 한쪽으로 접어도 들키지 않는다.
+    server.use(
+      http.get('http://backend.test/user/me/participations', () =>
+        HttpResponse.json([ABORTED, ELIMINATED_NO_PLACE]),
+      ),
+    );
+
+    render(await MyPage());
+
+    expect(screen.getByText('중단')).toBeInTheDocument();
+    expect(screen.getByText('탈락')).toBeInTheDocument();
   });
 
   it('참가가 없으면 빈 안내를 그린다', async () => {
