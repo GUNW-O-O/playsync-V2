@@ -14,6 +14,7 @@ import {
   asClosedTournamentWrite,
 } from 'src/store/session/tournament-status';
 import { RedisService } from 'src/redis/redis.service';
+import { closeRegistration } from 'src/store/session/registration-gate';
 import { retryAsync } from 'src/common/retry';
 import { entryCountOf, payoutsForRaw } from './payout-table';
 import { awardPrize, prizeFor, prizePoolOf, splitBustedRanks } from './prize';
@@ -776,9 +777,37 @@ export class PlaysyncService {
     return result.success ? startStack : 0;
   }
 
+  /**
+   * 전광판 조회. `getFullTournamentInfo`가 이미 파생값을 돌려준다
+   * (`checkAndSyncBlindLevel`이 동기화된 레벨로 판정을 다시 세운다) — 안
+   * 따라가는 것은 `Tournament.isRegistrationOpen` 컬럼뿐이다. 파생이 닫힘이면
+   * 결제 게이트·딜러의 파이널 테이블 게이트와 같은 이유로 여기서도
+   * `closeRegistration`을 부른다. **문지기 없이 매번 부른다.**
+   *
+   * Redis 해시가 이미 마감을 반영했는지로 이 호출을 거르려 한 적이 있었다
+   * (T90 리뷰). `checkAndSyncBlindLevel`을 부르는 다른 경로들
+   * (`DealerService.startPreFlop`·`RecoveryService`)은 Postgres를 안
+   * 건드리므로, 대시보드가 한 번도 보기 전에 해시가 먼저 `'0'`이 될 수 있다
+   * — 그러면 문지기가 "이미 닫혔다"로 잘못 읽어 이 대회의 컬럼을 영영 못
+   * 닫았다. 실패를 삼키는 `closeRegistration`의 재시도도 그 문지기가 막았다.
+   * 조용하고 재시도 없는 구멍이라 문지기를 없앴다.
+   *
+   * 이 폴링 라우트가 매번 Postgres까지 왕복하는 대가를 치른다는 뜻이다.
+   * 그래도 안전한 이유는 `closeRegistration`의 `updateMany`가 **조건부**라서
+   * 다 — `WHERE isRegistrationOpen: true`라 이미 닫힌 행은 0행을 건드리고
+   * 끝난다(실제 쓰기는 최초 한 번뿐). 폴링마다 나가는 것은 그 조건부
+   * UPDATE 한 번이지, 컬럼이 다시 열리는 것이 아니다 — 마감은 여전히
+   * 단조다.
+   */
   async getDashboardInfo(tournamentId: string) {
     const info = await this.redis.getFullTournamentInfo(tournamentId);
-    return info ? info : null;
+    if (!info) return null;
+
+    if (!info.dashboard.isRegistrationOpen) {
+      await closeRegistration(this.prisma, tournamentId, (m) => this.logger.warn(m));
+    }
+
+    return info;
   }
 
 }

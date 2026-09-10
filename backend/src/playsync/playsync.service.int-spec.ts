@@ -719,3 +719,160 @@ describe('PlaysyncService.syncTableInventoryToDb — 버튼 좌석', () => {
     expect(`버튼 ${table.buttonUser}`).toBe('버튼 5');
   });
 });
+
+/**
+ * T90. **전광판 조회가 파생 마감을 DB에도 남긴다.**
+ *
+ * `getFullTournamentInfo`는 이미 파생값을 돌려준다 —
+ * `checkAndSyncBlindLevel`이 동기화된 레벨로 판정을 다시 세운다. 안 따라가는
+ * 것은 `Tournament.isRegistrationOpen` 컬럼뿐이다. 결제 게이트·딜러의 파이널
+ * 테이블 게이트와 같은 이유로, 여기서도 파생이 닫힘이면 컬럼을 닫는다 —
+ * **문지기 없이 파생이 닫힘일 때마다 부른다.**
+ *
+ * 전에는 Redis 해시가 이미 마감을 반영했는지로 이 호출을 걸렀다(폴링마다
+ * Postgres UPDATE가 나가면 안 된다는 것이 그 근거였다). 그 문지기는 리뷰가
+ * 잡은 구멍이었다 — `checkAndSyncBlindLevel`을 부르는 다른 경로들
+ * (`DealerService.startPreFlop`·`RecoveryService`)이 Postgres는 안 건드리고
+ * 해시만 먼저 `'0'`으로 내릴 수 있어서, 대시보드가 한 번도 보기 전에 이미
+ * "닫힘"으로 보이면 문지기가 영영 열려 그 대회의 컬럼을 못 닫았다. 조용하고
+ * 재시도도 없는 구멍이라 문지기를 없앴다 — `closeRegistration`의
+ * `updateMany`가 이미 조건부(`WHERE isRegistrationOpen: true`)라 폴링마다
+ * 불러도 실제 쓰기는 최초 한 번뿐이다.
+ */
+describe('PlaysyncService.getDashboardInfo — 등록 마감', () => {
+  let redis: Redis;
+  let prisma: PrismaClient;
+  let redisService: RedisService;
+  let service: PlaysyncService;
+
+  const TOURNAMENT = 'dashboard-close-1';
+
+  // 레벨 하나가 1분인 구조 셋 — payment.service.int-spec.ts의 것과 같다.
+  const STRUCTURE = [
+    { lv: 1, sb: 100, ante: false, duration: 1 },
+    { lv: 2, sb: 200, ante: false, duration: 1 },
+    { lv: 3, sb: 300, ante: false, duration: 1 },
+  ];
+
+  /** DB 대회 하나. 컬럼은 아직 `true`고, 시작한 지 90초라 이미 레벨 인덱스 1(lv 2)다. */
+  async function seedTournament() {
+    const owner = await prisma.user.create({ data: { nickname: 'dash-owner', password: 'x' } });
+    const store = await prisma.store.create({ data: { name: 'dash-store', ownerId: owner.id } });
+    const blind = await prisma.blindStructure.create({
+      data: { name: 'dash-blind', storeId: store.id, structure: STRUCTURE },
+    });
+    await prisma.tournament.create({
+      data: {
+        id: TOURNAMENT,
+        name: '전광판 마감 대회',
+        blindId: blind.id,
+        storeId: store.id,
+        dealerOtpHash: 'unused-hash',
+        entryFee: 1000,
+        startStack: 10000,
+        rebuyUntil: 2,
+        isRegistrationOpen: true,
+        status: 'ONGOING',
+        startedAt: new Date(Date.now() - 90_000),
+      },
+    });
+  }
+
+  /**
+   * 대시보드가 아직 레벨 0(등록 열림)을 캐시해 뒀다고 흉내낸다. `nextLevelAt`을
+   * 과거로 둬야 `getFullTournamentInfo`가 이번 호출에서 재계산(전이)을 탄다
+   * — redis.service.int-spec.ts의 `checkAndSyncBlindLevel` 시나리오와 같은 장치다.
+   */
+  async function seedRedisMeta() {
+    await redisService.setTournamentMeta(
+      TOURNAMENT,
+      {
+        isRegistrationOpen: true,
+        totalPlayer: 0, activePlayer: 0, totalBuyinAmount: 0, rakePercent: 0,
+        entryCount: 0, itmCount: 1, rebuyUntil: 2, avgStack: 0,
+        entryFee: 1000, tournamentName: '전광판 마감 대회', startStack: 10000,
+        prizePool: 0, prizes: [{ place: 1, percent: 100, amount: 0 }],
+      },
+      {
+        isBreak: false,
+        startedAt: Date.now() - 90_000,
+        currentBlindLv: 0,
+        nextLevelAt: Date.now() - 1_000,
+        serverTime: Date.now(),
+        blindStructure: STRUCTURE,
+      },
+      [{ minEntries: 0, payouts: [{ place: 1, percent: 100 }] }],
+    );
+  }
+
+  beforeAll(() => {
+    redis = createTestRedis();
+    prisma = createTestPrisma();
+    redisService = new RedisService(redis);
+    service = new PlaysyncService(
+      {} as unknown as Queue,
+      redisService,
+      prisma as unknown as PrismaService,
+      new EventEmitter2(),
+    );
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+    await closeTestPrisma(prisma);
+  });
+
+  beforeEach(async () => {
+    await flushTestRedis(redis);
+    await truncateAll(prisma);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('전광판 조회가 마감을 DB에도 남긴다', async () => {
+    await seedTournament();
+    await seedRedisMeta();
+
+    const info = await service.getDashboardInfo(TOURNAMENT);
+
+    expect(info?.dashboard.isRegistrationOpen).toBe(false);
+    const t = await prisma.tournament.findUniqueOrThrow({ where: { id: TOURNAMENT } });
+    expect(`컬럼 ${t.isRegistrationOpen}`).toBe('컬럼 false');
+  });
+
+  /**
+   * **리뷰가 잡은 구멍.** `DealerService.startPreFlop`·`RecoveryService`도
+   * `checkAndSyncBlindLevel`을 부르지만 Postgres는 건드리지 않는다 — 마감
+   * 레벨을 지난 뒤 핸드가 먼저 시작되거나 복구가 먼저 돌면, 대시보드가 한
+   * 번도 보기 전에 해시의 `isRegistrationOpen`이 이미 `'0'`으로 내려가
+   * 있다. 폴링 문지기(`isRegistrationClosedInCache`, 삭제됨)는 그 값을
+   * "지난 폴링이 이미 컬럼도 닫았다"로 잘못 읽어, 이 대회의 컬럼을 영영
+   * 닫지 못했다 — 조용하고 재시도도 없는 구멍이었다.
+   *
+   * `redisService.checkAndSyncBlindLevel`을 직접 불러 그 경로를 흉내낸다.
+   *
+   * **그 문지기를 되살리지 않는다.** "닫힌 대회를 여러 번 읽어도 컬럼이
+   * 다시 열리지 않는다"는 검사를 여기 두려던 적이 있었지만 지웠다 —
+   * `closeRegistration`은 `WHERE isRegistrationOpen: true`로만 쓰므로
+   * 구조적으로 컬럼을 다시 열 수 없고, 그 검사는 코드가 어길 수 없는
+   * 성질을 확인하는 셈이라 항상 초록일 뿐 아무것도 잡지 못했다(T29 — 실패할
+   * 수 없는 검사는 없는 검사보다 나쁘다). 폴링마다 `closeRegistration`을
+   * 다시 부르는 것은 "반복이 공짜"라는 근거(조건부 `updateMany`)가 이미
+   * 위쪽 주석(`getDashboardInfo`)에 있다 — 여기서 다시 검사로 확인할
+   * 대상이 아니다.
+   */
+  it('다른 경로가 이미 해시를 닫아 둔 뒤에도 대시보드 조회가 컬럼을 닫는다', async () => {
+    await seedTournament();
+    await seedRedisMeta();
+    // DealerService.startPreFlop·RecoveryService처럼 대시보드보다 먼저
+    // 해시만 마감으로 내리는 경로.
+    await redisService.checkAndSyncBlindLevel(TOURNAMENT);
+
+    await service.getDashboardInfo(TOURNAMENT);
+
+    const t = await prisma.tournament.findUniqueOrThrow({ where: { id: TOURNAMENT } });
+    expect(`컬럼 ${t.isRegistrationOpen}`).toBe('컬럼 false');
+  });
+});

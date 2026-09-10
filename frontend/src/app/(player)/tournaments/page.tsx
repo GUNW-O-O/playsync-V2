@@ -17,6 +17,11 @@ type StoreTournament = {
   id: string;
   name: string;
   status: string;
+  // 원시 컬럼이 아니라 파생값이다. `getStoreAvailableSessions`가 대회마다
+  // `isRegistrationOpenNow`(순수 함수, DB 재료만으로 계산)를 다시 태워
+  // 이 필드를 덮어쓰고, 방금 닫힘으로 바뀐 대회는 그 자리에서 컬럼도 닫는다.
+  // 그래서 이 목록은 상세를 아무도 열지 않은 대회도 마감 레벨을 지나는 순간
+  // 카드가 「등록 마감」으로 바뀐다 — 화면의 `open` 판정은 이 값을 그대로 믿는다.
   isRegistrationOpen: boolean;
   entryFee: number;
   startStack: number;
