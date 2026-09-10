@@ -259,10 +259,12 @@ assertTableAccess` 하나로 합쳐 WS·REST가 함께 부르게 했다(위 "신
 
 ## 가드를 못 거는 공개 읽기 라우트 (T66)
 
-**로그인 전에 부르는 조회가 셋 있다.** `GET /dealer/:id`
+**로그인 전에 부르는 조회가 넷 있다.** `GET /dealer/:id`
 (`SessionService.getGameSessionWithTables`) · `GET /tournaments/:id`
 (`PaymentService.getTournamentInfo`) · `GET /tournaments/stores`
-(`PaymentService.searchStore`). 딜러·좌석 태블릿은 OTP를 넣을 테이블을
+(`PaymentService.searchStore`) · `GET /tournaments/stores/:storeId`
+(`PaymentService.getStoreAvailableSessions`). **마지막 것은 T91까지 이 목록에
+없었고, 실제로 `select`도 없었다** — 대회 행이 통째로 나갔다. 딜러·좌석 태블릿은 OTP를 넣을 테이블을
 고르려면 목록이 먼저 있어야 하고, 참가자는 로그인 전에 상점을 고른다 —
 그 시점의 클라이언트에는 자격 증명이 하나도 없다. **가드를 걸 수 없는 것이
 이 라우트들의 성질이다.**

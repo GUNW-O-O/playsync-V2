@@ -920,6 +920,34 @@ describe('PaymentService.getStoreAvailableSessions — 등록 마감', () => {
     const t = await prisma.tournament.findUniqueOrThrow({ where: { id: STAYS_OPEN } });
     expect(`컬럼 ${t.isRegistrationOpen}`).toBe('컬럼 true');
   });
+
+  /**
+   * T91. **키 집합을 통째로 비교한다.** `select`가 이미 명시적이라 Prisma
+   * 모델에 컬럼이 하나 느는 것만으로는 이 검사가 울지 않는다 — 그건 맞는
+   * 동작이다(새 컬럼은 `select`에 적지 않는 한 응답에 실리지 않는다). 이
+   * 검사가 실제로 잡는 것은 둘이다.
+   *
+   * - `select`가 다시 넓어지거나 통째로 사라져 화면이 안 읽는 필드가
+   *   도로 새는 것.
+   * - 파생 재료(`startedAt`·`pausedMs`·`rebuyUntil`·`blindStructure`)가
+   *   `select`에 하나 늘었는데 응답 전에 벗겨내는 것을 잊는 것 — 다음에
+   *   `isRegistrationOpenNow`의 재료를 손대는 사람이 가장 걸리기 쉬운
+   *   함정이 이것이다.
+   *
+   * 일곱은 참가자 대회 목록·딜러 대기·좌석 대기 세 화면이 실제로 읽는
+   * 필드의 합집합이다(`getStoreAvailableSessions`의 주석).
+   *
+   * 블라인드 구조는 이 키 집합에 없다는 사실 자체가 "판정에만 쓰고 응답에는
+   * 안 싣는다"를 증명한다 — T90이 이 조회에 붙인 조인이라 이름으로 남긴다.
+   */
+  it('목록 조회는 화면이 읽는 필드만 내보낸다 — 블라인드 구조는 판정에만 쓰고 새지 않는다', async () => {
+    const rows = await service.getStoreAvailableSessions(STORE);
+    const row = rows.find((r) => r.id === STAYS_OPEN);
+
+    expect(Object.keys(row!).sort()).toEqual(
+      ['entryFee', 'id', 'isRegistrationOpen', 'name', 'startStack', 'status', 'totalPlayers'].sort(),
+    );
+  });
 });
 
 /**

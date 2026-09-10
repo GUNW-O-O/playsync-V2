@@ -10,8 +10,10 @@ type Store = { id: string; name: string };
  * `GET /tournaments/stores/:storeId`의 행.
  *
  * 출처는 `backend/src/payment/payment.service.ts`의
- * `getStoreAvailableSessions` — `PENDING`과 `ONGOING`만, `dealerOtpHash`를
- * `omit`한 `Tournament` 행이다. 화면이 쓰는 것만 추린다.
+ * `getStoreAvailableSessions` — `PENDING`과 `ONGOING`만, 화면 셋(이 목록·딜러
+ * 대기·좌석 대기)이 읽는 일곱 필드로 좁힌 `select`다(T91). `Tournament` 행
+ * 전체를 `omit`한 것이 아니다 — `payoutTable`·`pausedMs` 같은 나머지 컬럼은
+ * 애초에 쿼리에 실리지 않는다.
  */
 type StoreTournament = {
   id: string;

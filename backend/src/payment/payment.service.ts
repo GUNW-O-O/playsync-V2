@@ -60,6 +60,17 @@ export class PaymentService {
    * `isRegistrationOpenNow`는 DB 재료(`startedAt`·`pausedMs`·블라인드
    * 구조·컬럼·`rebuyUntil`)만으로 끝나는 순수 함수라, 쿼리 한 번으로 받은
    * 값들을 메모리에서 N번 다시 세는 것으로 충분하다.
+   *
+   * **이 라우트는 가드 없는 공개 조회이기도 하다.** `select` 없는 `findMany`는
+   * 스칼라를 전부 실어(T91) `payoutTable`·`totalBuyinAmount` 같은 남의 정산
+   * 정보와 `pausedMs` 같은 내부 상태까지 나갔다. 화면 셋이 실제로 읽는 필드만
+   * 남긴다:
+   *   - 참가자 대회 목록(`(player)/tournaments/page.tsx`): id·name·status·
+   *     isRegistrationOpen·entryFee·startStack·totalPlayers
+   *   - 딜러 대기(`(terminal)/dealer/page.tsx`의 `DealerWaitingClient`):
+   *     id·name·status
+   *   - 좌석 대기(`(terminal)/table/page.tsx`의 `WaitingClient`):
+   *     id·name·status
    */
   async getStoreAvailableSessions(storeId: string) {
     const tournaments = await this.prismaService.tournament.findMany({
@@ -67,9 +78,21 @@ export class PaymentService {
         storeId: storeId,
         status: NOT_CLOSED_TOURNAMENT_FILTER,
       },
-      // 파생의 재료 하나. 응답에는 안 실린다 — 아래서 계산에만 쓰고 벗겨낸다
-      // (화면은 이 필드를 읽지 않는다).
-      include: { blindStructure: { select: { structure: true } } },
+      select: {
+        id: true,
+        name: true,
+        status: true,
+        isRegistrationOpen: true,
+        entryFee: true,
+        startStack: true,
+        totalPlayers: true,
+        // 위 화면 중 어느 것도 안 읽는 파생의 재료다 — 아래서 계산에만
+        // 쓰고 응답 전에 벗겨낸다.
+        startedAt: true,
+        pausedMs: true,
+        rebuyUntil: true,
+        blindStructure: { select: { structure: true } },
+      },
       orderBy: {
         createdAt: 'desc',
       },
@@ -77,13 +100,15 @@ export class PaymentService {
 
     // 컬럼이 이미 닫혀 있으면 파생을 건너뛴다 — 되돌아오지 않는 최종 답이다.
     const toClose: string[] = [];
-    const results = tournaments.map(({ blindStructure, ...t }) => {
-      const isRegistrationOpen = t.isRegistrationOpen
-        ? isRegistrationOpenNow({ ...t, blindStructure })
-        : false;
-      if (t.isRegistrationOpen && !isRegistrationOpen) toClose.push(t.id);
-      return { ...t, isRegistrationOpen };
-    });
+    const results = tournaments.map(
+      ({ startedAt, pausedMs, rebuyUntil, blindStructure, ...t }) => {
+        const isRegistrationOpen = t.isRegistrationOpen
+          ? isRegistrationOpenNow({ ...t, startedAt, pausedMs, rebuyUntil, blindStructure })
+          : false;
+        if (t.isRegistrationOpen && !isRegistrationOpen) toClose.push(t.id);
+        return { ...t, isRegistrationOpen };
+      },
+    );
 
     // 방금 닫힘으로 바뀐 행만 컬럼도 닫는다. **`toClose`는 두 번째 조회부터는
     // 항상 비어 있다** — 첫 조회가 이미 그 행들의 컬럼을 닫아서다. 목록을 볼
