@@ -17,7 +17,8 @@ const { default: MyPage } = await import('./page');
  * 응답 모양의 출처: `backend/src/user/user.service.ts:66-81`.
  * `tournamentParticipation.findMany`의 행에 `tournament` 관계를
  * `select: { id, name, status, entryFee, startedAt }`로 붙인 것이고,
- * `playerOtp`는 대회가 `FINISHED`면 서버가 `null`로 지운다(같은 함수 79행).
+ * `playerOtp`는 대회가 닫히면(`isClosedTournament` — `FINISHED` 또는
+ * `CANCELLED`) 서버가 `null`로 지운다(같은 함수의 `getMyParticipations`).
  *
  * 지어내지 않는다 — 예전에 목이 봉투를 안 벗겨 그 경로에 닿지도 못한 적이 있다.
  */

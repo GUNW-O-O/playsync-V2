@@ -11,8 +11,8 @@ const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
  * 모양의 출처는 `backend/src/user/user.service.ts:66-81`이다 —
  * `TournamentParticipation` 행에 `tournament` 관계를
  * `select: { id, name, status, entryFee, startedAt }`로 붙인 것이고,
- * 대회가 `FINISHED`면 서버가 `playerOtp`를 `null`로 지운 뒤 내려보낸다.
- * 화면이 쓰는 것만 추린다.
+ * 대회가 닫히면(`isClosedTournament` — `FINISHED` 또는 `CANCELLED`) 서버가
+ * `playerOtp`를 `null`로 지운 뒤 내려보낸다. 화면이 쓰는 것만 추린다.
  */
 type Participation = {
   id: string;
@@ -141,9 +141,11 @@ export default async function MyPage() {
               {row.playerOtp ? (
                 <OtpReveal otp={row.playerOtp} />
               ) : (
-                /* 서버가 OTP를 지우는 조건은 FINISHED 하나뿐이라 여기까지
-                   오는 일은 없어야 한다. 그래도 버튼을 그려 두면 눌러도
-                   빈 칸이 뜨는 화면이 된다. */
+                /* 서버가 OTP를 지우는 조건은 대회가 닫힌 경우
+                   (`isClosedTournament`) 뿐이고, 닫힌 대회는 위 `isOver`가
+                   이미 「지난 참가」로 걸러 이 카드까지 오지 않는다 — 그래서
+                   진행 중 참가에서 playerOtp가 비는 일은 없어야 한다. 그래도
+                   버튼을 그려 두면 눌러도 빈 칸이 뜨는 화면이 된다. */
                 <p className="text-[14px] leading-[1.29] tracking-[0.16px] text-[var(--ink-muted)]">
                   참가 OTP가 없습니다. 상점에 문의하세요.
                 </p>
