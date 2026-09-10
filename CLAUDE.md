@@ -117,7 +117,7 @@ contract       76  (6 suites)
 e2e            13  (4 files, regression 프로젝트)
 데모 촬영       1  (`npm run demo`)
 정산 촬영       1  (`npm run demo:settlement`, 마무리마다 한 번씩 셋)
-부하 하네스    12  (1 file, `cd load && npm test`)
+부하 하네스    24  (2 files, `cd load && npm test`)
 타입 에러       0
 ```
 
