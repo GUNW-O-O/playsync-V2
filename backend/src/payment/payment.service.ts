@@ -91,6 +91,27 @@ export class PaymentService {
       },
     });
     if (!tournament) throw new ConflictException('잘못된 세션 ID 입니다.');
+
+    // **등록 마감은 파생값이다**(registration-gate.ts). 컬럼은 상점이 손으로
+    // 닫은 것만 담고, 레벨이 `rebuyUntil`을 지나 자동으로 닫힌 마감은 담지
+    // 않는다. 이 라우트는 가드 없는 공개 조회라 참가자 폰이 직접 부르고,
+    // 컬럼을 그대로 내보내면 마감 뒤 아무도 참가를 시도하지 않은 대회에도
+    // 계속 초록 배지와 참가 버튼이 뜬다.
+    //
+    // **컬럼이 이미 닫혀 있으면 파생을 건너뛴다.** 그 값은 되돌아오지 않는
+    // 최종 답이라(컬럼은 다시 열리지 않는다) 다시 셀 이유가 없다 — 닫힌
+    // 대회의 조회 깊이를 그만큼 줄인다.
+    const isRegistrationOpen = tournament.isRegistrationOpen
+      ? await isRegistrationOpenLive(this.prismaService, this.redisService, tournament)
+      : false;
+
+    // 판정이 방금 닫힘으로 바뀌었으면 컬럼도 닫는다 — `assertRegistrationOpen`·
+    // 딜러의 파이널 테이블 게이트와 같은 이유다. 안 닫으면 컬럼만 보는 다른
+    // 자리들이 영영 틀린 값을 본다.
+    if (tournament.isRegistrationOpen && !isRegistrationOpen) {
+      await closeRegistration(this.prismaService, tournament.id, (m) => this.logger.warn(m));
+    }
+
     // **읽기 경로는 읽기만 한다.** 예전에는 좌석 해시가 비어 있으면 여기서
     // `tables[0]`의 비트맵을 다시 세웠다. 셋 다 틀린 일이었다.
     //
@@ -103,8 +124,14 @@ export class PaymentService {
     // - 유실을 되세우는 권위는 `RecoveryService.recoverTournament`(T46) 하나다.
     //   그쪽은 좌석 행이 있는 테이블 **전부**를 스냅샷 기준으로 세운다.
     //   가드 없는 공개 조회가 두 번째 권위가 되면 둘이 어긋난다.
+    //
+    // **등록 마감 갱신은 그 금지의 예외다.** 위 `closeRegistration`은 좌석
+    // 비트맵 재건과 다르다 — 단조(닫히기만 한다)이고, 조건부(이미 닫힌 행은
+    // 건드리지 않는다)이고, 실패를 삼키고(로그만 남기고 던지지 않는다), 그
+    // 판정 값 자체가 바로 아래 응답에 실린다. 비트맵 재건은 응답에 안 실리는
+    // 순수 부수효과였고 이건 응답이 이미 말하는 사실을 DB에 옮겨 적을 뿐이다.
     const seatStatus = await this.redisService.getTournamentTables(tournamentId);
-    return { tournament, seatStatus };
+    return { tournament: { ...tournament, isRegistrationOpen }, seatStatus };
   }
 
   /**

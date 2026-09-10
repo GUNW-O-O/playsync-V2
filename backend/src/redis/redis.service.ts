@@ -412,6 +412,29 @@ export class RedisService {
     return info ? info.dashboard : null;
   }
 
+  /**
+   * 등록 마감이 해시에 **이미** 반영됐는지만 본다(필드 하나짜리 `hget`).
+   * `FullTournamentInfo`(경계 밖 봉투)에는 넣지 않는다 — 공개 대시보드
+   * 라우트가 그 타입을 그대로 JSON으로 내보내므로, 여기 실으면 새 필드가
+   * 그 응답에도 샌다.
+   *
+   * **부르는 순서가 뜻을 정한다 — `getFullTournamentInfo`보다 먼저 불러야
+   * 한다.** `checkAndSyncBlindLevel`은 마감 레벨을 지난 **바로 그 호출**에서만
+   * 이 필드를 `'1'`에서 `'0'`으로 내린다(전이의 순간이 한 번뿐이고, 그 뒤로는
+   * 단조라 되돌아오지 않는다). `getFullTournamentInfo` **뒤**에 이 값을 읽으면
+   * 방금 막 전이가 일어난 그 호출조차 "이미 닫혀 있었다"로 보여, 전이 자체를
+   * 놓친다. 먼저 읽어야 "이번 호출 전까지는 열려 있었다 / 이미 닫혀 있었다"를
+   * 가른다.
+   *
+   * `PlaysyncService.getDashboardInfo`가 이 값으로 DB `UPDATE`를 폴링마다
+   * 반복하지 않게 거른다 — 전광판은 초 단위로 폴링되므로 매 폴링 Postgres까지
+   * 왕복하면 안 된다(닫힌 뒤에는 이 함수의 `hget` 하나로 끝난다).
+   */
+  async isRegistrationClosedInCache(tournamentId: string): Promise<boolean> {
+    const value = await this.redis.hget(this.getInfoKey(tournamentId), 'isRegistrationOpen');
+    return value === '0';
+  }
+
   // 대시보드는 해시에 평탄화해서 저장한다(setTournamentMeta). 개별 필드를
   // hincrby로 원자적으로 증감할 수 있고, 읽을 때는 hgetall 한 번으로 끝난다.
   // JSON 한 덩어리로 두면 증감마다 읽고-고치고-쓰기가 되어 레이스가 생긴다.

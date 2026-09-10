@@ -719,3 +719,141 @@ describe('PlaysyncService.syncTableInventoryToDb — 버튼 좌석', () => {
     expect(`버튼 ${table.buttonUser}`).toBe('버튼 5');
   });
 });
+
+/**
+ * T90. **전광판 조회가 파생 마감을 DB에도 남긴다.**
+ *
+ * `getFullTournamentInfo`는 이미 파생값을 돌려준다 —
+ * `checkAndSyncBlindLevel`이 동기화된 레벨로 판정을 다시 세운다. 안 따라가는
+ * 것은 `Tournament.isRegistrationOpen` 컬럼뿐이다. 결제 게이트·딜러의 파이널
+ * 테이블 게이트와 같은 이유로, 여기서도 파생이 닫힘이면 컬럼을 닫는다.
+ *
+ * **다만 전광판은 폴링된다.** 결제·딜러 조작은 사람이 손으로 누르는 드문
+ * 행동이라 매번 `closeRegistration`을 불러도 무해하지만, 대시보드는 초
+ * 단위로 계속 불린다 — 마감 뒤에도 매 폴링마다 Postgres UPDATE가 나가면 안
+ * 된다. `RedisService.isRegistrationClosedInCache`를 `getFullTournamentInfo`
+ * **보다 먼저** 불러 문지기로 쓴다.
+ */
+describe('PlaysyncService.getDashboardInfo — 등록 마감', () => {
+  let redis: Redis;
+  let prisma: PrismaClient;
+  let redisService: RedisService;
+  let service: PlaysyncService;
+
+  const TOURNAMENT = 'dashboard-close-1';
+
+  // 레벨 하나가 1분인 구조 셋 — payment.service.int-spec.ts의 것과 같다.
+  const STRUCTURE = [
+    { lv: 1, sb: 100, ante: false, duration: 1 },
+    { lv: 2, sb: 200, ante: false, duration: 1 },
+    { lv: 3, sb: 300, ante: false, duration: 1 },
+  ];
+
+  /** DB 대회 하나. 컬럼은 아직 `true`고, 시작한 지 90초라 이미 레벨 인덱스 1(lv 2)다. */
+  async function seedTournament() {
+    const owner = await prisma.user.create({ data: { nickname: 'dash-owner', password: 'x' } });
+    const store = await prisma.store.create({ data: { name: 'dash-store', ownerId: owner.id } });
+    const blind = await prisma.blindStructure.create({
+      data: { name: 'dash-blind', storeId: store.id, structure: STRUCTURE },
+    });
+    await prisma.tournament.create({
+      data: {
+        id: TOURNAMENT,
+        name: '전광판 마감 대회',
+        blindId: blind.id,
+        storeId: store.id,
+        dealerOtpHash: 'unused-hash',
+        entryFee: 1000,
+        startStack: 10000,
+        rebuyUntil: 2,
+        isRegistrationOpen: true,
+        status: 'ONGOING',
+        startedAt: new Date(Date.now() - 90_000),
+      },
+    });
+  }
+
+  /**
+   * 대시보드가 아직 레벨 0(등록 열림)을 캐시해 뒀다고 흉내낸다. `nextLevelAt`을
+   * 과거로 둬야 `getFullTournamentInfo`가 이번 호출에서 재계산(전이)을 탄다
+   * — redis.service.int-spec.ts의 `checkAndSyncBlindLevel` 시나리오와 같은 장치다.
+   */
+  async function seedRedisMeta() {
+    await redisService.setTournamentMeta(
+      TOURNAMENT,
+      {
+        isRegistrationOpen: true,
+        totalPlayer: 0, activePlayer: 0, totalBuyinAmount: 0, rakePercent: 0,
+        entryCount: 0, itmCount: 1, rebuyUntil: 2, avgStack: 0,
+        entryFee: 1000, tournamentName: '전광판 마감 대회', startStack: 10000,
+        prizePool: 0, prizes: [{ place: 1, percent: 100, amount: 0 }],
+      },
+      {
+        isBreak: false,
+        startedAt: Date.now() - 90_000,
+        currentBlindLv: 0,
+        nextLevelAt: Date.now() - 1_000,
+        serverTime: Date.now(),
+        blindStructure: STRUCTURE,
+      },
+      [{ minEntries: 0, payouts: [{ place: 1, percent: 100 }] }],
+    );
+  }
+
+  beforeAll(() => {
+    redis = createTestRedis();
+    prisma = createTestPrisma();
+    redisService = new RedisService(redis);
+    service = new PlaysyncService(
+      {} as unknown as Queue,
+      redisService,
+      prisma as unknown as PrismaService,
+      new EventEmitter2(),
+    );
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+    await closeTestPrisma(prisma);
+  });
+
+  beforeEach(async () => {
+    await flushTestRedis(redis);
+    await truncateAll(prisma);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('전광판 조회가 마감을 DB에도 남긴다', async () => {
+    await seedTournament();
+    await seedRedisMeta();
+
+    const info = await service.getDashboardInfo(TOURNAMENT);
+
+    expect(info?.dashboard.isRegistrationOpen).toBe(false);
+    const t = await prisma.tournament.findUniqueOrThrow({ where: { id: TOURNAMENT } });
+    expect(`컬럼 ${t.isRegistrationOpen}`).toBe('컬럼 false');
+  });
+
+  /**
+   * `updateMany`를 스파이한다 — `closeRegistration`은 조건부(WHERE
+   * isRegistrationOpen: true)라 두 번째 호출이 실제로 행을 바꾸지 않는 것만
+   * 봐서는 "그래도 매번 Postgres까지 왕복했다"를 놓친다. 왕복 자체가 없어야
+   * 한다는 것이 이 검사의 값어치다.
+   */
+  it('이미 닫힌 대회를 여러 번 읽어도 쓰기가 반복되지 않는다', async () => {
+    await seedTournament();
+    await seedRedisMeta();
+    const updateManySpy = jest.spyOn(prisma.tournament, 'updateMany');
+
+    await service.getDashboardInfo(TOURNAMENT);
+    expect(updateManySpy).toHaveBeenCalledTimes(1);
+
+    await service.getDashboardInfo(TOURNAMENT);
+    await service.getDashboardInfo(TOURNAMENT);
+
+    expect(updateManySpy).toHaveBeenCalledTimes(1);
+  });
+});

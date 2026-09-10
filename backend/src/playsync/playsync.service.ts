@@ -14,6 +14,7 @@ import {
   asClosedTournamentWrite,
 } from 'src/store/session/tournament-status';
 import { RedisService } from 'src/redis/redis.service';
+import { closeRegistration } from 'src/store/session/registration-gate';
 import { retryAsync } from 'src/common/retry';
 import { entryCountOf, payoutsForRaw } from './payout-table';
 import { awardPrize, prizeFor, prizePoolOf, splitBustedRanks } from './prize';
@@ -776,9 +777,30 @@ export class PlaysyncService {
     return result.success ? startStack : 0;
   }
 
+  /**
+   * 전광판 조회. `getFullTournamentInfo`가 이미 파생값을 돌려준다
+   * (`checkAndSyncBlindLevel`이 동기화된 레벨로 판정을 다시 세운다) — 안
+   * 따라가는 것은 `Tournament.isRegistrationOpen` 컬럼뿐이다. 파생이 닫힘인데
+   * 컬럼이 열려 있으면 결제 게이트·딜러의 파이널 테이블 게이트와 같은 이유로
+   * 여기서도 `closeRegistration`을 부른다.
+   *
+   * **문지기가 필요하다 — 전광판은 폴링된다.** 다른 두 호출자는 사람이 손으로
+   * 누르는 드문 조작이라 매번 불러도 무해하지만, 이 조회는 초 단위로 계속
+   * 들어온다. `isRegistrationClosedInCache`를 `getFullTournamentInfo`
+   * **앞에서** 불러 해시가 이미 닫힘을 반영했는지 본다(그 함수 주석이 순서가
+   * 왜 이래야 하는지를 설명한다) — 이미 닫혀 있었다면 지난 폴링이 DB도 이미
+   * 닫혔을 것이므로 이번에는 Postgres를 건드리지 않는다.
+   */
   async getDashboardInfo(tournamentId: string) {
+    const alreadyClosedInCache = await this.redis.isRegistrationClosedInCache(tournamentId);
     const info = await this.redis.getFullTournamentInfo(tournamentId);
-    return info ? info : null;
+    if (!info) return null;
+
+    if (!info.dashboard.isRegistrationOpen && !alreadyClosedInCache) {
+      await closeRegistration(this.prisma, tournamentId, (m) => this.logger.warn(m));
+    }
+
+    return info;
   }
 
 }
