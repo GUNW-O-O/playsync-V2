@@ -793,6 +793,136 @@ describe('PaymentService.getTournamentInfo — 등록 마감', () => {
 });
 
 /**
+ * T90(추가). **목록 조회도 같은 파생을 태운다.**
+ *
+ * 참가자 목록 화면(`(player)/tournaments/page.tsx`)은 `GET /tournaments/:id`가
+ * 아니라 `GET /tournaments/stores/:storeId`(`getStoreAvailableSessions`)를
+ * 읽는다 — 위 `getTournamentInfo` 스펙은 이 라우트를 전혀 건드리지 않는다.
+ * 그래서 상세를 아무도 열지 않은 대회는 목록 카드에서 마감 레벨이 지난
+ * 뒤에도 계속 초록 「등록 열림」을 보였다.
+ *
+ * 목록은 여러 대회를 한 번에 훑으므로 대회마다 Redis를 왕복하는
+ * `isRegistrationOpenLive`는 쓰지 않는다(N+1). `isRegistrationOpenNow`는
+ * DB 재료만으로 끝나는 순수 함수라, 쿼리 한 번으로 가져온 값들로 메모리에서
+ * N번 다시 센다.
+ */
+describe('PaymentService.getStoreAvailableSessions — 등록 마감', () => {
+  let redis: Redis;
+  let prisma: PrismaClient;
+  let redisService: RedisService;
+  let service: PaymentService;
+
+  const STORE = 'store-list-close-1';
+  const CLOSING = 'list-close-1';
+  const STAYS_OPEN = 'list-open-1';
+
+  // 위 두 describe와 같은 구조 — 레벨 하나가 1분이고 `lv`가 곧 마감 기준값이다.
+  const STRUCTURE = [
+    { lv: 1, sb: 100, ante: false, duration: 1 },
+    { lv: 2, sb: 200, ante: false, duration: 1 },
+    { lv: 3, sb: 300, ante: false, duration: 1 },
+  ];
+
+  /**
+   * **같은 상점에 대회 둘, 한 콜.** 하나(`CLOSING`)는 마감 레벨을 지났고,
+   * 하나(`STAYS_OPEN`)는 아직 레벨 전이다. 판정을 항상 "닫힘"으로 접는
+   * 고침은 `STAYS_OPEN`을 깨고, 항상 "열림"으로 접는 고침은 `CLOSING`을
+   * 깬다 — 한 조회 안에서 두 갈래가 서로를 증명한다(CLAUDE.md, T29).
+   */
+  async function seedStore() {
+    const owner = await prisma.user.create({ data: { nickname: 'list-owner', password: 'x' } });
+    const store = await prisma.store.create({
+      data: { id: STORE, name: 'list-store', ownerId: owner.id },
+    });
+    const blind = await prisma.blindStructure.create({
+      data: { name: 'list-blind', storeId: store.id, structure: STRUCTURE },
+    });
+    await prisma.tournament.create({
+      data: {
+        id: CLOSING,
+        name: '마감 대회',
+        blindId: blind.id,
+        storeId: store.id,
+        dealerOtpHash: 'unused-hash',
+        entryFee: 1000,
+        startStack: 10000,
+        rebuyUntil: 2,
+        isRegistrationOpen: true,
+        status: 'ONGOING',
+        // 90초 경과 → 레벨 인덱스 1 = lv 2. rebuyUntil 2면 curLv(2) >= 2로 마감.
+        startedAt: new Date(Date.now() - 90_000),
+      },
+    });
+    await prisma.tournament.create({
+      data: {
+        id: STAYS_OPEN,
+        name: '진행 대회',
+        blindId: blind.id,
+        storeId: store.id,
+        dealerOtpHash: 'unused-hash',
+        entryFee: 1000,
+        startStack: 10000,
+        rebuyUntil: 2,
+        isRegistrationOpen: true,
+        status: 'ONGOING',
+        // 30초 경과 → 레벨 인덱스 0 = lv 1. 아직 열려 있다.
+        startedAt: new Date(Date.now() - 30_000),
+      },
+    });
+  }
+
+  beforeAll(() => {
+    redis = createTestRedis();
+    prisma = createTestPrisma();
+    redisService = new RedisService(redis);
+    service = new PaymentService(
+      new UserService(prisma as unknown as PrismaService),
+      {} as unknown as SessionService,
+      prisma as unknown as PrismaService,
+      redisService,
+    );
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+    await closeTestPrisma(prisma);
+  });
+
+  beforeEach(async () => {
+    await flushTestRedis(redis);
+    await truncateAll(prisma);
+    await seedStore();
+  });
+
+  it('마감 레벨을 지난 대회는 목록 조회도 마감으로 답한다', async () => {
+    const rows = await service.getStoreAvailableSessions(STORE);
+
+    const closing = rows.find((r) => r.id === CLOSING);
+    expect(closing?.isRegistrationOpen).toBe(false);
+  });
+
+  it('그 목록 조회가 컬럼도 닫는다', async () => {
+    await service.getStoreAvailableSessions(STORE);
+
+    const t = await prisma.tournament.findUniqueOrThrow({ where: { id: CLOSING } });
+    expect(`컬럼 ${t.isRegistrationOpen}`).toBe('컬럼 false');
+  });
+
+  /**
+   * 위와 어긋나는 입력이다 — 같은 콜, 같은 상점의 다른 행.
+   */
+  it('아직 열린 대회는 목록 조회가 컬럼을 닫지 않는다', async () => {
+    const rows = await service.getStoreAvailableSessions(STORE);
+
+    const staysOpen = rows.find((r) => r.id === STAYS_OPEN);
+    expect(staysOpen?.isRegistrationOpen).toBe(true);
+
+    const t = await prisma.tournament.findUniqueOrThrow({ where: { id: STAYS_OPEN } });
+    expect(`컬럼 ${t.isRegistrationOpen}`).toBe('컬럼 true');
+  });
+});
+
+/**
  * 목업 결제 — 충전과 거절(T72).
  *
  * **이 스펙의 값어치는 "가짜 결제"가 아니라 거절이다.** 지금까지 결제 거절

@@ -17,12 +17,11 @@ type StoreTournament = {
   id: string;
   name: string;
   status: string;
-  // 이 조회(`getStoreAvailableSessions`)는 T90이 손대지 않았다 — 컬럼을
-  // 그대로 내보낸다. 상세 조회(`PaymentService.getTournamentInfo`)만
-  // `isRegistrationOpenLive`로 다시 판정해 컬럼을 덮어쓴다. 그래서 이
-  // 목록은 마감 레벨을 지났는데 아무도 그 대회를 건드리지 않았다면(상세를
-  // 열지도, 전광판이 폴링하지도 않았다면) 실제보다 늦게 「등록 열림」을 보일
-  // 수 있다 — 화면의 `open` 판정은 이 값을 그대로 믿는다.
+  // 원시 컬럼이 아니라 파생값이다. `getStoreAvailableSessions`가 대회마다
+  // `isRegistrationOpenNow`(순수 함수, DB 재료만으로 계산)를 다시 태워
+  // 이 필드를 덮어쓰고, 방금 닫힘으로 바뀐 대회는 그 자리에서 컬럼도 닫는다.
+  // 그래서 이 목록은 상세를 아무도 열지 않은 대회도 마감 레벨을 지나는 순간
+  // 카드가 「등록 마감」으로 바뀐다 — 화면의 `open` 판정은 이 값을 그대로 믿는다.
   isRegistrationOpen: boolean;
   entryFee: number;
   startStack: number;

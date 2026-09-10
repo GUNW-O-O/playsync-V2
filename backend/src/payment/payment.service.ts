@@ -7,6 +7,7 @@ import {
   closeRegistration,
   isRegistrationOpenLive,
 } from 'src/store/session/registration-gate';
+import { isRegistrationOpenNow } from 'src/store/session/registration';
 import { RedisService } from 'src/redis/redis.service';
 import { SessionService } from 'src/store/session/session.service';
 import { UserService } from 'src/user/user.service';
@@ -43,18 +44,55 @@ export class PaymentService {
     });
   }
 
-  // 해당 매장의 참가가능 토너먼트 정보
+  /**
+   * 해당 매장의 참가가능 토너먼트 정보.
+   *
+   * **등록 마감은 파생값이다**(`registration.ts`). `getTournamentInfo`(상세
+   * 조회)만 그 파생을 태우고 이 목록은 컬럼을 그대로 내보냈다 — 참가자 목록
+   * 화면(`(player)/tournaments/page.tsx`)이 실제로 읽는 라우트가 이것이라,
+   * 마감 레벨을 지난 뒤 아무도 상세를 열지 않은 대회는 카드가 계속 초록
+   * 「등록 열림」이었다.
+   *
+   * **`isRegistrationOpenLive`를 쓰지 않는다.** 그 함수는 Redis를 본다 —
+   * 대회마다 부르면 목록 하나에 대회 수만큼 Redis 왕복이 붙는 N+1이 된다.
+   * `isRegistrationOpenNow`는 DB 재료(`startedAt`·`pausedMs`·블라인드
+   * 구조·컬럼·`rebuyUntil`)만으로 끝나는 순수 함수라, 쿼리 한 번으로 받은
+   * 값들을 메모리에서 N번 다시 세는 것으로 충분하다.
+   */
   async getStoreAvailableSessions(storeId: string) {
-    return await this.prismaService.tournament.findMany({
+    const tournaments = await this.prismaService.tournament.findMany({
       where: {
         storeId: storeId,
         status: NOT_CLOSED_TOURNAMENT_FILTER,
       },
+      // 파생의 재료 하나. 응답에는 안 실린다 — 아래서 계산에만 쓰고 벗겨낸다
+      // (화면은 이 필드를 읽지 않는다).
+      include: { blindStructure: { select: { structure: true } } },
       // 참가자용 조회다. 해시라도 응답에 실으면 안 된다.
       orderBy: {
         createdAt: 'desc',
       },
     });
+
+    // 컬럼이 이미 닫혀 있으면 파생을 건너뛴다 — 되돌아오지 않는 최종 답이다.
+    const toClose: string[] = [];
+    const results = tournaments.map(({ blindStructure, ...t }) => {
+      const isRegistrationOpen = t.isRegistrationOpen
+        ? isRegistrationOpenNow({ ...t, blindStructure })
+        : false;
+      if (t.isRegistrationOpen && !isRegistrationOpen) toClose.push(t.id);
+      return { ...t, isRegistrationOpen };
+    });
+
+    // 방금 닫힘으로 바뀐 행만 컬럼도 닫는다. **`toClose`는 두 번째 조회부터는
+    // 항상 비어 있다** — 첫 조회가 이미 그 행들의 컬럼을 닫아서다. 목록을 볼
+    // 때마다 UPDATE가 나가는 것처럼 보이지만 실제로는 전이가 일어난 그 한
+    // 번뿐이다(`closeRegistration` 자체도 조건부라 그 뒤로는 0행을 건드린다).
+    await Promise.all(
+      toClose.map((id) => closeRegistration(this.prismaService, id, (m) => this.logger.warn(m))),
+    );
+
+    return results;
   }
 
   // `SessionService.getGameSession`을 재사용하지 않는다 — 그건 상점 콘솔의
