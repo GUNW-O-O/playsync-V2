@@ -123,6 +123,24 @@ export default function DisplayClient({ tournamentId }: { tournamentId: string }
   const remainingMs = blindField.nextLevelAt - (now + clockOffsetRef.current);
   const remaining = formatClock(remainingMs);
 
+  // 서버 복구 중(T96). 시계가 `pausedAt`에서 멈춰 있다 — 벽시계로 깎으면
+  // 태블릿들이 돌아오는 동안 전광판만 레벨을 넘긴다.
+  if (blindField.pausedAt !== undefined) {
+    return (
+      <div className="flex h-screen flex-col items-center justify-center bg-sb-bg px-8 text-center">
+        <div className="font-cond text-[clamp(20px,3vw,30px)] uppercase tracking-[0.3em] text-sb-dim">
+          서버 복구 중
+        </div>
+        <div className="font-cond text-[clamp(70px,15vw,170px)] font-bold leading-[0.9] tabular-nums text-sb-dim">
+          {formatClock(blindField.nextLevelAt - blindField.pausedAt)}
+        </div>
+        <div className="mt-5 font-cond text-[clamp(17px,2.4vw,26px)] tracking-[0.14em] text-sb-dim">
+          테이블이 돌아오면 이어서 진행합니다
+        </div>
+      </div>
+    );
+  }
+
   if (blindField.isBreak) {
     const next = blindField.blindStructure[blindField.currentBlindLv + 1];
     return (

@@ -76,6 +76,39 @@ describe('DisplayClient', () => {
     expect(pollCount).toBeGreaterThanOrEqual(2);
   });
 
+  /**
+   * 서버 복구 중(T96). 시계가 `pausedAt`에서 멈춰 있다 — 벽시계(`now`)로
+   * 계속 깎으면 태블릿들이 돌아오는 동안 전광판만 레벨을 넘긴다. 그래서
+   * `now`를 미는 초 단위 화면 시계(1초 간격)가 한 번 더 흘러도 남은 시간이
+   * 같은 글자로 남아야 한다.
+   */
+  it('pausedAt이 있으면 서버 복구 중이고 남은 시간이 1초 뒤에도 고정된다', async () => {
+    server.use(http.get('*/playsync/dashboard/:id', () => HttpResponse.json({
+      ...VALID,
+      blindField: { ...VALID.blindField, pausedAt: 40000, nextLevelAt: 100000 },
+    })));
+
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    render(<DisplayClient tournamentId="t1" />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText('서버 복구 중')).toBeInTheDocument();
+    // (100000 - 40000) ms = 60초 = "1:00".
+    expect(screen.getByText('1:00')).toBeInTheDocument();
+
+    // 화면 시계가 1초 미는 것과 다음 폴링이 겹쳐도 pausedAt 계산은
+    // 벽시계(now)를 보지 않으므로 그대로다.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_MS);
+    });
+
+    expect(screen.getByText('1:00')).toBeInTheDocument();
+  });
+
   it('isBreak면 화면을 통째로 휴식으로 바꾼다', async () => {
     server.use(http.get('*/playsync/dashboard/:id', () =>
       HttpResponse.json({ ...VALID, blindField: { ...VALID.blindField, isBreak: true } })));

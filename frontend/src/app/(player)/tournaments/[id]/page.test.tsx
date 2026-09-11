@@ -85,6 +85,30 @@ const ONGOING_PAST_DEADLINE = {
   blindStructure: null,
 };
 
+/**
+ * 서버 복구 중(T96). `SYNCING`은 결제를 막지 않는다 — 정지는 블라인드 시계와
+ * 딜러 복귀뿐이고, 이미 결제한 사람이 다시 앉는 길과는 별개다. 「복구 중」이
+ * 등록 열림/마감 앞에 붙어야 상점 문의 전화가 줄어든다.
+ */
+/*
+ * 이름에 「복구 중」을 넣지 않는다 — 대회명이 `h1`으로도 그려지므로 그
+ * 부분 문자열이 들어가면 `getByText(/복구 중/)`가 상태 줄이 아니라
+ * 제목을 잡아 실패해야 할 자리에서 조용히 통과한다.
+ */
+const SYNCING = {
+  id: 't5',
+  name: '여름 프리즈아웃',
+  status: 'SYNCING',
+  isRegistrationOpen: true,
+  entryFee: 50000,
+  startStack: 20000,
+  rebuyUntil: 3,
+  totalPlayers: 8,
+  activePlayers: 8,
+  storeId: 's1',
+  blindStructure: null,
+};
+
 function renderPage(id: string) {
   return TournamentDetailPage({ params: Promise.resolve({ id }) });
 }
@@ -160,5 +184,19 @@ describe('대회 상세', () => {
     expect(screen.getByText('등록 마감')).toBeInTheDocument();
     expect(screen.queryByText('등록 열림')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /참가/ })).toBeDisabled();
+  });
+
+  it('SYNCING이면 「복구 중」이 보이고, 등록이 열려 있으면 참가 버튼은 살아 있다', async () => {
+    server.use(
+      http.get('http://backend.test/tournaments/t5', () =>
+        HttpResponse.json({ tournament: SYNCING }),
+      ),
+    );
+
+    render(await renderPage('t5'));
+
+    expect(screen.getByText(/복구 중/)).toBeInTheDocument();
+    expect(screen.getByText(/등록 열림/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /참가/ })).not.toBeDisabled();
   });
 });

@@ -24,7 +24,7 @@ const TOURNAMENT: TournamentMeta = {
  */
 function renderConsole(
   reissue = vi.fn(async () => ({ ok: true as const, dealerOtp: '920576' })),
-  overrides: { tournament?: TournamentMeta; dashboard?: unknown } = {},
+  overrides: { tournament?: TournamentMeta; dashboard?: unknown; preview?: unknown } = {},
 ) {
   render(
     <ConsoleClient
@@ -40,7 +40,7 @@ function renderConsole(
       closeTable={vi.fn(async () => ({ ok: true as const }))}
       releaseSeats={vi.fn(async () => ({ ok: true as const }))}
       reissueDealerOtp={reissue}
-      preview={null}
+      preview={(overrides.preview ?? null) as never}
       completeTournament={vi.fn(async () => ({ ok: true as const }))}
       chopTournament={vi.fn(async () => ({ ok: true as const }))}
       abortTournament={vi.fn(async () => ({ ok: true as const }))}
@@ -49,6 +49,22 @@ function renderConsole(
   );
   return { reissue };
 }
+
+/**
+ * 마무리 미리보기 최소 픽스처. 마무리 영역은 `live && (ONGOING || SYNCING)`일
+ * 때만 그려지므로, 조건 자체를 보려면 `live`가 있어야 한다.
+ */
+const PREVIEW = {
+  totalBuyinAmount: 100000,
+  rakePercent: 0,
+  rakeAmount: 0,
+  prizePool: 100000,
+  paidPrize: 0,
+  remainingPrize: 100000,
+  complete: { canRun: true, reason: null },
+  chop: { canRun: true, reason: null, rows: [] },
+  abort: { canRun: true, reason: null, groups: [], storeAmount: 0, scaled: false },
+};
 
 describe('ConsoleClient — 딜러 OTP', () => {
   beforeEach(() => {
@@ -280,5 +296,23 @@ describe('ConsoleClient — 등록 마감', () => {
 
     expect(screen.getByText('평균 스택').nextElementSibling).toHaveTextContent('-');
     expect(screen.queryByText('5,000')).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * 서버 복구 중(T96). 콘솔은 정지 중에도 상점이 대회를 볼 수 있어야 한다 —
+ * 마무리(중단 등)는 복구 중에도 열려 있어야 한다는 것이 이 티켓의 결정이다.
+ * `STATUS_LABEL`이 `if` 분기였다면 `SYNCING`이 폴백(원래 상태 문자열 그대로)
+ * 으로 새어 나갔을 자리다.
+ */
+describe('ConsoleClient — 서버 복구 중', () => {
+  it('배지가 「복구 중」이고 마무리 영역이 보인다', () => {
+    renderConsole(undefined, {
+      tournament: { ...TOURNAMENT, status: 'SYNCING' },
+      preview: PREVIEW,
+    });
+
+    expect(screen.getByText('복구 중')).toBeInTheDocument();
+    expect(screen.getByText('대회 마무리 — 되돌릴 수 없습니다')).toBeInTheDocument();
   });
 });

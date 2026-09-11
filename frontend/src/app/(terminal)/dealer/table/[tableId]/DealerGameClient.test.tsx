@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/mocks/server';
 import { DEALER_OFFSET_MS } from '@/lib/reconnect-policy';
-import { GamePhase, type TableState } from '@playsync/contract';
+import { GamePhase, TOURNAMENT_SYNCING_EVENT, type TableState } from '@playsync/contract';
 
 // 종료 덮개가 대기 화면으로 돌아간다(`TournamentClosedOverlay`). 좌석 쪽
 // `SeatGameClient.test.tsx`와 같은 배선이다.
@@ -520,6 +520,30 @@ describe('DealerGameClient', () => {
       socket.emitServerEvent('renderGame', baseState({ phase: GamePhase.FLOP }));
 
       expect(screen.queryByTestId('dealer-resume')).toBeNull();
+    });
+  });
+
+  /**
+   * 서버 복구 중 딜러 복귀(T96). `syncing: false`가 오기 전까지는 재개
+   * 버튼을 막는다 — `present === required`만 보고 열면, 서버가 아직 끝내지
+   * 못한 순간에 누른 재개가 거절된다(`TournamentSyncingSchema` 주석).
+   */
+  describe('서버 복구 중 딜러 복귀', () => {
+    it('복귀 진행을 보여주고, 다 돌아와야 재개 버튼이 열린다', async () => {
+      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.FLOP }));
+      socket.emitServerEvent(
+        'renderGame',
+        baseState({ phase: GamePhase.FLOP, resumePending: { downMs: 60_000 } }),
+      );
+
+      socket.emitServerEvent(TOURNAMENT_SYNCING_EVENT, { syncing: true, present: 7, required: 9 });
+
+      expect(screen.getByTestId('dealer-resume')).toHaveTextContent('딜러 7/9 복귀');
+      expect(screen.getByRole('button', { name: '이어서 진행' })).toBeDisabled();
+
+      socket.emitServerEvent(TOURNAMENT_SYNCING_EVENT, { syncing: false, present: 9, required: 9 });
+
+      expect(screen.getByRole('button', { name: '이어서 진행' })).not.toBeDisabled();
     });
   });
 });

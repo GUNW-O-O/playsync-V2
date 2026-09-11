@@ -9,6 +9,8 @@ import {
   GamePhase,
   TableState,
   TournamentClosedSchema,
+  TournamentSyncingSchema,
+  TOURNAMENT_SYNCING_EVENT,
   type ClosedTournamentStatus,
 } from '@playsync/contract';
 import WinnerOverlay, { type WinnerCandidate } from './WinnerOverlay';
@@ -77,6 +79,12 @@ export default function DealerGameClient({
    * 지우면 딜러가 끝난 대회의 펠트를 다시 만지게 된다.
    */
   const [closed, setClosed] = useState<ClosedTournamentStatus | null>(null);
+  /**
+   * 서버 복구 중 딜러 복귀 진행(T96). `tournamentSyncing`은 이 대회의 딜러에게만
+   * 오고, 대회 단위 정렬은 서버가 보장한다(`TournamentSyncingSchema` 주석) —
+   * 마지막으로 받은 값이 곧 지금 값이다.
+   */
+  const [sync, setSync] = useState<{ present: number; required: number } | null>(null);
 
   /**
    * 소켓 배선은 `useTableSocket`이 든다(T93). 좌석 화면과 두 벌로 들고 있던
@@ -109,6 +117,18 @@ export default function DealerGameClient({
           setActionError(null);
         } else {
           console.error('tournamentClosed 계약 위반 — 무시한다.', parsed.error);
+        }
+      } else if (serverEvent === TOURNAMENT_SYNCING_EVENT) {
+        // **계약을 읽는다.** `tournamentClosed` 분기와 같은 이유다.
+        const parsed = TournamentSyncingSchema.safeParse(data);
+        if (parsed.success) {
+          setSync(
+            parsed.data.syncing
+              ? { present: parsed.data.present, required: parsed.data.required }
+              : null,
+          );
+        } else {
+          console.error('tournamentSyncing 계약 위반 — 무시한다.', parsed.error);
         }
       } else if (serverEvent === 'error') {
         // 거절은 브로드캐스트가 아니라 **누른 사람에게만** 오는 ack다
@@ -247,11 +267,18 @@ export default function DealerGameClient({
           <span>
             서버가 {formatDuration(resumePending.downMs)} 멈췄다 돌아왔습니다. 자리가 다 찼는지
             보고 이어서 진행하세요.
+            {/*
+              **서버가 아직 끝내지 못한 재개는 거절된다.** `present === required`만
+              보고 버튼을 열면 그 자리 하나만 다르다 — `syncing: false`가
+              올 때까지는 서버가 끝났다고 말한 것이 아니다(T96).
+            */}
+            {sync && ` 딜러 ${sync.present}/${sync.required} 복귀 — 전원이 돌아오면 이어서 진행할 수 있습니다.`}
           </span>
           <button
             type="button"
+            disabled={sync !== null}
             onClick={resumeTable}
-            className="shrink-0 border border-white px-4 py-2 text-sm font-semibold"
+            className="shrink-0 border border-white px-4 py-2 text-sm font-semibold disabled:opacity-40"
           >
             이어서 진행
           </button>
