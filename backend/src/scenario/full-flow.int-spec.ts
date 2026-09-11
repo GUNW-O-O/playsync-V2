@@ -197,7 +197,10 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
       queue, prismaService, redisService, playsync, jwt, otpAttempts,
     );
     tickets = new WsTicketService(redis);
-    gateway = new WsGateway(dealer, playsync, redisService, tickets, emitter, prismaService);
+    // 이 시나리오는 SYNCING을 만들지 않는다 — 항상 ONGOING이라
+    // `completeSync`가 불릴 일이 없다. 최소 목이면 충분하다(T96).
+    const recovery = { completeSync: jest.fn() };
+    gateway = new WsGateway(dealer, playsync, redisService, tickets, emitter, prismaService, recovery as any);
 
     // 세 명으로 진행한다. 운영 기본값은 6이고 그 규칙은 T16이 따로 검증한다.
     process.env.MIN_PLAYERS_TO_START = '3';

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { DealerModule } from 'src/dealer/dealer.module';
 import { PlaysyncModule } from 'src/playsync/playsync.module';
+import { RecoveryModule } from 'src/recovery/recovery.module';
 import { WsGateway } from './ws.gateway';
 import { WsTicketController } from './ws-ticket.controller';
 import { WsTicketService } from './ws-ticket.service';
@@ -17,9 +18,12 @@ import { WsTicketService } from './ws-ticket.service';
  * 배선을 명시적으로 다시 만들어야 부팅이 깨지지 않는다.
  * (RedisService·JwtService·EventEmitter2는 각각 `@Global()`이거나
  * `global: true`로 등록돼 있어 여기서 따로 import할 필요가 없다.)
+ *
+ * RecoveryModule도 같은 이유로 더한다 — `WsGateway`가 `RecoveryService`를
+ * 주입받아, 딜러가 다 돌아온 순간(n/n) `completeSync`를 부른다(T96).
  */
 @Module({
-  imports: [DealerModule, PlaysyncModule],
+  imports: [DealerModule, PlaysyncModule, RecoveryModule],
   controllers: [WsTicketController],
   providers: [WsGateway, WsTicketService],
 })
