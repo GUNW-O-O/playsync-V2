@@ -114,6 +114,17 @@ services:
       # 몇 개에서 닫히는지를 잰다(`load/scenarios/door.js`).
       THROTTLE_LIMIT: ${LOAD_THROTTLE_LIMIT:-100000}
       THROTTLE_AUTH_LIMIT: ${LOAD_THROTTLE_AUTH_LIMIT:-100000}
+      # bcrypt 코스트. **기본이 제품 값 10이라 램프·스모크·문은 한 글자도
+      # 안 바뀐다** — 지난 실측들과 비교 가능한 상태를 유지하는 것이 기본값을
+      # 안 내린 이유다. 정원을 잴 때만 `BCRYPT_ROUNDS=4`로 띄워 문의 비용을
+      # 64배 깎고, 같은 무대를 10으로도 돌려 빼면 정원 수치 중 bcrypt의 몫이
+      # 나온다(`src/auth/bcrypt-cost.ts`).
+      #
+      # **시드도 같은 값으로 다시 깔아야 한다.** `compare` 비용은 이 값이
+      # 아니라 저장된 해시가 정한다 — 여기만 내리면 실행 중 가입(10%)만
+      # 싸지고 로그인 90%는 옛 코스트 그대로다. `seed-load.ts`가 같은 함수를
+      # import하므로 같은 셸에서 `BCRYPT_ROUNDS`를 export한 채 시드를 돌린다.
+      BCRYPT_ROUNDS: ${BCRYPT_ROUNDS:-10}
       # `NEW_USER_RATIO`(load/lib/table.js) 분기가 실행 중에 만드는 신규 가입
       # 봇의 초기 포인트. 없으면 0으로 나와 `PaymentService.joinSession`의
       # `user.points < session.entryFee` 게이트가 409로 막는다(C-2). 값은

@@ -6,6 +6,7 @@ import { Role } from '@prisma/client';
 import { UserService } from 'src/user/user.service';
 import { JwtService } from '@nestjs/jwt';
 import { tokenTtl } from './token-ttl';
+import { bcryptRounds } from './bcrypt-cost';
 
 
 /**
@@ -42,7 +43,7 @@ export class AuthService {
     const existing = await this.prisma.user.findUnique({ where: { nickname: dto.nickname } });
     if (existing) throw new BadRequestException('이미 존재하는 ID입니다.');
 
-    const hashedPassword = await bcrypt.hash(dto.password, 10);
+    const hashedPassword = await bcrypt.hash(dto.password, bcryptRounds());
     const user = await this.prisma.user.create({
       data: { nickname: dto.nickname, password: hashedPassword, points: signupInitialPoints() },
     });
@@ -63,7 +64,7 @@ export class AuthService {
     const existing = await this.prisma.user.findUnique({ where: { nickname: dto.nickname } });
     if (existing) throw new BadRequestException('이미 존재하는 ID입니다.');
 
-    const hashedPassword = await bcrypt.hash(dto.password, 10);
+    const hashedPassword = await bcrypt.hash(dto.password, bcryptRounds());
     const owner = await this.prisma.user.create({
       data: { nickname: dto.nickname, password: hashedPassword, role: Role.STORE_ADMIN },
     });

@@ -11,6 +11,7 @@ import { mkdirSync, writeFileSync } from 'fs';
 import Redis from 'ioredis';
 import { resolve } from 'path';
 import { Pool } from 'pg';
+import { bcryptRounds } from '../src/auth/bcrypt-cost';
 import { hashDealerOtp } from '../src/dealer/dealer-otp';
 import { resetAll, setEmptySnapshot, setSeatBitmap } from './seed-helpers';
 // `shared/...` 별칭(jest의 moduleNameMapper·tsconfig의 baseUrl)은 컴파일
@@ -220,7 +221,7 @@ async function main() {
     // 해시를 한 번만 계산해 돌려 쓴다. 부하 계정이 전부 같은 비밀번호라
     // 가능하고, 시드에서 bcrypt를 반복하는 비용을 없앤다 — 측정하고 싶은
     // bcrypt는 시드의 것이 아니라 **실행 중 회원가입·로그인의 것**이다.
-    const password = await bcrypt.hash(LOAD_PASSWORD, 10);
+    const password = await bcrypt.hash(LOAD_PASSWORD, bcryptRounds());
 
     const owner = await prisma.user.create({
       data: { nickname: OWNER_NICKNAME, password, role: Role.STORE_ADMIN },
