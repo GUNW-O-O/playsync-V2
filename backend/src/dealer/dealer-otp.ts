@@ -1,9 +1,9 @@
 import { randomInt } from 'node:crypto';
 import * as bcrypt from 'bcrypt';
+import { bcryptRounds } from '../auth/bcrypt-cost';
 
 export const OTP_LENGTH = 6;
 
-const SALT_ROUNDS = 10;
 
 /**
  * OTP를 문자열로 다루는 이유.
@@ -19,7 +19,7 @@ export function generateDealerOtp(): string {
 }
 
 export function hashDealerOtp(otp: string): Promise<string> {
-  return bcrypt.hash(otp, SALT_ROUNDS);
+  return bcrypt.hash(otp, bcryptRounds());
 }
 
 export function verifyDealerOtp(otp: string, hash: string): Promise<boolean> {
