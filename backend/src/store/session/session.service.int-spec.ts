@@ -3089,6 +3089,29 @@ describe('SessionService.completeSession — 상점 몫', () => {
     expect(t.status).toBe(TournamentStatus.FINISHED);
   });
 
+  /**
+   * 재리뷰 m4②. `abortSession`(중단) 쪽에는 같은 확인이 있는데
+   * `completeSession`(종료 · 그리고 `chopSession`이 타는 공통 경로) 쪽에는
+   * 없었다. `schema.prisma`의 `pausedAt` 주석("SYNCING과 언제나 함께 서고
+   * 함께 사라진다")이 이 닫는 자리에서도 사실인지 직접 본다.
+   */
+  it('SYNCING인 대회를 종료하면 pausedAt이 사라진다', async () => {
+    await seedSettled({ rakePercent: 10, players: 5 });
+    await prisma.tournament.update({
+      where: { id: tournamentId },
+      data: { status: TournamentStatus.SYNCING, pausedAt: new Date() },
+    });
+
+    await sessionService.completeSession(tournamentId, ownerId);
+
+    const tournament = await prisma.tournament.findUniqueOrThrow({
+      where: { id: tournamentId },
+      select: { status: true, pausedAt: true },
+    });
+    expect(`상태 ${tournament.status} / pausedAt ${tournament.pausedAt}`)
+      .toBe(`상태 ${TournamentStatus.FINISHED} / pausedAt null`);
+  });
+
   it('상점 몫이 주인에게 가고 SETTLEMENT 내역이 남는다', async () => {
     const { rake } = await seedSettled({ rakePercent: 10, players: 5 });
     const before = await pointsOf(ownerId);

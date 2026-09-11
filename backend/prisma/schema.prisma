@@ -203,8 +203,10 @@ model Tournament {
   /// `pausedMs`(누적 정지)와 스톱워치 한 쌍이다. `status === SYNCING`과
   /// 언제나 함께 서고 함께 사라진다 — 서는 자리(`recoverTournament`)와
   /// 꺼지는 자리(`completeSync`)가 각각 같은 update 한 문장으로 둘을 쓴다.
-  /// 대회를 닫는 세 곳(`completeSession`·`abortSession`) 역시 이 컬럼을
-  /// `null`로 되돌린다 — `cancelSession`은 시작 전에만 도는 문이라(SYNCING은
+  /// 대회가 닫히는 갈래는 셋(승리 종료 · 찹 · 중단)이지만 `chopSession`은
+  /// 끝에서 그대로 `completeSession`을 타므로, 이 컬럼을 `null`로 되돌리는
+  /// 함수는 둘뿐이다 — 승리·찹 공통인 `completeSession`과 중단인
+  /// `abortSession`. `cancelSession`은 시작 전에만 도는 문이라(SYNCING은
   /// 시작한 대회에만 있다) 값이 이미 null이고 손댈 것이 없다.
   ///
   /// 값은 **마지막 하트비트**다. 복구 중 다시 죽어도 덮지 않으므로, 첫 정지 ·
