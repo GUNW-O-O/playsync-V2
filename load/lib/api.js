@@ -1,6 +1,8 @@
 import http from 'k6/http';
 import { fail, sleep } from 'k6';
-import { Counter } from 'k6/metrics';
+import { Counter, Trend } from 'k6/metrics';
+
+import { nextAttempt, spreadForHerd } from './reconnect-backoff.js';
 
 /**
  * 부하 봇이 타는 REST 경로.
@@ -189,12 +191,65 @@ export function dealerLogin(tournamentId, tableId, otp) {
  *
  * 소켓 하나마다 한 번씩 필요하다 — 재사용할 수 없다.
  */
-export function wsTicket(token) {
+export const ticketLimited = new Counter('ticket_limited');
+export const ticketGaveUp = new Counter('ticket_gave_up');
+export const ticketWaitMs = new Trend('ticket_wait_ms', true);
+
+/**
+ * 재접속 무리를 흩는 폭. 상한에 걸린 단말이 다시 두드릴 시각을 이 폭에 걸쳐
+ * 고르게 뿌린다.
+ *
+ * 기본값을 무대 규모에서 만든다 — 무리(테이블 × 소켓 10)를 전역 상한
+ * (`throttle.ts`의 `DEFAULT_LIMIT`, 분당 600)으로 나눈 값이다. 감으로 잡으면
+ * 두 번째 파도가 또 문에 걸린다(`reconnect-backoff.js`의 `spreadForHerd`).
+ */
+export const RECONNECT_SPREAD_MS =
+  __ENV.LOAD_RECONNECT_SPREAD_MS === undefined || __ENV.LOAD_RECONNECT_SPREAD_MS === ''
+    // 무리(테이블 × 소켓 10)를 버킷 상한으로 나눈 값이 기본이다.
+    ? spreadForHerd(Number(__ENV.LOAD_MAX_TABLES || 66) * 10, Number(__ENV.LOAD_TICKET_LIMIT || 600))
+    // **0을 허락해야 한다.** 0이 곧 지금 제품의 모양(전원이 같은 순간에
+    // 새로고침)이고, 그것이 이 측정의 대조군이다. `Number('0') || 기본값`으로
+    // 쓰면 0이 falsy라 조용히 기본값으로 돌아간다 — 대조군이 사라진다.
+    : Number(__ENV.LOAD_RECONNECT_SPREAD_MS);
+
+/**
+ * 티켓을 한 번 두드린다. **막으면 기다리지 않고 돌아온다.**
+ *
+ * 기다리는 일을 호출자에게 넘기는 이유가 하나뿐이다 — k6의 `sleep`은 VU를
+ * 통째로 멈춘다. 재접속 중인 VU에도 아직 살아 있는 소켓이 있어서, 여기서
+ * 30초를 자면 그 소켓들의 메시지 처리가 같이 멈추고 **열려 있던 측정 창이
+ * 30초짜리 지연으로 기록된다.** 실측에서 그렇게 실행 하나를 버렸다(내 액션
+ * p95 2291ms · 그때 서버 lag 중앙값 0.4ms · CPU 4%). 호출자는 타이머로
+ * 다시 부른다.
+ *
+ * @returns {{ticket: string}|{waitMs: number}|{gaveUp: true}}
+ */
+export function wsTicketAttempt(token, attempt = 0) {
   const res = http.post(`${BASE}/ws/ticket`, null, {
     headers: bearer(token),
     tags: { step: 'ticket' },
   });
-  return must(res, 'WS 티켓 발급').ticket;
+
+  const verdict = nextAttempt(res, attempt, { spreadMs: RECONNECT_SPREAD_MS });
+
+  if (verdict.retry) {
+    // 상한에 걸린 것은 결함이 아니라 **재려던 것**이다 — 무대를 제품 기본
+    // 상한으로 띄우면 재접속 폭발이 실제로 여기 걸린다(T93).
+    ticketLimited.add(1);
+    ticketWaitMs.add(verdict.waitMs);
+    return { waitMs: verdict.waitMs };
+  }
+
+  if (verdict.reason === 'gave-up') {
+    // **VU를 죽이지 않는다.** 죽이면 테이블 하나가 통째로 사라져 "몇 대가
+    // 끝내 못 돌아왔나"가 실행 요약에서 지워진다 — 그것이 이 측정이 내려는
+    // 답이다. 소켓 하나가 비는 대가는 `reconnect_ms`가 그 테이블에 대해
+    // 기록되지 않는 것이고, 그 침묵이 곧 "복구 못 함"이다.
+    ticketGaveUp.add(1);
+    return { gaveUp: true };
+  }
+
+  return { ticket: must(res, 'WS 티켓 발급').ticket };
 }
 
 /** 상점이 대회를 시작한다. 최소 인원이 앉아 있어야 통과한다. */

@@ -87,6 +87,24 @@ function signupLine(summary) {
 }
 
 /**
+ * 재접속이 실제로 일어났을 때만 적는다. 폭발이 없는 실행(스모크·문)에서는
+ * 전부 0이라 줄만 길어진다.
+ *
+ * **끝내 못 돌아온 소켓을 눈에 띄게 적는다.** 그 수가 0이 아니면 그 테이블의
+ * `reconnect_ms`가 통째로 빠져 있고, 그러면 남은 표본은 **돌아온 것들만의
+ * 분포**다 — 평균이 좋아 보이는 이유가 거기 있다.
+ */
+function reconnectLine(summary) {
+  if (!summary.reconnects) return '재접속 없음';
+  const r = summary.reconnectMs;
+  const gave = summary.ticketGaveUp ? ` 미복구 ${summary.ticketGaveUp} ⚠` : '';
+  return (
+    `재접속 ${summary.reconnects}회 복구 중앙 ${r ? r.med : '-'}ms 최대 ${r ? r.max : '-'}ms` +
+    ` · 티켓상한 ${summary.ticketLimited}${gave}`
+  );
+}
+
+/**
  * 사람이 읽을 한 줄. 램프에서는 단계마다 이 줄이 하나씩 쌓인다.
  *
  * **`resolutionMs`를 빼서 보여주지 않는다.** 원값을 그대로 두고 바닥값을 같이
@@ -97,6 +115,7 @@ export function oneLine(label, summary) {
   const others = summary.othersAction;
   const myServer = summary.myActionServer;
   const myClient = summary.myActionClient;
+
   return [
     label,
     `핸드 ${summary.hands}`,
@@ -112,6 +131,7 @@ export function oneLine(label, summary) {
     signupLine(summary),
     `레이즈 ${summary.raises}/폴드 ${summary.folds}/리바인 ${summary.rebuysAccepted}`,
     `테이블409 ${summary.tableCreateConflicts}`,
+    reconnectLine(summary),
     summary.server
       ? `lag 중앙 ${summary.server.lagMs.med}ms 최대 ${summary.server.lagMs.max}ms` +
         ` · CPU ${summary.server.cpuPercent}% · rss ${summary.server.rssMb}MB` +
@@ -151,6 +171,11 @@ export function buildSummary(data, name) {
     tableSetupMs: trend(data, 'table_setup_ms'),
     reconnects: counter(data, 'reconnects'),
     reconnectMs: trend(data, 'reconnect_ms'),
+    // 재접속이 문에 걸린 자리. `ticketGaveUp`이 0이 아니면 그 테이블의
+    // `reconnectMs`는 기록되지 않는다 — 소켓 하나가 끝내 안 붙어서다.
+    ticketLimited: counter(data, 'ticket_limited'),
+    ticketGaveUp: counter(data, 'ticket_gave_up'),
+    ticketWaitMs: trend(data, 'ticket_wait_ms'),
     myAction: trend(data, 'my_action_ms'),
     // 내 액션의 왕복을 서버 쪽과 단말 쪽으로 쪼갠 값(T76). 합계 하나로는
     // "왕복 1초인데 서버 lag은 2ms"를 가릴 수 없었다.

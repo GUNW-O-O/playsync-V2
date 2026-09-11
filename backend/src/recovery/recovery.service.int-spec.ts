@@ -1,4 +1,5 @@
 import Redis from 'ioredis';
+import { Queue } from 'bullmq';
 import { PlayerStatus, PrismaClient, TournamentStatus } from '@prisma/client';
 import { BlindField } from 'shared/types/tournamentMeta';
 import { closeTestPrisma, createTestPrisma, truncateAll } from '../../test/helpers/prisma';
@@ -24,14 +25,22 @@ describe('RecoveryService', () => {
   let redis: Redis;
   let redisService: RedisService;
   let recovery: RecoveryService;
+  let queue: Queue;
+  let queueConnection: Redis;
   let seq = 0;
 
   beforeAll(() => {
     prisma = createTestPrisma();
     redis = createTestRedis();
+    // 복구가 턴 타이머를 다시 건다(T94). 진짜 큐라야 "걸렸는가"를 볼 수 있다 —
+    // `maxRetriesPerRequest: null`은 BullMQ가 요구하는 연결 설정이다.
+    queueConnection = createTestRedis({ maxRetriesPerRequest: null });
+    queue = new Queue('player-timeout', { connection: queueConnection });
   });
 
   afterAll(async () => {
+    await queue.close();
+    await queueConnection.quit();
     await redis.quit();
     await closeTestPrisma(prisma);
   });
@@ -39,9 +48,10 @@ describe('RecoveryService', () => {
   beforeEach(async () => {
     await truncateAll(prisma);
     await flushTestRedis(redis);
+    await queue.obliterate({ force: true });
     seq = 0;
     redisService = new RedisService(redis);
-    recovery = new RecoveryService(prisma as unknown as PrismaService, redisService);
+    recovery = new RecoveryService(prisma as unknown as PrismaService, redisService, queue);
   });
 
   async function setHeartbeatAgo(ms: number) {
@@ -413,6 +423,110 @@ describe('RecoveryService', () => {
    * 테이블 단위 재구성(3단계). 스냅샷 유실 판정과 정지 시간 보정은 별개의
    * 축이라 위 테스트들과 겹치지 않는다.
    */
+  /**
+   * 정지에서 돌아온 뒤의 **턴 시계**(T94).
+   *
+   * 정지 동안 블라인드 시계는 위에서 밀어 주는데 액션 시계는 아무도 밀지
+   * 않았다. 그 비대칭이 차례였던 사람을 자동 폴드시켰다. 폴드되는 경로가
+   * 둘이라 둘 다 본다 — 살아남은 잡과, 지나간 마감 시각이다.
+   */
+  describe('턴 시계 재설정', () => {
+    /** 차례가 살아 있는 테이블 하나. `deadline`을 과거로 두면 정지를 겪은 모양이다. */
+    async function seedLiveTurn(opts: { deadline?: number; epoch?: number; turnSeat?: number } = {}) {
+      const { tournamentId, tableIds } = await seedOngoingTournament();
+      const [tableId] = tableIds;
+      const userId = await seatPlayer({ tournamentId, tableId, seatPosition: 0, stack: 8000 });
+      const live: TableState = {
+        phase: GamePhase.FLOP,
+        players: Array(9).fill(null),
+        buttonUser: 0,
+        currentTurnSeatIndex: opts.turnSeat ?? 0,
+        pot: 500,
+        sidePots: [],
+        currentBet: 200,
+        smallBlind: 100,
+        ante: 0,
+        tournamentId,
+        timerEpoch: opts.epoch ?? 3,
+        // 정지 전에 찍힌 마감이다. 지금은 이미 지났다.
+        actionDeadline: opts.deadline ?? Date.now() - 120_000,
+      };
+      live.players[0] = {
+        id: userId, tableId, nickname: 'p', seatIndex: 0, stack: 7800,
+        bet: 200, hasFolded: false, hasChecked: false, isAllIn: false, totalContributed: 200,
+      };
+      await redisService.saveSnapshotUnlocked(tableId, live, 'table-created');
+      return { tournamentId, tableId, userId };
+    }
+
+    /**
+     * **이것이 결함의 두 번째 경로다.** 마감이 절대 시각이라, 안 고치면
+     * 돌아온 사람이 누른 버튼이 `handleAction`에서 `TIME_OUT`으로 바뀐다.
+     *
+     * 유예(60초)와 턴(30초)을 둘 다 더한 값인지를 본다. 턴만 다시 주면
+     * 재접속이 끝나기 전에 마감이 와서(실측 31.9초) 결국 같은 폴드가 난다.
+     */
+    it('지나간 마감을 유예까지 더해 다시 찍는다', async () => {
+      const { tableId } = await seedLiveTurn();
+      await setHeartbeatAgo(300_000);
+
+      await recovery.recoverAll();
+
+      const after = await redisService.getSnapShot(tableId);
+      // 90초 = 유예 60 + 턴 30. 유예를 빼먹으면 30초대라 이 선을 못 넘는다.
+      expect(after!.actionDeadline).toBeGreaterThan(Date.now() + 85_000);
+    });
+
+    /**
+     * **첫 번째 경로.** 큐에 남은 잡은 지연이 이미 지나 부팅 직후 발화하는데,
+     * 세대가 그대로면 `handleAction`의 세대 검사를 통과해 폴드시킨다.
+     */
+    it('세대를 올려 살아남은 잡을 무효로 만든다', async () => {
+      const { tableId } = await seedLiveTurn({ epoch: 3 });
+      await setHeartbeatAgo(300_000);
+
+      await recovery.recoverAll();
+
+      expect((await redisService.getSnapShot(tableId))!.timerEpoch).toBe(4);
+    });
+
+    /**
+     * 세대만 올리고 새 잡을 안 걸면 타이머가 아예 없는 테이블이 된다 —
+     * 아무도 안 누르면 영영 멈춘다. **자동 폴드를 판 세우기로 바꾸는 것이다.**
+     */
+    it('새 타이머 잡을 건다 — 새 세대로, 그 사람을 가리켜서', async () => {
+      const { tableId, userId } = await seedLiveTurn({ epoch: 3 });
+      await setHeartbeatAgo(300_000);
+
+      await recovery.recoverAll();
+
+      const job = await queue.getJob(`${tableId}-4`);
+      expect(job).toBeDefined();
+      expect(job!.data).toMatchObject({ tableId, userId, timerEpoch: 4 });
+      // 유예가 실렸는지 잡 쪽에서도 본다. 스냅샷만 고치고 잡을 짧게 걸면
+      // 마감 전에 잡이 먼저 터진다.
+      expect(job!.opts.delay).toBeGreaterThan(85_000);
+    });
+
+    /**
+     * **차례가 없는 테이블에 마감을 찍으면 없던 타이머가 생긴다.**
+     * `scheduleTimeout`이 같은 조건으로 잡을 안 거는 것과 짝이다 — 이 검사가
+     * 없으면 "전부 다시 찍는다"는 구현도 위 셋을 전부 통과한다.
+     */
+    it('차례가 없으면 손대지 않는다', async () => {
+      const { tableId } = await seedLiveTurn({ turnSeat: -1, epoch: 3 });
+      await setHeartbeatAgo(300_000);
+
+      await recovery.recoverAll();
+
+      const after = await redisService.getSnapShot(tableId);
+      expect(`세대 ${after!.timerEpoch} 마감 ${after!.actionDeadline! < Date.now()}`).toBe(
+        '세대 3 마감 true',
+      );
+      expect(await queue.getJob(`${tableId}-4`)).toBeUndefined();
+    });
+  });
+
   describe('테이블 단위 재구성', () => {
     it('스냅샷 없는 테이블만 재구성한다 — 한 대회에 둘이 섞여 있어도', async () => {
       const { tournamentId, tableIds } = await seedOngoingTournament({ tableCount: 2 });
@@ -459,7 +573,16 @@ describe('RecoveryService', () => {
 
       await recovery.recoverAll();
 
-      expect(JSON.stringify(await redisService.getSnapShot(tableA))).toBe(aBefore);
+      // **턴 시계는 예외다**(T94). 정지에서 돌아오면 복구가 마감과 세대를 다시
+      // 찍으므로 스냅샷이 한 바이트도 안 바뀌지는 않는다. 이 검사가 보려는
+      // 것은 "재구성하지 않았다"이지 "불변"이 아니라서, 게임 내용만 견준다 —
+      // 재구성했다면 phase가 WAITING이고 스택이 DB 값(8000)이 된다.
+      const aAfter = await redisService.getSnapShot(tableA);
+      const gameContent = (s: unknown) => {
+        const { actionDeadline, timerEpoch, ...rest } = s as TableState;
+        return JSON.stringify(rest);
+      };
+      expect(gameContent(aAfter)).toBe(gameContent(JSON.parse(aBefore)));
       const bAfter = await redisService.getSnapShot(tableB);
       expect(bAfter).not.toBeNull();
       expect(bAfter!.players[3]).toMatchObject({ stack: 4000 });
