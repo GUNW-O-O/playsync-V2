@@ -51,8 +51,9 @@ function renderConsole(
 }
 
 /**
- * 마무리 미리보기 최소 픽스처. 마무리 영역은 `live && (ONGOING || SYNCING)`일
- * 때만 그려지므로, 조건 자체를 보려면 `live`가 있어야 한다.
+ * 마무리 미리보기 최소 픽스처. 마무리 영역은 `live &&` 시작 뒤(`PENDING`이
+ * 아니고 닫히지도 않은) 상태일 때만 그려지므로, 조건 자체를 보려면 `live`가
+ * 있어야 한다.
  */
 const PREVIEW = {
   totalBuyinAmount: 100000,

@@ -647,8 +647,15 @@ export default function ConsoleClient({
           시작 전 대회에는 이 영역이 없다. 닫을 것이 아직 없고, 그때의
           되돌리기는 「취소」라는 다른 문이다.
         */}
-        {/* 시작 뒤의 대회. 복구 중에도 중단은 열려 있어야 한다(T96). */}
-        {live && (tournament.status === 'ONGOING' || tournament.status === 'SYNCING') && (
+        {/*
+          시작 뒤의 대회. 복구 중에도 중단은 열려 있어야 한다(T96).
+
+          **여집합으로 잡는다**(최종 리뷰 M8). `ONGOING`·`SYNCING`을 나열하면
+          다음 살아 있는 상태가 생겨도 컴파일 에러 없이 이 영역이 조용히
+          사라진다 — `isClosed`(위, `ClosedTournamentStatusSchema` 기반)를
+          그대로 뒤집으면 스키마가 늘어나는 순간 여기도 같이 늘어난다.
+        */}
+        {live && tournament.status !== 'PENDING' && !isClosed && (
           <>
             <div className="h-px bg-[var(--hairline)]" />
             <div>
