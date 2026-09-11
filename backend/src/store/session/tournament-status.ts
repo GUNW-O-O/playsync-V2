@@ -55,3 +55,19 @@ export function asClosedTournamentWrite(e: unknown): never {
   if ((e as { code?: string }).code === 'P2025') throw new Error(CLOSED_TOURNAMENT_WRITE);
   throw e;
 }
+
+/**
+ * **시작했고 아직 닫히지 않은 대회**(T96).
+ *
+ * `status === ONGOING`으로 직접 비교하던 자리들이 `SYNCING`을 조용히 놓친다 —
+ * 복구 중에 다시 죽은 대회가 복구 대상에서 빠지는 것이 그 하나였다. 판정을
+ * 여기 한 곳에 둔다(닫힘을 `isClosedTournament` 하나로 모은 것과 같은 이유).
+ */
+export const LIVE_TOURNAMENT_STATUSES = [
+  TournamentStatus.ONGOING,
+  TournamentStatus.SYNCING,
+] as const;
+
+export function isLiveTournament(status: TournamentStatus): boolean {
+  return (LIVE_TOURNAMENT_STATUSES as readonly TournamentStatus[]).includes(status);
+}

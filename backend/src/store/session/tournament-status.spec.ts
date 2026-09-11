@@ -1,9 +1,9 @@
 import { TournamentStatus } from '@prisma/client';
-import { ClosedTournamentStatusSchema } from '@playsync/contract';
+import { ClosedTournamentStatusSchema, TournamentStatusSchema } from '@playsync/contract';
 import { PaymentService } from 'src/payment/payment.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { SessionService } from './session.service';
-import { CLOSED_TOURNAMENT_STATUSES, isClosedTournament } from './tournament-status';
+import { CLOSED_TOURNAMENT_STATUSES, LIVE_TOURNAMENT_STATUSES, isClosedTournament } from './tournament-status';
 
 /**
  * 살아 있는 대회를 조회에서 빠뜨리지 않는지(T71 9-3).
@@ -80,4 +80,22 @@ describe('닫힘 목록이 contract와 같다', () => {
     const fromContract = [...ClosedTournamentStatusSchema.options].sort();
     expect(fromBackend).toEqual(fromContract);
   });
+});
+
+/**
+ * **모든 상태가 정확히 한 칸에 든다** — 시작 전 · 살아 있음 · 닫힘.
+ *
+ * `SYNCING`이 한 번 그랬다: 선언만 되고 어느 목록에도 없어서, 붙는 순간
+ * 대회가 조회에서 사라지게 돼 있었다(T71). 다음 상태가 어느 칸에도 안
+ * 들어가면 여기서 빨개진다.
+ */
+it('Prisma의 대회 상태가 시작 전 · 살아 있음 · 닫힘으로 서로소 분할된다', () => {
+  const buckets = [[TournamentStatus.PENDING], [...LIVE_TOURNAMENT_STATUSES], [...CLOSED_TOURNAMENT_STATUSES]];
+  const flat = buckets.flat();
+  expect(new Set(flat).size).toBe(flat.length);
+  expect([...flat].sort()).toEqual([...Object.values(TournamentStatus)].sort());
+});
+
+it('contract의 상태 목록이 Prisma enum과 같다', () => {
+  expect([...TournamentStatusSchema.options].sort()).toEqual([...Object.values(TournamentStatus)].sort());
 });

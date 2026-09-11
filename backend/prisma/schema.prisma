@@ -39,6 +39,14 @@ enum TransactionType {
 enum TournamentStatus {
   PENDING // 생성 직후, 바이인 대기
   ONGOING // 게임 진행 중
+
+  /// 서버가 멈췄다 돌아와 **그 대회의 딜러 태블릿이 다 돌아오기를 기다리는 중**(T96).
+  /// 부팅이 켜고(`RecoveryService.recoverTournament`), 딜러가 n/n이 되면
+  /// `RecoveryService.completeSync`가 끈다. 이 동안 블라인드 시계가 멈춘다.
+  ///
+  /// T71이 「아무도 대입하지 않는다」로 지웠던 값이다. 되살리면서 대입하는
+  /// 자리가 둘 생겼다.
+  SYNCING
   FINISHED // 최종 종료 (영구 데이터 보존 상태)
 
   /// 취소 — 시작 전에 닫고 참가비를 전액 환불했다.
@@ -189,6 +197,16 @@ model Tournament {
   /// `startedAt`과 뜻이 다르다. `startedAt`은 대회가 실제로 시작한 시각이고
   /// 절대 밀리지 않는다. 미는 것은 Redis `BlindField.startedAt`이다.
   pausedMs Int @default(0)
+
+  /// 정지가 시작된 시각. **정지 중이 아니면 null**(T96).
+  ///
+  /// `pausedMs`(누적 정지)와 스톱워치 한 쌍이다. `status === SYNCING`과
+  /// 언제나 함께 서고 함께 사라진다 — 쓰는 자리 둘(`recoverTournament`·
+  /// `completeSync`)이 같은 update 한 문장으로 둘을 쓴다.
+  ///
+  /// 값은 **마지막 하트비트**다. 복구 중 다시 죽어도 덮지 않으므로, 첫 정지 ·
+  /// 복구 대기 · 두 번째 정지가 한 번의 보정에 들어간다.
+  pausedAt DateTime?
 }
 
 model Table {

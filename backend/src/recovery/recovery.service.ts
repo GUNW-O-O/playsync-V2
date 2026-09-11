@@ -1,8 +1,9 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
-import { PlayerStatus, TournamentStatus } from '@prisma/client';
+import { PlayerStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { buildTournamentMeta } from 'src/store/session/tournament-meta';
+import { LIVE_TOURNAMENT_STATUSES } from 'src/store/session/tournament-status';
 import { deriveAnteAmount } from 'shared/util/util';
 import { planPause } from 'src/playsync/turn-clock';
 // 엔진의 좌석 타입과 Prisma 모델 이름이 둘 다 `TablePlayer`다. 이 파일은
@@ -82,8 +83,10 @@ export class RecoveryService implements OnApplicationBootstrap {
         update: { beatAt: now },
       });
 
+      // `SYNCING`도 대상이다(T96). 복구를 기다리는 중에 다시 죽은 대회가
+      // 여기서 빠지면 그 대회는 영영 복구되지 않는다.
       const tournaments = await this.prisma.tournament.findMany({
-        where: { status: TournamentStatus.ONGOING },
+        where: { status: { in: [...LIVE_TOURNAMENT_STATUSES] } },
         select: { id: true },
       });
 
