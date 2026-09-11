@@ -19,9 +19,10 @@ import { retryAsync } from 'src/common/retry';
 import { entryCountOf, payoutsForRaw } from './payout-table';
 import { awardPrize, prizeFor, prizePoolOf, splitBustedRanks } from './prize';
 import { SEAT_ROLE } from 'src/auth/seat-role';
+import { TURN_TIMEOUT_MS } from './turn-clock';
 
-/** 한 턴에 주어지는 시간. 잡의 delay와 state.actionDeadline이 같은 값을 써야 한다. */
-const TURN_TIMEOUT_MS = 30000;
+// 턴 시계는 `turn-clock.ts`가 든다. 복구(`RecoveryService`)가 정지 뒤에 같은
+// 시계를 다시 세우므로, 여기 상수를 두면 두 벌이 되어 한쪽만 바뀌는 날이 온다.
 
 /**
  * 리바인 팝업 응답을 기다리는 시간.
