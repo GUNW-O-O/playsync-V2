@@ -1201,6 +1201,38 @@ describe('WsGateway 인바운드 경계', () => {
     });
 
     /**
+     * 재리뷰 m3. `recount`의 송신 루프를 `required`(좌석이 찬 테이블만)로
+     * 되돌려도 기존 테스트는 전부 초록이었다 — `required`에 없는 **빈**
+     * 테이블에 붙은 딜러를 아무 테스트도 보지 않았기 때문이다. 그 딜러가
+     * 바로 Task4 M2·I2가 고친 대상이다: 세는 집합(`required`)과 보내는
+     * 집합(`seatMaps`)이 다르므로, 자기 테이블에 아직 아무도 안 앉았어도
+     * 다른 테이블의 복귀 진행을 받아야 한다.
+     */
+    it('빈 테이블의 딜러도 required 밖에서 진행을 받고, 좌석이 풀리면 완료도 받는다(m3)', async () => {
+      await seedSyncingTournament();
+      // TABLE만 한 자리 앉힌다 — OTHER_TABLE은 비트맵은 있지만 전부 0이다.
+      // (필드 자체가 없으면 `getTournamentTables`가 그 테이블을 읽지 않아
+      // seatMaps에도 안 잡힌다 — 실제 운영에서는 테이블 생성 시점에 이미
+      // 빈 비트맵이 깔려 있으므로 여기서도 명시적으로 세워 둔다.) n(required)=1.
+      await new RedisService(redis).rebuildSeatBitmap(TOURNAMENT, TABLE, [0]);
+      await new RedisService(redis).rebuildSeatBitmap(TOURNAMENT, OTHER_TABLE, []);
+
+      // 옛 코드(`required`로 송신)라면 OTHER_TABLE은 required 밖이라
+      // 이 딜러는 아무것도 못 받는다.
+      const otherDealer = await connect(await dealerTicket(OTHER_TABLE), OTHER_TABLE);
+      expect(lastSyncingPayload(otherDealer)).toEqual({ syncing: true, present: 0, required: 1 });
+
+      // 좌석을 뗀다. 딜러 접속·접속해제 경로는 안 도므로 SEAT_LIST_UPDATED가
+      // 대신 알린다(위 테스트와 같은 자리) — 이번엔 빈 테이블의 딜러가 실제로
+      // 그 알림을 받는지까지 본다.
+      await new RedisService(redis).rebuildSeatBitmap(TOURNAMENT, TABLE, []);
+      const seatState = await new RedisService(redis).getTournamentTables(TOURNAMENT);
+      await gateway.handleSeatListUpdated({ tournamentId: TOURNAMENT, state: seatState });
+
+      expect(lastSyncingPayload(otherDealer)).toEqual({ syncing: false, present: 0, required: 0 });
+    });
+
+    /**
      * I1(리뷰). 판정이 끝나지 않은 재집계끼리는 「세고 → 곧바로 보낸다」가
      * 동기라 서로 어긋나지 않는다. 어긋나는 자리는 **끝난 판정의
      * `await completeSync` 창**이다 — 마지막 딜러 접속이 2/2를 세고
