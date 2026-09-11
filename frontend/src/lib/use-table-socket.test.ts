@@ -23,7 +23,9 @@ class FakeSocket {
   }
 }
 
-const SILENCE = 60;
+// 실타이머 기준이다. Windows에서 Testing Library의 실타이머 폴링이 50ms 주기라, 그보다
+// 넉넉한 여유를 둔다.
+const SILENCE = 300;
 
 beforeEach(() => {
   FakeSocket.instances.length = 0;
@@ -47,7 +49,7 @@ describe('useTableSocket 침묵 감시 (T96)', () => {
   it('침묵이 길어지면 그 소켓을 버리고 새 소켓을 연다', async () => {
     mount();
     await waitFor(() => expect(FakeSocket.instances.length).toBe(1));
-    await waitFor(() => expect(FakeSocket.instances.length).toBe(2), { timeout: 1000 });
+    await waitFor(() => expect(FakeSocket.instances.length).toBe(2), { timeout: 2000 });
     expect(FakeSocket.instances[0].closed).toBe(true);
   });
 
@@ -59,7 +61,7 @@ describe('useTableSocket 침묵 감시 (T96)', () => {
     await waitFor(() => expect(FakeSocket.instances.length).toBe(1));
     const s = FakeSocket.instances[0];
     for (let i = 0; i < 5; i++) {
-      await new Promise((r) => setTimeout(r, SILENCE / 2));
+      await new Promise((r) => setTimeout(r, 100));
       s.emit(KEEPALIVE_EVENT);
     }
     expect(FakeSocket.instances.length).toBe(1);
