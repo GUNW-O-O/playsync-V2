@@ -1025,6 +1025,16 @@ describe('WsGateway 인바운드 경계', () => {
       return events.at(-1)?.data;
     }
 
+    /** `pred`가 참이 될 때까지 짧게 반복해 기다린다. 실제 I/O(Redis·Prisma)가
+     * 끝나는 시점을 폴링으로만 알 수 있는 아래 I1 테스트에서 쓴다. */
+    async function waitUntil(pred: () => boolean, timeoutMs = 2000) {
+      const start = Date.now();
+      while (!pred()) {
+        if (Date.now() - start > timeoutMs) throw new Error('waitUntil timeout');
+        await new Promise((r) => setTimeout(r, 5));
+      }
+    }
+
     beforeEach(async () => {
       // 이 describe만 Prisma 대회 데이터를 쓴다. 마지막 describe라 다른
       // 테스트의 상태를 지울 걱정이 없다(`prisma`는 이 파일의 다른 describe와
@@ -1129,6 +1139,80 @@ describe('WsGateway 인바운드 경계', () => {
       await gateway.handleSeatListUpdated({ tournamentId: TOURNAMENT, state: seatState });
 
       expect(recovery.completeSync).toHaveBeenCalledWith(TOURNAMENT);
+    });
+
+    /**
+     * I1(리뷰). 판정이 끝나지 않은 재집계끼리는 「세고 → 곧바로 보낸다」가
+     * 동기라 서로 어긋나지 않는다. 어긋나는 자리는 **끝난 판정의
+     * `await completeSync` 창**이다 — 마지막 딜러 접속이 2/2를 세고
+     * `completeSync`에 들어간 사이, 다른 딜러가 끊겨 새 재집계가 `SYNCING`을
+     * (아직 커밋 전이라) 그대로 읽으면, 그 재집계가 나중에 `{syncing:false}`
+     * 뒤에 낡은 `{syncing:true}`를 보낼 수 있다. 대회마다 `reportSync`를
+     * 줄 세우면(`syncChains`) 뒤에 선 재집계는 앞선 것이 실제로 상태를
+     * 커밋한 뒤에야 다시 읽으므로 `ONGOING`을 보고 조용히 돌아간다.
+     *
+     * **실제 Redis·Postgres 왕복 시간에 기대지 않는다.** 처음 이 테스트를
+     * `completeSync`가 실제로 DB를 갱신하게 해서 짜 봤는데, 두 재집계가 실제
+     * 인프라를 왕복하는 순서는 이 컨테이너에서는 항상 "좋은" 순서로
+     * 끝났다(체이닝을 지워도 초록) — I1이 "확률은 낮다"고 적은 그 창이
+     * 로컬 컨테이너에서는 그냥 안 열렸다. 그래서 상태 읽기
+     * (`prisma.tournament.findUnique`)만 스파이로 확정적으로 바꾼다 —
+     * `committed` 플래그가 실제 `completeSync`가 언젠가 상태를 커밋하는
+     * 순간을 흉내낸다. 나머지(Redis 왕복, 소켓 전송)는 그대로 실제 경로다.
+     */
+    it('completeSync가 끝나기 전에 줄 선 재집계는 그 뒤에 낡은 syncing:true를 보내지 않는다(I1)', async () => {
+      await seedSyncingTournament();
+      await seedSeats();
+      const tableDealer = await connect(await dealerTicket(TABLE), TABLE);
+
+      // `recount`가 읽는 상태를 확정적으로 통제한다. `committed`가 false인
+      // 동안은 실제 DB와 같은 값(SYNCING)이고, completeSync가 "끝나면"
+      // (아래에서 직접 뒤집는다) ONGOING이 된다 — 실제 서비스가 상태를
+      // 커밋하는 것과 같은 관찰 결과를, 왕복 시간에 기대지 않고 낸다.
+      let committed = false;
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      const originalFindUnique = prisma.tournament.findUnique.bind(prisma.tournament);
+      const findUniqueSpy = jest
+        .spyOn(prisma.tournament, 'findUnique')
+        .mockImplementation((async (args: any) => {
+          if (args?.where?.id === TOURNAMENT) {
+            return { status: committed ? TournamentStatus.ONGOING : TournamentStatus.SYNCING };
+          }
+          return originalFindUnique(args);
+        }) as any);
+
+      // #1(마지막 딜러 접속)의 completeSync를 걸어 둔다 — 풀리면 위 플래그를
+      // 뒤집는다(실제 서비스의 커밋 순간).
+      let releaseCompleteSync: () => void = () => {};
+      const gate = new Promise<void>((resolve) => { releaseCompleteSync = resolve; });
+      recovery.completeSync.mockImplementationOnce(async () => {
+        await gate;
+        committed = true;
+        return true;
+      });
+
+      try {
+        // #1: OTHER_TABLE 딜러가 접속해 2/2를 세고 completeSync에 들어간다.
+        const connectPromise = connect(await dealerTicket(OTHER_TABLE), OTHER_TABLE);
+        await waitUntil(() => recovery.completeSync.mock.calls.length === 1);
+
+        // #2: 그 사이 TABLE 딜러가 끊긴다 — 같은 대회 줄에 선다. 여기서
+        // await하지 않는다 — 체이닝이 있으면 #1이 끝나기 전에는 #2의 재집계
+        // 자체가 시작하지 않으므로, 여기서 기다리면 아래 `releaseCompleteSync`
+        // 전에 테스트가 멈춘다. **되돌린(체이닝 없는) 버전에서는** 이 호출이
+        // `recount`를 곧바로 부르고, 그 `findUnique`가 `committed`를
+        // **아직 false인 채로** 동기적으로 읽는다 — 다음 줄에서 플래그를
+        // 뒤집기 **전**이다.
+        const disconnectPromise = gateway.handleDisconnect(tableDealer);
+        // #1을 푼다.
+        releaseCompleteSync();
+
+        const [otherDealer] = await Promise.all([connectPromise, disconnectPromise]);
+
+        expect(lastSyncingPayload(otherDealer)).toEqual({ syncing: false, present: 2, required: 2 });
+      } finally {
+        findUniqueSpy.mockRestore();
+      }
     });
   });
 });

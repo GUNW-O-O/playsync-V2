@@ -236,8 +236,10 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
         if (wire) client.send(JSON.stringify({ event: 'renderGame', data: wire }));
 
         // 딜러가 돌아왔다 — 그 대회가 SYNCING이면 다시 세어 본다(T96).
+        // 부수 작업(집계)의 순간 장애가 바깥 catch로 새면, 방금 인증에
+        // 성공한 딜러 소켓이 "인증 실패"로 끊긴다(M1) — 여기서 삼킨다.
         if (payload.role === Role.DEALER && payload.tournamentId) {
-          await this.reportSync(payload.tournamentId);
+          await this.reportSync(payload.tournamentId).catch((e) => this.logger.error('SYNCING 재집계 실패', e));
         }
       }
 
@@ -429,18 +431,55 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     }
   }
 
+  /** 대회 id별 재집계 줄(T96 리뷰 I1). `reportSync`만 채우고 비운다. */
+  private syncChains = new Map<string, Promise<void>>();
+
+  /**
+   * `recount`를 그 대회 줄 맨 뒤에 세운다(T96 리뷰 I1).
+   *
+   * **끝나지 않은 재집계끼리는 서로 어긋나지 않는다** — 한 번의 `recount` 안에서
+   * 세는 것과 보내는 것이 동기이기 때문이다. 어긋나는 자리는 **끝난 판정의
+   * `await completeSync` 창**이다: 마지막 딜러가 2/2를 세고 `completeSync`에
+   * 들어간 사이 다른 딜러가 끊기면, 그 새 재집계는 아직 커밋 전인 `SYNCING`을
+   * 그대로 읽고 "아직이다"를 계산해 두었다가, 앞선 재집계가 커밋하고
+   * `{syncing:false}`를 보낸 **뒤에** 낡은 `{syncing:true}`로 도착할 수 있다.
+   * 그러면 대회는 이미 `ONGOING`이라 그 뒤로는 `reportSync`가 전부 첫 줄에서
+   * 돌아가므로, 딜러의 「이어서 진행」이 잠긴 채로 되돌릴 이벤트가 영영 없다.
+   *
+   * 이 체인이 그 창을 없앤다 — 뒤에 선 `recount`는 앞선 것이 **실제로 상태를
+   * 커밋한 뒤**에야 다시 읽으므로 `ONGOING`을 보고 조용히 돌아간다. 동시
+   * n/n에서 진 쪽이 `completeSync`를 한 번 더 부르는 것도 함께 사라진다.
+   *
+   * 프로세스가 하나라(B9) 메모리 체인으로 충분하다. 체인이 끝났을 때 그
+   * 사이 아무도 새로 줄을 세우지 않았으면 맵에서 지운다 — 안 지우면 이 맵이
+   * 대회 수만큼 서버 수명 내내 계속 늘어난다.
+   */
+  private reportSync(tournamentId: string): Promise<void> {
+    const prior = this.syncChains.get(tournamentId) ?? Promise.resolve();
+    const next = prior.then(() => this.recount(tournamentId));
+    const settled = next.catch((e) => {
+      this.logger.error('SYNCING 재집계 실패', e);
+    });
+    this.syncChains.set(tournamentId, settled);
+    void settled.then(() => {
+      if (this.syncChains.get(tournamentId) === settled) {
+        this.syncChains.delete(tournamentId);
+      }
+    });
+    return next;
+  }
+
   /**
    * 그 대회가 `SYNCING`이면 딜러 복귀를 다시 세어 딜러들에게 알리고, n/n이면
-   * 끝낸다(T96).
+   * 끝낸다(T96). **직접 부르지 않는다** — 항상 `reportSync`를 거쳐 대회별
+   * 줄을 선다.
    *
    * **소켓 수를 판정에 쓴다.** T95가 피했던 것은 게이트웨이에 하트비트가 없어
    * 좀비가 살아 보였기 때문이고, 그 전제는 `sweepSockets`가 없앴다. 그래도
    * 좀비가 끼면 n/n이 조금 일찍 풀릴 뿐이다 — 판을 여는 것은 여전히 테이블마다
    * 딜러가 누르는 재개다.
-   *
-   * 프로세스가 하나라(B9) 메모리 안에서 세도 일관된다.
    */
-  private async reportSync(tournamentId: string) {
+  private async recount(tournamentId: string) {
     const t = await this.prisma.tournament.findUnique({ where: { id: tournamentId }, select: { status: true } });
     if (t?.status !== TournamentStatus.SYNCING) return;
 
