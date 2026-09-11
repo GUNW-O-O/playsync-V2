@@ -11,6 +11,7 @@ import { GamePhase, TableState } from 'src/game-engine/types';
 import { PaymentService } from 'src/payment/payment.service';
 import { PlaysyncService } from 'src/playsync/playsync.service';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { RecoveryService } from 'src/recovery/recovery.service';
 import { RedisService } from 'src/redis/redis.service';
 import { SessionService } from 'src/store/session/session.service';
 import { UserService } from 'src/user/user.service';
@@ -198,9 +199,11 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
     );
     tickets = new WsTicketService(redis);
     // 이 시나리오는 SYNCING을 만들지 않는다 — 항상 ONGOING이라
-    // `completeSync`가 불릴 일이 없다. 최소 목이면 충분하다(T96).
-    const recovery = { completeSync: jest.fn() };
-    gateway = new WsGateway(dealer, playsync, redisService, tickets, emitter, prismaService, recovery as any);
+    // `completeSync`가 불릴 일이 없다. 그래도 진짜 서비스를 쓴다 — 시나리오
+    // 계층에는 스텁을 두지 않는다(CLAUDE.md). 의존성(Prisma·Redis)이 이미
+    // 손에 있으니 목으로 대신할 이유가 없다.
+    const recovery = new RecoveryService(prismaService, redisService);
+    gateway = new WsGateway(dealer, playsync, redisService, tickets, emitter, prismaService, recovery);
 
     // 세 명으로 진행한다. 운영 기본값은 6이고 그 규칙은 T16이 따로 검증한다.
     process.env.MIN_PLAYERS_TO_START = '3';
