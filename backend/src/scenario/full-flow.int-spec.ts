@@ -88,6 +88,9 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
       readyState: 1,
       close: jest.fn(),
       send: jest.fn((raw: string) => client.sent.push(JSON.parse(raw))),
+      // 진짜 `ws`에는 항상 있다. `handleConnection`이 pong 핸들러를 배선할 때
+      // 부른다(M6).
+      on: jest.fn(),
     };
     return client;
   }

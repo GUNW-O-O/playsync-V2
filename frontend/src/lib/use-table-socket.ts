@@ -8,8 +8,9 @@ import { type SocketRole, retryAfterMs, waitFor } from '@/lib/reconnect-policy';
 /**
  * 이만큼 아무것도 못 받으면 연결이 죽은 것으로 본다(T96).
  *
- * 서버가 10초마다 `keepalive`를 보낸다(`WsGateway.sweepSockets`). **두 틱을
- * 놓치고도 남는 값**이라 GC나 망 흔들림 한 번으로 끊지 않는다.
+ * 서버가 10초마다 `keepalive`를 보낸다(`WsGateway.sweepSockets`). **틱
+ * 하나를 놓쳐도 끊지 않는 값**이라 GC나 망 흔들림 한 번으로 끊지 않는다 —
+ * 마지막 수신 뒤 두 틱을 놓치면 30초가 되어서야 이 값(25초)을 넘는다.
  *
  * 필요한 이유: 서버가 좀비를 치워도 태블릿은 모른다. 브라우저 JS는 프로토콜
  * ping을 볼 수 없고 태블릿은 사람이 누를 때만 보내므로 `onclose`가 안 뜬다 —
@@ -42,15 +43,12 @@ export function useTableSocket({
   role,
   onMessage,
   defaultError,
-  silenceMs = SOCKET_SILENCE_MS,
 }: {
   tableId: string;
   role: SocketRole;
   /** 서버 이벤트 하나를 받는다. 신원이 매 렌더 바뀌어도 소켓을 다시 열지 않는다. */
   onMessage: (event: string, data: unknown) => void;
   defaultError: string;
-  /** 테스트가 줄인다. */
-  silenceMs?: number;
 }) {
   const socketRef = useRef<WebSocket | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
@@ -86,7 +84,7 @@ export function useTableSocket({
         target.close();
         setConnectionError(defaultError);
         scheduleRetry(null);
-      }, silenceMs);
+      }, SOCKET_SILENCE_MS);
     }
 
     /**
@@ -196,7 +194,7 @@ export function useTableSocket({
     };
     // `onMessage`는 ref로 들어가므로 의존성에 없다 — 넣으면 렌더마다 재연결한다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tableId, role, defaultError, silenceMs]);
+  }, [tableId, role, defaultError]);
 
   return { socketRef, connectionError, reconnecting };
 }

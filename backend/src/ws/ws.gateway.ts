@@ -62,6 +62,11 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
    */
   onModuleInit() {
     this.pingTimer = setInterval(() => this.sweepSockets(), socketPingMs());
+    // 이 타이머가 이벤트 루프를 붙잡아 프로세스 종료를 막지 않게 한다
+    // (`HeartbeatService.onApplicationBootstrap`과 같은 이유). 없으면
+    // `WsModule`을 `app.init()`하고 `close()`를 빠뜨린 스펙에서 jest가
+    // 끝나지 않는다.
+    this.pingTimer.unref();
   }
 
   onModuleDestroy() {
@@ -75,9 +80,16 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     const all = new Set<any>();
     for (const set of this.tableSessions.values()) for (const s of set) all.add(s);
     for (const set of this.tournamentSessions.values()) for (const s of set) all.add(s);
+    const dead = sweep(all, message);
+    // 운영에서 이 PR의 목적(소켓 수를 믿는다)을 확인할 유일한 관측값이다.
+    // 소켓마다 남기지 않는다 — 틱마다 한 줄이면 충분하고, 대량으로 끊기는
+    // 순간에 로그가 그 자체로 다른 문제가 되지 않게 한다.
+    if (dead.length > 0) {
+      this.logger.warn(`응답 없는 소켓 ${dead.length}개를 끊었다`);
+    }
     // `terminate()`는 `ws`가 `close`를 내게 해 `handleDisconnect`가 따로 불리지만,
     // 여기서 먼저 빼 둔다 — 두 번 불려도 같다(Set.delete).
-    for (const dead of sweep(all, message)) this.handleDisconnect(dead as unknown as WebSocket);
+    for (const socket of dead) this.handleDisconnect(socket as unknown as WebSocket);
   }
 
   private addToMap(map: Map<string, Set<WebSocket>>, id: string, client: WebSocket) {
@@ -193,7 +205,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
 
       // 좀비 판정의 근거(T96). 브라우저는 ping에 자동으로 pong한다.
       markAlive(client as any);
-      (client as any).on?.('pong', () => markAlive(client as any));
+      (client as any).on('pong', () => markAlive(client as any));
 
       // 1. 대회 단위 접속 (테이블 지정 없음) — 좌석 현황(`SEAT_LIST_UPDATED`)
       //    브로드캐스트를 받는 용도다.

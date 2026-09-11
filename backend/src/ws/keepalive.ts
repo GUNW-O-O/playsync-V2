@@ -28,10 +28,16 @@ export interface KeepaliveSocket {
 
 const OPEN = 1;
 
-/** 테스트가 주기를 줄일 수 있게 한다. 양의 정수가 아니면 기본값이다. */
+/**
+ * 테스트가 주기를 줄일 수 있게 한다. **줄이는 값만** 받는다 — 양의 정수가
+ * 아니거나 `SOCKET_PING_MS`보다 크면 기본값으로 돌아간다. 이 환경 변수의
+ * 용도는 테스트가 주기를 줄이는 것뿐이라, 늘린 값을 그대로 받으면 조용한
+ * 테이블의 태블릿이 전부 `SOCKET_SILENCE_MS`(`use-table-socket.ts`)마다
+ * 끊기고 다시 붙는다.
+ */
 export function socketPingMs(raw: string | undefined = process.env.WS_PING_INTERVAL_MS): number {
   const n = Number(raw);
-  return Number.isInteger(n) && n > 0 ? n : SOCKET_PING_MS;
+  return Number.isInteger(n) && n > 0 && n <= SOCKET_PING_MS ? n : SOCKET_PING_MS;
 }
 
 /** 접속 직후와 pong을 받을 때 부른다. */

@@ -60,4 +60,13 @@ describe('keepalive sweep', () => {
     expect(socketPingMs('abc')).toBe(10_000);
     expect(socketPingMs('0')).toBe(10_000);
   });
+
+  /**
+   * 이 환경 변수는 줄이는 용도뿐이다. 늘린 값을 그대로 받으면 조용한
+   * 테이블의 태블릿이 전부 `SOCKET_SILENCE_MS`마다 끊기고 다시 붙는다(M4).
+   */
+  it('SOCKET_PING_MS보다 큰 값은 거절하고 기본으로 돌아간다', () => {
+    expect(socketPingMs(String(SOCKET_PING_MS + 1))).toBe(SOCKET_PING_MS);
+    expect(socketPingMs(String(SOCKET_PING_MS))).toBe(SOCKET_PING_MS);
+  });
 });
