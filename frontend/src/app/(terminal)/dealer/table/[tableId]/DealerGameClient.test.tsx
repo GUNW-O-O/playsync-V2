@@ -566,5 +566,28 @@ describe('DealerGameClient', () => {
       expect(screen.getByRole('button', { name: '핸드 시작' })).not.toBeDisabled();
       expect(screen.queryByTestId('dealer-sync-strip')).toBeNull();
     });
+
+    /**
+     * 재리뷰 m2. 서버 게이트(`WsGateway.runDealerAction`)는 SYNCING 동안
+     * 딜러 명령 여섯을 전부 거절하는데, 화면은 「핸드 시작」·「승자 결정」만
+     * `sync`를 봤다 — 킥·폴드·저장 재시도는 각자 다른 조건만 보고 있어서,
+     * 자리를 비운 사람을 내보내는 흔한 조작이 SYNCING 중에도 그대로 눌렸다.
+     */
+    it('킥·폴드·저장 재시도도 sync가 있으면 막는다', async () => {
+      const { socket } = await renderWithSocket(
+        baseState({ phase: GamePhase.FLOP, currentTurnSeatIndex: 3, dbSyncStatus: 'FAILED' }),
+      );
+      await userEvent.click(screen.getByTestId('seat-3'));
+
+      expect(screen.getByTestId('confirm-fold')).not.toBeDisabled();
+      expect(screen.getByTestId('confirm-kick')).not.toBeDisabled();
+      expect(screen.getByRole('button', { name: '저장 재시도' })).not.toBeDisabled();
+
+      socket.emitServerEvent(TOURNAMENT_SYNCING_EVENT, { syncing: true, present: 1, required: 2 });
+
+      expect(screen.getByTestId('confirm-fold')).toBeDisabled();
+      expect(screen.getByTestId('confirm-kick')).toBeDisabled();
+      expect(screen.getByRole('button', { name: '저장 재시도' })).toBeDisabled();
+    });
   });
 });

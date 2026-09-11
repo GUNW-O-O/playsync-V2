@@ -391,7 +391,10 @@ export default function DealerGameClient({
                 <button
                   type="button"
                   data-testid="confirm-fold"
-                  disabled={!isBettingRound}
+                  // 서버 게이트(`WsGateway.runDealerAction`)가 SYNCING 동안
+                  // DEALER_FOLD를 거절한다. `sync`도 직접 봐야 딜러가 이유
+                  // 없이 거절당하는 일이 없다(재리뷰 m2).
+                  disabled={!isBettingRound || sync !== null}
                   onClick={confirmFold}
                   className="flex-1 rounded border border-tb-line py-2 text-xs text-tb-ink disabled:opacity-30"
                 >
@@ -400,8 +403,10 @@ export default function DealerGameClient({
                 <button
                   type="button"
                   data-testid="confirm-kick"
+                  // 서버 게이트가 SYNCING 동안 DEALER_KICK도 거절한다(재리뷰 m2).
+                  disabled={sync !== null}
                   onClick={confirmKick}
-                  className="flex-1 rounded border border-tb-line py-2 text-xs text-tb-ink"
+                  className="flex-1 rounded border border-tb-line py-2 text-xs text-tb-ink disabled:opacity-30"
                 >
                   내보내기
                 </button>
@@ -454,7 +459,8 @@ export default function DealerGameClient({
           {isCheckpointStuck ? (
             <button
               type="button"
-              disabled={dbSyncStatus === 'RETRYING'}
+              // 서버 게이트가 SYNCING 동안 RETRY_CHECKPOINT도 거절한다(재리뷰 m2).
+              disabled={dbSyncStatus === 'RETRYING' || sync !== null}
               onClick={retryCheckpoint}
               className="h-14 flex-1 border border-err text-sm text-tb-ink disabled:opacity-30"
             >
@@ -479,6 +485,11 @@ export default function DealerGameClient({
           sidePots={gameState?.sidePots ?? []}
           onSubmit={submitWinners}
           onCancel={() => setShowWinnerOverlay(false)}
+          // 오버레이는 열려 있는 동안 `sync`가 나중에 도착할 수 있다 —
+          // 열 때는 `canResolveWinners`가 이미 막았어도, 열려 있는 채로
+          // SYNCING이 시작되면 서버 게이트가 RESOLVE_WINNERS를 거절한다
+          // (재리뷰 m2).
+          submitDisabled={sync !== null}
         />
       )}
 
