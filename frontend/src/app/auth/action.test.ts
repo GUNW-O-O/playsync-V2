@@ -97,3 +97,63 @@ describe('auth 액션 — JSON이 아닌 실패 응답', () => {
     });
   });
 });
+
+/**
+ * T92. 상한(429)에 걸리면 백엔드 본문의 `message`가 그대로
+ * `ThrottlerException: Too Many Requests`다 — 영어 예외 이름이다. 화면은
+ * 이 문구를 참가자에게 보여줄 말로 바꿔야 하고, `Retry-After` 헤더가 있으면
+ * 몇 초 뒤에 다시 시도하면 되는지를 그 안에 얹는다.
+ *
+ * 세 번째 검사(401)가 없으면 429 분기를 모든 실패에 걸어도 이 파일의 다른
+ * 검사는 초록으로 남는다(T29) — 그래서 "상한이 아닌 실패는 그대로"를 따로
+ * 못 박는다.
+ *
+ * **헤더에 먹이는 초는 17이다.** 제품 어디에도 없는 값이라야 "헤더에서
+ * 읽었다"가 증명된다 — 처음엔 30을 먹였는데 그것이 블록 기본값과 같아,
+ * 헤더 읽기를 지우고 상수 30을 박아도 검사가 전부 초록이었다. 짝이 되는
+ * 반대 입력이 아래 "헤더가 없으면 초를 지어내지 않는다"다.
+ */
+describe.each([
+  ['handleLogin', handleLogin, 'http://backend.test/auth/login'] as const,
+  ['handleRegister', handleRegister, 'http://backend.test/auth/join'] as const,
+])('%s — 요청율 상한(429) 안내', (_name, action, url) => {
+  beforeEach(() => {
+    cookieStore.set.mockReset();
+  });
+
+  const THROTTLED_BODY = { statusCode: 429, message: 'ThrottlerException: Too Many Requests' };
+
+  it('상한에 걸리면 다시 시도할 시각을 안내한다', async () => {
+    server.use(
+      http.post(url, () =>
+        HttpResponse.json(THROTTLED_BODY, { status: 429, headers: { 'Retry-After': '17' } }),
+      ),
+    );
+
+    const result = (await action(CREDENTIALS)) as { error?: string };
+
+    expect(result.error).toEqual(expect.any(String));
+    expect(result.error).not.toMatch(/ThrottlerException/i);
+    expect(result.error).toContain('17초');
+  });
+
+  it('Retry-After가 없으면 초를 지어내지 않는다', async () => {
+    server.use(http.post(url, () => HttpResponse.json(THROTTLED_BODY, { status: 429 })));
+
+    const result = (await action(CREDENTIALS)) as { error?: string };
+
+    expect(result.error).toEqual(expect.any(String));
+    expect(result.error).not.toMatch(/ThrottlerException/i);
+    expect(result.error).not.toMatch(/[0-9]/);
+  });
+
+  it('상한이 아닌 실패는 지금 문구 그대로다', async () => {
+    server.use(
+      http.post(url, () =>
+        HttpResponse.json({ statusCode: 401, message: '원래 문구 그대로' }, { status: 401 }),
+      ),
+    );
+
+    await expect(action(CREDENTIALS)).resolves.toEqual({ error: '원래 문구 그대로' });
+  });
+});

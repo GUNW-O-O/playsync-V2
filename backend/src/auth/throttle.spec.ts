@@ -1,4 +1,10 @@
-import { authLimit, defaultLimit, throttleWindowMs, throttlerOptions } from './throttle';
+import {
+  authLimit,
+  blockDurationMs,
+  defaultLimit,
+  throttleWindowMs,
+  throttlerOptions,
+} from './throttle';
 
 /**
  * 값이 아니라 **기본값의 방향**을 못 박는 스펙이다.
@@ -16,7 +22,8 @@ describe('요청율 상한 설정', () => {
       window: throttleWindowMs({}),
       global: defaultLimit({}),
       auth: authLimit({}),
-    }).toEqual({ window: 60_000, global: 600, auth: 120 });
+      block: blockDurationMs({}),
+    }).toEqual({ window: 60_000, global: 600, auth: 120, block: 30_000 });
   });
 
   it('인증 라우트가 전역보다 좁다', () => {
@@ -28,13 +35,15 @@ describe('요청율 상한 설정', () => {
       THROTTLE_WINDOW_MS: '1000',
       THROTTLE_LIMIT: '99999',
       THROTTLE_AUTH_LIMIT: '5000',
+      THROTTLE_BLOCK_MS: '2000',
     };
 
     expect({
       window: throttleWindowMs(env),
       global: defaultLimit(env),
       auth: authLimit(env),
-    }).toEqual({ window: 1000, global: 99999, auth: 5000 });
+      block: blockDurationMs(env),
+    }).toEqual({ window: 1000, global: 99999, auth: 5000, block: 2000 });
   });
 
   /**
@@ -52,10 +61,29 @@ describe('요청율 상한 설정', () => {
     expect(defaultLimit({ THROTTLE_LIMIT: raw })).toBe(600);
     expect(authLimit({ THROTTLE_AUTH_LIMIT: raw })).toBe(120);
     expect(throttleWindowMs({ THROTTLE_WINDOW_MS: raw })).toBe(60_000);
+    expect(blockDurationMs({ THROTTLE_BLOCK_MS: raw })).toBe(30_000);
   });
 
   it('ThrottlerModule에 넘길 모양으로 나온다', () => {
-    expect(throttlerOptions({ THROTTLE_LIMIT: '7', THROTTLE_WINDOW_MS: '1000' }))
-      .toEqual([{ ttl: 1000, limit: 7 }]);
+    expect(
+      throttlerOptions({ THROTTLE_LIMIT: '7', THROTTLE_WINDOW_MS: '1000', THROTTLE_BLOCK_MS: '2000' }),
+    ).toEqual({
+      throttlers: [{ ttl: 1000, limit: 7, blockDuration: 2000 }],
+      errorMessage: expect.any(String),
+    });
+  });
+
+  /**
+   * T92. 기본 에러 문구가 라이브러리 기본값(`ThrottlerException: Too Many
+   * Requests`)이면 참가자 화면에 영어 예외 이름이 그대로 뜬다. `getErrorMessage`는
+   * 옵션이 배열이면 이 문구를 아예 안 보므로(`throttler.guard.js`), 객체 형태로
+   * 나오는지와 문구 내용을 함께 검사한다.
+   */
+  it('옵션이 문구를 싣는다 — 영어 기본값이 아니다', () => {
+    const { errorMessage } = throttlerOptions({});
+
+    expect(typeof errorMessage).toBe('string');
+    expect(errorMessage).not.toMatch(/Too Many Requests/i);
+    expect(errorMessage).not.toMatch(/ThrottlerException/i);
   });
 });

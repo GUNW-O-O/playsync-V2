@@ -27,6 +27,25 @@ function failureMessage(body: unknown, fallback: string): string {
   return fallback;
 }
 
+/**
+ * 요청율 상한(429) 전용 안내문. 백엔드 본문의 `message`는 남은 초를 안 들고
+ * 있어(`backend/src/auth/throttle.ts`의 `ERROR_MESSAGE`) 여기서 따로 만든다(T92).
+ *
+ * 남은 시간은 서버가 `Retry-After` 헤더로 들고 있다 — 화면이 숫자를 지어내지
+ * 않고 그 헤더를 읽는다. 헤더가 없거나(프록시가 걸러내는 경우) HTTP-date
+ * 형식이면 `Number`가 NaN을 내고, `Number.isFinite`가 그것을 걸러 초 없는
+ * 문장으로 떨어진다.
+ *
+ * **주어를 쓰지 않는다.** `handleRegister`도 이 함수를 쓰는데 `/auth/join`은
+ * 자기 버킷이라(Nest의 `generateKey`가 핸들러 이름을 키에 넣는다) "로그인"이
+ * 틀린 말이 된다.
+ */
+function throttleMessage(res: Response): string {
+  const retryAfter = Number(res.headers.get('Retry-After'));
+  const wait = Number.isFinite(retryAfter) && retryAfter > 0 ? `${retryAfter}초 뒤` : '잠시 후';
+  return `요청이 몰려 잠시 닫혔습니다. ${wait} 다시 시도해 주세요.`;
+}
+
 // [회원가입 Action]
 export async function handleRegister(formData: FormData) {
   const password = formData.get('password');
@@ -39,6 +58,7 @@ export async function handleRegister(formData: FormData) {
   });
 
   if (!res.ok) {
+    if (res.status === 429) return { error: throttleMessage(res) };
     const body = await res.json().catch(() => null);
     return { error: failureMessage(body, '회원가입에 실패했습니다.') };
   }
@@ -63,6 +83,7 @@ export async function handleLogin(formData: FormData) {
   const data = await res.json().catch(() => null);
 
   if (!res.ok) {
+    if (res.status === 429) return { error: throttleMessage(res) };
     return { error: failureMessage(data, '아이디 또는 비밀번호가 틀렸습니다.') };
   }
   if (!data) {

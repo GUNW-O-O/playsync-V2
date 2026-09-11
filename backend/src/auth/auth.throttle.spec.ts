@@ -18,15 +18,21 @@ import request from 'supertest';
  */
 describe('인증 라우트 요청율 상한', () => {
   let app: INestApplication;
+  let errorMessage: string;
 
   const before = {
     auth: process.env.THROTTLE_AUTH_LIMIT,
     global: process.env.THROTTLE_LIMIT,
+    block: process.env.THROTTLE_BLOCK_MS,
   };
 
   beforeAll(async () => {
     process.env.THROTTLE_AUTH_LIMIT = '3';
     process.env.THROTTLE_LIMIT = '1000';
+    // 7초. 기본값(30초)도 창(60초)도 아닌 값이라야 `Retry-After`가
+    // **`blockDuration`에서 왔다**가 증명된다 — 30을 먹이면 기본값과 같아
+    // 값이 어디서 왔는지 못 가른다.
+    process.env.THROTTLE_BLOCK_MS = '7000';
 
     // 데코레이터가 import 시점에 env를 읽으므로, 값을 세운 뒤에 들여야 한다.
     // 동적 `import()`가 아니라 `require`인 이유는 ts-jest가 CJS로 돌기 때문이다
@@ -35,6 +41,7 @@ describe('인증 라우트 요청율 상한', () => {
     const { AuthController } = require('./auth.controller') as typeof import('./auth.controller');
     const { AuthService } = require('./auth.service') as typeof import('./auth.service');
     const { throttlerOptions } = require('./throttle') as typeof import('./throttle');
+    errorMessage = throttlerOptions().errorMessage;
 
     const moduleRef = await Test.createTestingModule({
       imports: [ThrottlerModule.forRoot(throttlerOptions())],
@@ -53,22 +60,38 @@ describe('인증 라우트 요청율 상한', () => {
     await app?.close();
     process.env.THROTTLE_AUTH_LIMIT = before.auth;
     process.env.THROTTLE_LIMIT = before.global;
+    process.env.THROTTLE_BLOCK_MS = before.block;
     if (before.auth === undefined) delete process.env.THROTTLE_AUTH_LIMIT;
     if (before.global === undefined) delete process.env.THROTTLE_LIMIT;
+    if (before.block === undefined) delete process.env.THROTTLE_BLOCK_MS;
   });
 
   it('한도를 넘긴 요청은 429로 끊긴다', async () => {
     const body = { nickname: 'someone', password: 'wrong-but-irrelevant' };
 
     const codes: number[] = [];
+    let blocked!: request.Response;
     for (let i = 0; i < 4; i++) {
-      const res = await request(app.getHttpServer()).post('/auth/login').send(body);
-      codes.push(res.status);
+      blocked = await request(app.getHttpServer()).post('/auth/login').send(body);
+      codes.push(blocked.status);
     }
 
     // 앞의 셋은 통과하고 넷째만 막힌다. "전부 막힘"도 "전부 통과"도 아니라는
     // 것을 함께 못 박는다 — 둘 다 설정 실수의 흔한 모양이다.
     expect(`${codes.slice(0, 3).join(',')} 그다음 ${codes[3]}`).toBe('201,201,201 그다음 429');
+
+    // 그리고 그 429가 **참가자가 읽을 수 있는 모양인가**. 설정값 스펙
+    // (`throttle.spec.ts`)은 옵션 객체의 모양만 보므로, 라이브러리가 그
+    // `errorMessage`를 실제로 쓰는지는 여기서만 증명된다 — 옵션을 배열로
+    // 되돌리면 `getErrorMessage`가 커스텀 문구를 안 보고 라이브러리의 영어
+    // 문구로 돌아간다.
+    expect(blocked.body.message).toBe(errorMessage);
+
+    // `Retry-After`는 프론트가 "몇 초 뒤"를 만드는 유일한 근거다
+    // (`frontend/src/app/auth/action.ts`의 `throttleMessage`). '7'이 나와야
+    // `THROTTLE_BLOCK_MS`가 헤더까지 닿은 것이다 — `blockDuration`을 안 실으면
+    // 라이브러리가 `ttl`로 떨어뜨려 '60'이 나온다.
+    expect(blocked.headers['retry-after']).toBe('7');
   });
 });
 
