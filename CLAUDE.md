@@ -107,11 +107,11 @@ npm run assets:settlement  # 정산 촬영을 자른다 (셋이 다 있어야 �
 타입 에러 0건, 테스트 전부 통과가 정상이다. CI(`.github/workflows/ci.yml`)가
 타입 체크 · 테스트 · 빌드를 돌린다.
 
-현재 기준선 (T92 시점):
+현재 기준선 (#109 시점):
 
 ```
 contract       76  (6 suites)
-백엔드 단위   376  (34 suites)
+백엔드 단위   388  (35 suites)
 프론트 단위   229  (33 files)
 통합          608  (38 suites)
 e2e            13  (4 files, regression 프로젝트)
@@ -135,6 +135,144 @@ T92가 백엔드를 376, 프론트를 229로 올렸다. 프론트의 여섯은 �
 한쪽만 재면 다른 쪽이 조용히 갈라진다. 백엔드의 하나는 옵션이 영어 기본
 문구가 아닌 것을 보는 검사다. **진짜 429를 받는 스펙**(`auth.throttle.spec.ts`)은
 건수가 안 늘었다 — 이미 있던 검사에 본문과 `Retry-After`를 더 본 것이라서다.
+
+#109가 376에서 388로, 스위트를 하나 늘렸다. bcrypt 코스트 노브 하나에 열둘이
+붙은 것은 **범위 밖을 되돌리는 규칙**이 값마다 다른 이유로 틀릴 수 있어서다
+(`Number('')`는 0, `Number('abc')`는 NaN, `10.5`는 정수가 아니다). 마지막 하나는
+진짜로 구워서 `$2b$04# Playsync V2
+
+오프라인 홀덤 토너먼트 운영 시스템. 기존 MVP 리포지토리를 복사해 온 뒤,
+코드 리뷰에서 발견한 문제를 고쳐나가는 것이 이 리포지토리의 목적이다.
+
+**작업 전에 [`docs/domain.md`](./docs/domain.md)를 읽는다.** 이 도메인은
+"카드는 물리, 칩은 디지털"이고, 그 전제를 모르면 **없는 기능을 누락으로 착각해
+만들게 된다**(셔플·핸드 랭킹·승자 판정·자동 밸런싱은 전부 의도적으로 없다).
+
+## 문서 지도
+
+**매 세션 읽는다.**
+
+| 문서 | 무엇 |
+|---|---|
+| **`CLAUDE.md`** (이 파일) | 작업 규칙 · 명령어 · 기준선 |
+| [`docs/domain.md`](./docs/domain.md) | 도메인 규칙과 **코드 좌표**. 어기면 뭐가 깨지나 |
+
+**작업할 때 연다.**
+
+| 문서 | 언제 |
+|---|---|
+| [`docs/tickets-audit.md`](./docs/tickets-audit.md) | **이미 깨져 있는 것.** 결함 대장이고, 상태 열이 진행 현황이다 |
+| [`docs/backlog.md`](./docs/backlog.md) | **하기로 정한 방향**과 안 하기로 한 것의 근거 |
+| `docs/superpowers/plans/` · `specs/` | 티켓의 계획과 설계. 스킬이 만든다 |
+| [`docs/threat-model.md`](./docs/threat-model.md) | 신뢰 경계 |
+| [`load/README.md`](./load/README.md) | 부하 무대 · 봇. 부하 작업할 때만 |
+
+**사람 기록물 — 작업 중에 읽지 않는다.**
+`README.md` · `docs/chat-log*.md` · `docs/tickets.md` · `docs/fixlist.md` ·
+`docs/review.md` · `docs/results/`.
+
+같은 내용을 두 곳에 쓰지 않는다. 두 벌이 되면 어긋난다.
+
+### 티켓을 어디에 기록하나
+
+`docs/tickets-next.md`를 폐기하면서 정했다(2026-08-20). 그 문서는 네 가지를
+한꺼번에 들고 있었는데, 넷 다 이미 다른 자리가 있었다 — 34개 티켓 중 30개가
+`chat-log`에 더 자세히(기각한 안까지) 있었고, 최종 설계는 `domain.md`가 살아
+있는 판으로 들고 있었다. 4,714줄이 그 셋의 요약본이었다.
+
+| 무엇 | 어디 |
+|---|---|
+| 무엇을 할지 | `tickets-audit.md`(결함) · `backlog.md`(방향) |
+| 계획 · 설계 | `docs/superpowers/plans/` · `specs/` |
+| 진행 상태 | `tickets-audit.md`의 상태 열 (`대기` → `완료 (#PR)`) |
+| 지금 코드의 규칙 | `domain.md` |
+| 판단 과정 | `docs/chat-log*.md` (세션 대화를 걸러 커밋한다) |
+| 무엇을 했나 | PR 본문 + 커밋 |
+
+## 구조
+
+npm workspaces 모노레포.
+
+| 워크스페이스 | 역할 |
+|---|---|
+| `backend` | NestJS. 게임 로직, WebSocket 게이트웨이, DB/Redis |
+| `frontend` | Next.js |
+| `packages/contract` | 백엔드/프론트가 공유하는 zod 스키마. **경계를 넘는 것만** 정의한다 |
+
+### contract 패키지 규칙
+
+- 비밀 값은 공개형을 contract에 정의하고, 백엔드가 `.extend()`로 내부형을 만든다.
+  전체 스키마를 contract에 두고 `.omit()`으로 빼지 않는다 — 프론트가 import할 수
+  있게 되는 순간 규칙이 문서로만 남는다.
+- 인바운드(클라 → 서버)는 `.strict()`. 모르는 키가 오면 에러.
+- 아웃바운드(서버 → 클라)는 zod 기본 스트립. 스키마에 없는 키는 조용히 제거되므로
+  백엔드에 필드를 추가해도 자동으로 새지 않는다. **스키마를 실제로 태우는 자리가
+  있어야 이 줄이 사실이 된다** — `renderGame`은 `WsGateway.toWireState`가 그것이다.
+  T71 전에는 태우는 자리가 없어 `timerEpoch`가 그대로 나갔다.
+- **프론트는 contract 타입을 import한다. 손으로 복사하지 않는다.** 복사본은
+  백엔드가 필드를 늘렸을 때 조용히 어긋나지만, 계약을 읽으면 계약에 없는 필드는
+  애초에 못 읽는다 — 런타임 유실이 아니라 컴파일 에러가 된다.
+- Prisma 모델과 백엔드 내부 함수 인자는 contract에 넣지 않는다.
+
+## 명령어
+
+루트에서 실행한다.
+
+```bash
+npm run typecheck      # contract 빌드 후 backend/frontend 타입 체크
+npm run build          # contract → backend → frontend
+npm run dev:backend    # NestJS watch
+npm run dev:frontend   # Next dev
+npm run test           # 단위 테스트 (인프라 없음, 1분)
+cd load && npm test    # 부하 하네스의 창 큐 (node --test, 인프라 없음)
+npm run test:int       # 통합 테스트 (컨테이너 기동부터 자동)
+npm run test:e2e       # 화면 회귀 (Playwright, 시드 필요)
+npm run seed           # 개발 시드 (= npm run seed -w backend)
+npm run demo           # 데모 촬영 (시드 → 프론트 빌드 → 장면 다섯)
+npm run demo:settlement  # 정산 촬영. 마무리 셋을 각각 시드부터 다시 돈다
+npm run assets         # 장면 1~5 촬영본을 자르고 합쳐 img/ 로 (ffmpeg-static)
+npm run assets:settlement  # 정산 촬영을 자른다 (셋이 다 있어야 돈다)
+```
+
+부하 명령(`load:up` · `load:ramp-a/b` · `load:metrics` · `load:logs` ·
+`seed:load` · `load:down`)과 그 무대 설명은 [`load/README.md`](./load/README.md).
+
+개발용 인프라는 `cd backend && docker compose up -d`. PostgreSQL + Redis를 띄우고
+`seed` 서비스가 마이그레이션과 데모 시드를 한 번 돌리고 끝난다.
+
+**시드는 지우고 다시 만든다.** 데모가 매번 같은 화면에서 시작해야 해서고, 그래서
+개발 DB의 기존 데이터가 사라진다. 통합 테스트는 별도 컨테이너(5433/6380)라 무관하다.
+
+## 베이스라인
+
+타입 에러 0건, 테스트 전부 통과가 정상이다. CI(`.github/workflows/ci.yml`)가
+타입 체크 · 테스트 · 빌드를 돌린다.
+
+현재 기준선 (#109 시점):
+
+```
+contract       76  (6 suites)
+백엔드 단위   388  (35 suites)
+프론트 단위   229  (33 files)
+통합          608  (38 suites)
+e2e            13  (4 files, regression 프로젝트)
+데모 촬영       1  (`npm run demo`)
+정산 촬영       1  (`npm run demo:settlement`, 마무리마다 한 번씩 셋)
+부하 하네스    24  (2 files, `cd load && npm test`)
+타입 에러       0
+```
+
+**이 브랜치에서 실제로 돌린 값**이다 — PR들이 각자 잰 숫자를 합산한 것이
+아니다. 프론트가 210에서 221로 는 것은 닫힌 대회의 표시를 갈라 적게 되면서고
+(T87·T88·T89), 백엔드가 374에서 375로 는 것은 **계약과 백엔드가 닫힘 목록을
+두 벌로 든다**는 사실에 검사를 하나 건 것이다 — 다섯 번째 상태가 한쪽에만
+들어가면 화면들이 조용히 그 결함으로 되돌아간다.
+
+**파일이 31에서 33으로 는 것은 참가자 대회 화면 둘에 검사가 하나도 없었기
+때문이다**(T89). 상세와 목록 둘 다 이번에 처음 깔았다.
+
+를 본다 — **값을 잘 읽는다**와 **그 값이 해시에 실린다**는
+다른 말이고, 그 노브의 목적은 후자다.
 
 e2e · 촬영 · 부하 하네스는 CI가 아니라 사람이 돌린다. **정산 촬영은 마무리
 셋(`DEMO_ENDING`)을 각각 한 번씩 돌린다** — 하나가 대회를 닫으면 나머지는
