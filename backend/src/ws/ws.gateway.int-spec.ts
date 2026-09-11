@@ -38,6 +38,7 @@ describe('WsGateway 인바운드 경계', () => {
   const TABLE = 'table-1';
   const OTHER_TABLE = 'table-2';
   const TOURNAMENT = 'tournament-1';
+  const ORIGIN = 'http://localhost:3000';
 
   function makePlayer(id: string, seatIndex: number): TablePlayer {
     return {
@@ -82,6 +83,10 @@ describe('WsGateway 인바운드 경계', () => {
       send: jest.fn(() => {
         if (client.readyState !== 1) throw new Error('WebSocket is not open');
       }),
+      // 진짜 `ws`에는 항상 있다. `handleConnection`이 pong을 배선하는 자리에서
+      // 부른다(M6) — 없으면 `?.`로 건너뛰던 시절처럼 그 배선이 조용히 사라져도
+      // 아무 테스트도 못 잡는다.
+      on: jest.fn(),
       readyState,
     };
     return client;
@@ -891,6 +896,70 @@ describe('WsGateway 인바운드 경계', () => {
       });
 
       expect(`${first.send.mock.calls.length} / ${second.send.mock.calls.length}`).toBe('1 / 1');
+    });
+  });
+
+  describe('좀비 소켓 청소 (T96)', () => {
+    function makeLiveClient() {
+      const handlers: Record<string, () => void> = {};
+      const client: any = makeClient();
+      client.ping = jest.fn();
+      client.terminate = jest.fn(() => { client.readyState = 3; });
+      client.on = jest.fn((ev: string, fn: () => void) => { handlers[ev] = fn; });
+      client.pong = () => handlers.pong?.();
+      return client;
+    }
+
+    it('pong을 안 한 테이블 소켓은 두 틱 뒤 끊고 방에서 뺀다. pong한 소켓은 살아서 keepalive를 받는다', async () => {
+      // 위 beforeEach가 매 테스트 전에 TABLE 스냅샷을 이미 심어 둔다
+      // (alice·bob이 그 players다) — 여기서 따로 심을 것이 없다.
+      const zombie = makeLiveClient();
+      const alive = makeLiveClient();
+      await gateway.handleConnection(zombie, makeRequest(`tableId=${TABLE}&ticket=${await seatTicket('alice')}`, ORIGIN));
+      await gateway.handleConnection(alive, makeRequest(`tableId=${TABLE}&ticket=${await seatTicket('bob')}`, ORIGIN));
+
+      gateway.sweepSockets();
+      alive.pong();
+      gateway.sweepSockets();
+
+      expect(zombie.terminate).toHaveBeenCalled();
+      expect(alive.terminate).not.toHaveBeenCalled();
+      expect(alive.send).toHaveBeenCalledWith(JSON.stringify({ event: 'keepalive' }));
+      expect((gateway as any).tableSessions.get(TABLE)?.has(zombie)).toBe(false);
+      expect((gateway as any).tableSessions.get(TABLE)?.has(alive)).toBe(true);
+    });
+
+    /**
+     * M1-2. `sweepSockets`는 `tableSessions`와 `tournamentSessions` 두 맵을
+     * 돈다(구현의 `for` 루프 둘). 위 테스트는 테이블 방만 접속시켜서, 대회
+     * 방 루프를 통째로 지워도 이 파일이 전부 초록이었다 — T29와 같은 모양의
+     * 구멍이다. 딜러 티켓은 `tournamentId`를 들고 있어(`loginDealer`가
+     * 서명해 넣은 값) DB 조회 없이 대회 방에 붙을 수 있다.
+     */
+    it('대회 방(tournamentSessions)의 소켓도 청소 대상이다', async () => {
+      const zombie = makeLiveClient();
+      const alive = makeLiveClient();
+      const zombieTicket = await tickets.issue({
+        sub: 'dealer-session-2',
+        role: Role.DEALER,
+        tournamentId: TOURNAMENT,
+      });
+      const aliveTicket = await tickets.issue({
+        sub: 'dealer-session-3',
+        role: Role.DEALER,
+        tournamentId: TOURNAMENT,
+      });
+      await gateway.handleConnection(zombie, makeRequest(`tournamentId=${TOURNAMENT}&ticket=${zombieTicket}`, ORIGIN));
+      await gateway.handleConnection(alive, makeRequest(`tournamentId=${TOURNAMENT}&ticket=${aliveTicket}`, ORIGIN));
+
+      gateway.sweepSockets();
+      alive.pong();
+      gateway.sweepSockets();
+
+      expect(zombie.terminate).toHaveBeenCalled();
+      expect(alive.terminate).not.toHaveBeenCalled();
+      expect((gateway as any).tournamentSessions.get(TOURNAMENT)?.has(zombie)).toBe(false);
+      expect((gateway as any).tournamentSessions.get(TOURNAMENT)?.has(alive)).toBe(true);
     });
   });
 });
