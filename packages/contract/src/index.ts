@@ -15,3 +15,4 @@ export * from "./table-state";
 export * from "./dashboard";
 export * from "./finish-preview";
 export * from "./tournament-closed";
+export * from "./keepalive";

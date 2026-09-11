@@ -1,10 +1,11 @@
-import { Logger } from '@nestjs/common';
+import { Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { ConnectedSocket, MessageBody, OnGatewayConnection, OnGatewayDisconnect, SubscribeMessage, WebSocketGateway } from '@nestjs/websockets';
 import { Role } from '@prisma/client';
 import {
   DealerAction,
   DealerActionSchema,
+  KEEPALIVE_EVENT,
   PlayerActionSchema,
   RebuyResponseSchema,
   TableStateSchema,
@@ -16,6 +17,7 @@ import { TableState } from 'src/game-engine/types';
 import { PlaysyncService } from 'src/playsync/playsync.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
+import { markAlive, socketPingMs, sweep } from './keepalive';
 import { WsIdentity, WsTicketService } from './ws-ticket.service';
 
 /**
@@ -32,7 +34,7 @@ function allowedOrigins(): string[] {
 @WebSocketGateway({
   path: '/playsync',
 })
-export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
+export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(WsGateway.name);
 
   // 토너먼트 전체 (예매, 공지용)
@@ -47,6 +49,36 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly eventEmitter: EventEmitter2,
     private readonly prisma: PrismaService,
   ) { }
+
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
+
+  /**
+   * 좀비 소켓 청소를 시작한다(T96). 게이트웨이에 하트비트가 없던 동안 반만
+   * 닫힌 TCP가 방에 `OPEN`으로 남았다 — 딜러 복귀를 소켓으로 세려면
+   * (`SYNCING`의 n/n) 그 수가 사실이어야 한다.
+   *
+   * 테스트는 게이트웨이를 `new`로 세우므로 이 훅이 돌지 않는다. 틱은
+   * `sweepSockets`를 직접 불러 잰다.
+   */
+  onModuleInit() {
+    this.pingTimer = setInterval(() => this.sweepSockets(), socketPingMs());
+  }
+
+  onModuleDestroy() {
+    if (this.pingTimer) clearInterval(this.pingTimer);
+    this.pingTimer = null;
+  }
+
+  /** 한 틱. 두 방(대회 · 테이블)의 소켓 전부. */
+  sweepSockets() {
+    const message = JSON.stringify({ event: KEEPALIVE_EVENT });
+    const all = new Set<any>();
+    for (const set of this.tableSessions.values()) for (const s of set) all.add(s);
+    for (const set of this.tournamentSessions.values()) for (const s of set) all.add(s);
+    // `terminate()`는 `ws`가 `close`를 내게 해 `handleDisconnect`가 따로 불리지만,
+    // 여기서 먼저 빼 둔다 — 두 번 불려도 같다(Set.delete).
+    for (const dead of sweep(all, message)) this.handleDisconnect(dead as unknown as WebSocket);
+  }
 
   private addToMap(map: Map<string, Set<WebSocket>>, id: string, client: WebSocket) {
     let sessions = map.get(id);
@@ -158,6 +190,10 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       if (payload.tournamentId) {
         (client as any).tournamentId = payload.tournamentId;
       }
+
+      // 좀비 판정의 근거(T96). 브라우저는 ping에 자동으로 pong한다.
+      markAlive(client as any);
+      (client as any).on?.('pong', () => markAlive(client as any));
 
       // 1. 대회 단위 접속 (테이블 지정 없음) — 좌석 현황(`SEAT_LIST_UPDATED`)
       //    브로드캐스트를 받는 용도다.

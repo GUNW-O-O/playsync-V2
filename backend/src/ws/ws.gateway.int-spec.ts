@@ -38,6 +38,7 @@ describe('WsGateway 인바운드 경계', () => {
   const TABLE = 'table-1';
   const OTHER_TABLE = 'table-2';
   const TOURNAMENT = 'tournament-1';
+  const ORIGIN = 'http://localhost:3000';
 
   function makePlayer(id: string, seatIndex: number): TablePlayer {
     return {
@@ -891,6 +892,37 @@ describe('WsGateway 인바운드 경계', () => {
       });
 
       expect(`${first.send.mock.calls.length} / ${second.send.mock.calls.length}`).toBe('1 / 1');
+    });
+  });
+
+  describe('좀비 소켓 청소 (T96)', () => {
+    function makeLiveClient() {
+      const handlers: Record<string, () => void> = {};
+      const client: any = makeClient();
+      client.ping = jest.fn();
+      client.terminate = jest.fn(() => { client.readyState = 3; });
+      client.on = jest.fn((ev: string, fn: () => void) => { handlers[ev] = fn; });
+      client.pong = () => handlers.pong?.();
+      return client;
+    }
+
+    it('pong을 안 한 테이블 소켓은 두 틱 뒤 끊고 방에서 뺀다. pong한 소켓은 살아서 keepalive를 받는다', async () => {
+      // 위 beforeEach가 매 테스트 전에 TABLE 스냅샷을 이미 심어 둔다
+      // (alice·bob이 그 players다) — 여기서 따로 심을 것이 없다.
+      const zombie = makeLiveClient();
+      const alive = makeLiveClient();
+      await gateway.handleConnection(zombie, makeRequest(`tableId=${TABLE}&ticket=${await seatTicket('alice')}`, ORIGIN));
+      await gateway.handleConnection(alive, makeRequest(`tableId=${TABLE}&ticket=${await seatTicket('bob')}`, ORIGIN));
+
+      gateway.sweepSockets();
+      alive.pong();
+      gateway.sweepSockets();
+
+      expect(zombie.terminate).toHaveBeenCalled();
+      expect(alive.terminate).not.toHaveBeenCalled();
+      expect(alive.send).toHaveBeenCalledWith(JSON.stringify({ event: 'keepalive' }));
+      expect((gateway as any).tableSessions.get(TABLE)?.has(zombie)).toBe(false);
+      expect((gateway as any).tableSessions.get(TABLE)?.has(alive)).toBe(true);
     });
   });
 });
