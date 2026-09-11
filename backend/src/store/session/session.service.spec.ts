@@ -431,6 +431,8 @@ describe('SessionService.startSession', () => {
   const gameRow = (tables: unknown[]) => ({
     id: 't1',
     name: 'T',
+    // 재리뷰 M5 — `initializeGame`이 이 상태를 보고 PENDING이 아니면 거부한다.
+    status: TournamentStatus.PENDING,
     isRegistrationOpen: true,
     totalPlayers: 6,
     activePlayers: 6,
@@ -636,6 +638,8 @@ describe('SessionService 시작 최소 인원', () => {
         findUnique: jest.fn().mockResolvedValue({
           id: 't1',
           name: 'T',
+          // 재리뷰 M5 — `initializeGame`이 이 상태를 보고 PENDING이 아니면 거부한다.
+          status: TournamentStatus.PENDING,
           isRegistrationOpen: true,
           totalPlayers,
           activePlayers: totalPlayers,

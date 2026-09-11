@@ -1567,6 +1567,20 @@ describe('SessionService.startSession — 버튼 좌석 영속화', () => {
       data: { status: TournamentStatus.SYNCING, startedAt: new Date(), pausedAt },
     });
 
+    // 재리뷰 m1/M5. 가드가 DB 트랜잭션 안에만 있으면 `initializeGame`의
+    // Redis 쓰기(`mutateSnapshot`의 버튼 재추첨, `setTournamentMeta`의
+    // blindField 덮어쓰기)는 그 앞에서 이미 끝나 있다. 이 자리에 SYNCING의
+    // 동결(`pausedAt`)을 심어 두고, 거부된 뒤에도 그대로인지를 본다.
+    await redisService.setTournamentBlind(tournamentId, {
+      isBreak: false,
+      startedAt: pausedAt.getTime(),
+      currentBlindLv: 0,
+      nextLevelAt: pausedAt.getTime() + 60_000,
+      serverTime: pausedAt.getTime(),
+      blindStructure: [],
+      pausedAt: pausedAt.getTime(),
+    });
+
     process.env.MIN_PLAYERS_TO_START = '0';
     try {
       await expect(sessionService.startSession(tournamentId, ownerId))
@@ -1581,6 +1595,13 @@ describe('SessionService.startSession — 버튼 좌석 영속화', () => {
     });
     expect(`상태 ${tournament.status} / pausedAt 유지 ${tournament.pausedAt?.getTime() === pausedAt.getTime()}`)
       .toBe('상태 SYNCING / pausedAt 유지 true');
+
+    // Redis도 안 건드렸어야 한다 — blindField의 pausedAt이 그대로고, 착석
+    // 테이블 스냅샷의 buttonUser(seed값 0)도 재추첨되지 않았어야 한다.
+    const blindField = await redisService.getTournamentBlind(tournamentId);
+    const snapshot = await redisService.getSnapShot(tableId);
+    expect(`blindField.pausedAt ${blindField?.pausedAt} / buttonUser ${snapshot?.buttonUser}`)
+      .toBe(`blindField.pausedAt ${pausedAt.getTime()} / buttonUser 0`);
   });
 
   // T34 — startSession에는 소유권 확인이 없었다. 서버 액션이 tournamentId를

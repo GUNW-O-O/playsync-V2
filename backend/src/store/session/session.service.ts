@@ -568,6 +568,25 @@ export class SessionService {
 
     const startedAt = new Date();
     if (!game) throw new NotFoundException('세션을 찾을 수 없습니다.');
+
+    // **상태 검사가 여기 있어야 한다**(재리뷰 M5). 아래 `mutateSnapshot`은
+    // 살아 있는 모든 테이블 스냅샷의 `buttonUser`를 다시 추첨해 덮고,
+    // `setTournamentMeta`는 blindField를 `startedAt = now`로 덮어 SYNCING의
+    // 동결(`pausedAt`)을 지운다. 둘 다 Redis 쓰기라 `startSession`의
+    // `updateMany` 가드(DB 트랜잭션)가 던지는 `ConflictException`으로는
+    // 되돌릴 수 없다 — DB만 롤백되고 Redis는 이미 망가진 채 남는다. 그래서
+    // 이 검사를 그 두 쓰기보다 앞에 둔다.
+    //
+    // `startSession`의 `updateMany({ where: { id, status: PENDING } })`는
+    // 지우지 않는다 — 그것은 **동시에** 시작을 두 번 누른 경우의 문지기로
+    // 남긴다. 이 검사와 그 가드가 같은 상태를 보므로, 순차 호출(먼저 읽고
+    // 나중에 커밋)은 여기서 막히지만 두 요청이 이 검사를 동시에 통과하는
+    // 좁은 창은 남는다 — 그건 이 검사가 새로 여는 문제가 아니라 원래부터
+    // 있던 쓰기 경합이다(재리뷰 m1).
+    if (game.status !== TournamentStatus.PENDING) {
+      throw new ConflictException('이미 시작된 대회입니다.');
+    }
+
     const { dashboard, blindField, payoutTable } = buildTournamentMeta(game, startedAt.getTime());
 
     const minPlayers = minPlayersToStart();
