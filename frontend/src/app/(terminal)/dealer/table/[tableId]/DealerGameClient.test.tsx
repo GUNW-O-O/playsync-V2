@@ -476,4 +476,50 @@ describe('DealerGameClient', () => {
       rand.mockRestore();
     });
   });
+
+  /**
+   * 정지와 재개(T95). 서버가 멈췄다 돌아온 테이블은 **딜러가 연다** — 자동으로
+   * 풀면 그 시각을 감으로 잡아야 하고, 소켓 수로 판정하면 좀비 소켓 하나가
+   * 테이블을 영영 묶는다.
+   */
+  describe('정지와 재개', () => {
+    it('정지 표시가 오면 멈춘 길이와 재개 버튼을 띄운다', async () => {
+      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.FLOP }));
+
+      socket.emitServerEvent(
+        'renderGame',
+        baseState({ phase: GamePhase.FLOP, resumePending: { downMs: 192_000 } }),
+      );
+
+      // 3분 12초. 밀리초를 그대로 보여 주면 딜러가 머릿속 나눗셈을 해야 한다.
+      expect(screen.getByTestId('dealer-resume')).toHaveTextContent('3분 12초');
+    });
+
+    it('버튼을 누르면 재개 명령이 나간다', async () => {
+      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.FLOP }));
+      socket.emitServerEvent(
+        'renderGame',
+        baseState({ phase: GamePhase.FLOP, resumePending: { downMs: 60_000 } }),
+      );
+
+      await userEvent.click(screen.getByRole('button', { name: '이어서 진행' }));
+
+      expect(socket.sent).toContainEqual({
+        event: 'DEALER_ACTION',
+        data: { action: 'RESUME_TABLE' },
+      });
+    });
+
+    /**
+     * **반대 입력.** 멈추지 않은 테이블에 이 배너가 뜨면 딜러가 멀쩡한 판에서
+     * 재개를 누르게 되고, 서버는 그것을 거절한다.
+     */
+    it('멈추지 않았으면 뜨지 않는다', async () => {
+      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.FLOP }));
+
+      socket.emitServerEvent('renderGame', baseState({ phase: GamePhase.FLOP }));
+
+      expect(screen.queryByTestId('dealer-resume')).toBeNull();
+    });
+  });
 });

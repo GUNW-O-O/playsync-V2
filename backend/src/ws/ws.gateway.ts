@@ -382,6 +382,8 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         return this.dealer.handleDealerAction(tournamentId, tableId, action.targetUserId, 'KICK');
       case 'RETRY_CHECKPOINT':
         return this.dealer.retryCheckpoint(tableId);
+      case 'RESUME_TABLE':
+        return this.dealer.resumeTable(tableId);
       default: {
         // 스키마가 이미 모르는 액션을 거르므로 런타임에 여기 오지 않는다.
         // 이 줄의 목적은 컴파일 타임이다 — contract에 액션을 추가하면 case를

@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { DealerAction } from '@playsync/contract';
 import Felt from '@/component/felt/Felt';
+import { formatDuration } from '@/lib/format-duration';
 import { useTableSocket } from '@/lib/use-table-socket';
 import {
   GamePhase,
@@ -153,6 +154,10 @@ export default function DealerGameClient({
     sendDealerAction({ action: 'START_PRE_FLOP' });
   }
 
+  function resumeTable() {
+    sendDealerAction({ action: 'RESUME_TABLE' });
+  }
+
   function retryCheckpoint() {
     sendDealerAction({ action: 'RETRY_CHECKPOINT' });
   }
@@ -201,6 +206,7 @@ export default function DealerGameClient({
    * 표시는 하고 버튼만 끈다 — 아무것도 안 그리면 딜러는 여전히 멈춘 이유를
    * 모른다.
    */
+  const resumePending = gameState?.resumePending;
   const dbSyncStatus = gameState?.dbSyncStatus;
   const isCheckpointStuck = dbSyncStatus === 'RETRYING' || dbSyncStatus === 'FAILED';
 
@@ -217,6 +223,38 @@ export default function DealerGameClient({
             새로고침해야 하는 줄 안다 — 실제로는 기다리면 낫는다.
           */}
           {reconnecting ? `${connectionError} 다시 연결하는 중입니다…` : connectionError}
+        </div>
+      )}
+
+      {/*
+        **서버가 멈췄다 돌아온 테이블은 딜러가 연다**(T95).
+
+        자동으로 풀지 않는 이유는 그 시각을 감으로 잡아야 하기 때문이다 —
+        짧으면 아직 깜깜한 사람이 폴드당하고 길면 다 모인 테이블이 기다린다.
+        소켓 수를 세는 방법은 게이트웨이에 하트비트가 없어(반만 닫힌 TCP는
+        살아 있는 것처럼 보인다) 좀비 소켓 하나가 테이블을 영영 묶는다.
+
+        **카드가 물리라 딜러에게는 눈이 있다.** 자리에 사람이 앉았는지는
+        화면이 아니라 그 사람이 안다. 그래서 이 딜러 단말은 좌석보다 늦게
+        붙는다(`reconnect-policy.ts`) — 먼저 붙으면 아홉 중 둘만 찬 테이블을
+        보게 되고, 이르게 누르는 순간이 정확히 거기다.
+      */}
+      {resumePending && (
+        <div
+          data-testid="dealer-resume"
+          className="absolute inset-x-0 top-0 z-50 flex items-center justify-between gap-3 bg-err px-4 py-3 text-left text-sm text-white"
+        >
+          <span>
+            서버가 {formatDuration(resumePending.downMs)} 멈췄다 돌아왔습니다. 자리가 다 찼는지
+            보고 이어서 진행하세요.
+          </span>
+          <button
+            type="button"
+            onClick={resumeTable}
+            className="shrink-0 border border-white px-4 py-2 text-sm font-semibold"
+          >
+            이어서 진행
+          </button>
         </div>
       )}
 

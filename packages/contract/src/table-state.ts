@@ -104,6 +104,28 @@ export const TableStateSchema = z.object({
   ante: chips,
   actionDeadline: z.int().optional(),
   /**
+   * 서버가 멈췄다 돌아와서, 딜러가 다시 열기를 기다리는 중(T95).
+   *
+   * **`dbSyncStatus`·`rebuyPending`과 같은 이유로 스냅샷 필드다.** 딜러만이
+   * 아니라 테이블 전원이 알아야 하고, 무엇보다 **이 사건을 겪은 단말은 전부
+   * 재접속한 단말**이라 지나간 이벤트를 받을 수가 없다. 스냅샷은 접속할 때
+   * 한 번 받는다(`WsGateway.handleConnection`).
+   *
+   * 이 필드가 서 있는 동안 `actionDeadline`은 없다. 마감을 그대로 두면 돌아온
+   * 사람이 누른 버튼이 시간 초과로 바뀐다(T94).
+   */
+  resumePending: z
+    .object({
+      /**
+       * 얼마나 멈췄나(ms). 화면이 「3분 12초 멈췄습니다」를 적는 근거다.
+       *
+       * 새로 재는 값이 아니라 `RecoveryService`가 하트비트로 이미 계산한
+       * 값이다. 하트비트 주기가 오차 상한이라 실제보다 그만큼 길게 나온다.
+       */
+      downMs: z.int().min(0),
+    })
+    .optional(),
+  /**
    * 핸드 종료 체크포인트(DB 동기화)의 상태. 정상 진행 중에는 없다.
    *
    * 별도 이벤트가 아니라 스냅샷 필드인 것은 설계다 — 딜러만이 아니라 테이블

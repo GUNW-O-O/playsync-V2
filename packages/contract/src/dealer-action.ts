@@ -36,6 +36,20 @@ export const DealerActionSchema = z.discriminatedUnion("action", [
   // 멈춘 것 자체는 올바른 안전 상태이므로 되돌리는 명령이 아니라, 막다른
   // 골목을 없애는 명령이다.
   z.object({ action: z.literal("RETRY_CHECKPOINT") }).strict(),
+  /**
+   * 서버가 멈췄다 돌아온 테이블을 딜러가 다시 연다(T95).
+   *
+   * **정지의 끝을 시계가 아니라 사람이 정한다.** 부팅은 정지의 끝이 아니다 —
+   * 프로세스가 떠도 태블릿이 돌아와야 판이 돈다. 자동으로 풀면 그 시각을
+   * 감으로 잡아야 하고, 짧으면 아직 깜깜한 사람이 폴드당하고 길면 다 모인
+   * 테이블이 기다린다.
+   *
+   * **소켓 수를 세어 자동으로 풀지 않는다.** 게이트웨이에 하트비트가 없어
+   * 반만 닫힌 TCP는 살아 있는 것처럼 보인다 — 그 값으로 판정하면 좀비 소켓
+   * 하나가 테이블을 영영 묶는다. 카드가 물리라 **딜러에게는 눈이 있고**,
+   * 좌석에 사람이 앉았는지는 그 사람이 안다.
+   */
+  z.object({ action: z.literal("RESUME_TABLE") }).strict(),
 ]);
 
 export type DealerAction = z.infer<typeof DealerActionSchema>;
