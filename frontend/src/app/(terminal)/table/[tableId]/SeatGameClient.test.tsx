@@ -163,7 +163,9 @@ describe('SeatGameClient', () => {
 
       render(<SeatGameClient tableId="tbl-1" seatIndex={0} />);
 
-      await waitFor(() => expect(screen.getByText('만료된 좌석 세션입니다.')).toBeInTheDocument());
+      // 배너는 서버 문구 뒤에 '다시 연결하는 중입니다…'를 덧붙일 수 있다(T93).
+      // 정확 일치로 보면 그 덧붙임 하나에 깨지므로 서버 문구가 실렸는지만 본다.
+      await waitFor(() => expect(screen.getByText(/만료된 좌석 세션입니다/)).toBeInTheDocument());
 
       errorSpy.mockRestore();
     });
@@ -175,9 +177,7 @@ describe('SeatGameClient', () => {
       render(<SeatGameClient tableId="tbl-1" seatIndex={0} />);
 
       await waitFor(() =>
-        expect(
-          screen.getByText('연결이 끊어졌습니다. 화면을 새로고침하거나 운영자에게 알려주세요.'),
-        ).toBeInTheDocument(),
+        expect(screen.getByText(/연결이 끊어졌습니다/)).toBeInTheDocument(),
       );
 
       errorSpy.mockRestore();
@@ -467,6 +467,82 @@ describe('SeatGameClient', () => {
       const closed = screen.queryByTestId('seat-tournament-closed');
       expect(`배너 ${banner ? '있음' : '없음'} / 덮개 ${closed ? '있음' : '없음'}`)
         .toBe('배너 없음 / 덮개 있음');
+    });
+  });
+
+  /**
+   * **끊기면 스스로 돌아온다**(T93).
+   *
+   * 예전에는 `onclose`가 문구만 세우고 끝났고, effect 의존성이 테이블 id라
+   * 다시 돌지도 않았다 — 서버를 재시작하면 행사장의 태블릿 전부가 에러
+   * 화면에서 멈추고 사람이 한 대씩 새로고침해야 했다.
+   */
+  describe('자동 재접속', () => {
+    /** 지터를 0으로 고정한다 — 최대 40초를 실제로 기다리지 않는다. */
+    function noJitter() {
+      return vi.spyOn(Math, 'random').mockReturnValue(0);
+    }
+
+    it('소켓이 끊기면 새 소켓을 연다', async () => {
+      const rand = noJitter();
+      const { socket } = await renderWithSocket();
+
+      // 1006은 브라우저가 비정상 종료에 쓰는 코드다 — 서버가 사라진 경우.
+      act(() => socket.onclose?.({ code: 1006, reason: '' }));
+
+      await waitFor(() => expect(FakeSocket.instances.length).toBe(2));
+      rand.mockRestore();
+    });
+
+    /**
+     * **반대 입력.** 코드 1000은 서버가 정상적으로 닫은 것이고, 대회가 끝나
+     * 닫힌 경우가 그것이다. 다시 붙으면 끝난 대회에 계속 매달린다 — 이 검사가
+     * 없으면 "항상 다시 붙는다"는 구현도 위 검사를 통과한다.
+     */
+    it('정상 종료(1000)에는 다시 붙지 않는다', async () => {
+      const rand = noJitter();
+      const { socket } = await renderWithSocket();
+
+      act(() => socket.onclose?.({ code: 1000, reason: '' }));
+
+      // 다시 붙었다면 이 사이에 인스턴스가 늘어난다.
+      await new Promise((r) => setTimeout(r, 30));
+      expect(FakeSocket.instances.length).toBe(1);
+      rand.mockRestore();
+    });
+
+    /**
+     * 배너가 "새로고침하라"에서 "기다리면 낫는다"로 바뀌어야 한다. 문구만
+     * 남기면 참가자는 자기가 할 일이 있는 줄 안다.
+     */
+    it('다시 붙는 동안 그 사실을 배너에 적는다', async () => {
+      const rand = noJitter();
+      const { socket } = await renderWithSocket();
+
+      act(() => socket.onclose?.({ code: 1006, reason: '' }));
+
+      await waitFor(() =>
+        expect(screen.getByText(/다시 연결하는 중입니다/)).toBeInTheDocument(),
+      );
+      rand.mockRestore();
+    });
+
+    /**
+     * **성공의 정의가 "열렸다"가 아니라 "첫 프레임이 왔다"다.** 그 프레임이
+     * 곧 "열렸고 등록됐다"의 증거다(`WsGateway.handleConnection`). 프레임이
+     * 오면 배너가 사라져야 한다.
+     */
+    it('첫 프레임이 오면 배너가 사라진다', async () => {
+      const rand = noJitter();
+      const { socket } = await renderWithSocket();
+
+      act(() => socket.onclose?.({ code: 1006, reason: '' }));
+      await waitFor(() => expect(FakeSocket.instances.length).toBe(2));
+
+      FakeSocket.instances[1].emitServerEvent('renderGame', BASE_STATE);
+
+      expect(screen.queryByText(/연결이 끊어졌습니다/)).toBeNull();
+      rand.mockRestore();
     });
   });
 });

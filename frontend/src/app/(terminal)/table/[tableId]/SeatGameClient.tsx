@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { PlayerAction } from '@playsync/contract';
 import Felt from '@/component/felt/Felt';
-import { apiFetch } from '@/lib/api';
+import { useTableSocket } from '@/lib/use-table-socket';
 import { TableState, TournamentClosedSchema, type ClosedTournamentStatus } from '@playsync/contract';
 import SeatActionPanel from './SeatActionPanel';
 import RebuyOverlay, { type RebuyPrompt } from './RebuyOverlay';
@@ -13,7 +13,10 @@ import TournamentClosedOverlay from '@/component/TournamentClosedOverlay';
 // 서버·소켓이 문구를 안 줄 때의 최후 안내. WS 배선(티켓 요청·정리·배너)은
 // 옛 GameClient에서 그대로 옮겨 왔다 — T24가 세운 규칙이고, 액세스 토큰이
 // 이 컴포넌트에 들어오지 않는 구조를 다시 설계하지 않는다.
-const DEFAULT_CONNECTION_ERROR = '연결이 끊어졌습니다. 화면을 새로고침하거나 운영자에게 알려주세요.';
+// **새로고침하라고 적지 않는다**(T93). 이제 화면이 스스로 다시 붙으므로,
+// 사람이 할 일을 먼저 적으면 가만히 두면 낫는 상황에 손을 대게 만든다. 끝내
+// 실패했을 때의 안내는 `useTableSocket`이 그 시점에 따로 내놓는다.
+const DEFAULT_CONNECTION_ERROR = '연결이 끊어졌습니다.';
 
 /** 서버가 `error` 프레임에 문자열을 안 실어 줬을 때의 최후 안내. */
 const DEFAULT_ACTION_ERROR = '요청이 거절되었습니다.';
@@ -67,7 +70,6 @@ export default function SeatGameClient({
   /** 눈앞의 테이블에 붙은 번호. 없으면 머리글에서 테이블을 뺀다. */
   tableOrder?: number;
 }) {
-  const socketRef = useRef<WebSocket | null>(null);
   const [gameState, setGameState] = useState<TableState | null>(initialData || null);
   const mySeatIndex: number | null = seatIndex ?? null;
   const [rebuyData, setRebuyData] = useState<RebuyPrompt | null>(null);
@@ -111,7 +113,6 @@ export default function SeatGameClient({
     모달을 또 얹으면 정작 다시 눌러야 할 버튼을 가리므로, 그 실패는
     `RebuyOverlay` **안에** 그린다.
   */
-  const [connectionError, setConnectionError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [rebuyError, setRebuyError] = useState<string | null>(null);
 
@@ -123,96 +124,53 @@ export default function SeatGameClient({
     setRebuyData(next);
   }
 
-  useEffect(() => {
-    let socket: WebSocket | null = null;
-    let cancelled = false;
-
-    // 티켓은 1회용 30초라 연결 시도마다 새로 받는다. 액세스 토큰은 이 컴포넌트에
-    // 들어오지 않는다 — 쿠키를 읽는 것은 route handler(서버)뿐이다.
-    //
-    // fetch 자체가 reject하는 경우(네트워크 단절, 브라우저 확장 차단 등)를
-    // try/catch로 감싼다. 감싸지 않으면 이 async IIFE는 어디서도 await되지
-    // 않으므로 처리되지 않은 프라미스 거부로 새어 나간다. res.json() 파싱
-    // 실패도 같은 자리에서 잡힌다.
-    (async () => {
-      try {
-        const res = await apiFetch('/api/ws-ticket', { method: 'POST' });
-        if (!res.ok) {
-          const body = await res.json().catch(() => null);
-          const message = (body as { message?: unknown } | null)?.message;
-          console.error('WS 티켓을 받지 못했습니다.');
-          if (!cancelled) {
-            setConnectionError(typeof message === 'string' && message ? message : DEFAULT_CONNECTION_ERROR);
-          }
-          return;
+  /**
+   * 소켓 배선은 `useTableSocket`이 든다(T93). 예전에는 `onclose`가 문구만
+   * 세우고 끝나, **서버를 재시작하면 태블릿이 에러 화면에서 영영 멈췄다.**
+   *
+   * 좌석은 딜러보다 **먼저** 붙는다(`reconnect-policy.ts`) — 딜러가 판을
+   * 재개할지 정할 때 이미 가라앉은 그림을 보게 하려는 것이다.
+   */
+  const { socketRef, connectionError, reconnecting } = useTableSocket({
+    tableId,
+    role: 'seat',
+    defaultError: DEFAULT_CONNECTION_ERROR,
+    onMessage: (serverEvent, data) => {
+      if (serverEvent === 'renderGame') {
+        // 선을 넘어온 JSON이라 타입이 없다. **여기서 검증하지 않는 이유는
+        // 서버가 이미 태우기 때문이다** — `WsGateway.toWireState`가 계약에
+        // 없는 키를 지우고 위반이면 아예 안 보낸다(T71).
+        const state = data as TableState;
+        setGameState(state);
+        // 판정 (b): 리바인 프롬프트가 떠 있는 동안에는 좌석 소멸을
+        // 나온 것으로 보지 않는다 — 리바인 구간에도 좌석이 잠깐 빈다.
+        if (!rebuyDataRef.current && mySeatIndex !== null && state.players[mySeatIndex] === null) {
+          setExitReason(sawRebuyPromptRef.current ? 'eliminated' : 'seat-released');
         }
-        const { ticket } = await res.json();
-        if (cancelled) return;
-
-        const wsUrl = `${process.env.NEXT_PUBLIC_BACKEND_URL?.replace('http', 'ws')}/playsync?tableId=${tableId}&ticket=${ticket}`;
-        socket = new WebSocket(wsUrl);
-        socketRef.current = socket;
-
-        socket.onmessage = (event) => {
-          const { event: serverEvent, data } = JSON.parse(event.data);
-          if (serverEvent === 'renderGame') {
-            setGameState(data);
-            // 판정 (b): 리바인 프롬프트가 떠 있는 동안에는 좌석 소멸을
-            // 나온 것으로 보지 않는다 — 리바인 구간에도 좌석이 잠깐 빈다.
-            if (!rebuyDataRef.current && mySeatIndex !== null && data.players[mySeatIndex] === null) {
-              setExitReason(sawRebuyPromptRef.current ? 'eliminated' : 'seat-released');
-            }
-          } else if (serverEvent === 'tournamentClosed') {
-            // **계약을 읽는다.** 손으로 필드를 꺼내면 백엔드가 모양을 바꿔도
-            // 컴파일이 통과하고 화면만 조용히 어긋난다.
-            const parsed = TournamentClosedSchema.safeParse(data);
-            if (parsed.success) {
-              setClosed(parsed.data.status);
-            } else {
-              console.error('tournamentClosed 계약 위반 — 무시한다.', parsed.error);
-            }
-          } else if (serverEvent === 'REBUY_PROMPT') {
-            setRebuyError(null);
-            updateRebuyData(data);
-          } else if (serverEvent === 'error') {
-            // 거절은 브로드캐스트가 아니라 **누른 사람에게만** 오는 ack다
-            // (`ws.gateway.ts`의 `handlePlayerAction`). 안 읽으면 참가자는
-            // 눌렀는데 아무 변화도 없는 화면을 보고 먹은 줄 안다.
-            //
-            // **`renderGame`으로 지우지 않는다.** 딜러 화면은 그렇게 하지만
-            // (`DealerGameClient`), 좌석 화면에서 `renderGame`은 남이 액션할
-            // 때마다 오는 브로드캐스트라 — 내 거절 사유가 1초도 못 버틴다.
-            setActionError(typeof data === 'string' && data ? data : DEFAULT_ACTION_ERROR);
-          }
-        };
-
-        socket.onclose = (event) => {
-          // cleanup(언마운트)이 socket.close()를 부르면 이 핸들러도 불린다.
-          // cancelled로 그 정상 종료를 구분한다. 코드 1000(정상 종료)도
-          // 에러로 보지 않는다.
-          if (cancelled || event.code === 1000) return;
-          setConnectionError(event.reason && event.reason.trim() ? event.reason : DEFAULT_CONNECTION_ERROR);
-        };
-
-        socket.onerror = () => {
-          if (cancelled) return;
-          setConnectionError(DEFAULT_CONNECTION_ERROR);
-        };
-      } catch (err) {
-        // 언마운트로 인한 중단(cancelled)은 정상 경로다. 에러처럼 남기지 않는다.
-        if (!cancelled) {
-          console.error('WS 티켓 요청 중 오류가 발생했습니다.', err);
-          setConnectionError(DEFAULT_CONNECTION_ERROR);
+      } else if (serverEvent === 'tournamentClosed') {
+        // **계약을 읽는다.** 손으로 필드를 꺼내면 백엔드가 모양을 바꿔도
+        // 컴파일이 통과하고 화면만 조용히 어긋난다.
+        const parsed = TournamentClosedSchema.safeParse(data);
+        if (parsed.success) {
+          setClosed(parsed.data.status);
+        } else {
+          console.error('tournamentClosed 계약 위반 — 무시한다.', parsed.error);
         }
+      } else if (serverEvent === 'REBUY_PROMPT') {
+        setRebuyError(null);
+        updateRebuyData(data as RebuyPrompt);
+      } else if (serverEvent === 'error') {
+        // 거절은 브로드캐스트가 아니라 **누른 사람에게만** 오는 ack다
+        // (`ws.gateway.ts`의 `handlePlayerAction`). 안 읽으면 참가자는
+        // 눌렀는데 아무 변화도 없는 화면을 보고 먹은 줄 안다.
+        //
+        // **`renderGame`으로 지우지 않는다.** 딜러 화면은 그렇게 하지만
+        // (`DealerGameClient`), 좌석 화면에서 `renderGame`은 남이 액션할
+        // 때마다 오는 브로드캐스트라 — 내 거절 사유가 1초도 못 버틴다.
+        setActionError(typeof data === 'string' && data ? data : DEFAULT_ACTION_ERROR);
       }
-    })();
-
-    return () => {
-      cancelled = true;
-      socket?.close();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tableId, seatIndex]);
+    },
+  });
 
   /**
    * 소켓이 열려 있으면 보내고 `true`, 아니면 아무것도 안 보내고 `false`.
@@ -270,7 +228,11 @@ export default function SeatGameClient({
     <div className="relative flex h-screen w-screen flex-col overflow-hidden bg-tb-bg text-tb-ink">
       {connectionError && (
         <div className="absolute inset-x-0 top-0 z-50 bg-err px-4 py-2 text-center text-sm font-medium text-white">
-          {connectionError}
+          {/*
+            **다시 붙는 중인지를 함께 적는다.** 문구만 있으면 읽는 사람은 자기가
+            새로고침해야 하는 줄 안다 — 실제로는 기다리면 낫는다.
+          */}
+          {reconnecting ? `${connectionError} 다시 연결하는 중입니다…` : connectionError}
         </div>
       )}
 
