@@ -61,18 +61,27 @@ const AUTH_LIMIT = 120;
  * 떨어뜨려 60초가 된다(T92) — 브라우저가 전부 Next 프로세스 하나를 거치는
  * 이 토폴로지에서는 한 사람이 걸어도 대기열 전체가 그 창을 그대로 문다.
  * 30초로 짧게 잡아 피해 시간을 반으로 줄인다. 상한(120)은 그대로 둔다 —
- * 막힌 뒤에도 카운터가 계속 늘면 막힌 채로 못 풀리므로, 상한을 만지는 건
- * 다른 문제다.
+ * 몰림의 크기는 사람 수가 정하는 것이라 상한을 만지는 건 다른 문제다.
+ * (블록 중에는 히트를 세지 않고 벽시계로 풀린다 —
+ * `throttler.service.js`의 `increment`가 `isBlocked`면 `fireHitCount`를
+ * 건너뛴다. 막혀서 못 풀리는 일은 없다.)
  */
 const BLOCK_MS = 30_000;
 
 /**
  * 429 본문의 `message`. 기본값(`ThrottlerException: Too Many Requests`)은
- * 라이브러리가 박아 둔 영어 문구라 참가자 화면에 그대로 뜬다. 초 단위 남은
- * 시간은 여기 넣지 않는다 — 요청마다 다른 값이고 `Retry-After` 헤더가 이미
- * 들고 있다. 화면이 그 헤더와 이 문구를 합친다(`frontend/src/app/auth/action.ts`).
+ * 라이브러리가 박아 둔 영어 문구인데, 프론트의 `failureMessage`들이 본문의
+ * `message`를 그대로 띄우므로 영어 예외 이름이 화면에 나온다(T92).
+ *
+ * **주어를 쓰지 않는다.** 이 문구는 `forRoot`의 것이라 APP_GUARD를 지나는
+ * 모든 라우트의 429 본문이 된다 — 딜러 단말도 좌석 태블릿도 상점 콘솔도
+ * 이것을 읽는다. "로그인 요청이"라고 적으면 그 화면들에서 틀린 말이 된다.
+ *
+ * 남은 초는 여기 넣지 않는다 — 요청마다 다른 값이고 `Retry-After` 헤더가
+ * 이미 들고 있다. 로그인·가입 화면은 이 본문을 아예 안 읽고 그 헤더로
+ * 자기 문구를 만든다(`frontend/src/app/auth/action.ts`의 `throttleMessage`).
  */
-const ERROR_MESSAGE = '로그인 요청이 많아 잠시 제한되었습니다. 잠시 후 다시 시도해 주세요.';
+const ERROR_MESSAGE = '요청이 많아 잠시 제한되었습니다. 잠시 후 다시 시도해 주세요.';
 
 type Env = Record<string, string | undefined>;
 

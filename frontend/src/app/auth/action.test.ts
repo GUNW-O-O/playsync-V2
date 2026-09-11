@@ -107,6 +107,11 @@ describe('auth 액션 — JSON이 아닌 실패 응답', () => {
  * 세 번째 검사(401)가 없으면 429 분기를 모든 실패에 걸어도 이 파일의 다른
  * 검사는 초록으로 남는다(T29) — 그래서 "상한이 아닌 실패는 그대로"를 따로
  * 못 박는다.
+ *
+ * **헤더에 먹이는 초는 17이다.** 제품 어디에도 없는 값이라야 "헤더에서
+ * 읽었다"가 증명된다 — 처음엔 30을 먹였는데 그것이 블록 기본값과 같아,
+ * 헤더 읽기를 지우고 상수 30을 박아도 검사가 전부 초록이었다. 짝이 되는
+ * 반대 입력이 아래 "헤더가 없으면 초를 지어내지 않는다"다.
  */
 describe.each([
   ['handleLogin', handleLogin, 'http://backend.test/auth/login'] as const,
@@ -121,7 +126,7 @@ describe.each([
   it('상한에 걸리면 다시 시도할 시각을 안내한다', async () => {
     server.use(
       http.post(url, () =>
-        HttpResponse.json(THROTTLED_BODY, { status: 429, headers: { 'Retry-After': '30' } }),
+        HttpResponse.json(THROTTLED_BODY, { status: 429, headers: { 'Retry-After': '17' } }),
       ),
     );
 
@@ -129,16 +134,17 @@ describe.each([
 
     expect(result.error).toEqual(expect.any(String));
     expect(result.error).not.toMatch(/ThrottlerException/i);
-    expect(result.error).toContain('30');
+    expect(result.error).toContain('17초');
   });
 
-  it('Retry-After가 없어도 안내가 뜬다', async () => {
+  it('Retry-After가 없으면 초를 지어내지 않는다', async () => {
     server.use(http.post(url, () => HttpResponse.json(THROTTLED_BODY, { status: 429 })));
 
     const result = (await action(CREDENTIALS)) as { error?: string };
 
     expect(result.error).toEqual(expect.any(String));
     expect(result.error).not.toMatch(/ThrottlerException/i);
+    expect(result.error).not.toMatch(/[0-9]/);
   });
 
   it('상한이 아닌 실패는 지금 문구 그대로다', async () => {
