@@ -503,11 +503,15 @@ export class RedisService {
     if (!blind) return null;
 
     const force = options?.force ?? false;
-    const now = Date.now();
+    // 정지 중이면 시계가 그 시각에 멈춰 있다(T96). 레벨이 오르면 등록 마감이
+    // 닫히고 마감은 단조라 되돌아오지 않는다 — 보정만으로는 부족하다.
+    // `serverTime`은 실제 시각 그대로 둔다. 단말이 자기 시계와의 오프셋을 재는 값이다.
+    const wall = Date.now();
+    const now = blind.pausedAt ?? wall;
     // 최적화: 아직 다음 레벨 시간이 되지 않았다면 현재 상태 그대로 반환
     // (이미 휴식 중이라면 blind.isBreak가 true인 상태로 반환됨)
     if (!force && blind.nextLevelAt && now < blind.nextLevelAt) {
-      return { ...blind, serverTime: now };
+      return { ...blind, serverTime: wall };
     }
     // 시간 경과 시에만 상세 계산 수행
     // `parseBlindStructure`를 거치지 않고 바로 넘긴다 — 안전한 이유는 이
@@ -515,7 +519,7 @@ export class RedisService {
     // Redis에 쓴 값이기 때문이다(`getTournamentBlind` 참고). 다음에
     // `getCurrentBlindLevel`을 부르는 새 호출자가 파싱 안 된 구조를 넘기면
     // 여기서 조용히 깨진다.
-    const calculated = getCurrentBlindLevel(blind.blindStructure, blind.startedAt);
+    const calculated = getCurrentBlindLevel(blind.blindStructure, blind.startedAt, now);
     // 레벨 인덱스가 바뀌었거나, 휴식 상태(isBreak)가 변경되었을 때만 업데이트
     if (
       force ||
@@ -527,7 +531,7 @@ export class RedisService {
         currentBlindLv: calculated.currentIndex,
         nextLevelAt: calculated.nextLevelAt,
         isBreak: calculated.isBreak, // lv 99,
-        serverTime: now,
+        serverTime: wall,
       };
       await this.setTournamentBlind(tournamentId, updatedBlind);
       // 휴식 중이면 직전 실제 레벨로 판정한다. 휴식의 `lv`는 99라 어떤

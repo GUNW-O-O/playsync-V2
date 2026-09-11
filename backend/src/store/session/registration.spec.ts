@@ -112,12 +112,14 @@ describe('isRegistrationOpenNow', () => {
     rebuyUntil: number;
     startedAt: Date | null;
     pausedMs: number;
+    pausedAt: Date | null;
   }> = {}) {
     return {
       isRegistrationOpen: true,
       rebuyUntil: 2,
       startedAt: new Date(Date.now() - 90_000),
       pausedMs: 0,
+      pausedAt: null,
       blindStructure: { structure },
       ...over,
     };
@@ -140,6 +142,7 @@ describe('isRegistrationOpenNow', () => {
         rebuyUntil: 3,
         startedAt: new Date(Date.now() - 150_000),
         pausedMs: 0,
+        pausedAt: null,
         blindStructure: { structure: withBreak },
       }),
     ).toBe(true);
@@ -160,6 +163,16 @@ describe('isRegistrationOpenNow', () => {
    */
   it('정지 시간만큼 기준점을 민다', () => {
     expect(isRegistrationOpenNow(tournament({ pausedMs: 60_000 }))).toBe(true);
+  });
+
+  /**
+   * **정지 중에는 레벨이 안 오른다.** 마감이 단조라 정지 구간에서 한 번 닫히면
+   * 되돌아오지 않는다 — 보정만으로는 부족하고 계산이 멈춰야 한다(T96).
+   */
+  it('pausedAt이 있으면 그 시각의 레벨로 판정한다', () => {
+    const startedAt = new Date(Date.now() - 90_000); // 벽시계로는 마감 레벨(2)을 지났다
+    const t = tournament({ startedAt, pausedMs: 0, rebuyUntil: 2, pausedAt: new Date(startedAt.getTime() + 30_000) });
+    expect(isRegistrationOpenNow(t)).toBe(true);
   });
 
   /**

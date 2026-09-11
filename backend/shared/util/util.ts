@@ -3,9 +3,9 @@ import { BlindTimingResult } from "shared/types/blind";
 
 export function getCurrentBlindLevel(
   structure: BlindLevelDto[],
-  startedAt: number
+  startedAt: number,
+  now: number = Date.now()
 ): BlindTimingResult {
-  const now = Date.now();
   const elapsedMs = now - startedAt;
   let accumulatedMs = 0;
 

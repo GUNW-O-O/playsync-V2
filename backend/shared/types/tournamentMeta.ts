@@ -44,6 +44,11 @@ export interface BlindField {
   nextLevelAt: number,
   serverTime: number,
   blindStructure: BlindLevelDto[],
+  /**
+   * 정지가 시작된 시각(epoch ms). **있으면 시계가 멈춰 있다**(T96).
+   * DB `Tournament.pausedAt`의 사본이다 — 부팅이 대입하고 `completeSync`가 지운다.
+   */
+  pausedAt?: number,
 }
 
 /**

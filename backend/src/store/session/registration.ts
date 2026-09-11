@@ -81,6 +81,8 @@ export interface RegistrationSource {
   rebuyUntil: number;
   startedAt: Date | null;
   pausedMs: number;
+  /** 정지가 시작된 시각. 있으면 그 시각의 레벨로 멈춘다(T96). */
+  pausedAt: Date | null;
   blindStructure: { structure: unknown };
 }
 
@@ -106,7 +108,7 @@ export function isRegistrationOpenNow(t: RegistrationSource): boolean {
 
   const structure = parseBlindStructure(t.blindStructure.structure);
   const blindBaseAt = t.startedAt.getTime() + t.pausedMs;
-  const { currentIndex } = getCurrentBlindLevel(structure, blindBaseAt);
+  const { currentIndex } = getCurrentBlindLevel(structure, blindBaseAt, t.pausedAt?.getTime() ?? Date.now());
 
   return isRegistrationOpenAtLevel(
     t.isRegistrationOpen,
