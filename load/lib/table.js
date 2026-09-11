@@ -3,6 +3,7 @@ import { WebSocket } from 'k6/experimental/websockets';
 import { setTimeout, clearTimeout } from 'k6/timers';
 import { Trend, Counter } from 'k6/metrics';
 import {
+  RECONNECT_SPREAD_MS,
   chargeForEntry,
   dealerLogin,
   enterSeat,
@@ -10,7 +11,7 @@ import {
   login,
   myPlayerOtp,
   signup,
-  wsTicket,
+  wsTicketAttempt,
 } from './api.js';
 import { createWindowQueue } from './windows.js';
 
@@ -407,8 +408,23 @@ export function runHands({
    * 30초다(T24). 서버는 1008로 끊고, 그 테이블은 소켓 아홉으로 계속 도는데
    * 지표만 조용히 망가진다(아래 `liveSockets` 주석).
    */
-  function open(token, role, seat) {
-    const ws = new WebSocket(url(wsTicket(token)), null, { headers: { Origin: ORIGIN } });
+  function open(token, role, seat, attempt = 0) {
+    // **티켓이 막히면 여기서 자지 않는다.** `sleep`은 VU를 통째로 멈춰 아직
+    // 살아 있는 소켓의 측정 창까지 그만큼 부풀린다(`api.js`의
+    // `wsTicketAttempt` 주석). 타이머로 다시 온다.
+    const got = wsTicketAttempt(token, attempt);
+    if (got.waitMs !== undefined) {
+      setTimeout(() => {
+        if (!closing) open(token, role, seat, attempt + 1);
+      }, got.waitMs);
+      return;
+    }
+    // 끝내 못 받았다. 이 소켓은 안 열린다 — `burstState.expect`가 채워지지
+    // 않으므로 이 테이블의 `reconnect_ms`는 기록되지 않는다. 그 침묵이 곧
+    // "복구 못 함"이고, `ticket_gave_up`이 몇 개인지를 센다.
+    if (got.gaveUp) return;
+
+    const ws = new WebSocket(url(got.ticket), null, { headers: { Origin: ORIGIN } });
     const idx = sockets.length;
     // `scheduled`가 없으면 같은 소켓이 액션을 중복 예약한다. 자기 차례인
     // 동안에는 브로드캐스트가 올 때마다 `step`이 다시 불리기 때문이다.
@@ -455,7 +471,10 @@ export function runHands({
       // 재접속 복구 시간 — 다시 붙은 소켓 전부가 첫 화면을 받은 순간.
       if (burstState && !burstState.seen.has(idx)) {
         burstState.seen.add(idx);
-        if (burstState.seen.size >= sockets.length) {
+        // **`sockets.length`가 아니라 열려야 하는 수로 본다.** 티켓이 막힌
+        // 소켓은 나중에 열리므로, 현재 길이로 재면 아직 두 개가 안 붙었는데
+        // "전부 복구됐다"가 되어 `reconnect_ms`가 실제보다 짧게 남는다.
+        if (burstState.seen.size >= burstState.expect) {
           reconnectMs.add(Date.now() - burstState.at);
           burstState = null;
         }
@@ -627,9 +646,14 @@ export function runHands({
   // Redis GETDEL로 소비된다). 그래서 이 사건은 WS만이 아니라 REST
   // (`POST /ws/ticket`)를 전원이 동시에 치는 부하이기도 하다.
   //
-  // 지터를 걸지 않는다. 실제 모양이 "배너를 본 사람들이 동시에
-  // 새로고침"이고, `SeatGameClient.tsx:118`에 자동 재접속이 없어
-  // 백오프가 낄 자리 자체가 없다.
+  // **소켓마다 자기 깨어날 시각을 따로 뽑는다.** 소켓 하나가 태블릿 하나라
+  // 한꺼번에 여는 것은 열 대가 같은 밀리초에 새로고침한다는 뜻이 된다.
+  // 폭이 0이면 예전 모양 그대로다 — 전원이 같은 순간에 몰린다.
+  //
+  // 폭을 0과 값으로 두 번 돌리는 것이 이 사건을 재는 방법이다. 0은 지금
+  // 제품의 모양이고(`SeatGameClient.tsx`에 자동 재접속이 없어 사람이 동시에
+  // 새로고침한다), 값을 준 쪽은 T93이 넣으려는 모양이다. 둘의 차이가 곧
+  // "지터가 무엇을 사는가"다.
   const burst =
     reconnectAtMs === null || reconnectAtMs === undefined
       ? null
@@ -648,9 +672,16 @@ export function runHands({
           // 창을 비운다 — 끊긴 소켓이 못 받은 창은 영영 안 채워진다.
           windows.clear();
           reconnects.add(1);
-          burstState = { at: Date.now(), seen: new Set() };
-          seats.forEach((s) => open(s.seatToken, 'seat', s.seat));
-          open(dealerToken, 'dealer', -1);
+          burstState = { at: Date.now(), seen: new Set(), expect: seats.length + 1 };
+          const wake = () => Math.floor(Math.random() * RECONNECT_SPREAD_MS);
+          seats.forEach((s) => {
+            setTimeout(() => {
+              if (!closing) open(s.seatToken, 'seat', s.seat);
+            }, wake());
+          });
+          setTimeout(() => {
+            if (!closing) open(dealerToken, 'dealer', -1);
+          }, wake());
         }, reconnectAtMs);
 
   return new Promise((resolve) => {
