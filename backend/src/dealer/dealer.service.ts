@@ -567,6 +567,38 @@ export class DealerService {
   }
 
   /**
+   * 서버가 멈췄다 돌아온 테이블을 딜러가 다시 연다(T95).
+   *
+   * **정지의 끝을 사람이 정한다.** 부팅은 정지의 끝이 아니다 — 프로세스가 떠도
+   * 태블릿이 돌아와야 판이 돈다. 자동으로 풀면 그 시각을 감으로 잡아야 하고,
+   * 짧으면 아직 깜깜한 사람이 폴드당하고 길면 다 모인 테이블이 기다린다.
+   * 실측으로 660소켓이 전부 돌아오는 데 31.9초였다(`docs/results/`).
+   *
+   * **소켓 수를 세지 않는다.** 게이트웨이에 하트비트가 없어 반만 닫힌 TCP는
+   * 살아 있는 것처럼 보인다 — 그 값으로 자동 판정하면 좀비 소켓 하나가
+   * 테이블을 영영 묶는다. 카드가 물리라 딜러에게는 눈이 있고, 좌석에 사람이
+   * 앉았는지는 그 사람이 안다.
+   *
+   * 타이머는 `scheduleTurnTimeout`이 건다 — 평소 경로와 **같은 코드**다.
+   * 여기서 따로 걸면 재개한 테이블만 다른 시계를 쓰게 된다.
+   */
+  async resumeTable(tableId: string): Promise<TableState> {
+    const next = await this.redis.mutateSnapshot(tableId, async (state) => {
+      if (!state) throw new Error(SNAPSHOT_MISSING);
+      // 멈춘 적 없는 테이블에 이 명령이 오면 거절한다. 조용히 통과시키면
+      // 지금 차례인 사람의 30초가 딜러의 오조작 한 번에 되감긴다.
+      if (!state.resumePending) throw new Error('멈춰 있는 테이블이 아닙니다.');
+
+      delete state.resumePending;
+      await this.playsync.scheduleTurnTimeout(tableId, state);
+      return state;
+    });
+    // 위에서 없으면 던졌으므로 여기 null이 올 수 없다. 타입만 좁힌다.
+    if (!next) throw new Error(SNAPSHOT_MISSING);
+    return next;
+  }
+
+  /**
    * 체크포인트가 찍힌 뒤에만 부른다. 원천이 Redis로 넘어가는 지점.
    *
    * **락 안에서 페이즈를 다시 본다**(T62). 부르는 쪽이 페이즈를 확인한 뒤

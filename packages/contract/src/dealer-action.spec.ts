@@ -103,4 +103,24 @@ describe("RebuyResponseSchema", () => {
       expect(RebuyResponseSchema.safeParse(input).success).toBe(false);
     },
   );
+
+  /**
+   * 정지에서 돌아온 테이블을 딜러가 다시 여는 명령(T95). 인자가 없는 것이
+   * 요점이다 — **무엇을 재개할지는 서버가 안다.** 딜러가 테이블을 지목하게
+   * 하면 남의 테이블을 열 수 있고, 그 권한 판정은 어차피 게이트웨이가 소켓에
+   * 실린 신원으로 한다.
+   */
+  describe("RESUME_TABLE", () => {
+    it("인자 없이 통과한다", () => {
+      expect(DealerActionSchema.parse({ action: "RESUME_TABLE" })).toEqual({
+        action: "RESUME_TABLE",
+      });
+    });
+
+    it("모르는 키를 거절한다", () => {
+      expect(
+        DealerActionSchema.safeParse({ action: "RESUME_TABLE", tableId: "tbl-1" }).success,
+      ).toBe(false);
+    });
+  });
 });

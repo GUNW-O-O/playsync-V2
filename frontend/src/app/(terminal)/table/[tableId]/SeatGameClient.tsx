@@ -3,6 +3,7 @@
 import { useRef, useState } from 'react';
 import { PlayerAction } from '@playsync/contract';
 import Felt from '@/component/felt/Felt';
+import { formatDuration } from '@/lib/format-duration';
 import { useTableSocket } from '@/lib/use-table-socket';
 import { TableState, TournamentClosedSchema, type ClosedTournamentStatus } from '@playsync/contract';
 import SeatActionPanel from './SeatActionPanel';
@@ -224,6 +225,8 @@ export default function SeatGameClient({
   const toCall = gameState ? Math.max(0, gameState.currentBet - betPlaced) : 0;
   const minRaise = gameState ? gameState.currentBet + gameState.smallBlind * 2 : 0;
 
+  const resumePending = gameState?.resumePending;
+
   return (
     <div className="relative flex h-screen w-screen flex-col overflow-hidden bg-tb-bg text-tb-ink">
       {connectionError && (
@@ -233,6 +236,24 @@ export default function SeatGameClient({
             새로고침해야 하는 줄 안다 — 실제로는 기다리면 낫는다.
           */}
           {reconnecting ? `${connectionError} 다시 연결하는 중입니다…` : connectionError}
+        </div>
+      )}
+
+      {/*
+        **판이 왜 멈춰 있는지 앉은 사람도 알아야 한다**(T95).
+
+        이 화면을 보는 사람은 방금 재접속한 사람이다 — 소켓이 다시 열리고 첫
+        프레임이 온 것이 곧 "서버가 돌아왔다"의 증거다(T93). 그 프레임에 정지
+        표시가 실려 있으면 기다릴 대상을 적는다. 안 적으면 참가자는 자기 차례가
+        멈춘 이유를 모른 채 버튼을 누르고, 서버는 그것을 거절한다.
+      */}
+      {resumePending && (
+        <div
+          data-testid="seat-resume-wait"
+          className="absolute inset-x-0 top-0 z-40 bg-tb-act px-4 py-2 text-center text-sm font-medium text-[#06201a]"
+        >
+          서버가 {formatDuration(resumePending.downMs)} 멈췄다 돌아왔습니다. 딜러가 판을 다시
+          열기를 기다리는 중입니다.
         </div>
       )}
 

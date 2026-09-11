@@ -156,4 +156,27 @@ describe("RenderGameEventSchema", () => {
       RenderGameEventSchema.safeParse({ event: "renderSeatList", data: snapshot() }).success,
     ).toBe(false);
   });
+
+  /**
+   * 정지 표시(T95). `actionDeadline`이 없는 것으로 대신할 수 없어 필드를 따로
+   * 둔다 — 마감이 없는 상태는 이미 「차례 없음」(쇼다운·대기)을 뜻한다.
+   */
+  describe("resumePending", () => {
+    it("없어도 되고 있으면 통과한다", () => {
+      expect(TableStateSchema.parse(snapshot()).resumePending).toBeUndefined();
+      expect(
+        TableStateSchema.parse(snapshot({ resumePending: { downMs: 192_000 } })).resumePending,
+      ).toEqual({ downMs: 192_000 });
+    });
+
+    it("정지 길이가 없으면 거절한다 — 화면이 지어낼 값이 아니다", () => {
+      expect(TableStateSchema.safeParse(snapshot({ resumePending: {} })).success).toBe(false);
+    });
+
+    it("음수 정지는 거절한다", () => {
+      expect(
+        TableStateSchema.safeParse(snapshot({ resumePending: { downMs: -1 } })).success,
+      ).toBe(false);
+    });
+  });
 });

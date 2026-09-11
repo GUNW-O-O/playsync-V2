@@ -125,7 +125,7 @@ export async function setupTournament(
   // `RecoveryService`는 `OnApplicationBootstrap`을 구현하지만, 이 하네스는
   // `AppModule`을 부팅하지 않고 서비스를 손으로 배선한다 — 그래서 `recoverAll()`은
   // 자동으로 돌지 않고, 시나리오가 명시적으로 불러야 한다.
-  const recovery = new RecoveryService(prismaService, redisService, queue);
+  const recovery = new RecoveryService(prismaService, redisService);
 
   // 시작 최소 인원은 운영 기본값이 6이다. 시나리오는 인원을 자유롭게 잡아야
   // 하므로 여기서 낮춘다 — 검증 대상이 인원 규칙이 아니라 게임 진행이다.

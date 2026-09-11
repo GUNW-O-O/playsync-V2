@@ -1,12 +1,10 @@
-import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
-import { Queue } from 'bullmq';
 import { PlayerStatus, TournamentStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { buildTournamentMeta } from 'src/store/session/tournament-meta';
 import { deriveAnteAmount } from 'shared/util/util';
-import { planResume, resumeGraceMs } from 'src/playsync/turn-clock';
+import { planPause } from 'src/playsync/turn-clock';
 // 엔진의 좌석 타입과 Prisma 모델 이름이 둘 다 `TablePlayer`다. 이 파일은
 // 양쪽을 다 쓰므로 import에서 가른다.
 import {
@@ -23,7 +21,6 @@ export class RecoveryService implements OnApplicationBootstrap {
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
-    @InjectQueue('player-timeout') private readonly timeoutQueue: Queue,
   ) {}
 
   async onApplicationBootstrap() {
@@ -234,7 +231,7 @@ export class RecoveryService implements OnApplicationBootstrap {
         // 문장이 곧 결함이었다. 정지 동안 블라인드 시계는 위에서 밀어 주는데
         // 액션 시계만 그대로 두면, 돌아온 사람이 누른 버튼이 마감을 지나
         // `TIME_OUT`으로 바뀐다(`PlaysyncService.handleAction`).
-        await this.resumeTurnClock(table.id, existing);
+        await this.pauseTurnClock(table.id, existing, downtime);
         //
         // **그래도 좌석 비트맵은 따로 본다.** 유실 판정을 스냅샷 유무 하나로
         // 하면 이 부분 유실이 사각지대로 남는다 — 비트맵은
@@ -280,49 +277,44 @@ export class RecoveryService implements OnApplicationBootstrap {
   }
 
   /**
-   * 정지에서 돌아온 테이블의 턴 시계를 다시 세운다(T94).
+   * 정지에서 돌아온 테이블을 **멈춘 채로 세운다**(T94·T95).
    *
-   * **폴드시키는 경로가 둘이라 둘 다 막는다.** 하나만 막으면 다른 하나가 같은
+   * 폴드시키는 경로가 둘이라 둘 다 막는다. 하나만 막으면 다른 하나가 같은
    * 결과를 낸다.
    *
    * 1. 큐에 남은 잡. 지연은 정지 동안에도 흐르므로 워커가 붙는 즉시 만기인
    *    잡들이 발화한다. **세대를 올려 무효로 만든다** — `handleAction`의
    *    `isStaleEpoch`가 그 일을 하려고 이미 있다.
    * 2. 마감 시각. 절대 시각이라 돌아온 사람의 버튼이 `TIME_OUT`이 된다.
-   *    **다시 찍는다.**
+   *    **지운다.**
    *
-   * 그리고 새 잡을 건다. 걸지 않으면 타이머가 아예 없는 테이블이 생기고, 그
-   * 자리는 아무도 안 누르면 영영 멈춘다 — 자동 폴드를 없애려다 **판을 세우는
-   * 결함**으로 바꾸는 것이다.
+   * **새 잡을 걸지 않는다.** 정지의 끝은 부팅이 아니라 딜러가 다시 여는
+   * 순간이다(`DealerService.resumeTable`). 카드가 물리라 딜러가 없으면 판은
+   * 어차피 안 나가므로, 타이머 없는 테이블이 남는 것을 받아들인다 —
+   * 소프트웨어 타이머가 대신할 수 있는 일이 아니다.
    *
-   * 실패해도 대회를 접지 않는다. 이 테이블의 타이머가 없는 것은 나쁘지만, 그
+   * 실패해도 대회를 접지 않는다. 이 테이블이 안 멈춘 것은 나쁘지만, 그
    * 때문에 다른 테이블의 복구까지 잃는 것은 더 나쁘다.
    */
-  private async resumeTurnClock(tableId: string, state: TableState): Promise<void> {
-    const plan = planResume(state, Date.now(), resumeGraceMs());
+  private async pauseTurnClock(
+    tableId: string,
+    state: TableState,
+    downMs: number,
+  ): Promise<void> {
+    const plan = planPause(state);
     if (!plan) return;
 
     try {
       state.timerEpoch = plan.epoch;
-      state.actionDeadline = plan.deadline;
+      state.actionDeadline = undefined;
+      state.resumePending = { downMs };
       await this.redis.saveSnapshotUnlocked(tableId, state, 'boot-recovery');
 
-      await this.timeoutQueue.add(
-        'player-timeout',
-        { tableId, userId: plan.userId, timerEpoch: plan.epoch },
-        {
-          delay: plan.deadline - Date.now(),
-          jobId: `${tableId}-${plan.epoch}`,
-          removeOnComplete: true,
-          removeOnFail: true,
-        },
-      );
-
       this.logger.log(
-        `턴 시계를 다시 세웠다 (table=${tableId}, 세대 ${plan.epoch}, 유예 포함 ${plan.deadline - Date.now()}ms)`,
+        `턴 시계를 멈췄다 — 딜러의 재개를 기다린다 (table=${tableId}, 세대 ${plan.epoch}, 정지 ${downMs}ms)`,
       );
     } catch (e) {
-      this.logger.error(`턴 시계 재설정 실패 (table=${tableId})`, e as Error);
+      this.logger.error(`턴 시계 정지 실패 (table=${tableId})`, e as Error);
     }
   }
 

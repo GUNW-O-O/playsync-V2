@@ -545,4 +545,30 @@ describe('SeatGameClient', () => {
       rand.mockRestore();
     });
   });
+
+  /**
+   * 정지 안내(T95). 이 화면을 보는 사람은 방금 재접속한 사람이다 — 첫 프레임에
+   * 정지 표시가 실려 있으면 **기다릴 대상**을 적어야 한다. 안 적으면 참가자는
+   * 자기 차례가 멈춘 이유를 모른 채 버튼을 누르고 서버가 거절한다.
+   */
+  describe('정지 안내', () => {
+    it('정지 표시가 오면 멈춘 길이와 기다릴 대상을 적는다', async () => {
+      const { socket } = await renderWithSocket();
+
+      socket.emitServerEvent('renderGame', { ...BASE_STATE, resumePending: { downMs: 192_000 } });
+
+      const banner = screen.getByTestId('seat-resume-wait');
+      expect(banner).toHaveTextContent('3분 12초');
+      expect(banner).toHaveTextContent('딜러');
+    });
+
+    /** **반대 입력.** 멈추지 않은 판에 이 안내가 뜨면 참가자가 손을 멈춘다. */
+    it('멈추지 않았으면 뜨지 않는다', async () => {
+      const { socket } = await renderWithSocket();
+
+      socket.emitServerEvent('renderGame', BASE_STATE);
+
+      expect(screen.queryByTestId('seat-resume-wait')).toBeNull();
+    });
+  });
 });

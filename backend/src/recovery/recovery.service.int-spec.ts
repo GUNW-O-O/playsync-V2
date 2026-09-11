@@ -51,7 +51,7 @@ describe('RecoveryService', () => {
     await queue.obliterate({ force: true });
     seq = 0;
     redisService = new RedisService(redis);
-    recovery = new RecoveryService(prisma as unknown as PrismaService, redisService, queue);
+    recovery = new RecoveryService(prisma as unknown as PrismaService, redisService);
   });
 
   async function setHeartbeatAgo(ms: number) {
@@ -424,15 +424,19 @@ describe('RecoveryService', () => {
    * 축이라 위 테스트들과 겹치지 않는다.
    */
   /**
-   * 정지에서 돌아온 뒤의 **턴 시계**(T94).
+   * 정지에서 돌아온 뒤의 **턴 시계**(T94·T95).
    *
    * 정지 동안 블라인드 시계는 위에서 밀어 주는데 액션 시계는 아무도 밀지
    * 않았다. 그 비대칭이 차례였던 사람을 자동 폴드시켰다. 폴드되는 경로가
    * 둘이라 둘 다 본다 — 살아남은 잡과, 지나간 마감 시각이다.
+   *
+   * **정지의 끝은 부팅이 아니다.** 복구는 멈춰 세우기만 하고, 다시 여는 것은
+   * 딜러다(`DealerService.resumeTable`). 그래서 여기서는 "새 잡을 걸지
+   * 않았는가"까지 본다.
    */
-  describe('턴 시계 재설정', () => {
+  describe('턴 시계 정지', () => {
     /** 차례가 살아 있는 테이블 하나. `deadline`을 과거로 두면 정지를 겪은 모양이다. */
-    async function seedLiveTurn(opts: { deadline?: number; epoch?: number; turnSeat?: number } = {}) {
+    async function seedLiveTurn(opts: { epoch?: number; turnSeat?: number } = {}) {
       const { tournamentId, tableIds } = await seedOngoingTournament();
       const [tableId] = tableIds;
       const userId = await seatPlayer({ tournamentId, tableId, seatPosition: 0, stack: 8000 });
@@ -449,7 +453,7 @@ describe('RecoveryService', () => {
         tournamentId,
         timerEpoch: opts.epoch ?? 3,
         // 정지 전에 찍힌 마감이다. 지금은 이미 지났다.
-        actionDeadline: opts.deadline ?? Date.now() - 120_000,
+        actionDeadline: Date.now() - 120_000,
       };
       live.players[0] = {
         id: userId, tableId, nickname: 'p', seatIndex: 0, stack: 7800,
@@ -460,21 +464,22 @@ describe('RecoveryService', () => {
     }
 
     /**
-     * **이것이 결함의 두 번째 경로다.** 마감이 절대 시각이라, 안 고치면
+     * **이것이 결함의 두 번째 경로다.** 마감이 절대 시각이라, 안 지우면
      * 돌아온 사람이 누른 버튼이 `handleAction`에서 `TIME_OUT`으로 바뀐다.
      *
-     * 유예(60초)와 턴(30초)을 둘 다 더한 값인지를 본다. 턴만 다시 주면
-     * 재접속이 끝나기 전에 마감이 와서(실측 31.9초) 결국 같은 폴드가 난다.
+     * 마감을 지우기만 하면 "차례가 없다"(쇼다운·대기)와 구별이 안 되므로
+     * 정지 표시를 함께 세운다.
      */
-    it('지나간 마감을 유예까지 더해 다시 찍는다', async () => {
+    it('지나간 마감을 지우고 정지 표시를 세운다', async () => {
       const { tableId } = await seedLiveTurn();
       await setHeartbeatAgo(300_000);
 
       await recovery.recoverAll();
 
       const after = await redisService.getSnapShot(tableId);
-      // 90초 = 유예 60 + 턴 30. 유예를 빼먹으면 30초대라 이 선을 못 넘는다.
-      expect(after!.actionDeadline).toBeGreaterThan(Date.now() + 85_000);
+      // 정지 길이는 하트비트에서 나온다 — 주기(5초)만큼 실제보다 길게 잡힌다.
+      expect(`마감 ${after!.actionDeadline} 정지 ${after!.resumePending!.downMs > 290_000}`)
+        .toBe('마감 undefined 정지 true');
     });
 
     /**
@@ -491,27 +496,24 @@ describe('RecoveryService', () => {
     });
 
     /**
-     * 세대만 올리고 새 잡을 안 걸면 타이머가 아예 없는 테이블이 된다 —
-     * 아무도 안 누르면 영영 멈춘다. **자동 폴드를 판 세우기로 바꾸는 것이다.**
+     * **정지의 끝은 시계가 아니라 딜러다.** 부팅에서 새 타이머를 걸면 그
+     * 시각을 감으로 잡는 것이 되고, 짧으면 아직 깜깜한 사람이 폴드당하고
+     * 길면 다 모인 테이블이 기다린다. 카드가 물리라 딜러 없이는 판이 어차피
+     * 안 나가므로, 타이머 없는 테이블이 남는 것을 받아들인다.
      */
-    it('새 타이머 잡을 건다 — 새 세대로, 그 사람을 가리켜서', async () => {
-      const { tableId, userId } = await seedLiveTurn({ epoch: 3 });
+    it('새 타이머 잡을 걸지 않는다', async () => {
+      const { tableId } = await seedLiveTurn({ epoch: 3 });
       await setHeartbeatAgo(300_000);
 
       await recovery.recoverAll();
 
-      const job = await queue.getJob(`${tableId}-4`);
-      expect(job).toBeDefined();
-      expect(job!.data).toMatchObject({ tableId, userId, timerEpoch: 4 });
-      // 유예가 실렸는지 잡 쪽에서도 본다. 스냅샷만 고치고 잡을 짧게 걸면
-      // 마감 전에 잡이 먼저 터진다.
-      expect(job!.opts.delay).toBeGreaterThan(85_000);
+      expect(await queue.getJob(`${tableId}-4`)).toBeUndefined();
     });
 
     /**
-     * **차례가 없는 테이블에 마감을 찍으면 없던 타이머가 생긴다.**
-     * `scheduleTimeout`이 같은 조건으로 잡을 안 거는 것과 짝이다 — 이 검사가
-     * 없으면 "전부 다시 찍는다"는 구현도 위 셋을 전부 통과한다.
+     * **차례가 없는 테이블에 정지 표시를 달면 딜러가 아무 일도 없던 테이블에서
+     * 재개 버튼을 눌러야 한다.** 이 검사가 없으면 "전부 멈춘다"는 구현도 위
+     * 셋을 전부 통과한다.
      */
     it('차례가 없으면 손대지 않는다', async () => {
       const { tableId } = await seedLiveTurn({ turnSeat: -1, epoch: 3 });
@@ -520,10 +522,8 @@ describe('RecoveryService', () => {
       await recovery.recoverAll();
 
       const after = await redisService.getSnapShot(tableId);
-      expect(`세대 ${after!.timerEpoch} 마감 ${after!.actionDeadline! < Date.now()}`).toBe(
-        '세대 3 마감 true',
-      );
-      expect(await queue.getJob(`${tableId}-4`)).toBeUndefined();
+      expect(`세대 ${after!.timerEpoch} 정지 ${after!.resumePending === undefined}`)
+        .toBe('세대 3 정지 true');
     });
   });
 
@@ -573,13 +573,13 @@ describe('RecoveryService', () => {
 
       await recovery.recoverAll();
 
-      // **턴 시계는 예외다**(T94). 정지에서 돌아오면 복구가 마감과 세대를 다시
-      // 찍으므로 스냅샷이 한 바이트도 안 바뀌지는 않는다. 이 검사가 보려는
+      // **턴 시계는 예외다**(T94·T95). 정지에서 돌아오면 복구가 마감을 지우고
+      // 세대를 올리고 정지 표시를 세우므로 스냅샷이 한 바이트도 안 바뀌지는 않는다. 이 검사가 보려는
       // 것은 "재구성하지 않았다"이지 "불변"이 아니라서, 게임 내용만 견준다 —
       // 재구성했다면 phase가 WAITING이고 스택이 DB 값(8000)이 된다.
       const aAfter = await redisService.getSnapShot(tableA);
       const gameContent = (s: unknown) => {
-        const { actionDeadline, timerEpoch, ...rest } = s as TableState;
+        const { actionDeadline, timerEpoch, resumePending, ...rest } = s as TableState;
         return JSON.stringify(rest);
       };
       expect(gameContent(aAfter)).toBe(gameContent(JSON.parse(aBefore)));
