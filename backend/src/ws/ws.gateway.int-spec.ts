@@ -1072,6 +1072,60 @@ describe('WsGateway 인바운드 경계', () => {
       expect(lastSyncingPayload(otherDealer)).toEqual({ syncing: false, present: 2, required: 2 });
     });
 
+    /**
+     * Task4 M3(리뷰 권장, 최종 리뷰가 머지 가능으로 봤지만 한 줄이라 같이
+     * 담는다). `completeSync`가 false를 돌려주면(동시 n/n의 진 쪽) 그
+     * 재집계는 아무에게도 `syncing:false`를 보내지 않는다 — 이긴 쪽의
+     * 재집계가 이미 보냈거나, 다음 재집계가 이어서 본다.
+     */
+    it('completeSync가 false를 돌려주면 syncing:false를 보내지 않는다(Task4 M3)', async () => {
+      await seedSyncingTournament();
+      await seedSeats();
+      const tableDealer = await connect(await dealerTicket(TABLE), TABLE);
+      recovery.completeSync.mockResolvedValueOnce(false);
+
+      const otherDealer = await connect(await dealerTicket(OTHER_TABLE), OTHER_TABLE);
+
+      expect(recovery.completeSync).toHaveBeenCalledWith(TOURNAMENT);
+      expect(lastSyncingPayload(otherDealer)).toBeUndefined();
+      expect(lastSyncingPayload(tableDealer)).toEqual({ syncing: true, present: 1, required: 2 });
+    });
+
+    /**
+     * M4(최종 리뷰). 게이트웨이 통합 스펙의 나머지는 `RecoveryService`를
+     * 목으로 둔다 — 그 서비스의 원자성(동시 n/n에 한쪽만 이긴다)은
+     * `recovery.service.int-spec.ts`가 잰다. 여기 하나만 진짜
+     * `RecoveryService`(Prisma·Redis는 이미 진짜다)를 물려 **게이트웨이 →
+     * completeSync**의 실제 이음매가 도는지 본다 — 스펙 시나리오의 2·3단계가
+     * 목 스펙에만 있었다는 것이 최종 리뷰 M4의 지적이다.
+     */
+    it('진짜 RecoveryService로 마지막 딜러가 접속하면 DB가 ONGOING·pausedAt null이 된다(M4)', async () => {
+      await seedSyncingTournament();
+      await seedSeats();
+      const realGateway = new WsGateway(
+        dealer as unknown as DealerService,
+        playsync,
+        new RedisService(redis),
+        tickets,
+        new EventEmitter2(),
+        prisma as unknown as PrismaService,
+        new RecoveryService(prisma as unknown as PrismaService, new RedisService(redis)),
+      );
+
+      await realGateway.handleConnection(
+        makeClient(),
+        makeRequest(`tableId=${TABLE}&ticket=${await dealerTicket(TABLE)}`, ORIGIN),
+      );
+      await realGateway.handleConnection(
+        makeClient(),
+        makeRequest(`tableId=${OTHER_TABLE}&ticket=${await dealerTicket(OTHER_TABLE)}`, ORIGIN),
+      );
+
+      const t = await prisma.tournament.findUniqueOrThrow({ where: { id: TOURNAMENT } });
+      expect(`상태 ${t.status}`).toBe('상태 ONGOING');
+      expect(t.pausedAt).toBeNull();
+    });
+
     it('SYNCING인 동안 딜러 명령을 거절한다', async () => {
       await seedSyncingTournament();
       await seedSeats();
@@ -1083,13 +1137,18 @@ describe('WsGateway 인바운드 경계', () => {
       expect(dealer.startPreFlop).not.toHaveBeenCalled();
     });
 
-    /** 반대 입력: ONGOING이면 알리지도, 명령을 막지도 않는다. */
-    it('ONGOING이면 tournamentSyncing을 안 보내고 딜러 명령이 그대로 통과한다', async () => {
+    /**
+     * 반대 입력: ONGOING이면 딜러 명령을 막지 않는다. 접속한 소켓 본인에게는
+     * `{syncing:false,0,0}`이 한 번 간다(최종 리뷰 I2) — 이 소켓이 SYNCING을
+     * 실제로 본 적이 없어도, 붙는 순간 "지금은 SYNCING이 아니다"를 스스로
+     * 확인하게 만드는 자리다.
+     */
+    it('ONGOING이면 접속한 소켓에게만 syncing:false를 보내고 딜러 명령이 그대로 통과한다', async () => {
       await seedSyncingTournament(TournamentStatus.ONGOING);
       await seedSeats();
 
       const dealerClient = await connect(await dealerTicket(TABLE), TABLE);
-      expect(lastSyncingPayload(dealerClient)).toBeUndefined();
+      expect(lastSyncingPayload(dealerClient)).toEqual({ syncing: false, present: 0, required: 0 });
 
       const result = await gateway.handleDealerAction(dealerClient, { action: 'START_PRE_FLOP' });
 

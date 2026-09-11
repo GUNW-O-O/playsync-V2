@@ -238,8 +238,16 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
         // 딜러가 돌아왔다 — 그 대회가 SYNCING이면 다시 세어 본다(T96).
         // 부수 작업(집계)의 순간 장애가 바깥 catch로 새면, 방금 인증에
         // 성공한 딜러 소켓이 "인증 실패"로 끊긴다(M1) — 여기서 삼킨다.
+        //
+        // **이 소켓을 `recount`에 함께 넘긴다**(최종 리뷰 I2). 대회가 이미
+        // SYNCING이 아니면 그 자리에서 이 소켓에만 `{syncing:false}`를 알려
+        // 준다 — 완료 순간에 좀비였던 소켓, `required`에서 이미 빠진 테이블,
+        // n→0으로 끝난 경우처럼 서버가 새 이벤트를 보장할 수 없는 자리들을
+        // "붙는 쪽이 매번 확인한다"로 전부 없앤다.
+        // 실패는 `reportSync`의 체인이 이미 로그로 남긴다(M7) — 여기서
+        // 또 찍으면 같은 실패가 두 줄로 남는다. 여기서는 삼키기만 한다.
         if (payload.role === Role.DEALER && payload.tournamentId) {
-          await this.reportSync(payload.tournamentId).catch((e) => this.logger.error('SYNCING 재집계 실패', e));
+          await this.reportSync(payload.tournamentId, client).catch(() => { /* reportSync가 이미 로그로 남긴다 */ });
         }
       }
 
@@ -280,9 +288,10 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
 
     // 끊긴 소켓이 딜러면 그 대회의 복귀 집계가 하나 줄었을 수 있다(T96).
     // `sweepSockets`는 이 메서드를 기다리지 않고 부른다(기존 동작 유지) —
-    // 실패해도 여기서 삼키므로 처리되지 않은 거부로 새지 않는다.
+    // 실패해도 여기서 삼키므로 처리되지 않은 거부로 새지 않는다. 로그는
+    // `reportSync`의 체인이 이미 남긴다(M7) — 여기서 또 찍지 않는다.
     if (removedFromTable && role === Role.DEALER && tournamentId) {
-      await this.reportSync(tournamentId).catch((e) => this.logger.error('SYNCING 재집계 실패', e));
+      await this.reportSync(tournamentId).catch(() => { /* reportSync가 이미 로그로 남긴다 */ });
     }
   }
 
@@ -454,9 +463,9 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
    * 사이 아무도 새로 줄을 세우지 않았으면 맵에서 지운다 — 안 지우면 이 맵이
    * 대회 수만큼 서버 수명 내내 계속 늘어난다.
    */
-  private reportSync(tournamentId: string): Promise<void> {
+  private reportSync(tournamentId: string, joiner?: WebSocket): Promise<void> {
     const prior = this.syncChains.get(tournamentId) ?? Promise.resolve();
-    const next = prior.then(() => this.recount(tournamentId));
+    const next = prior.then(() => this.recount(tournamentId, joiner));
     const settled = next.catch((e) => {
       this.logger.error('SYNCING 재집계 실패', e);
     });
@@ -478,10 +487,21 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
    * 좀비가 살아 보였기 때문이고, 그 전제는 `sweepSockets`가 없앴다. 그래도
    * 좀비가 끼면 n/n이 조금 일찍 풀릴 뿐이다 — 판을 여는 것은 여전히 테이블마다
    * 딜러가 누르는 재개다.
+   *
+   * @param joiner 방금 접속한 소켓(`handleConnection`에서만 넘긴다). 이
+   *   대회가 SYNCING이 아니면 **이 소켓에만** `{syncing:false,0,0}`을
+   *   알려 준다(최종 리뷰 I2) — 완료가 이미 끝난 뒤에 붙은 소켓은 그 뒤로
+   *   서버가 새 이벤트를 보낼 자리가 없어, 붙는 순간 스스로 확인하게 한다.
    */
-  private async recount(tournamentId: string) {
+  private async recount(tournamentId: string, joiner?: WebSocket) {
     const t = await this.prisma.tournament.findUnique({ where: { id: tournamentId }, select: { status: true } });
-    if (t?.status !== TournamentStatus.SYNCING) return;
+    if (t?.status !== TournamentStatus.SYNCING) {
+      if (joiner && joiner.readyState === WebSocket.OPEN) {
+        const payload = TournamentSyncingSchema.parse({ syncing: false, present: 0, required: 0 });
+        try { joiner.send(JSON.stringify({ event: TOURNAMENT_SYNCING_EVENT, data: payload })); } catch { /* 다음 틱이 치운다 */ }
+      }
+      return;
+    }
 
     const seatMaps = await this.redis.getTournamentTables(tournamentId);
     const required = seatMaps.filter((m) => m.seatStatus.some(Boolean)).map((m) => m.tableId);
@@ -500,8 +520,11 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     }
 
     const payload = TournamentSyncingSchema.parse({ syncing, present: progress.present, required: progress.required });
-    for (const id of required) {
-      for (const s of this.tableSessions.get(id) ?? []) {
+    // **이 대회의 테이블 전부(`seatMaps`)에 보낸다** — `required`만 돌면 빈
+    // 테이블에 붙은 딜러와, n=0으로 끝난 경우(required가 비어 있다) 아무도
+    // 못 받는다(최종 리뷰 I2 · Task 4 M2). 세는 쪽(위 `required`)은 그대로다.
+    for (const m of seatMaps) {
+      for (const s of this.tableSessions.get(m.tableId) ?? []) {
         if ((s as any).role !== Role.DEALER || s.readyState !== WebSocket.OPEN) continue;
         try { s.send(JSON.stringify({ event: TOURNAMENT_SYNCING_EVENT, data: payload })); } catch { /* 다음 틱이 치운다 */ }
       }
@@ -565,12 +588,9 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     // 좌석이 SYNCING 중에 전부 풀리면(T96) n이 0으로 떨어지는데, 그 변화는
     // 딜러 접속·접속해제 어느 쪽에서도 일어나지 않는다 — 접속 이벤트만
     // 기다리면 그 대회는 다음 부팅까지 영영 SYNCING에 머문다. `@OnEvent`
-    // 핸들러의 거부는 아무도 처리하지 않으므로 여기서 삼킨다.
-    try {
-      await this.reportSync(payload.tournamentId);
-    } catch (e) {
-      this.logger.error('SYNCING 재집계 실패', e as Error);
-    }
+    // 핸들러의 거부는 아무도 처리하지 않으므로 여기서 삼킨다 — 로그는
+    // `reportSync`의 체인이 이미 남긴다(M7), 여기서 또 찍지 않는다.
+    await this.reportSync(payload.tournamentId).catch(() => { /* reportSync가 이미 로그로 남긴다 */ });
   }
 
   /**

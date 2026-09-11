@@ -200,12 +200,18 @@ export default function DealerGameClient({
     (`PlaysyncService.markRebuyPending`).
   */
   const rebuyPending = gameState?.rebuyPending;
-  const canStartHand = gameState?.phase === GamePhase.WAITING && closed === null;
+  // **`sync !== null`이면 그 둘도 막는다**(최종 리뷰 I1). 정지 배너
+  // (`resumePending`)는 `planPause`가 차례 없는 테이블(WAITING·SHOWDOWN·
+  // HAND_END)에는 붙이지 않아 안 뜬다 — 그런데 그 테이블도 대회가
+  // SYNCING이면 서버 게이트(`WsGateway.runDealerAction`)가 명령을 그대로
+  // 거절한다. 배너가 없어도 게이트는 있으므로, 버튼도 `sync`를 직접 봐야
+  // 딜러가 이유 없이 거절당하는 일이 없다.
+  const canStartHand = gameState?.phase === GamePhase.WAITING && closed === null && sync === null;
   // **기다리는 동안은 승자 결정을 막는다.** 스냅샷은 이미 `HAND_END`라 이
   // 조건이 대개 거짓이지만, 늦게 도착한 쇼다운 프레임 하나면 버튼이 다시
   // 켜지고 그것을 누른 딜러는 「쇼다운 상태가 아닙니다」만 받는다.
   const canResolveWinners =
-    gameState?.phase === GamePhase.SHOWDOWN && closed === null && !rebuyPending;
+    gameState?.phase === GamePhase.SHOWDOWN && closed === null && !rebuyPending && sync === null;
 
   // 폴드는 베팅 라운드에서만 뜻이 있다. `TableEngine.act`가 그 밖의 페이즈를
   // 통째로 던지므로, 거절을 받고 나서 알게 하지 않고 여기서 미리 끈다.
@@ -251,8 +257,9 @@ export default function DealerGameClient({
 
         자동으로 풀지 않는 이유는 그 시각을 감으로 잡아야 하기 때문이다 —
         짧으면 아직 깜깜한 사람이 폴드당하고 길면 다 모인 테이블이 기다린다.
-        소켓 수를 세는 방법은 게이트웨이에 하트비트가 없어(반만 닫힌 TCP는
-        살아 있는 것처럼 보인다) 좀비 소켓 하나가 테이블을 영영 묶는다.
+        딜러 복귀는 소켓 수로 판정한다(`WsGateway.recount`) — 게이트웨이가
+        pong 없는 소켓을 스스로 끊으므로(T96) 좀비 소켓 하나가 테이블을
+        영영 묶는 일이 없다.
 
         **카드가 물리라 딜러에게는 눈이 있다.** 자리에 사람이 앉았는지는
         화면이 아니라 그 사람이 안다. 그래서 이 딜러 단말은 좌석보다 늦게
@@ -282,6 +289,23 @@ export default function DealerGameClient({
           >
             이어서 진행
           </button>
+        </div>
+      )}
+
+      {/*
+        **정지 배너가 없는 테이블도 SYNCING을 본다**(최종 리뷰 I1). `planPause`가
+        차례 없는 테이블(WAITING·SHOWDOWN·HAND_END)에는 `resumePending`을 붙이지
+        않아 위 배너가 안 뜨는데, 그 테이블도 서버 게이트는 똑같이 걸려 있다
+        (`canStartHand`·`canResolveWinners`의 `sync === null`). 배너가 없으면
+        「핸드 시작」이 그냥 꺼진 것처럼 보여 딜러가 이유를 모른다 — 이 띠가 그
+        이유를 적는다.
+      */}
+      {sync && !resumePending && (
+        <div
+          data-testid="dealer-sync-strip"
+          className="absolute inset-x-0 top-0 z-50 bg-err px-4 py-3 text-center text-sm text-white"
+        >
+          딜러 {sync.present}/{sync.required} 복귀 — 전원이 돌아오면 이어서 진행할 수 있습니다.
         </div>
       )}
 

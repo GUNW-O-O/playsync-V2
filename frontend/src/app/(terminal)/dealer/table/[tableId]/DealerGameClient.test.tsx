@@ -545,5 +545,26 @@ describe('DealerGameClient', () => {
 
       expect(screen.getByRole('button', { name: '이어서 진행' })).not.toBeDisabled();
     });
+
+    /**
+     * 최종 리뷰 I1. `planPause`는 차례 없는 테이블(WAITING 포함)에는
+     * `resumePending`을 붙이지 않아 위 배너가 안 뜬다 — 그런데 그 테이블도
+     * 서버 게이트(`WsGateway.runDealerAction`)는 SYNCING이면 명령을 그대로
+     * 거절한다. 배너 밖에 독립된 띠가 있어야 하고, 「핸드 시작」도 `sync`를
+     * 직접 봐야 한다.
+     */
+    it('정지 배너가 없는 WAITING 테이블도 복귀 진행을 보여주고 핸드 시작을 막는다', async () => {
+      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.WAITING }));
+
+      socket.emitServerEvent(TOURNAMENT_SYNCING_EVENT, { syncing: true, present: 7, required: 9 });
+
+      expect(screen.getByTestId('dealer-sync-strip')).toHaveTextContent('딜러 7/9 복귀');
+      expect(screen.getByRole('button', { name: '핸드 시작' })).toBeDisabled();
+
+      socket.emitServerEvent(TOURNAMENT_SYNCING_EVENT, { syncing: false, present: 9, required: 9 });
+
+      expect(screen.getByRole('button', { name: '핸드 시작' })).not.toBeDisabled();
+      expect(screen.queryByTestId('dealer-sync-strip')).toBeNull();
+    });
   });
 });
