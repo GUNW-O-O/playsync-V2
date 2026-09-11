@@ -108,13 +108,17 @@ test aborted: 내 액션 p95가 1000ms를 2번 연속 넘었다
 - `load/README.md`가 `export BCRYPT_ROUNDS=4`를 한 번 적는데, **그 값이
   `docker compose`를 부르는 모든 셸에 있어야 한다**는 말이 없다.
 
+**둘 다 같은 판에서 걸었다.** 헬스체크는 `backend-load`에, 셸 경고는
+`load/README.md`의 bcrypt 절에 들어갔다 — 아래 「다시 돌리는 법」은 그 전의
+절차라 `until curl` 줄이 남아 있다. 지금은 k6가 스스로 기다린다.
+
 ## 다시 돌리는 법
 
 ```bash
 export BCRYPT_ROUNDS=4        # 또는 10
 docker compose -f backend/docker-compose.test.yml --profile load \
   up -d --force-recreate backend-load
-# 백엔드가 응답할 때까지 기다린다 — 헬스체크가 없어서 사람이 한다
+# 백엔드가 응답할 때까지 기다린다. 이 실행 당시에는 헬스체크가 없어 사람이 했다
 until curl -sf http://127.0.0.1:3001/internal/metrics >/dev/null; do sleep 2; done
 
 DATABASE_URL="postgresql://test:test@127.0.0.1:5433/playsync_test" \

@@ -104,6 +104,12 @@ docker update --cpus 1 playsync-backend-load   # 여기부터가 측정 구간
 부하용 서비스에는 `profiles`가 붙어 있어 **프로파일을 켜야 뜬다.** 그래서
 `npm run test:int`의 동작은 이 추가 전과 같다.
 
+**k6는 백엔드가 응답할 때까지 기다린다.** `backend-load`에 헬스체크
+(`/internal/metrics`)가 걸려 있고 k6의 `depends_on`이 `service_healthy`를 본다.
+없던 시절에 실행 하나를 통째로 버렸다 — 컨테이너는 「Started」인데 Node는 아직
+`prisma migrate deploy` 중이었고, 연결 거절이 **반복**으로 세어져 `poolBase`가
+계정 풀 밖으로 밀렸다. 착석이 전부 「풀 부족 → 가입」으로 가고 핸드가 0이었다.
+
 백엔드 이미지는 `backend/Dockerfile`이다. 함정 둘이 박혀 있다.
 
 - **alpine을 쓰지 않는다.** `bcrypt`가 네이티브라 musl에서 컴파일이 필요한데,
@@ -149,6 +155,33 @@ npm run load:up
 npm run load:ramp-a
 
 unset BCRYPT_ROUNDS      # 기본 10으로 돌아온다
+```
+
+**`export`다. 한 줄짜리 `VAR=x cmd` 접두사로는 안 된다.** 그 접두사는 그 한
+줄에만 붙고 다음 줄로 넘어가지 않는데, 이 변수는 **셋을 동시에** 맞춰야 한다 —
+시드가 굽는 해시, 백엔드가 굽는 해시, 그리고 `docker compose`를 부르는 모든
+호출이다.
+
+셋째가 함정이다. `load:up`도 `load:ramp-a`도 compose를 부르고, **부를 때마다
+compose가 파일을 다시 읽는다.** 그 셸에 `BCRYPT_ROUNDS`가 없으면
+`${BCRYPT_ROUNDS:-10}`이 기본값으로 풀려 `backend-load`의 정의가 달라지고,
+그러면 compose가 **백엔드를 그 값으로 다시 만든다.** 시드는 4인데 백엔드는
+10인 무대가 조용히 선다. 문(door) 무대의 `LOAD_THROTTLE_*`가 정확히 같은
+함정이고(아래), 실측에서 둘 다 밟았다
+([`docs/results/2026-09-11-bcrypt-share.md`](../docs/results/2026-09-11-bcrypt-share.md)).
+
+새 터미널을 열었거나 중간에 `unset`했으면 **거기서부터 다시 export한다.**
+다음 compose 호출이 곧 재생성이다.
+
+무대가 실제로 어느 값으로 섰는지는 두 자리를 대조해 본다. 둘이 같은 숫자를
+가리켜야 한다.
+
+```bash
+docker exec playsync-db-test psql -U test -d playsync_test -t \
+  -c 'select left(password,7), count(*) from "User" group by 1;'
+
+docker inspect playsync-backend-load \
+  --format '{{range .Config.Env}}{{println .}}{{end}}' | grep BCRYPT
 ```
 
 **시드를 다시 깔지 않으면 90%가 안 바뀐다.** bcrypt 해시는 자기 코스트를

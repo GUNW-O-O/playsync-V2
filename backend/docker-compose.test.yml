@@ -136,6 +136,25 @@ services:
       # 부하가 결제 거절을 밟으려면 켜져 있어야 하고, 거절 자체는 봇 쪽
       # `LOAD_DECLINE_RATIO`가 정한다.
       MOCK_PAYMENT: 1
+    # **뜨기를 기다릴 수 있게 만든다.** 이게 없으면 k6의 `depends_on`이 컨테이너가
+    # 「Started」인 것만 보고 출발하는데, 그 시점의 이 컨테이너는 아직
+    # `prisma migrate deploy`를 돌리는 중이다(Dockerfile의 `CMD`). Node가 포트를
+    # 열기 전에 붙은 k6는 연결 거절을 **반복**으로 세는데, 램프의 `poolBase`가
+    # 반복 순번에서 나오는 값이라 그 헛반복이 순번을 계정 풀 밖으로 밀어낸다 —
+    # 실측에서 6초에 2만 번이 돌아 착석이 전부 「풀 부족 → 가입」으로 갔고
+    # 핸드가 0이었다(`docs/results/2026-09-11-bcrypt-share.md`).
+    #
+    # 프로브가 `/internal/metrics`인 이유는 그 자리가 **인증이 없고 DB도 안 타는**
+    # 유일한 라우트라서다. 위 `LOAD_METRICS=1`이 있어야 등록되므로 그 값을 끄면
+    # 이 컨테이너는 영영 unhealthy다 — 둘은 함께 움직인다.
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:3001/internal/metrics"]
+      interval: 2s
+      timeout: 3s
+      # 첫 기동은 마이그레이션까지 돌아 수십 초가 걸린다. `start_period` 동안의
+      # 실패는 retries를 깎지 않으므로 넉넉히 준다.
+      start_period: 90s
+      retries: 5
     depends_on:
       db-test:
         condition: service_healthy
@@ -164,5 +183,9 @@ services:
       WS_URL: ws://backend-load:3001
     volumes:
       - ../load:/load
+    # **`service_started`가 아니라 `service_healthy`다.** 기본값(started)은 컨테이너가
+    # 생성돼 돌기 시작한 것만 보고 통과시키는데, 그 시점에 Node는 아직 포트를 안
+    # 열었다. 위 `backend-load`의 헬스체크 주석이 그 대가를 적는다.
     depends_on:
-      - backend-load
+      backend-load:
+        condition: service_healthy
