@@ -3,6 +3,7 @@ import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/mocks/server';
+import { DEALER_OFFSET_MS } from '@/lib/reconnect-policy';
 import { GamePhase, type TableState } from '@playsync/contract';
 
 // 종료 덮개가 대기 화면으로 돌아간다(`TournamentClosedOverlay`). 좌석 쪽
@@ -418,6 +419,61 @@ describe('DealerGameClient', () => {
       const closed = screen.queryByTestId('dealer-tournament-closed');
       expect(`배너 ${banner ? '있음' : '없음'} / 덮개 ${closed ? '있음' : '없음'}`)
         .toBe('배너 없음 / 덮개 있음');
+    });
+  });
+
+  /**
+   * **끊기면 스스로 돌아온다**(T93). 좌석 화면과 **같은 훅**을 쓰므로
+   * (`useTableSocket`) 규칙 자체는 `reconnect-policy.test.ts`가 든다. 여기서
+   * 보는 것은 이 화면이 그 배선에 실제로 붙어 있는가다 — 예전에는 두 화면이
+   * 같은 코드를 두 벌로 들고 있었고, 그런 상태에서는 한쪽만 고쳐진다.
+   */
+  describe('자동 재접속', () => {
+    function noJitter() {
+      return vi.spyOn(Math, 'random').mockReturnValue(0);
+    }
+
+    /**
+     * **딜러는 좌석 폭이 지난 뒤에 붙는다.** 이 화면에서 직접 확인한다 —
+     * 규칙(`reconnect-policy.ts`)이 맞아도 이 화면이 `role: 'dealer'`를 안
+     * 주면 좌석과 같은 시각에 붙어 순서가 통째로 사라진다.
+     *
+     * 지터를 0으로 고정했으므로 남는 것은 offset뿐이다. 그 앞에서 한 번,
+     * 뒤에서 한 번 봐서 **"언젠가 붙는다"가 아니라 "그 전에는 안 붙는다"**를
+     * 함께 못 박는다.
+     */
+    it('좌석 폭이 지나기 전에는 붙지 않고, 지난 뒤에 붙는다', async () => {
+      const rand = noJitter();
+      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.WAITING }));
+
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        act(() => socket.onclose?.({ code: 1006, reason: '' }));
+
+        await vi.advanceTimersByTimeAsync(DEALER_OFFSET_MS - 1_000);
+        expect(FakeSocket.instances.length).toBe(1);
+
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(FakeSocket.instances.length).toBe(2);
+      } finally {
+        vi.useRealTimers();
+        rand.mockRestore();
+      }
+    });
+
+    /**
+     * **반대 입력.** 대회가 끝나 서버가 닫은 소켓(코드 1000)에 다시 붙으면
+     * 딜러 단말이 끝난 대회에 계속 매달린다.
+     */
+    it('정상 종료(1000)에는 다시 붙지 않는다', async () => {
+      const rand = noJitter();
+      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.WAITING }));
+
+      act(() => socket.onclose?.({ code: 1000, reason: '' }));
+
+      await new Promise((r) => setTimeout(r, 30));
+      expect(FakeSocket.instances.length).toBe(1);
+      rand.mockRestore();
     });
   });
 });

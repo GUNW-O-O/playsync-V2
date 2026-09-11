@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { DealerAction } from '@playsync/contract';
 import Felt from '@/component/felt/Felt';
-import { apiFetch } from '@/lib/api';
+import { useTableSocket } from '@/lib/use-table-socket';
 import {
   GamePhase,
   TableState,
@@ -16,7 +16,10 @@ import TournamentClosedOverlay from '@/component/TournamentClosedOverlay';
 // 서버·소켓이 문구를 안 줄 때의 최후 안내. WS 배선(티켓 요청·정리·배너)은
 // `SeatGameClient`에서 그대로 옮겨 왔다 — T24가 세운 규칙이고, 액세스 토큰이
 // 이 컴포넌트에 들어오지 않는 구조를 다시 설계하지 않는다.
-const DEFAULT_CONNECTION_ERROR = '연결이 끊어졌습니다. 화면을 새로고침하거나 운영자에게 알려주세요.';
+// **새로고침하라고 적지 않는다**(T93). 이제 화면이 스스로 다시 붙으므로,
+// 사람이 할 일을 먼저 적으면 가만히 두면 낫는 상황에 손을 대게 만든다. 끝내
+// 실패했을 때의 안내는 `useTableSocket`이 그 시점에 따로 내놓는다.
+const DEFAULT_CONNECTION_ERROR = '연결이 끊어졌습니다.';
 
 /** 딜러 화면 상단 바 · 상태 배지에 쓰는 페이즈 한글 이름. */
 const PHASE_LABEL: Record<number, string> = {
@@ -63,9 +66,7 @@ export default function DealerGameClient({
    */
   storeId?: string;
 }) {
-  const socketRef = useRef<WebSocket | null>(null);
   const [gameState, setGameState] = useState<TableState | null>(initialData || null);
-  const [connectionError, setConnectionError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [kickTarget, setKickTarget] = useState<KickTarget | null>(null);
   const [showWinnerOverlay, setShowWinnerOverlay] = useState(false);
@@ -76,86 +77,47 @@ export default function DealerGameClient({
    */
   const [closed, setClosed] = useState<ClosedTournamentStatus | null>(null);
 
-  useEffect(() => {
-    let socket: WebSocket | null = null;
-    let cancelled = false;
-
-    // 티켓은 1회용 30초라 연결 시도마다 새로 받는다. 액세스 토큰은 이 컴포넌트에
-    // 들어오지 않는다 — 쿠키를 읽는 것은 route handler(서버)뿐이다.
-    (async () => {
-      try {
-        const res = await apiFetch('/api/ws-ticket', { method: 'POST' });
-        if (!res.ok) {
-          const body = await res.json().catch(() => null);
-          const message = (body as { message?: unknown } | null)?.message;
-          console.error('WS 티켓을 받지 못했습니다.');
-          if (!cancelled) {
-            setConnectionError(typeof message === 'string' && message ? message : DEFAULT_CONNECTION_ERROR);
-          }
-          return;
+  /**
+   * 소켓 배선은 `useTableSocket`이 든다(T93). 좌석 화면과 두 벌로 들고 있던
+   * 것을 한 벌로 모았다 — 다른 것은 받은 메시지로 무엇을 하느냐뿐이다.
+   *
+   * **딜러는 좌석보다 늦게 붙는다**(`reconnect-policy.ts`). 먼저 붙으면 아홉
+   * 중 둘만 찬 테이블을 보게 되고, 사람이 판을 이르게 재개하는 순간이 거기다.
+   */
+  const { socketRef, connectionError, reconnecting } = useTableSocket({
+    tableId,
+    role: 'dealer',
+    defaultError: DEFAULT_CONNECTION_ERROR,
+    onMessage: (serverEvent, data) => {
+      if (serverEvent === 'renderGame') {
+        // 선을 넘어온 JSON이라 타입이 없다. **여기서 검증하지 않는 이유는
+        // 서버가 이미 태우기 때문이다** — `WsGateway.toWireState`가 계약에
+        // 없는 키를 지우고 위반이면 아예 안 보낸다(T71).
+        setGameState(data as TableState);
+        // 새 상태가 왔다는 것은 앞의 명령이 먹었다는 뜻이다. 지난 거절
+        // 사유를 남겨 두면 성공한 화면 위에 붙어 있게 된다.
+        setActionError(null);
+      } else if (serverEvent === 'tournamentClosed') {
+        // **계약을 읽는다.** 손으로 필드를 꺼내면 백엔드가 모양을 바꿔도
+        // 컴파일이 통과하고 화면만 조용히 어긋난다.
+        const parsed = TournamentClosedSchema.safeParse(data);
+        if (parsed.success) {
+          setClosed(parsed.data.status);
+          // 끝난 대회의 거절 사유는 이제 읽을 값이 없다. 덮개 뒤에 남겨
+          // 두면 대기 화면으로 돌아간 뒤에도 붙어 있다.
+          setActionError(null);
+        } else {
+          console.error('tournamentClosed 계약 위반 — 무시한다.', parsed.error);
         }
-        const { ticket } = await res.json();
-        if (cancelled) return;
-
-        const wsUrl = `${process.env.NEXT_PUBLIC_BACKEND_URL?.replace('http', 'ws')}/playsync?tableId=${tableId}&ticket=${ticket}`;
-        socket = new WebSocket(wsUrl);
-        socketRef.current = socket;
-
-        socket.onmessage = (event) => {
-          const { event: serverEvent, data } = JSON.parse(event.data);
-          if (serverEvent === 'renderGame') {
-            setGameState(data);
-            // 새 상태가 왔다는 것은 앞의 명령이 먹었다는 뜻이다. 지난 거절
-            // 사유를 남겨 두면 성공한 화면 위에 붙어 있게 된다.
-            setActionError(null);
-          } else if (serverEvent === 'tournamentClosed') {
-            // **계약을 읽는다.** 손으로 필드를 꺼내면 백엔드가 모양을 바꿔도
-            // 컴파일이 통과하고 화면만 조용히 어긋난다.
-            const parsed = TournamentClosedSchema.safeParse(data);
-            if (parsed.success) {
-              setClosed(parsed.data.status);
-              // 끝난 대회의 거절 사유는 이제 읽을 값이 없다. 덮개 뒤에 남겨
-              // 두면 대기 화면으로 돌아간 뒤에도 붙어 있다.
-              setActionError(null);
-            } else {
-              console.error('tournamentClosed 계약 위반 — 무시한다.', parsed.error);
-            }
-          } else if (serverEvent === 'error') {
-            // 거절은 브로드캐스트가 아니라 **누른 사람에게만** 오는 ack다
-            // (`ws.gateway.ts`). 상태가 그대로인 거절 — 승자 결정에서 팟
-            // 하나를 안 찍은 경우 같은 것 — 은 이 문구가 없으면 화면에
-            // 아무 변화도 남기지 않아 딜러가 먹은 줄 안다.
-            setActionError(typeof data === 'string' && data ? data : '명령이 거절되었습니다.');
-          }
-        };
-
-        socket.onclose = (event) => {
-          // cleanup(언마운트)이 socket.close()를 부르면 이 핸들러도 불린다.
-          // cancelled로 그 정상 종료를 구분한다. 코드 1000(정상 종료)도
-          // 에러로 보지 않는다.
-          if (cancelled || event.code === 1000) return;
-          setConnectionError(event.reason && event.reason.trim() ? event.reason : DEFAULT_CONNECTION_ERROR);
-        };
-
-        socket.onerror = () => {
-          if (cancelled) return;
-          setConnectionError(DEFAULT_CONNECTION_ERROR);
-        };
-      } catch (err) {
-        // 언마운트로 인한 중단(cancelled)은 정상 경로다. 에러처럼 남기지 않는다.
-        if (!cancelled) {
-          console.error('WS 티켓 요청 중 오류가 발생했습니다.', err);
-          setConnectionError(DEFAULT_CONNECTION_ERROR);
-        }
+      } else if (serverEvent === 'error') {
+        // 거절은 브로드캐스트가 아니라 **누른 사람에게만** 오는 ack다
+        // (`ws.gateway.ts`). 상태가 그대로인 거절 — 승자 결정에서 팟
+        // 하나를 안 찍은 경우 같은 것 — 은 이 문구가 없으면 화면에
+        // 아무 변화도 남기지 않아 딜러가 먹은 줄 안다.
+        setActionError(typeof data === 'string' && data ? data : '명령이 거절되었습니다.');
       }
-    })();
-
-    return () => {
-      cancelled = true;
-      socket?.close();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tableId]);
+    },
+  });
 
   function sendDealerAction(action: DealerAction) {
     if (socketRef.current?.readyState === WebSocket.OPEN) {
@@ -250,7 +212,11 @@ export default function DealerGameClient({
     <div className="relative flex h-screen w-screen flex-col overflow-hidden bg-tb-bg text-tb-ink">
       {connectionError && (
         <div className="absolute inset-x-0 top-0 z-50 bg-err px-4 py-2 text-center text-sm font-medium text-white">
-          {connectionError}
+          {/*
+            **다시 붙는 중인지를 함께 적는다.** 문구만 있으면 읽는 사람은 자기가
+            새로고침해야 하는 줄 안다 — 실제로는 기다리면 낫는다.
+          */}
+          {reconnecting ? `${connectionError} 다시 연결하는 중입니다…` : connectionError}
         </div>
       )}
 
