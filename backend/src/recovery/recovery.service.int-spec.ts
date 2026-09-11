@@ -225,8 +225,11 @@ describe('RecoveryService', () => {
     ).pausedMs;
     await recovery.completeSync(tournamentId);
     const after = await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } });
-    // 누적은 끄는 자리(completeSync)의 몫이다.
-    expect(after.pausedMs).toBeGreaterThan(before);
+    // 누적은 끄는 자리(completeSync)의 몫이다. `>before`만 보면 아주 작은
+    // 증가(예: 1ms)로도 통과한다 — 이 테스트 이름이 약속하는 「첫 정지부터의
+    // Δ」(1단계에서 60초 전으로 찍은 하트비트)를 실제로 증명하려면 그 크기를
+    // 본다.
+    expect(after.pausedMs - before).toBeGreaterThan(55_000);
   });
 
   /**
@@ -375,9 +378,9 @@ describe('RecoveryService', () => {
   it('한 대회의 복구가 실패해도 다른 대회는 복구된다 — 둘 다 SYNCING이 된다', async () => {
     const { tournamentId: brokenId } = await seedOngoingTournament();
     // startedAt을 인위적으로 지운다 — ONGOING인데 startedAt이 없는 것은
-    // 정상 흐름에서는 일어날 수 없는 상태고, 이 서비스가 "그 테이블 재구성
-    // 실패로 본다"고 선언한 케이스다. blindField가 없어야(=redis에 아무것도
-    // 안 세워야) 재구성 분기로 들어가 이 값을 읽으려다 던진다.
+    // 정상 흐름에서는 일어날 수 없는 상태고, 이 서비스가 "이 대회 복구
+    // 실패로 본다"고 선언한 케이스다. 1단계(SYNCING 진입) 바로 뒤의
+    // `!t.startedAt` 검사가 blindField나 테이블 재구성에 닿기도 전에 던진다.
     await prisma.tournament.update({ where: { id: brokenId }, data: { startedAt: null } });
     const { tournamentId: okId, tableIds: okTableIds } = await seedOngoingTournament();
     // 앉은 사람을 하나 둔다 — 없으면 okId도 그 자리에서 completeSync까지

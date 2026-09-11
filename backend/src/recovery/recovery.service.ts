@@ -29,21 +29,6 @@ export class RecoveryService implements OnApplicationBootstrap {
   }
 
   /**
-   * 하트비트가 마지막으로 찍힌 뒤 흐른 시간. 행이 없으면 `null`(최초 부팅).
-   *
-   * 임계값을 두지 않는다. 정상 재시작 5초도 5초 밀리는데 그게 맞다 — 그 5초
-   * 동안 대회는 진짜로 돌지 않았다. "얼마 이상이면 장애"를 정하면 그 미만의
-   * 정지가 조용히 진행 시간으로 들어간다.
-   */
-  async downtimeMs(): Promise<number | null> {
-    const beat = await this.prisma.serverHeartbeat.findUnique({
-      where: { id: 'singleton' },
-    });
-    if (!beat) return null;
-    return Math.max(0, Date.now() - beat.beatAt.getTime());
-  }
-
-  /**
    * 부팅 복구. **서버는 무슨 장애였는지 추측하지 않는다** — 지금 무엇이
    * 없는지만 본다.
    *
@@ -102,7 +87,7 @@ export class RecoveryService implements OnApplicationBootstrap {
         }
       }
     } catch (e) {
-      // `downtimeMs()`·위 하트비트 갱신·`tournament.findMany`는 대회
+      // 하트비트 조회·갱신·`tournament.findMany`는 대회
       // 하나에 걸린 일이 아니라 이 함수 자체의 전제라, 위 대회 단위 catch가
       // 감싸지 못한다. 여기서 안 잡으면 `onApplicationBootstrap`이 실패해
       // 프로세스가 `listen()` 앞에서 멈춘다 — 헬스체크가 있는 배치에서는
@@ -226,9 +211,10 @@ export class RecoveryService implements OnApplicationBootstrap {
       if (existing) {
         // **스냅샷에 시간이 하나 있다** — `actionDeadline`이다(T94). 예전에 이
         // 자리 주석은 "스냅샷에는 시간이 없으므로 손댈 것이 없다"였고, 그
-        // 문장이 곧 결함이었다. 정지 동안 블라인드 시계는 위에서 밀어 주는데
-        // 액션 시계만 그대로 두면, 돌아온 사람이 누른 버튼이 마감을 지나
-        // `TIME_OUT`으로 바뀐다(`PlaysyncService.handleAction`).
+        // 문장이 곧 결함이었다. 블라인드 시계는 위(2단계)에서 `pausedAt`에
+        // 얼려 두는데(더 이상 밀지 않는다) 액션 시계만 그대로 두면, 돌아온
+        // 사람이 누른 버튼이 마감을 지나 `TIME_OUT`으로 바뀐다
+        // (`PlaysyncService.handleAction`).
         await this.pauseTurnClock(table.id, existing, downtime);
         //
         // **그래도 좌석 비트맵은 따로 본다.** 유실 판정을 스냅샷 유무 하나로
@@ -400,12 +386,13 @@ export class RecoveryService implements OnApplicationBootstrap {
     });
     const stackOf = new Map(participations.map(p => [p.userId, p.currentStack]));
 
-    // 대회 단위(2단계)가 이미 기준점을 밀어 뒀다. 여기서 캐시된 값을 그냥
-    // 읽으면(getTournamentBlind) 유실 직전에 마지막으로 폴링된 낡은 레벨이
-    // 나올 수 있다 — startPreFlop이 다음 핸드에서 어차피 덮어쓰므로 게임에는
-    // 무해하지만, 재구성이 세우는 첫 스냅샷 값 자체는 지금 시점의 진짜 레벨과
-    // 다를 수 있다. checkAndSyncBlindLevel로 지금 시각 기준 레벨을 강제
-    // 재계산한다.
+    // 캐시된 값을 그냥 읽으면(getTournamentBlind) 유실 직전에 마지막으로
+    // 폴링된 낡은 레벨이 나올 수 있다 — startPreFlop이 다음 핸드에서 어차피
+    // 덮어쓰므로 게임에는 무해하지만, 재구성이 세우는 첫 스냅샷 값 자체는
+    // 지금 레벨과 다를 수 있다. `checkAndSyncBlindLevel`로 다시 계산한다 —
+    // 비강제라, 대회가 아직 SYNCING이면 `pausedAt`에서 얼린 레벨이 나오고
+    // (2단계가 이미 그 기준점을 대입해 뒀다), ONGOING이면 지금 시각 기준
+    // 레벨이 나온다.
     const blind = await this.redis.checkAndSyncBlindLevel(tournamentId);
     if (!blind) throw new Error(`블라인드 정보가 없다 (tournament=${tournamentId})`);
     const level = blind.blindStructure[blind.currentBlindLv];

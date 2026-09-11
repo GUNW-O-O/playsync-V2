@@ -1,5 +1,5 @@
 import { ActionType } from 'src/game-engine/types';
-import { checkInvariants, Harness, SCENARIO, setupTournament } from './harness';
+import { checkInvariants, chipsOnTable, Harness, SCENARIO, setupTournament } from './harness';
 
 /**
  * T96 — 복구의 수명. `SYNCING`을 부팅이 켜고 딜러 태블릿의 n/n이 끈다.
@@ -117,6 +117,10 @@ describe('시나리오 — SYNCING', () => {
   it('4. completeSync — SYNCING을 끝내고 한 번 보정한다', async () => {
     const before = await h.prisma.tournament.findUniqueOrThrow({ where: { id: h.tournamentId } });
     const blindBefore = (await h.redisService.getTournamentBlind(h.tournamentId))!;
+    // 1단계 이후 pausedAt은 안 바뀌었다(3단계가 그것을 증명한다) — 여기서
+    // 다시 읽는 것이 곧 그 첫 정지 시각이다.
+    const pausedAtMs = before.pausedAt!.getTime();
+    const callAt = Date.now();
 
     const result = await h.recovery.completeSync(h.tournamentId);
     expect(`4. 결과 ${result}`).toBe('4. 결과 true');
@@ -128,9 +132,13 @@ describe('시나리오 — SYNCING', () => {
     const blindAfter = (await h.redisService.getTournamentBlind(h.tournamentId))!;
     const deltaPausedMs = after.pausedMs - before.pausedMs;
     const deltaBlindStart = blindAfter.startedAt - blindBefore.startedAt;
-    expect(`4. pausedMs증가 ${deltaPausedMs} == Redis증가 ${deltaBlindStart} (±1s)`)
-      .toBe(`4. pausedMs증가 ${deltaPausedMs} == Redis증가 ${deltaPausedMs} (±1s)`);
+    // DB와 Redis가 같은 Δ를 밀었는가.
     expect(Math.abs(deltaPausedMs - deltaBlindStart)).toBeLessThan(1000);
+    // **Δ의 크기 자체가 실제 정지(1단계의 pausedAt부터 지금까지)와 같은가.**
+    // 위 비교만으로는 둘 다 같은 상수만큼 어긋나도 못 잡는다 — 이 시나리오의
+    // 핵심 주장(「한 번의 보정에 다 들어간다」)을 증명하는 것은 이 줄이다.
+    expect(`4. Δ 크기 ${Math.abs(deltaPausedMs - (callAt - pausedAtMs)) < 1000}`)
+      .toBe('4. Δ 크기 true');
     expect(blindAfter.pausedAt).toBeUndefined();
 
     await checkInvariants(h, '4. completeSync', chips);
@@ -204,11 +212,16 @@ describe('시나리오 — SYNCING (앉은 사람 없음)', () => {
       [{ seatIndex: 0, userId: 'p0' }, { seatIndex: 1, userId: 'p1' }],
       SCENARIO.owner,
     );
+    // 해제 뒤 테이블 위에 남아야 할 칩 총량 — 아무도 없으므로 이 값이
+    // 그대로 이 시나리오의 불변식 기준이다.
+    const chips = chipsOnTable(await h.snapshot());
 
     await h.recovery.recoverAll();
 
     const t = await h.prisma.tournament.findUniqueOrThrow({ where: { id: h.tournamentId } });
     expect(`상태 ${t.status}`).toBe('상태 ONGOING');
     expect(t.pausedAt).toBeNull();
+
+    await checkInvariants(h, '좌석 없는 대회 — recoverAll', chips);
   });
 });
