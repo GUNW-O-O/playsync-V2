@@ -150,8 +150,40 @@ describe('RecoveryService', () => {
     return userId;
   }
 
-  it('하트비트 행이 없으면 정지 시간 보정을 건너뛴다', async () => {
-    const { tournamentId } = await seedOngoingTournament();
+  /** 차례가 살아 있는 테이블 하나. `deadline`을 과거로 두면 정지를 겪은 모양이다. */
+  async function seedLiveTurn(opts: { epoch?: number; turnSeat?: number } = {}) {
+    const { tournamentId, tableIds } = await seedOngoingTournament();
+    const [tableId] = tableIds;
+    const userId = await seatPlayer({ tournamentId, tableId, seatPosition: 0, stack: 8000 });
+    const live: TableState = {
+      phase: GamePhase.FLOP,
+      players: Array(9).fill(null),
+      buttonUser: 0,
+      currentTurnSeatIndex: opts.turnSeat ?? 0,
+      pot: 500,
+      sidePots: [],
+      currentBet: 200,
+      smallBlind: 100,
+      ante: 0,
+      tournamentId,
+      timerEpoch: opts.epoch ?? 3,
+      // 정지 전에 찍힌 마감이다. 지금은 이미 지났다.
+      actionDeadline: Date.now() - 120_000,
+    };
+    live.players[0] = {
+      id: userId, tableId, nickname: 'p', seatIndex: 0, stack: 7800,
+      bet: 200, hasFolded: false, hasChecked: false, isAllIn: false, totalContributed: 200,
+    };
+    await redisService.saveSnapshotUnlocked(tableId, live, 'table-created');
+    return { tournamentId, tableId, userId };
+  }
+
+  it('하트비트 행이 없으면 pausedAt이 지금이다 — pausedMs는 그대로', async () => {
+    const { tournamentId, tableIds } = await seedOngoingTournament();
+    // 앉은 사람을 하나 둔다 — 없으면 recoverAll이 그 자리에서
+    // completeSync까지 끝내 버려 pausedMs가 Δ만큼 늘어나 버린다.
+    await seatPlayer({ tournamentId, tableId: tableIds[0], seatPosition: 0, stack: 5000 });
+    await prisma.table.update({ where: { id: tableIds[0] }, data: { buttonUser: 0 } });
     // 0은 컬럼 기본값과 같아서, "건드리지 않았다"와 "0으로 잘못 되돌렸다"를
     // 구별하지 못한다(`increment: 0`으로 바꿔도 초록이다 — 최종 리뷰
     // "판별력이 약한 것"). 0이 아닌 값을 미리 심어 실제로 손대지 않았음을
@@ -162,63 +194,93 @@ describe('RecoveryService', () => {
 
     const t = await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } });
     expect(t.pausedMs).toBe(4242);
+    expect(`상태 ${t.status}`).toBe('상태 SYNCING');
+    expect(`pausedAt 오차 ${Math.abs(t.pausedAt!.getTime() - Date.now()) < 1000}`)
+      .toBe('pausedAt 오차 true');
   });
 
-  it('정지 시간을 누적한다 — 두 번 복구하면 합이 더해진다', async () => {
-    const { tournamentId } = await seedOngoingTournament();
+  it('두 번 복구해도 pausedAt은 첫 값 — 누적은 completeSync가 한다', async () => {
+    const { tournamentId, tableIds } = await seedOngoingTournament();
+    await seatPlayer({ tournamentId, tableId: tableIds[0], seatPosition: 0, stack: 5000 });
+    await prisma.table.update({ where: { id: tableIds[0] }, data: { buttonUser: 0 } });
 
     await setHeartbeatAgo(60_000);
     await recovery.recoverAll();
     const first = (
       await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } })
-    ).pausedMs;
+    ).pausedAt;
 
     await setHeartbeatAgo(30_000);
     await recovery.recoverAll();
     const second = (
       await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } })
-    ).pausedMs;
+    ).pausedAt;
 
-    // 대입(`=`)이면 second가 30초쯤이 되어 빨개진다.
-    expect(second).toBeGreaterThan(first + 25_000);
+    // 대입으로 덮으면 second가 30초 전쯔으로 바뀌어 빨개진다 — 이미
+    // SYNCING이면 pausedAt을 덮지 않아야 한다.
+    expect(second!.getTime()).toBe(first!.getTime());
+
+    const before = (
+      await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } })
+    ).pausedMs;
+    await recovery.completeSync(tournamentId);
+    const after = await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } });
+    // 누적은 끄는 자리(completeSync)의 몫이다.
+    expect(after.pausedMs).toBeGreaterThan(before);
   });
 
   /**
-   * 최종 리뷰 Critical 1: `recoverAll`이 소비한 다운타임을 하트비트로 다시
-   * 찍지 않으면, 하트비트 주기(30초) 안에 프로세스가 다시 뜰 때(컨테이너
-   * 재시작 루프, dev watch, 운영자의 연속 재시작) 같은 구간을 또 더한다.
-   * 위 '정지 시간을 누적한다' 테스트는 두 번째 호출 전에
-   * `setHeartbeatAgo`로 하트비트를 **테스트가 직접 다시 찍어서** 이 결함에
-   * 닿지 않는다 — 여기서는 그 사이에 아무것도 다시 찍지 않는다.
+   * 최종 리뷰 Critical 1이 살던 자리. `recoverAll`이 소비한 다운타임을
+   * 하트비트로 다시 찍지 않으면, 하트비트 주기(30초) 안에 프로세스가 다시 뜰
+   * 때(컨테이너 재시작 루프, dev watch, 운영자의 연속 재시작) 그 구간을 또
+   * 다운타임으로 잰다 — 지금은 `pausedAt`이 이미 SYNCING이라 덮이지 않는
+   * 것으로, 그리고 그 구간 자체가 턴 시계 보정(`resumePending.downMs`)에
+   * 작게 반영되는 것으로 나타난다.
    */
-  it('복구가 하트비트를 소비한다 — 곧바로 다시 복구해도 두 번 더하지 않는다', async () => {
-    const { tournamentId } = await seedOngoingTournament();
+  it('복구가 하트비트를 소비한다 — 곧바로 다시 복구해도 pausedAt이 안 바뀌고 downMs가 작다', async () => {
+    const { tableId, tournamentId } = await seedLiveTurn();
     await setHeartbeatAgo(60_000);
 
     await recovery.recoverAll();
-    const first = (
+    const pausedAtFirst = (
       await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } })
-    ).pausedMs;
+    ).pausedAt;
+    const firstDownMs = (await redisService.getSnapShot(tableId))!.resumePending!.downMs;
 
     // 하트비트를 다시 찍지 않는다 — 30초 안에 프로세스가 다시 뜬 상황이다.
     await recovery.recoverAll();
-    const second = (
+    const pausedAtSecond = (
       await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } })
-    ).pausedMs;
+    ).pausedAt;
+    const secondDownMs = (await redisService.getSnapShot(tableId))!.resumePending!.downMs;
 
-    // 지금 코드는 second ≈ first + 60000이 되어 빨개진다.
-    expect(second - first).toBeLessThan(2_000);
+    expect(pausedAtSecond!.getTime()).toBe(pausedAtFirst!.getTime());
+    // 지금 코드는 second ≈ first(60000+)가 되어 빨개진다.
+    expect(secondDownMs).toBeLessThan(2_000);
   });
 
-  it('블라인드 기준점을 대회당 한 번만 민다 — 테이블이 셋이어도', async () => {
-    const { tournamentId } = await seedOngoingTournament({ tableCount: 3 });
-    // 블라인드 메타를 미리 세워 둔다 — "이미 살아 있는 스냅샷"의 대회 단위
-    // blindField 시나리오다.
-    await recovery.recoverAll(); // 하트비트가 없어 이번 호출은 blindField를 새로 세우기만 한다.
+  it('블라인드 기준점을 대회당 한 번만 민다 — completeSync가 테이블이 셋이어도', async () => {
+    const { tournamentId, tableIds } = await seedOngoingTournament({ tableCount: 3 });
+    // 앉은 사람을 하나 둔다 — 아무도 없으면 recoverAll이 그 자리에서
+    // completeSync까지 곧바로 끝내 버려 SYNCING 중간 상태를 볼 수 없다.
+    await seatPlayer({ tournamentId, tableId: tableIds[0], seatPosition: 0, stack: 5000 });
+    await prisma.table.update({ where: { id: tableIds[0] }, data: { buttonUser: 0 } });
+
+    // 블라인드 메타가 없어 첫 호출이 새로 세우면서 SYNCING을 켠다. 대입이라
+    // 이 진입 자체는 기준점을 밀지 않는다.
+    await recovery.recoverAll();
     const before = (await redisService.getTournamentBlind(tournamentId))!.startedAt;
 
-    await setHeartbeatAgo(60_000);
-    await recovery.recoverAll();
+    // 정지가 60초 전에 시작한 것으로 되돌린다(`setHeartbeatAgo`와 같은
+    // 이유로 실제 시간을 기다리지 않고 흉내 낸다) — 이미 SYNCING이라
+    // `recoverAll`을 다시 불러도 pausedAt은 안 덮이므로, completeSync가 볼
+    // Δ를 직접 심는다.
+    await prisma.tournament.update({
+      where: { id: tournamentId },
+      data: { pausedAt: new Date(Date.now() - 60_000) },
+    });
+
+    await recovery.completeSync(tournamentId);
     const after = (await redisService.getTournamentBlind(tournamentId))!.startedAt;
 
     expect(after - before).toBeGreaterThan(55_000);
@@ -270,17 +332,24 @@ describe('RecoveryService', () => {
     });
   });
 
-  it('blindField가 없으면 startedAt + pausedMs로 새로 세운다', async () => {
-    const { tournamentId } = await seedOngoingTournament({ startedAtMsAgo: 100_000 });
+  it('blindField가 없으면 startedAt + pausedMs로 새로 세운다 — blindField.pausedAt도 같다', async () => {
+    const { tournamentId, tableIds } = await seedOngoingTournament({ startedAtMsAgo: 100_000 });
+    // 앉은 사람을 하나 둔다 — 없으면 recoverAll이 그 자리에서 completeSync까지
+    // 끝내 SYNCING 중간 상태(이 테스트가 보려는 것)를 볼 수 없다.
+    await seatPlayer({ tournamentId, tableId: tableIds[0], seatPosition: 0, stack: 5000 });
+    await prisma.table.update({ where: { id: tableIds[0] }, data: { buttonUser: 0 } });
     await setHeartbeatAgo(40_000);
 
     await recovery.recoverAll();
 
     const t = await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } });
+    expect(`상태 ${t.status}`).toBe('상태 SYNCING');
     const blind = await redisService.getTournamentBlind(tournamentId);
     expect(blind).not.toBeNull();
     const expectedBaseAt = t.startedAt!.getTime() + t.pausedMs;
     expect(Math.abs(blind!.startedAt - expectedBaseAt)).toBeLessThan(1000);
+    expect(`blindField.pausedAt ${blind!.pausedAt}`)
+      .toBe(`blindField.pausedAt ${t.pausedAt!.getTime()}`);
   });
 
   /**
@@ -303,37 +372,42 @@ describe('RecoveryService', () => {
     expect(`등록 ${info}`).toBe('등록 0');
   });
 
-  it('한 대회의 복구가 실패해도 다른 대회는 복구된다', async () => {
+  it('한 대회의 복구가 실패해도 다른 대회는 복구된다 — 둘 다 SYNCING이 된다', async () => {
     const { tournamentId: brokenId } = await seedOngoingTournament();
     // startedAt을 인위적으로 지운다 — ONGOING인데 startedAt이 없는 것은
     // 정상 흐름에서는 일어날 수 없는 상태고, 이 서비스가 "그 테이블 재구성
     // 실패로 본다"고 선언한 케이스다. blindField가 없어야(=redis에 아무것도
     // 안 세워야) 재구성 분기로 들어가 이 값을 읽으려다 던진다.
     await prisma.tournament.update({ where: { id: brokenId }, data: { startedAt: null } });
-    const { tournamentId: okId } = await seedOngoingTournament();
+    const { tournamentId: okId, tableIds: okTableIds } = await seedOngoingTournament();
+    // 앉은 사람을 하나 둔다 — 없으면 okId도 그 자리에서 completeSync까지
+    // 끝나 ONGOING으로 돌아가, "SYNCING이 됐는가"를 볼 수 없다.
+    await seatPlayer({ tournamentId: okId, tableId: okTableIds[0], seatPosition: 0, stack: 5000 });
 
     await setHeartbeatAgo(50_000);
     await expect(recovery.recoverAll()).resolves.toBeUndefined();
 
     const broken = await prisma.tournament.findUniqueOrThrow({ where: { id: brokenId } });
     const ok = await prisma.tournament.findUniqueOrThrow({ where: { id: okId } });
-    // 실패한 대회도 1단계(pausedMs 누적)까지는 통과한다 — 실패는 2단계
-    // (blindField 재구성)에서 난다. 그래도 다른 대회는 온전히 복구된다.
-    expect(broken.pausedMs).toBeGreaterThan(0);
-    expect(ok.pausedMs).toBeGreaterThan(0);
+    // 실패한 대회도 1단계(SYNCING 진입)까지는 통과한다 — 실패는 그 다음
+    // (startedAt을 읽는 자리)에서 난다. 그래도 다른 대회는 온전히 복구된다.
+    expect(`broken 상태 ${broken.status}`).toBe('broken 상태 SYNCING');
+    expect(`ok 상태 ${ok.status}`).toBe('ok 상태 SYNCING');
   });
 
-  it('블라인드 기준점을 밀면 레벨이 되돌아온다', async () => {
-    const { tournamentId, structure } = await seedOngoingTournament();
+  /**
+   * 부팅(recoverTournament)이 아니라 **completeSync 뒤에** 본다(T96) —
+   * 부팅은 `pausedAt`에서 얼린 레벨을 보여줄 뿐이고, 실제로 "정지 시간만큼
+   * 미는" 보정은 SYNCING을 끄는 자리에서 일어난다. `pausedAt`을 DB에
+   * 직접 박아 두는 것은 하트비트 기반 `setHeartbeatAgo`와 같은 이유다 — 실제
+   * 시간을 기다리지 않고 "정지가 X초 전에 시작했다"를 흉내 낸다.
+   */
+  it('completeSync 뒤에 보면 레벨이 정지 시각의 값으로 있다', async () => {
+    const { tournamentId, structure } = await seedOngoingTournament({ startedAtMsAgo: 90_000 });
     // 90초 전에 시작한 것으로 블라인드를 세운다: 레벨 duration이 1분이라
-    // 90초 경과는 레벨 인덱스 1(두 번째 레벨) 한가운데다.
-    //
-    // `nextLevelAt`은 일부러 과거로 둔다. `checkAndSyncBlindLevel`은
-    // `now < nextLevelAt`이면 재계산 없이 캐시된 값을 그대로 돌려주는
-    // 최적화가 있다(redis.service.ts:361) — 실제 장애에서는 서버가 죽어
-    // 있는 동안에도 실제 시계는 흘러서 이 경계를 이미 지나 있다. 그 조건을
-    // 재현하지 않으면(가짜로 미래 시각을 넣으면) 이 테스트가 재계산 경로에
-    // 닿지도 못한 채 통과해 버린다.
+    // 90초 경과는 레벨 인덱스 1(두 번째 레벨) 한가운데다. `currentBlindLv`를
+    // 일부러 그 값(1)으로 심어 둔다 — completeSync의 force 재계산이 실제로
+    // 다시 계산하는지(캐시를 그대로 믇지 않는지)를 이 값이 증명한다.
     const blindField: BlindField = {
       isBreak: false,
       startedAt: Date.now() - 90_000,
@@ -343,64 +417,60 @@ describe('RecoveryService', () => {
       blindStructure: structure,
     };
     await redisService.setTournamentBlind(tournamentId, blindField);
+    // 정지가 40초 전에 시작했다 — 정지 시각의 경과는 90-40=50초, 60초(레벨 0
+    // duration) 미만이므로 정지 시각의 레벨은 0이다. completeSync가 그
+    // 경과를 그대로 보존해야 한다(정지 시간만큼 기준점도 같이 밀어서).
+    await prisma.tournament.update({
+      where: { id: tournamentId },
+      data: { status: TournamentStatus.SYNCING, pausedAt: new Date(Date.now() - 40_000) },
+    });
 
-    // 40초 다운타임 → 기준점이 40초 뒤로 밀려 경과 시간이 50초가 된다.
-    // 50초 < 60초(레벨 0 duration)이므로 레벨이 0으로 되돌아가야 한다.
-    await setHeartbeatAgo(40_000);
-    await recovery.recoverAll();
+    await recovery.completeSync(tournamentId);
 
     const synced = await redisService.checkAndSyncBlindLevel(tournamentId);
     expect(`레벨 ${synced!.currentBlindLv}`).toBe('레벨 0');
   });
 
   /**
-   * 최종 리뷰 Important 1: `nextLevelAt`은 `startedAt`에서 파생된 캐시다.
-   * 기준점만 밀고 파생값을 그대로 두면, `checkAndSyncBlindLevel`의 캐시
-   * 조기 반환(`now < nextLevelAt`)이 낡은 경계를 그대로 내보내 전광판
-   * 카운트다운이 0에 닿은 뒤 다운타임만큼 멈춘 채로 남는다.
-   *
-   * `nextLevelAt`을 **미래**로 두는 것이 핵심이다 — 위 '레벨이 되돌아온다'
-   * 테스트처럼 과거로 두면 캐시 분기를 건너뛰어 이 결함이 있는 입력을
-   * 스위트가 아예 비워 둔다. 반대로 그 테스트는 파생값을 **다시 계산하지
-   * 않고 더하기만** 하는 고침을 잡는다(캐시 분기가 켜지면서 낡은
-   * `currentBlindLv`가 나온다). 둘이 서로 어긋나는 입력이라 각각이 증명된다.
+   * 최종 리뷰 Important 1이 살던 자리. `nextLevelAt`은 `startedAt`에서
+   * 파생된 캐시다. `completeSync`가 기준점만 밀고 파생값을 그대로 두면,
+   * `checkAndSyncBlindLevel`의 캐시 조기 반환(`now < nextLevelAt`)이 낡은
+   * 경계를 그대로 내보내 전광판 카운트다운이 0에 닿은 뒤 정지 시간만큼 멈춘
+   * 채로 남는다. `completeSync`가 내부에서 `force: true`로 부르는 것이
+   * 이것을 막는다 — 여기서는 그 결과를 **외부에서** 다시 확인한다.
    */
-  it('기준점을 밀 때 nextLevelAt도 같이 민다 — 캐시 분기가 낡은 경계를 내보내지 않는다', async () => {
-    const { tournamentId, structure } = await seedOngoingTournament();
+  it('completeSync 뒤에 보면 nextLevelAt도 같이 밀려 있다', async () => {
+    const { tournamentId, structure } = await seedOngoingTournament({ startedAtMsAgo: 20_000 });
     const nextLevelAt = Date.now() + 40_000; // 미래 — 캐시 분기에 걸리는 입력
     await redisService.setTournamentBlind(tournamentId, {
       isBreak: false, startedAt: Date.now() - 20_000, currentBlindLv: 0,
       nextLevelAt, serverTime: Date.now(), blindStructure: structure,
     });
+    await prisma.tournament.update({
+      where: { id: tournamentId },
+      data: { status: TournamentStatus.SYNCING, pausedAt: new Date(Date.now() - 30_000) },
+    });
 
-    await setHeartbeatAgo(30_000);
-    await recovery.recoverAll();
+    await recovery.completeSync(tournamentId);
 
     const synced = await redisService.checkAndSyncBlindLevel(tournamentId);
-    // 지금 코드는 nextLevelAt이 그대로라 delta ≈ 0이 되어 빨개진다.
+    // completeSync가 force 없이 재계산하면 nextLevelAt이 그대로라 delta ≈ 0이
+    // 되어 빨개진다.
     expect(synced!.nextLevelAt - nextLevelAt).toBeGreaterThan(25_000);
   });
 
   /**
-   * **입력이 자기모순이 아닌 것이 이 테스트의 핵심이다.**
+   * **입력이 자기모순이 아닌 것이 이 테스트의 핵심이다.** 위 두 테스트처럼
+   * `startedAt`과 `nextLevelAt`을 따로 조작하지 않는다 — 여기 입력은
+   * `getCurrentBlindLevel`이 실제로 만들 수 있는 값이다: 레벨 duration이
+   * 1분, 경과 70초 → 인덱스 1, `nextLevelAt = startedAt + 120초`(미래).
    *
-   * 위 '레벨이 되돌아온다'는 `startedAt`이 90초 전인데 `nextLevelAt`을 과거로
-   * 둔다 — 그 조합은 제품 코드가 만들 수 없다(`getCurrentBlindLevel`은 둘을
-   * 항상 같이 계산한다). 일관된 입력만 놓고 보면 사실 **레벨은 밀기만으로도
-   * 옳다**: 기준점을 D만큼 밀고 실제 시계도 D만큼 흘러 경과가 상쇄되므로,
-   * 캐시에 든 레벨이 곧 죽은 시점의 레벨이고 그게 재개할 레벨이다.
-   *
-   * 갈리는 곳은 하나다. 하트비트 주기(30초)라 측정된 D는 실제 정지보다 최대
-   * 그만큼 **크다**. 과잉 보정으로 민 기준점의 레벨이 한 칸 내려가는데, 캐시는
-   * 낡은 레벨을 들고 있다 — 캐시 분기가 켜져 있으면 전광판과 다음 핸드가 서로
-   * 다른 레벨을 본다.
-   *
-   * 여기 입력은 제품 코드가 실제로 쓸 수 있는 값이다: 레벨 duration이 1분,
-   * 경과 70초 → 인덱스 1, `nextLevelAt = startedAt + 120초`(미래). 35초를
-   * 밀면 경과가 35초가 되어 인덱스 0으로 내려간다.
+   * 정지가 35초 전에 시작했다 — 정지 시각의 경과는 70-35=35초로 인덱스 0
+   * 이다. `completeSync`가 기준점을 밀 때 이 "한 칸 내려가는" 레벨을 캐시가
+   * 아니라 다시 계산해서 반영해야 한다.
    */
-  it('과잉 보정으로 레벨이 한 칸 내려가면 캐시도 따라 내려간다', async () => {
-    const { tournamentId, structure } = await seedOngoingTournament();
+  it('completeSync가 밀 때 레벨이 한 칸 내려가면 캐시도 따라 내려간다', async () => {
+    const { tournamentId, structure } = await seedOngoingTournament({ startedAtMsAgo: 70_000 });
     const startedAt = Date.now() - 70_000;
     await redisService.setTournamentBlind(tournamentId, {
       isBreak: false,
@@ -410,9 +480,12 @@ describe('RecoveryService', () => {
       serverTime: Date.now(),
       blindStructure: structure,
     });
+    await prisma.tournament.update({
+      where: { id: tournamentId },
+      data: { status: TournamentStatus.SYNCING, pausedAt: new Date(Date.now() - 35_000) },
+    });
 
-    await setHeartbeatAgo(35_000);
-    await recovery.recoverAll();
+    await recovery.completeSync(tournamentId);
 
     // 캐시 분기가 켜져 있으므로, 강제 갱신이 없으면 여기서 낡은 레벨 1이 나온다.
     const synced = await redisService.checkAndSyncBlindLevel(tournamentId);
@@ -435,33 +508,8 @@ describe('RecoveryService', () => {
    * 않았는가"까지 본다.
    */
   describe('턴 시계 정지', () => {
-    /** 차례가 살아 있는 테이블 하나. `deadline`을 과거로 두면 정지를 겪은 모양이다. */
-    async function seedLiveTurn(opts: { epoch?: number; turnSeat?: number } = {}) {
-      const { tournamentId, tableIds } = await seedOngoingTournament();
-      const [tableId] = tableIds;
-      const userId = await seatPlayer({ tournamentId, tableId, seatPosition: 0, stack: 8000 });
-      const live: TableState = {
-        phase: GamePhase.FLOP,
-        players: Array(9).fill(null),
-        buttonUser: 0,
-        currentTurnSeatIndex: opts.turnSeat ?? 0,
-        pot: 500,
-        sidePots: [],
-        currentBet: 200,
-        smallBlind: 100,
-        ante: 0,
-        tournamentId,
-        timerEpoch: opts.epoch ?? 3,
-        // 정지 전에 찍힌 마감이다. 지금은 이미 지났다.
-        actionDeadline: Date.now() - 120_000,
-      };
-      live.players[0] = {
-        id: userId, tableId, nickname: 'p', seatIndex: 0, stack: 7800,
-        bet: 200, hasFolded: false, hasChecked: false, isAllIn: false, totalContributed: 200,
-      };
-      await redisService.saveSnapshotUnlocked(tableId, live, 'table-created');
-      return { tournamentId, tableId, userId };
-    }
+    // `seedLiveTurn`은 describe 위(파일 상단)에서 공유한다 — '복구가
+    // 하트비트를 소비한다' 테스트도 같은 헬퍼가 필요해서 그쪽으로 옮겼다.
 
     /**
      * **이것이 결함의 두 번째 경로다.** 마감이 절대 시각이라, 안 지우면

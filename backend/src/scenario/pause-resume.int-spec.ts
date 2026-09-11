@@ -71,6 +71,10 @@ describe('시나리오 — 정지와 재개', () => {
     // `handleAction`의 판정 기준이 도착 순서가 아니라 마감 시각이라서다.
     expect(state.actionDeadline).toBeUndefined();
     expect(state.resumePending!.downMs).toBeGreaterThan(DOWNTIME_MS - 10_000);
+
+    // 부팅이 SYNCING을 켠다(T96) — 끄는 것은 딜러 n/n(`completeSync`)이다.
+    const t = await h.prisma.tournament.findUniqueOrThrow({ where: { id: h.tournamentId } });
+    expect(`2. 상태 ${t.status}`).toBe('2. 상태 SYNCING');
   });
 
   /**
@@ -94,6 +98,11 @@ describe('시나리오 — 정지와 재개', () => {
   it('4. 딜러가 열면 마감이 다시 붙고 정지 표시가 사라진다', async () => {
     const before = await h.snapshot();
     const epochBefore = before.timerEpoch!;
+
+    // 재개는 n/n 뒤다(T96) — 딜러가 열기 전에 게이트웨이가 completeSync로
+    // SYNCING을 먼저 끈다.
+    const result = await h.recovery.completeSync(h.tournamentId);
+    expect(`4. completeSync ${result}`).toBe('4. completeSync true');
 
     await h.dealer.resumeTable(h.tableId);
 

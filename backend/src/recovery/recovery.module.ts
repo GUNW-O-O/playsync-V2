@@ -11,5 +11,7 @@ import { RecoveryService } from './recovery.service';
 @Module({
   imports: [BullModule.registerQueue({ name: 'player-timeout' })],
   providers: [HeartbeatService, RecoveryService],
+  // 게이트웨이가 n/n을 본 순간 `completeSync`를 부른다(T96 Task 4).
+  exports: [RecoveryService],
 })
 export class RecoveryModule {}
