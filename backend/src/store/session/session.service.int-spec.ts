@@ -1553,6 +1553,36 @@ describe('SessionService.startSession — 버튼 좌석 영속화', () => {
     expect(`DB ${table.buttonUser}`).toBe(`DB ${snapshot!.buttonUser}`);
   });
 
+  /**
+   * 최종 리뷰 M5. 시작 전이에 `where: status PENDING` 가드가 없으면, API
+   * 호출 한 번이 이미 `SYNCING`인 대회에도 `startedAt`을 다시 찍는다 —
+   * `pausedAt`은 그대로 남고, 그 뒤로 등록 마감 판정이 영구히 얼린 시각으로
+   * 잰다. 화면은 PENDING에서만 시작 버튼을 보이지만 그것은 UI의 제약이지
+   * 서버의 제약이 아니다.
+   */
+  it('SYNCING인 대회는 다시 시작할 수 없다', async () => {
+    const pausedAt = new Date();
+    await prisma.tournament.update({
+      where: { id: tournamentId },
+      data: { status: TournamentStatus.SYNCING, startedAt: new Date(), pausedAt },
+    });
+
+    process.env.MIN_PLAYERS_TO_START = '0';
+    try {
+      await expect(sessionService.startSession(tournamentId, ownerId))
+        .rejects.toThrow(ConflictException);
+    } finally {
+      delete process.env.MIN_PLAYERS_TO_START;
+    }
+
+    const tournament = await prisma.tournament.findUniqueOrThrow({
+      where: { id: tournamentId },
+      select: { status: true, pausedAt: true },
+    });
+    expect(`상태 ${tournament.status} / pausedAt 유지 ${tournament.pausedAt?.getTime() === pausedAt.getTime()}`)
+      .toBe('상태 SYNCING / pausedAt 유지 true');
+  });
+
   // T34 — startSession에는 소유권 확인이 없었다. 서버 액션이 tournamentId를
   // 클라이언트 값 그대로 넘기므로, 이게 없으면 A 상점 관리자가 B 상점 대회를
   // 시작시킬 수 있었다. 다른 소유권 테스트(getSeatOccupants의 "남의 대회는
@@ -2644,6 +2674,29 @@ describe('SessionService.abortSession', () => {
     expect(heard).toEqual([
       { tournamentId, tableIds: [tableId], status: TournamentStatus.CANCELLED },
     ]);
+  });
+
+  /**
+   * 최종 리뷰 M2. `schema.prisma`의 `pausedAt` 주석("SYNCING과 언제나 함께
+   * 서고 함께 사라진다")이 닫는 자리에서도 사실이어야 한다 — 복구 중(SYNCING)에
+   * 중단을 눌러도 `pausedAt`이 닫힌 대회에 남지 않는다.
+   */
+  it('SYNCING인 대회를 중단하면 pausedAt이 사라진다', async () => {
+    await seedPaidPlayer('alive');
+    await start();
+    await prisma.tournament.update({
+      where: { id: tournamentId },
+      data: { status: TournamentStatus.SYNCING, pausedAt: new Date() },
+    });
+
+    await sessionService.abortSession(tournamentId, ownerId);
+
+    const tournament = await prisma.tournament.findUniqueOrThrow({
+      where: { id: tournamentId },
+      select: { status: true, pausedAt: true },
+    });
+    expect(`상태 ${tournament.status} / pausedAt ${tournament.pausedAt}`)
+      .toBe(`상태 ${TournamentStatus.CANCELLED} / pausedAt null`);
   });
 
   /**

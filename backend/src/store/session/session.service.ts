@@ -485,6 +485,14 @@ export class SessionService {
    * `reissueDealerOtp`, `revokeDealerSession`)과 같은 이유다 — 서버 액션이
    * `tournamentId`를 클라이언트 값 그대로 넘기므로, 이게 없으면 A 상점
    * 관리자가 B 상점 대회를 시작시킬 수 있다.
+   *
+   * **상태 전이가 문지기다**(최종 리뷰 M5). `where`에 `status: PENDING`을
+   * 실어 DB가 판정하게 한다 — 없으면 이미 `ONGOING`·`SYNCING`인 대회에도
+   * API 호출 한 번으로 `startedAt`이 다시 찍히고 `pausedAt`은 그대로 남아,
+   * 그 뒤로 등록 마감 판정(`isRegistrationOpenNow`)이 영구히 얼린 시각으로
+   * 잰다. 화면은 PENDING에서만 시작 버튼을 보이지만, 그것은 UI의 제약이지
+   * 서버의 제약이 아니다 — 다른 조건부 update(`completeSession`의 `won`,
+   * `abortSession`의 `closed`)와 같은 모양이다.
    */
   async startSession(id: string, ownerId: string) {
     await this.assertTournamentOwnership(id, ownerId);
@@ -516,10 +524,16 @@ export class SessionService {
       // 대회가 실제로 시작한 시각이고 영구히 밀리지 않는다. Redis의
       // BlindField.startedAt은 진행 시간의 기준점이라 장애 정지만큼 뒤로
       // 밀린다. 시작 시점에 두 값이 같은 것은 정합이 아니라 t=0의 우연이다.
-      return await tx.tournament.update({
-        where: { id },
+      const result = await tx.tournament.updateMany({
+        where: { id, status: TournamentStatus.PENDING },
         data: { status: TournamentStatus.ONGOING, startedAt },
-        });
+      });
+      if (result.count === 0) {
+        // 이미 시작된(또는 복구 대기 중인) 대회다. 재시도 창이 아니라
+        // 명시적인 거절이라야 상점 콘솔이 무엇이 잘못됐는지 안다.
+        throw new ConflictException('이미 시작된 대회입니다.');
+      }
+      return await tx.tournament.findUniqueOrThrow({ where: { id } });
     });
 
     /*
@@ -747,6 +761,10 @@ export class SessionService {
         data: {
           status: TournamentStatus.FINISHED,
           finishedAt: new Date(),
+          // SYNCING 상태로 닫히면(복구 중에 종료를 누른 경우) `pausedAt`이
+          // 닫힌 대회에 남는다 — `schema.prisma`의 주석("SYNCING과 언제나
+          // 함께 서고 함께 사라진다")을 문자 그대로 지킨다.
+          pausedAt: null,
         },
       });
       if (won.count === 0) return false;
@@ -1166,6 +1184,9 @@ export class SessionService {
           // 회계가 "걷었는데 아무도 안 받았다"로 남는다(`cancelSession`과 같다).
           totalBuyinAmount: 0,
           activePlayers: 0,
+          // SYNCING 상태로 닫히면(복구 중에 중단을 누른 경우) `pausedAt`이
+          // 닫힌 대회에 남는다 — `completeSession`과 같은 이유로 되돌린다.
+          pausedAt: null,
         },
       });
       if (closed.count === 0) return null;

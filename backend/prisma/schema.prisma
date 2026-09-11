@@ -201,8 +201,11 @@ model Tournament {
   /// 정지가 시작된 시각. **정지 중이 아니면 null**(T96).
   ///
   /// `pausedMs`(누적 정지)와 스톱워치 한 쌍이다. `status === SYNCING`과
-  /// 언제나 함께 서고 함께 사라진다 — 쓰는 자리 둘(`recoverTournament`·
-  /// `completeSync`)이 같은 update 한 문장으로 둘을 쓴다.
+  /// 언제나 함께 서고 함께 사라진다 — 서는 자리(`recoverTournament`)와
+  /// 꺼지는 자리(`completeSync`)가 각각 같은 update 한 문장으로 둘을 쓴다.
+  /// 대회를 닫는 세 곳(`completeSession`·`abortSession`) 역시 이 컬럼을
+  /// `null`로 되돌린다 — `cancelSession`은 시작 전에만 도는 문이라(SYNCING은
+  /// 시작한 대회에만 있다) 값이 이미 null이고 손댈 것이 없다.
   ///
   /// 값은 **마지막 하트비트**다. 복구 중 다시 죽어도 덮지 않으므로, 첫 정지 ·
   /// 복구 대기 · 두 번째 정지가 한 번의 보정에 들어간다.

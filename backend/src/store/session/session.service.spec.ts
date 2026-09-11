@@ -450,14 +450,18 @@ describe('SessionService.startSession', () => {
   const setup = (opts: { tables?: unknown[]; snapshot?: unknown; redisError?: Error } = {}) => {
     const tables = opts.tables ?? [{ id: 'table-1', tablePlayers: [{ seatPosition: 0 }] }];
 
-    const update = jest.fn().mockResolvedValue({});
+    // 최종 리뷰 M5 — 시작 전이가 조건부 `updateMany`(where: status PENDING)로
+    // 바뀌면서, 트랜잭션 안 `tournament`는 `update` 대신 `updateMany` +
+    // 성공한 뒤 다시 읽는 `findUniqueOrThrow`를 쓴다.
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const findUniqueOrThrow = jest.fn().mockResolvedValue({ id: 't1' });
     const tableUpdate = jest.fn().mockResolvedValue({});
     const prisma = {
-      tournament: { findUnique: jest.fn().mockResolvedValue(gameRow(tables)), update },
+      tournament: { findUnique: jest.fn().mockResolvedValue(gameRow(tables)), updateMany },
       $transaction: jest.fn(async (fn: any) =>
         typeof fn === 'function'
           ? fn({
-              tournament: { update },
+              tournament: { updateMany, findUniqueOrThrow },
               tournamentParticipation: { updateMany: jest.fn() },
               table: { update: tableUpdate },
             })
@@ -480,7 +484,7 @@ describe('SessionService.startSession', () => {
     const service = new SessionService(
       prisma as any, redis as any, {} as any, { emit: jest.fn() } as any,
     );
-    return { service, prisma, update, tableUpdate, setTournamentMeta, mutateSnapshot };
+    return { service, prisma, updateMany, tableUpdate, setTournamentMeta, mutateSnapshot };
   };
 
   /**
@@ -514,12 +518,12 @@ describe('SessionService.startSession', () => {
   it('거부되면 DB에 아무것도 커밋하지 않는다', async () => {
     // 예전에는 스냅샷이 하나도 없어도 startSession이 성공을 반환하고 ONGOING이
     // 됐다. 대시보드도 블라인드도 없는 채로 시작된 대회가 남는다.
-    const { service, prisma, update } = setup({ snapshot: null });
+    const { service, prisma, updateMany } = setup({ snapshot: null });
 
     await expect(service.startSession('t1', OWNER_ID)).rejects.toThrow();
 
     expect(prisma.$transaction).not.toHaveBeenCalled();
-    expect(update).not.toHaveBeenCalled();
+    expect(updateMany).not.toHaveBeenCalled();
   });
 
   it('Redis 저장이 실패하면 DB 커밋이 일어나지 않는다', async () => {
@@ -535,7 +539,7 @@ describe('SessionService.startSession', () => {
     // 목이 던지는 것은 **그 경로에서 실제로 나올 수 있는 것**이어야 한다.
     // ioredis가 끊긴 커넥션에 명령을 보낼 때 내는 문구를 쓴다 — 지워진
     // 메서드의 문구를 계속 던지면 아무 데도 없는 문자열을 검증하게 된다.
-    const { service, prisma, update } = setup({
+    const { service, prisma, updateMany } = setup({
       redisError: new Error('Connection is closed.'),
     });
 
@@ -547,7 +551,7 @@ describe('SessionService.startSession', () => {
     );
 
     expect(prisma.$transaction).not.toHaveBeenCalled();
-    expect(update).not.toHaveBeenCalled();
+    expect(updateMany).not.toHaveBeenCalled();
   });
 
   /**
@@ -560,7 +564,7 @@ describe('SessionService.startSession', () => {
    * **상점 콘솔에 "락"은 없는 말이다**(`domain.md`의 「상점도 손님이다」).
    */
   it('락을 못 잡으면 상점이 할 수 있는 일로 바꿔 던진다', async () => {
-    const { service, prisma, update } = setup({
+    const { service, prisma, updateMany } = setup({
       redisError: new Error('테이블 table-1 락 획득 실패'),
     });
 
@@ -569,7 +573,7 @@ describe('SessionService.startSession', () => {
 
     // 다시 누르는 것이 곧 재시도인 상황이므로 아무것도 커밋되지 않아야 한다.
     expect(prisma.$transaction).not.toHaveBeenCalled();
-    expect(update).not.toHaveBeenCalled();
+    expect(updateMany).not.toHaveBeenCalled();
   });
 
   it('Redis 준비가 끝난 뒤에야 DB를 커밋한다', async () => {
@@ -599,12 +603,12 @@ describe('SessionService.startSession', () => {
     // initializeGame과 startSession이 각각 시각을 찍어 둘이 어긋났다. 지금은
     // Redis만 읽어서 티가 안 나지만, 복구 경로가 DB의 startedAt을 읽는 순간
     // 다른 레벨이 나온다.
-    const { service, update, setTournamentMeta } = setup();
+    const { service, updateMany, setTournamentMeta } = setup();
 
     await service.startSession('t1', OWNER_ID);
 
     const blindField = setTournamentMeta.mock.calls[0][2];
-    const written = update.mock.calls
+    const written = updateMany.mock.calls
       .map(c => c[0].data.startedAt)
       .filter(Boolean)
       .map((d: Date) => new Date(d).getTime());
@@ -652,7 +656,12 @@ describe('SessionService 시작 최소 인원', () => {
       $transaction: jest.fn(async (fn: any) =>
         typeof fn === 'function'
           ? fn({
-              tournament: { update: jest.fn().mockResolvedValue({ id: 't1' }) },
+              // 최종 리뷰 M5 — 시작 전이가 조건부 `updateMany`(where: status
+              // PENDING)로 바뀌었다.
+              tournament: {
+                updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+                findUniqueOrThrow: jest.fn().mockResolvedValue({ id: 't1' }),
+              },
               tournamentParticipation: { updateMany: jest.fn() },
             })
           : undefined,
