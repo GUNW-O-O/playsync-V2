@@ -426,7 +426,8 @@ export class EntryService {
    * `createEmptyTableState`로 u3 혼자만 있는 스냅샷을 만든다. 그 위에서 대회가
    * 시작되면(`initializeGame`은 "스냅샷 없으면 거부"만 보고, 이 테이블은
    * 스냅샷이 **있으므로** 통과한다) u1·u2는 영원히 빠진 채 대회가 돈다 —
-   * `RecoveryService`는 ONGOING만 훑으므로 스스로 못 고친다.
+   * `RecoveryService`는 살아 있는 대회(`LIVE_TOURNAMENT_STATUSES`)만
+   * 훑으므로 스스로 못 고친다.
    *
    * **감수하는 것**: 넓히면 시작 전 대회도 좌석 행이 있는 테이블의 스냅샷
    * 유실에 막힌다 — 상점이 손을 써야 한다(재구성 코드가 PENDING까지

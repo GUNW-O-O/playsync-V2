@@ -6,6 +6,7 @@ import {
   ClosedTournamentStatusSchema,
   type FinishPreview,
   type FullTournamentInfo,
+  type TournamentStatus,
 } from '@playsync/contract';
 
 /**
@@ -18,7 +19,7 @@ import {
 export type TournamentMeta = {
   id: string;
   name: string;
-  status: string;
+  status: TournamentStatus;
   isRegistrationOpen: boolean;
   rebuyUntil: number;
   entryFee: number;
@@ -65,9 +66,12 @@ function dealerOtpKey(tournamentId: string) {
  */
 const NETWORK_ERROR = '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.';
 
-const STATUS_LABEL: Record<string, string> = {
+// `Record`라 계약에 상태가 늘면 여기서 컴파일 에러가 난다(T96, `me/page.tsx`의
+// `STATUS_LABEL`과 같은 이유).
+const STATUS_LABEL: Record<TournamentStatus, string> = {
   PENDING: '시작 전',
   ONGOING: '진행 중',
+  SYNCING: '복구 중',
   FINISHED: '종료',
   CANCELLED: '취소',
 };
@@ -643,7 +647,15 @@ export default function ConsoleClient({
           시작 전 대회에는 이 영역이 없다. 닫을 것이 아직 없고, 그때의
           되돌리기는 「취소」라는 다른 문이다.
         */}
-        {live && tournament.status === 'ONGOING' && (
+        {/*
+          시작 뒤의 대회. 복구 중에도 중단은 열려 있어야 한다(T96).
+
+          **여집합으로 잡는다**(최종 리뷰 M8). `ONGOING`·`SYNCING`을 나열하면
+          다음 살아 있는 상태가 생겨도 컴파일 에러 없이 이 영역이 조용히
+          사라진다 — `isClosed`(위, `ClosedTournamentStatusSchema` 기반)를
+          그대로 뒤집으면 스키마가 늘어나는 순간 여기도 같이 늘어난다.
+        */}
+        {live && tournament.status !== 'PENDING' && !isClosed && (
           <>
             <div className="h-px bg-[var(--hairline)]" />
             <div>

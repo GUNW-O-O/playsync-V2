@@ -90,6 +90,7 @@ export class PaymentService {
         // 쓰고 응답 전에 벗겨낸다.
         startedAt: true,
         pausedMs: true,
+        pausedAt: true,
         rebuyUntil: true,
         blindStructure: { select: { structure: true } },
       },
@@ -101,9 +102,9 @@ export class PaymentService {
     // 컬럼이 이미 닫혀 있으면 파생을 건너뛴다 — 되돌아오지 않는 최종 답이다.
     const toClose: string[] = [];
     const results = tournaments.map(
-      ({ startedAt, pausedMs, rebuyUntil, blindStructure, ...t }) => {
+      ({ startedAt, pausedMs, pausedAt, rebuyUntil, blindStructure, ...t }) => {
         const isRegistrationOpen = t.isRegistrationOpen
-          ? isRegistrationOpenNow({ ...t, startedAt, pausedMs, rebuyUntil, blindStructure })
+          ? isRegistrationOpenNow({ ...t, startedAt, pausedMs, pausedAt, rebuyUntil, blindStructure })
           : false;
         if (t.isRegistrationOpen && !isRegistrationOpen) toClose.push(t.id);
         return { ...t, isRegistrationOpen };

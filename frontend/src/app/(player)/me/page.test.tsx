@@ -142,6 +142,36 @@ const ELIMINATED_NO_PLACE = {
   },
 };
 
+/**
+ * 서버 복구 중(T96). `SYNCING`은 닫힌 상태가 아니라 「진행 중」에 남아야
+ * 한다 — 예전 `statusLabel`(리터럴 `if` 분기)은 모르는 상태를 전부
+ * 「종료」 폴백으로 떨어뜨렸다. 참가자가 아직 도는 대회를 「종료」로 보고
+ * OTP를 다시 확인할 이유가 없다고 오해하면 안 된다.
+ *
+ * 이름에 「복구 중」을 넣지 않는다 — 대회명이 `h3`로도 그려지므로 그 부분
+ * 문자열이 들어가면 `getByText(/복구 중/)`가 상태 줄이 아니라 이름을 잡아
+ * 실패해야 할 자리에서 조용히 통과한다.
+ */
+const SYNCING_ONGOING = {
+  id: 'p5',
+  tournamentId: 't5',
+  userId: 'u1',
+  status: 'WAITING',
+  buyInCount: 1,
+  finalPlace: null,
+  prizeAmount: 0,
+  currentStack: 5000,
+  playerOtp: '12345678',
+  createdAt: '2026-09-01T09:00:00.000Z',
+  tournament: {
+    id: 't5',
+    name: '가을 토너먼트',
+    status: 'SYNCING',
+    entryFee: 50000,
+    startedAt: '2026-09-01T10:00:00.000Z',
+  },
+};
+
 describe('/me — 내 참가', () => {
   beforeEach(() => {
     cookieStore.get.mockReturnValue({ value: 'jwt-value' });
@@ -270,6 +300,21 @@ describe('/me — 내 참가', () => {
     render(await MyPage());
 
     expect(screen.getByText(/참가한 대회가 없습니다/)).toBeInTheDocument();
+  });
+
+  it('SYNCING인 대회는 「진행 중」에 남고 「복구 중」이 보인다', async () => {
+    server.use(
+      http.get('http://backend.test/user/me/participations', () =>
+        HttpResponse.json([SYNCING_ONGOING]),
+      ),
+    );
+
+    render(await MyPage());
+
+    expect(screen.getByText('진행 중')).toBeInTheDocument();
+    expect(screen.getByText(/복구 중/)).toBeInTheDocument();
+    expect(screen.queryByText(/종료/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '참가 OTP 조회' })).toBeInTheDocument();
   });
 
   it('조회가 실패해도 백지가 되지 않는다', async () => {

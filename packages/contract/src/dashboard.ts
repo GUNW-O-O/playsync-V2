@@ -94,6 +94,11 @@ export const BlindFieldSchema = z.object({
   nextLevelAt: z.int(),
   serverTime: z.int(),
   blindStructure: z.array(BlindLevelSchema),
+  /**
+   * 정지가 시작된 시각(epoch ms). **있으면 시계가 멈춰 있다**(T96) — 전광판이
+   * 멈춘 시계를 그리고 「서버 복구 중」 화면을 띄우는 근거다.
+   */
+  pausedAt: z.int().optional(),
 });
 
 export type BlindField = z.infer<typeof BlindFieldSchema>;

@@ -16,3 +16,5 @@ export * from "./dashboard";
 export * from "./finish-preview";
 export * from "./tournament-closed";
 export * from "./keepalive";
+export * from "./tournament-status";
+export * from "./tournament-syncing";

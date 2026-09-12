@@ -154,7 +154,7 @@ Redis 정리는 **트랜잭션 안, 거절 검사 셋(404 · 점유 409 · 마�
 | | 뜻 | 장애 복구 때 |
 |---|---|---|
 | DB `Tournament.startedAt` | 대회가 실제로 시작한 시각 | **절대 밀지 않는다** |
-| Redis `BlindField.startedAt` | 블라인드 시계의 기준점 | **민다** (`recovery.service.ts`의 `recoverTournament`) |
+| Redis `BlindField.startedAt` | 블라인드 시계의 기준점 | 부팅은 DB에서 **대입**한다(`startedAt + pausedMs`, `recoverTournament`). **미는 것은 `completeSync` 한 곳**이다(T96) |
 
 t=0에 둘이 같은 것은 우연이지 불변식이 아니다. 근거 주석은
 `store/session/tournament-meta.ts`의 `buildTournamentMeta`.
@@ -168,8 +168,32 @@ t=0에 둘이 같은 것은 우연이지 불변식이 아니다. 근거 주석�
 
 | 갈래 | 판정 | 복구 |
 |---|---|---|
-| 시간 | 하트비트(30초)로 잰 정지 시간 | 블라인드 기준점을 그만큼 되돌린다 |
+| 시간 | 마지막 하트비트(5초 주기)부터 **그 대회의 딜러가 n/n으로 돌아올 때까지** | 그동안 블라인드를 `pausedAt`에서 멈추고, 끝나는 순간 그만큼 한 번 민다 |
 | 상태 | 테이블별 스냅샷 유무 | 없는 테이블만 DB로 다시 세운다 |
+
+### 정지의 끝은 부팅이 아니다 — `SYNCING`
+
+프로세스가 떠도 태블릿이 돌아와야 판이 돈다. 그래서 부팅은 진행 중이던 대회를
+전부 `SYNCING`으로 두고(`pausedAt` = 마지막 하트비트), **그 대회의 딜러 태블릿이
+전부 돌아오면** `completeSync`가 `ONGOING`으로 되돌린다(T96). 끝나는 시각이 대회마다
+다르므로 미는 양도 대회마다 다르다.
+
+- **n은 앉은 사람이 있는 테이블, k는 그중 딜러 소켓이 붙은 수다**
+  (`ws/sync-progress.ts`의 `syncProgress`). 게이트웨이가 딜러 접속·끊김·좌석
+  변동마다 대회별로 줄 세워 다시 센다. 앉은 테이블이 없으면 부팅에서 바로 끝낸다.
+- **소켓 수를 판정에 쓸 수 있는 것은 좀비를 치우기 때문이다**(`WsGateway.sweepSockets`,
+  ping/pong). 그래도 좀비가 끼면 n/n이 조금 일찍 풀릴 뿐이고, 판을 여는 것은 여전히
+  테이블마다 딜러가 누르는 재개(`resumeTable`)다.
+- **`SYNCING` 동안 딜러 명령은 전부 거절한다**(`WsGateway.runDealerAction`). 핸드
+  시작은 깜깜한 좌석을 판에 넣고, 승자 입력은 리바인 창을 꺼진 태블릿으로 보낸다.
+- **딜러 기기가 죽어 n/n이 안 차면** 딜러 OTP로 다른 기기를 붙인다. 모르면 상점이
+  재발급한다 — 복구 버튼이 아니라 「고장 난 태블릿을 바꾼다」는 현장의 조작이다.
+  블라인드가 멈춰 있으니 기다리는 동안 손해 보는 사람이 없다.
+- **`status === SYNCING` ⇔ `pausedAt !== null`.** 켜는 `recoverTournament`, 끄는
+  `completeSync`, 닫는 `completeSession`·`abortSession`이 둘을 한 문장으로 쓴다.
+  복구 중에 다시 죽어도 `pausedAt`을 덮지 않는다 — 첫 정지부터 한 번에 보정된다.
+- **Redis 기준점은 부팅마다 DB에서 대입한다.** `completeSync`의 Redis 쓰기가
+  실패하면 시계가 멈춘 채 남고, 다음 부팅의 대입이 고친다.
 
 상태 쪽에서 **`buttonUser`만 특별하다.** 나머지 필드는 전부 DB에서 파생된다 —
 좌석은 `TablePlayer`, 스택은 `TournamentParticipation`, 팟과 차례는 핸드 경계에서
@@ -181,7 +205,9 @@ t=0에 둘이 같은 것은 우연이지 불변식이 아니다. 근거 주석�
 **복구는 락을 잡지 않는다** — `saveSnapshotUnlocked(..., 'boot-recovery')`로
 그 사실을 코드에 적어 둔다(T42). 근거는 `recoverAll()`의 호출자가
 `OnApplicationBootstrap` 하나뿐이고 그것이 `app.listen()` 이전이라 경합 상대가
-없다는 것 — **호출자를 늘리면 이 근거가 깨진다.**
+없다는 것 — **호출자를 늘리면 이 근거가 깨진다.** `RecoveryService`에 런타임
+호출자(`completeSync`, 게이트웨이가 부른다)가 생겼지만 그것은 스냅샷을 쓰지 않고
+대회 행과 블라인드만 만진다.
 
 예외가 좌석 입장이었다. 스냅샷이 없으면 빈 상태를 만들어 진행하던 경로가
 복구와 겹치면 이미 앉은 사람을 지운다. `shouldBlockEmptySnapshot`
@@ -487,6 +513,10 @@ DB와 입력 DTO(`BlindLevelDto.ante`)는 **"앤티가 붙나"**(`boolean`)를 �
 그래서 **정지 기능은 만들지 않는다.** 만든 것은 천재지변으로 인한 중단
 하나뿐이고, 그것은 대회가 끝나는 것이며 되돌릴 수 없다.
 
+**`SYNCING`은 정지 기능이 아니다.** 사람이 거는 것이 아니라 서버가 멎었다
+돌아온 동안의 인프라 대기이고, 딜러 태블릿이 다 돌아오면 저절로 끝난다(위
+「정지의 끝은 부팅이 아니다」). `SYNCING` 중에도 중단은 열려 있다.
+
 ### 환불 규칙
 
 | 대상 | 비율 |
@@ -625,6 +655,7 @@ DB와 입력 DTO(`BlindLevelDto.ante`)는 **"앤티가 붙나"**(`boolean`)를 �
 | 대회 시작 전 | DB 컬럼만 | 레벨이 없다. Redis 메타도 `startSession` 전에는 없어서, 캐시를 찾으면 사전 등록이 막힌다 |
 | 진행 중 | Redis 값 | 핸드마다 `checkAndSyncBlindLevel`이 갱신하는 값이라 이미 신선하다 |
 | 진행 중 · 메타 유실 | DB로 계산 | 레벨 재료(`startedAt`·`pausedMs`·구조)가 전부 DB에 있다. 거절하지 않고 정확히 계산한다 |
+| 복구 중(`SYNCING`) | 위 둘 그대로, 단 **`pausedAt` 시각의 레벨** | 정지 동안 레벨이 오르면 마감이 닫히고, 마감은 단조라 되돌아오지 않는다 — 보정만으로는 부족하고 계산이 멈춰야 한다(T96) |
 
 **컬럼을 그대로 믿으면 안 된다.** `Tournament.isRegistrationOpen`은 마감 시각에
 스스로 닫히지 않는다 — **마감 시각에 발화하는 스케줄러가 없다.** 컬럼은 누군가

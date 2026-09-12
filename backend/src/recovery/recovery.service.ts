@@ -3,6 +3,7 @@ import { PlayerStatus, TournamentStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { buildTournamentMeta } from 'src/store/session/tournament-meta';
+import { LIVE_TOURNAMENT_STATUSES } from 'src/store/session/tournament-status';
 import { deriveAnteAmount } from 'shared/util/util';
 import { planPause } from 'src/playsync/turn-clock';
 // 엔진의 좌석 타입과 Prisma 모델 이름이 둘 다 `TablePlayer`다. 이 파일은
@@ -28,21 +29,6 @@ export class RecoveryService implements OnApplicationBootstrap {
   }
 
   /**
-   * 하트비트가 마지막으로 찍힌 뒤 흐른 시간. 행이 없으면 `null`(최초 부팅).
-   *
-   * 임계값을 두지 않는다. 정상 재시작 5초도 5초 밀리는데 그게 맞다 — 그 5초
-   * 동안 대회는 진짜로 돌지 않았다. "얼마 이상이면 장애"를 정하면 그 미만의
-   * 정지가 조용히 진행 시간으로 들어간다.
-   */
-  async downtimeMs(): Promise<number | null> {
-    const beat = await this.prisma.serverHeartbeat.findUnique({
-      where: { id: 'singleton' },
-    });
-    if (!beat) return null;
-    return Math.max(0, Date.now() - beat.beatAt.getTime());
-  }
-
-  /**
    * 부팅 복구. **서버는 무슨 장애였는지 추측하지 않는다** — 지금 무엇이
    * 없는지만 본다.
    *
@@ -53,7 +39,11 @@ export class RecoveryService implements OnApplicationBootstrap {
    */
   async recoverAll(): Promise<void> {
     try {
-      const downtime = await this.downtimeMs();
+      const beat = await this.prisma.serverHeartbeat.findUnique({ where: { id: 'singleton' } });
+      const downtime = beat ? Math.max(0, Date.now() - beat.beatAt.getTime()) : null;
+      // 정지가 시작된 시각. **소비 표시로 덮기 전에** 읽는다(아래 upsert).
+      // 행이 없으면(최초 부팅) 지금 — 멈춘 시간이 0에서 시작한다.
+      const pauseStartedAt = beat?.beatAt ?? new Date();
       if (downtime === null) {
         this.logger.log('하트비트가 없다 — 최초 부팅으로 보고 정지 시간 보정을 건너뛴다');
       }
@@ -82,20 +72,22 @@ export class RecoveryService implements OnApplicationBootstrap {
         update: { beatAt: now },
       });
 
+      // `SYNCING`도 대상이다(T96). 복구를 기다리는 중에 다시 죽은 대회가
+      // 여기서 빠지면 그 대회는 영영 복구되지 않는다.
       const tournaments = await this.prisma.tournament.findMany({
-        where: { status: TournamentStatus.ONGOING },
+        where: { status: { in: [...LIVE_TOURNAMENT_STATUSES] } },
         select: { id: true },
       });
 
       for (const t of tournaments) {
         try {
-          await this.recoverTournament(t.id, downtime ?? 0);
+          await this.recoverTournament(t.id, downtime ?? 0, pauseStartedAt);
         } catch (e) {
           this.logger.error(`대회 복구 실패 (tournament=${t.id})`, e as Error);
         }
       }
     } catch (e) {
-      // `downtimeMs()`·위 하트비트 갱신·`tournament.findMany`는 대회
+      // 하트비트 조회·갱신·`tournament.findMany`는 대회
       // 하나에 걸린 일이 아니라 이 함수 자체의 전제라, 위 대회 단위 catch가
       // 감싸지 못한다. 여기서 안 잡으면 `onApplicationBootstrap`이 실패해
       // 프로세스가 `listen()` 앞에서 멈춘다 — 헬스체크가 있는 배치에서는
@@ -107,54 +99,46 @@ export class RecoveryService implements OnApplicationBootstrap {
     }
   }
 
-  private async recoverTournament(tournamentId: string, downtime: number) {
-    // 1. 누적 정지 시간을 더한다. increment이지 대입이 아니다 — 대회 하나가
-    //    두 번 장애를 겪으면 Redis 기준점은 이미 첫 번째만큼 밀려 있다.
-    const t = downtime > 0
-      ? await this.prisma.tournament.update({
-          where: { id: tournamentId },
-          data: { pausedMs: { increment: downtime } },
-          include: { blindStructure: true },
-        })
-      : await this.prisma.tournament.findUniqueOrThrow({
-          where: { id: tournamentId },
-          include: { blindStructure: true },
-        });
+  private async recoverTournament(
+    tournamentId: string,
+    downtime: number,
+    pauseStartedAt: Date,
+  ) {
+    // 1. 켠다(T96). **이미 SYNCING이면 pausedAt을 덮지 않는다** — 첫 정지 ·
+    //    복구 대기 · 두 번째 정지가 `completeSync`의 한 번 보정에 들어간다.
+    //    조건부라 ONGOING인 행만 바뀐다. 상태와 시각을 한 문장으로 쓴다.
+    await this.prisma.tournament.updateMany({
+      where: { id: tournamentId, status: TournamentStatus.ONGOING },
+      data: { status: TournamentStatus.SYNCING, pausedAt: pauseStartedAt },
+    });
+    const t = await this.prisma.tournament.findUniqueOrThrow({
+      where: { id: tournamentId },
+      include: { blindStructure: true },
+    });
+    if (!t.startedAt) throw new Error('진행 중인데 startedAt이 없다');
+    const pausedAtMs = t.pausedAt?.getTime() ?? null;
 
-    // 2. **대회 단위**로 블라인드 기준점을 다룬다. blindField는 대회 하나에
-    //    하나(`tournament:{id}:info`)이므로, 테이블 루프 안에서 밀면 테이블
-    //    수만큼 밀린다.
+    // 2. 블라인드 기준점은 **대입**이다 — DB가 진실이다. 예전에는 부팅마다
+    //    `+ downtime`으로 증분했고, 한 번 어긋나면 영영 어긋났다. 대입이면
+    //    `completeSync`의 Redis 쓰기가 실패해도 다음 부팅이 고친다
+    //    (`syncActivePlayer`가 증감이 아니라 대입인 것과 같은 이유).
+    const blindBaseAt = t.startedAt.getTime() + t.pausedMs;
     const blind = await this.redis.getTournamentBlind(tournamentId);
     if (blind) {
-      if (downtime > 0) {
-        // 기준점만 민다. blindField의 나머지 셋(`currentBlindLv`,
-        // `nextLevelAt`, `isBreak`)은 기준점에서 파생된 캐시다.
-        await this.redis.setTournamentBlind(tournamentId, {
-          ...blind,
-          startedAt: blind.startedAt + downtime,
-        });
-
-        // 그리고 그 캐시를 다시 세운다.
-        //
-        // **레벨 자체는 밀기만으로 이미 옳다.** 기준점을 D만큼 밀었는데 실제
-        // 시계도 D만큼 흘렀으므로 경과 시간이 상쇄돼, 부팅 시점의 레벨이 죽은
-        // 시점의 레벨과 같다 — 그게 재개할 레벨이다. 캐시가 들고 있는 값이
-        // 바로 그 값이고, 다음 핸드는 어느 경로로든 그 값을 쓴다.
-        //
-        // 다시 세우는 이유는 둘이다.
-        // 1. 레벨이 안 바뀌면 평소 경로의 쓰기 게이트가 안 열려 `nextLevelAt`이
-        //    낡은 채로 남는다 — 전광판 카운트다운이 0에 닿은 뒤 다운타임만큼
-        //    멈춘다.
-        // 2. 하트비트 주기(30초) 때문에 D는 실제 정지보다 최대 그만큼 크다.
-        //    과잉 보정으로 민 기준점의 레벨이 한 칸 내려가는 경우, 캐시가 낡은
-        //    레벨을 들고 있으면 전광판과 다음 핸드가 서로 다른 레벨을 본다.
-        //
-        // 파생식을 여기에 복제하지 않는 이유는 재계산이 등록 마감
-        // 내리기(`curLv >= rebuyUntil`)를 함께 하기 때문이다 — 복제하면 그
-        // 규칙이 복구 경로에서만 빠진다. `force`가 필요한 것은 평소 경로의 두
-        // 게이트가 "기준점은 그대로"를 전제하기 때문이다.
-        await this.redis.checkAndSyncBlindLevel(tournamentId, { force: true });
-      }
+      const { pausedAt: _stale, ...rest } = blind;
+      await this.redis.setTournamentBlind(tournamentId, {
+        ...rest,
+        startedAt: blindBaseAt,
+        ...(pausedAtMs !== null ? { pausedAt: pausedAtMs } : {}),
+      });
+      // 파생 캐시(`currentBlindLv`·`nextLevelAt`·`isBreak`)를 기준점에 맞춘다.
+      //
+      // 파생식을 여기에 복제하지 않는 이유는 재계산이 등록 마감
+      // 내리기(`curLv >= rebuyUntil`)를 함께 하기 때문이다 — 복제하면 그
+      // 규칙이 복구 경로에서만 빠진다. `force`가 필요한 것은 평소 경로의 두
+      // 게이트(캐시 조기 반환·레벨 불변 시 쓰기 생략)가 "기준점은 그대로"를
+      // 전제하기 때문이다.
+      await this.redis.checkAndSyncBlindLevel(tournamentId, { force: true });
 
       // 인원수는 **다운타임과 무관하게** 맞춘다(T60). 다운타임이 0이어도
       // 카운터는 어긋나 있을 수 있다 — 짝을 빠뜨린 경로는 재기동과 관계없이
@@ -168,12 +152,11 @@ export class RecoveryService implements OnApplicationBootstrap {
       );
     } else {
       // 메타를 통째로 잃었다. DB로 다시 세운다. 기준점은 대회가 실제로
-      // 시작한 시각에 누적 정지를 더한 값이다. `buildTournamentMeta`가 DB
-      // `activePlayers`를 이미 싣고 있으므로 여기서 따로 맞출 것이 없다.
-      if (!t.startedAt) throw new Error('ONGOING인데 startedAt이 없다');
+      // 시작한 시각에 누적 정지를 더한 값이다(위에서 계산한 `blindBaseAt`).
+      // `buildTournamentMeta`가 DB `activePlayers`를 이미 싣고 있으므로
+      // 여기서 따로 맞출 것이 없다.
       const { dashboard, blindField, payoutTable } = buildTournamentMeta(
-        t,
-        t.startedAt.getTime() + t.pausedMs,
+        t, blindBaseAt, pausedAtMs,
       );
       await this.redis.setTournamentMeta(tournamentId, dashboard, blindField, payoutTable);
     }
@@ -228,9 +211,10 @@ export class RecoveryService implements OnApplicationBootstrap {
       if (existing) {
         // **스냅샷에 시간이 하나 있다** — `actionDeadline`이다(T94). 예전에 이
         // 자리 주석은 "스냅샷에는 시간이 없으므로 손댈 것이 없다"였고, 그
-        // 문장이 곧 결함이었다. 정지 동안 블라인드 시계는 위에서 밀어 주는데
-        // 액션 시계만 그대로 두면, 돌아온 사람이 누른 버튼이 마감을 지나
-        // `TIME_OUT`으로 바뀐다(`PlaysyncService.handleAction`).
+        // 문장이 곧 결함이었다. 블라인드 시계는 위(2단계)에서 `pausedAt`에
+        // 얼려 두는데(더 이상 밀지 않는다) 액션 시계만 그대로 두면, 돌아온
+        // 사람이 누른 버튼이 마감을 지나 `TIME_OUT`으로 바뀐다
+        // (`PlaysyncService.handleAction`).
         await this.pauseTurnClock(table.id, existing, downtime);
         //
         // **그래도 좌석 비트맵은 따로 본다.** 유실 판정을 스냅샷 유무 하나로
@@ -274,6 +258,61 @@ export class RecoveryService implements OnApplicationBootstrap {
         this.logger.error(`테이블 재구성 실패 (table=${table.id})`, e as Error);
       }
     }
+
+    // 앉은 테이블이 하나도 없으면 붙을 딜러가 없다. 접속 이벤트로 판정하면
+    // 영영 안 풀리므로 여기서 한 번 센다(T96).
+    const seatMaps = await this.redis.getTournamentTables(tournamentId);
+    if (!seatMaps.some((m) => m.seatStatus.some(Boolean))) {
+      await this.completeSync(tournamentId);
+    }
+  }
+
+  /**
+   * 그 대회의 딜러 태블릿이 전부 돌아왔다 — `SYNCING`을 끝내고 멈춘 시간만큼
+   * 블라인드를 한 번 민다(T96). 게이트웨이가 n/n을 본 순간 부른다.
+   *
+   * **조건부 update가 문지기다.** 두 딜러가 동시에 n/n을 봐도 한 행만 바뀌고,
+   * 진 쪽은 0행이라 아무것도 밀지 않는다. `pausedAt`까지 조건에 거는 이유는
+   * 읽은 뒤 쓰기 전에 다른 부팅이 끼는 경우까지 막으려는 것이다.
+   *
+   * **Redis는 DB 뒤다** — 되돌아가지 않아서다. Redis 쓰기가 실패하면 시계가
+   * 멈춘 채 남고, 다음 부팅이 DB에서 대입해 고친다(`recoverTournament` 2단계).
+   *
+   * 스냅샷을 쓰지 않는다 — `saveSnapshotUnlocked('boot-recovery')`의 근거
+   * (호출자가 부팅 하나뿐)를 건드리지 않는다.
+   *
+   * @returns 이 호출이 끝냈으면 true
+   */
+  async completeSync(tournamentId: string): Promise<boolean> {
+    const t = await this.prisma.tournament.findUnique({
+      where: { id: tournamentId },
+      select: { status: true, pausedAt: true, pausedMs: true, startedAt: true },
+    });
+    if (!t || t.status !== TournamentStatus.SYNCING || !t.pausedAt || !t.startedAt) return false;
+
+    const delta = Math.max(0, Date.now() - t.pausedAt.getTime());
+    const { count } = await this.prisma.tournament.updateMany({
+      where: { id: tournamentId, status: TournamentStatus.SYNCING, pausedAt: t.pausedAt },
+      data: { status: TournamentStatus.ONGOING, pausedAt: null, pausedMs: { increment: delta } },
+    });
+    if (count !== 1) return false;
+
+    try {
+      const blind = await this.redis.getTournamentBlind(tournamentId);
+      if (blind) {
+        const { pausedAt: _done, ...rest } = blind;
+        await this.redis.setTournamentBlind(tournamentId, {
+          ...rest,
+          startedAt: t.startedAt.getTime() + t.pausedMs + delta,
+        });
+        await this.redis.checkAndSyncBlindLevel(tournamentId, { force: true });
+      }
+    } catch (e) {
+      this.logger.error(`블라인드 재개 실패 — 다음 부팅이 DB로 고친다 (tournament=${tournamentId})`, e as Error);
+    }
+
+    this.logger.log(`SYNCING 종료 (tournament=${tournamentId}, 정지 ${delta}ms)`);
+    return true;
   }
 
   /**
@@ -347,12 +386,13 @@ export class RecoveryService implements OnApplicationBootstrap {
     });
     const stackOf = new Map(participations.map(p => [p.userId, p.currentStack]));
 
-    // 대회 단위(2단계)가 이미 기준점을 밀어 뒀다. 여기서 캐시된 값을 그냥
-    // 읽으면(getTournamentBlind) 유실 직전에 마지막으로 폴링된 낡은 레벨이
-    // 나올 수 있다 — startPreFlop이 다음 핸드에서 어차피 덮어쓰므로 게임에는
-    // 무해하지만, 재구성이 세우는 첫 스냅샷 값 자체는 지금 시점의 진짜 레벨과
-    // 다를 수 있다. checkAndSyncBlindLevel로 지금 시각 기준 레벨을 강제
-    // 재계산한다.
+    // 캐시된 값을 그냥 읽으면(getTournamentBlind) 유실 직전에 마지막으로
+    // 폴링된 낡은 레벨이 나올 수 있다 — startPreFlop이 다음 핸드에서 어차피
+    // 덮어쓰므로 게임에는 무해하지만, 재구성이 세우는 첫 스냅샷 값 자체는
+    // 지금 레벨과 다를 수 있다. `checkAndSyncBlindLevel`로 다시 계산한다 —
+    // 비강제라, 대회가 아직 SYNCING이면 `pausedAt`에서 얼린 레벨이 나오고
+    // (2단계가 이미 그 기준점을 대입해 뒀다), ONGOING이면 지금 시각 기준
+    // 레벨이 나온다.
     const blind = await this.redis.checkAndSyncBlindLevel(tournamentId);
     if (!blind) throw new Error(`블라인드 정보가 없다 (tournament=${tournamentId})`);
     const level = blind.blindStructure[blind.currentBlindLv];

@@ -1,5 +1,9 @@
 import Link from 'next/link';
-import { ClosedTournamentStatusSchema, type ClosedTournamentStatus } from '@playsync/contract';
+import {
+  ClosedTournamentStatusSchema,
+  type ClosedTournamentStatus,
+  type TournamentStatus,
+} from '@playsync/contract';
 import JoinPanel from './JoinPanel';
 import { joinTournament } from './action';
 
@@ -18,7 +22,7 @@ type BlindLevel = { lv: number; sb: number; ante: boolean; duration: number };
 type TournamentDetail = {
   id: string;
   name: string;
-  status: string;
+  status: TournamentStatus;
   // 컬럼이 아니라 파생값이다(T90). `getTournamentInfo`는 컬럼이 열려 있으면
   // `isRegistrationOpenLive`(registration-gate.ts)로 다시 판정해 그 결과로
   // 덮어써 내보낸다 — 컬럼은 상점이 손으로 닫은 것만 담고, 블라인드가
@@ -91,6 +95,9 @@ export default async function TournamentDetailPage({
     ClosedTournamentStatusSchema.options as readonly string[]
   ).includes(tournament.status);
   const closed = !tournament.isRegistrationOpen || isClosedStatus;
+  // 서버 복구 중(T96). 결제는 SYNCING을 막지 않는다 — 정지는 블라인드 시계와
+  // 딜러 복귀뿐이라, 등록 열림/마감 판정은 그대로 두고 앞에 사실만 덧붙인다.
+  const isSyncing = tournament.status === 'SYNCING';
 
   return (
     <div className="flex flex-col gap-6 p-6 pb-10">
@@ -110,18 +117,18 @@ export default async function TournamentDetailPage({
               색은 문서가 정한 의미색만 쓴다. */}
           <p
             className={`text-[12px] leading-[1.33] tracking-[0.32px] ${
-              closed ? 'text-[var(--ink-subtle)]' : 'text-[var(--ok)]'
+              closed || isSyncing ? 'text-[var(--ink-subtle)]' : 'text-[var(--ok)]'
             }`}
           >
             {/* 취소·종료를 「등록 마감」 하나로 뭉치면 "등록만 닫혔고 대회는
                 돈다"로 읽힌다 — 취소된 대회에는 참가할 대회 자체가 없다.
                 열린 쪽(「등록 열림」/「등록 마감」)은 상태가 아니라 `closed`에서
-                나오므로 `CLOSED_STATUS_LABEL`에 넣지 않는다. */}
+                나오므로 `CLOSED_STATUS_LABEL`에 넣지 않는다.
+                SYNCING은 닫힌 상태가 아니라 앞에 「복구 중 · 」만 붙인다 —
+                결제는 정지의 영향을 받지 않는다. */}
             {isClosedStatus
               ? CLOSED_STATUS_LABEL[tournament.status as ClosedTournamentStatus]
-              : closed
-                ? '등록 마감'
-                : '등록 열림'}
+              : `${isSyncing ? '복구 중 · ' : ''}${closed ? '등록 마감' : '등록 열림'}`}
           </p>
         </div>
       </div>

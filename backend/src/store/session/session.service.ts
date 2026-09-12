@@ -485,6 +485,14 @@ export class SessionService {
    * `reissueDealerOtp`, `revokeDealerSession`)과 같은 이유다 — 서버 액션이
    * `tournamentId`를 클라이언트 값 그대로 넘기므로, 이게 없으면 A 상점
    * 관리자가 B 상점 대회를 시작시킬 수 있다.
+   *
+   * **상태 전이가 문지기다**(최종 리뷰 M5). `where`에 `status: PENDING`을
+   * 실어 DB가 판정하게 한다 — 없으면 이미 `ONGOING`·`SYNCING`인 대회에도
+   * API 호출 한 번으로 `startedAt`이 다시 찍히고 `pausedAt`은 그대로 남아,
+   * 그 뒤로 등록 마감 판정(`isRegistrationOpenNow`)이 영구히 얼린 시각으로
+   * 잰다. 화면은 PENDING에서만 시작 버튼을 보이지만, 그것은 UI의 제약이지
+   * 서버의 제약이 아니다 — 다른 조건부 update(`completeSession`의 `won`,
+   * `abortSession`의 `closed`)와 같은 모양이다.
    */
   async startSession(id: string, ownerId: string) {
     await this.assertTournamentOwnership(id, ownerId);
@@ -516,10 +524,16 @@ export class SessionService {
       // 대회가 실제로 시작한 시각이고 영구히 밀리지 않는다. Redis의
       // BlindField.startedAt은 진행 시간의 기준점이라 장애 정지만큼 뒤로
       // 밀린다. 시작 시점에 두 값이 같은 것은 정합이 아니라 t=0의 우연이다.
-      return await tx.tournament.update({
-        where: { id },
+      const result = await tx.tournament.updateMany({
+        where: { id, status: TournamentStatus.PENDING },
         data: { status: TournamentStatus.ONGOING, startedAt },
-        });
+      });
+      if (result.count === 0) {
+        // 이미 시작된(또는 복구 대기 중인) 대회다. 재시도 창이 아니라
+        // 명시적인 거절이라야 상점 콘솔이 무엇이 잘못됐는지 안다.
+        throw new ConflictException('이미 시작된 대회입니다.');
+      }
+      return await tx.tournament.findUniqueOrThrow({ where: { id } });
     });
 
     /*
@@ -554,6 +568,25 @@ export class SessionService {
 
     const startedAt = new Date();
     if (!game) throw new NotFoundException('세션을 찾을 수 없습니다.');
+
+    // **상태 검사가 여기 있어야 한다**(재리뷰 M5). 아래 `mutateSnapshot`은
+    // 살아 있는 모든 테이블 스냅샷의 `buttonUser`를 다시 추첨해 덮고,
+    // `setTournamentMeta`는 blindField를 `startedAt = now`로 덮어 SYNCING의
+    // 동결(`pausedAt`)을 지운다. 둘 다 Redis 쓰기라 `startSession`의
+    // `updateMany` 가드(DB 트랜잭션)가 던지는 `ConflictException`으로는
+    // 되돌릴 수 없다 — DB만 롤백되고 Redis는 이미 망가진 채 남는다. 그래서
+    // 이 검사를 그 두 쓰기보다 앞에 둔다.
+    //
+    // `startSession`의 `updateMany({ where: { id, status: PENDING } })`는
+    // 지우지 않는다 — 그것은 **동시에** 시작을 두 번 누른 경우의 문지기로
+    // 남긴다. 이 검사와 그 가드가 같은 상태를 보므로, 순차 호출(먼저 읽고
+    // 나중에 커밋)은 여기서 막히지만 두 요청이 이 검사를 동시에 통과하는
+    // 좁은 창은 남는다 — 그건 이 검사가 새로 여는 문제가 아니라 원래부터
+    // 있던 쓰기 경합이다(재리뷰 m1).
+    if (game.status !== TournamentStatus.PENDING) {
+      throw new ConflictException('이미 시작된 대회입니다.');
+    }
+
     const { dashboard, blindField, payoutTable } = buildTournamentMeta(game, startedAt.getTime());
 
     const minPlayers = minPlayersToStart();
@@ -747,6 +780,10 @@ export class SessionService {
         data: {
           status: TournamentStatus.FINISHED,
           finishedAt: new Date(),
+          // SYNCING 상태로 닫히면(복구 중에 종료를 누른 경우) `pausedAt`이
+          // 닫힌 대회에 남는다 — `schema.prisma`의 주석("SYNCING과 언제나
+          // 함께 서고 함께 사라진다")을 문자 그대로 지킨다.
+          pausedAt: null,
         },
       });
       if (won.count === 0) return false;
@@ -1166,6 +1203,9 @@ export class SessionService {
           // 회계가 "걷었는데 아무도 안 받았다"로 남는다(`cancelSession`과 같다).
           totalBuyinAmount: 0,
           activePlayers: 0,
+          // SYNCING 상태로 닫히면(복구 중에 중단을 누른 경우) `pausedAt`이
+          // 닫힌 대회에 남는다 — `completeSession`과 같은 이유로 되돌린다.
+          pausedAt: null,
         },
       });
       if (closed.count === 0) return null;

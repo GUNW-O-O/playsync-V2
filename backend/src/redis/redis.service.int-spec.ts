@@ -698,6 +698,66 @@ describe('RedisService.checkAndSyncBlindLevel — 등록 마감', () => {
 
     expect(await redis.hget(infoKey, 'isRegistrationOpen')).toBe('0');
   });
+
+  /**
+   * **정지 중이면 시계가 그 시각에 멈춰 있다**(T96). 벽시계로는 이미 마감
+   * 레벨(2)을 지났지만(90초 경과, 1분짜리 레벨 둘), `pausedAt`이 60초 전이라
+   * 아직 레벨 0이다. 마감이 단조라 정지 구간에서 한 번 닫히면 되돌아오지
+   * 않으므로, 보정만으로는 부족하고 계산 자체가 멈춰야 한다.
+   */
+  it('정지 중에는 pausedAt 시각의 레벨로 멈춘다', async () => {
+    const now = Date.now();
+    const startedAt = now - 90_000;
+    const pausedAt = now - 60_000;
+    const structure = [
+      { lv: 1, sb: 100, ante: false, duration: 1 },
+      { lv: 2, sb: 200, ante: false, duration: 1 },
+    ];
+
+    await service.setTournamentMeta(
+      TOURNAMENT,
+      {
+        isRegistrationOpen: true,
+        totalPlayer: 9,
+        activePlayer: 9,
+        totalBuyinAmount: 90000,
+        rakePercent: 0,
+        entryCount: 0,
+        itmCount: 1,
+        rebuyUntil: 2,
+        avgStack: 30000,
+        tournamentName: '테스트 토너먼트',
+        entryFee: 10000,
+        startStack: 30000,
+        prizePool: 90000,
+        prizes: [
+          { place: 1, percent: 50, amount: 45000 },
+          { place: 2, percent: 30, amount: 27000 },
+          { place: 3, percent: 20, amount: 18000 },
+        ],
+      },
+      {
+        isBreak: false,
+        startedAt,
+        pausedAt,
+        currentBlindLv: 0,
+        nextLevelAt: now - 30_000,
+        serverTime: startedAt,
+        blindStructure: structure,
+      },
+      [{
+        minEntries: 0,
+        payouts: [
+          { place: 1, percent: 50 }, { place: 2, percent: 30 }, { place: 3, percent: 20 },
+        ],
+      }],
+    );
+
+    const blind = await service.checkAndSyncBlindLevel(TOURNAMENT);
+
+    expect(blind?.currentBlindLv).toBe(0);
+    expect(await redis.hget(infoKey, 'isRegistrationOpen')).toBe('1');
+  });
 });
 
 /**

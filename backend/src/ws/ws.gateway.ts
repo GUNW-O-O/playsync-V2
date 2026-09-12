@@ -1,7 +1,7 @@
 import { Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { ConnectedSocket, MessageBody, OnGatewayConnection, OnGatewayDisconnect, SubscribeMessage, WebSocketGateway } from '@nestjs/websockets';
-import { Role } from '@prisma/client';
+import { Role, TournamentStatus } from '@prisma/client';
 import {
   DealerAction,
   DealerActionSchema,
@@ -11,13 +11,17 @@ import {
   TableStateSchema,
   TableState as WireTableState,
   TournamentClosedSchema,
+  TournamentSyncingSchema,
+  TOURNAMENT_SYNCING_EVENT,
 } from '@playsync/contract';
 import { DealerService } from 'src/dealer/dealer.service';
 import { TableState } from 'src/game-engine/types';
 import { PlaysyncService } from 'src/playsync/playsync.service';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { RecoveryService } from 'src/recovery/recovery.service';
 import { RedisService } from 'src/redis/redis.service';
 import { markAlive, socketPingMs, sweep } from './keepalive';
+import { syncProgress } from './sync-progress';
 import { WsIdentity, WsTicketService } from './ws-ticket.service';
 
 /**
@@ -48,6 +52,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     private readonly tickets: WsTicketService,
     private readonly eventEmitter: EventEmitter2,
     private readonly prisma: PrismaService,
+    private readonly recovery: RecoveryService,
   ) { }
 
   private pingTimer: ReturnType<typeof setInterval> | null = null;
@@ -229,6 +234,21 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
         const state = await this.redis.getSnapShot(tableId);
         const wire = this.toWireState(state);
         if (wire) client.send(JSON.stringify({ event: 'renderGame', data: wire }));
+
+        // 딜러가 돌아왔다 — 그 대회가 SYNCING이면 다시 세어 본다(T96).
+        // 부수 작업(집계)의 순간 장애가 바깥 catch로 새면, 방금 인증에
+        // 성공한 딜러 소켓이 "인증 실패"로 끊긴다(M1) — 여기서 삼킨다.
+        //
+        // **이 소켓을 `recount`에 함께 넘긴다**(최종 리뷰 I2). 대회가 이미
+        // SYNCING이 아니면 그 자리에서 이 소켓에만 `{syncing:false}`를 알려
+        // 준다 — 완료 순간에 좀비였던 소켓, `required`에서 이미 빠진 테이블,
+        // n→0으로 끝난 경우처럼 서버가 새 이벤트를 보장할 수 없는 자리들을
+        // "붙는 쪽이 매번 확인한다"로 전부 없앤다.
+        // 실패는 `reportSync`의 체인이 이미 로그로 남긴다(M7) — 여기서
+        // 또 찍으면 같은 실패가 두 줄로 남는다. 여기서는 삼키기만 한다.
+        if (payload.role === Role.DEALER && payload.tournamentId) {
+          await this.reportSync(payload.tournamentId, client).catch(() => { /* reportSync가 이미 로그로 남긴다 */ });
+        }
       }
 
     } catch (err) {
@@ -240,14 +260,20 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
   }
 
   // 2. 연결 종료 시 세션 제거
-  handleDisconnect(client: WebSocket) {
+  async handleDisconnect(client: WebSocket) {
     const tableId = (client as any).tableId;
     const tournamentId = (client as any).tournamentId;
+    const role = (client as any).role;
 
-    // 테이블 세션 제거
+    // 테이블 세션 제거. `Set.delete`의 반환값을 남긴다 — `sweepSockets`가
+    // `terminate()` 뒤 이 메서드를 직접 부르고, 곧이어 `ws`의 `close`
+    // 이벤트가 같은 소켓에 다시 이 메서드를 부른다(T96). 두 번째 호출은
+    // 이미 빠진 소켓을 또 빼려는 것이라 `delete`가 `false`를 돌려주고,
+    // 그 신호로 아래 딜러 재집계를 두 번 쏘지 않는다.
+    let removedFromTable = false;
     if (tableId && this.tableSessions.has(tableId)) {
       const sessions = this.tableSessions.get(tableId);
-      sessions?.delete(client);
+      removedFromTable = sessions?.delete(client) ?? false;
       if (sessions?.size === 0) {
         this.tableSessions.delete(tableId);
       }
@@ -258,6 +284,14 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
       if (sessions?.size === 0) {
         this.tournamentSessions.delete(tournamentId);
       }
+    }
+
+    // 끊긴 소켓이 딜러면 그 대회의 복귀 집계가 하나 줄었을 수 있다(T96).
+    // `sweepSockets`는 이 메서드를 기다리지 않고 부른다(기존 동작 유지) —
+    // 실패해도 여기서 삼키므로 처리되지 않은 거부로 새지 않는다. 로그는
+    // `reportSync`의 체인이 이미 남긴다(M7) — 여기서 또 찍지 않는다.
+    if (removedFromTable && role === Role.DEALER && tournamentId) {
+      await this.reportSync(tournamentId).catch(() => { /* reportSync가 이미 로그로 남긴다 */ });
     }
   }
 
@@ -406,6 +440,97 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     }
   }
 
+  /** 대회 id별 재집계 줄(T96 리뷰 I1). `reportSync`만 채우고 비운다. */
+  private syncChains = new Map<string, Promise<void>>();
+
+  /**
+   * `recount`를 그 대회 줄 맨 뒤에 세운다(T96 리뷰 I1).
+   *
+   * **끝나지 않은 재집계끼리는 서로 어긋나지 않는다** — 한 번의 `recount` 안에서
+   * 세는 것과 보내는 것이 동기이기 때문이다. 어긋나는 자리는 **끝난 판정의
+   * `await completeSync` 창**이다: 마지막 딜러가 2/2를 세고 `completeSync`에
+   * 들어간 사이 다른 딜러가 끊기면, 그 새 재집계는 아직 커밋 전인 `SYNCING`을
+   * 그대로 읽고 "아직이다"를 계산해 두었다가, 앞선 재집계가 커밋하고
+   * `{syncing:false}`를 보낸 **뒤에** 낡은 `{syncing:true}`로 도착할 수 있다.
+   * 그러면 대회는 이미 `ONGOING`이라 그 뒤로는 `reportSync`가 전부 첫 줄에서
+   * 돌아가므로, 딜러의 「이어서 진행」이 잠긴 채로 되돌릴 이벤트가 영영 없다.
+   *
+   * 이 체인이 그 창을 없앤다 — 뒤에 선 `recount`는 앞선 것이 **실제로 상태를
+   * 커밋한 뒤**에야 다시 읽으므로 `ONGOING`을 보고 조용히 돌아간다. 동시
+   * n/n에서 진 쪽이 `completeSync`를 한 번 더 부르는 것도 함께 사라진다.
+   *
+   * 프로세스가 하나라(B9) 메모리 체인으로 충분하다. 체인이 끝났을 때 그
+   * 사이 아무도 새로 줄을 세우지 않았으면 맵에서 지운다 — 안 지우면 이 맵이
+   * 대회 수만큼 서버 수명 내내 계속 늘어난다.
+   */
+  private reportSync(tournamentId: string, joiner?: WebSocket): Promise<void> {
+    const prior = this.syncChains.get(tournamentId) ?? Promise.resolve();
+    const next = prior.then(() => this.recount(tournamentId, joiner));
+    const settled = next.catch((e) => {
+      this.logger.error('SYNCING 재집계 실패', e);
+    });
+    this.syncChains.set(tournamentId, settled);
+    void settled.then(() => {
+      if (this.syncChains.get(tournamentId) === settled) {
+        this.syncChains.delete(tournamentId);
+      }
+    });
+    return next;
+  }
+
+  /**
+   * 그 대회가 `SYNCING`이면 딜러 복귀를 다시 세어 딜러들에게 알리고, n/n이면
+   * 끝낸다(T96). **직접 부르지 않는다** — 항상 `reportSync`를 거쳐 대회별
+   * 줄을 선다.
+   *
+   * **소켓 수를 판정에 쓴다.** T95가 피했던 것은 게이트웨이에 하트비트가 없어
+   * 좀비가 살아 보였기 때문이고, 그 전제는 `sweepSockets`가 없앴다. 그래도
+   * 좀비가 끼면 n/n이 조금 일찍 풀릴 뿐이다 — 판을 여는 것은 여전히 테이블마다
+   * 딜러가 누르는 재개다.
+   *
+   * @param joiner 방금 접속한 소켓(`handleConnection`에서만 넘긴다). 이
+   *   대회가 SYNCING이 아니면 **이 소켓에만** `{syncing:false,0,0}`을
+   *   알려 준다(최종 리뷰 I2) — 완료가 이미 끝난 뒤에 붙은 소켓은 그 뒤로
+   *   서버가 새 이벤트를 보낼 자리가 없어, 붙는 순간 스스로 확인하게 한다.
+   */
+  private async recount(tournamentId: string, joiner?: WebSocket) {
+    const t = await this.prisma.tournament.findUnique({ where: { id: tournamentId }, select: { status: true } });
+    if (t?.status !== TournamentStatus.SYNCING) {
+      if (joiner && joiner.readyState === WebSocket.OPEN) {
+        const payload = TournamentSyncingSchema.parse({ syncing: false, present: 0, required: 0 });
+        try { joiner.send(JSON.stringify({ event: TOURNAMENT_SYNCING_EVENT, data: payload })); } catch { /* 다음 틱이 치운다 */ }
+      }
+      return;
+    }
+
+    const seatMaps = await this.redis.getTournamentTables(tournamentId);
+    const required = seatMaps.filter((m) => m.seatStatus.some(Boolean)).map((m) => m.tableId);
+    const dealerTables = required.filter((id) =>
+      [...(this.tableSessions.get(id) ?? [])].some(
+        (s: any) => s.role === Role.DEALER && s.readyState === WebSocket.OPEN,
+      ),
+    );
+    const progress = syncProgress(required, dealerTables);
+
+    let syncing = true;
+    if (progress.done) {
+      // 진 쪽(동시 n/n)은 false다. 이긴 쪽이 알린다.
+      if (!(await this.recovery.completeSync(tournamentId))) return;
+      syncing = false;
+    }
+
+    const payload = TournamentSyncingSchema.parse({ syncing, present: progress.present, required: progress.required });
+    // **이 대회의 테이블 전부(`seatMaps`)에 보낸다** — `required`만 돌면 빈
+    // 테이블에 붙은 딜러와, n=0으로 끝난 경우(required가 비어 있다) 아무도
+    // 못 받는다(최종 리뷰 I2 · Task 4 M2). 세는 쪽(위 `required`)은 그대로다.
+    for (const m of seatMaps) {
+      for (const s of this.tableSessions.get(m.tableId) ?? []) {
+        if ((s as any).role !== Role.DEALER || s.readyState !== WebSocket.OPEN) continue;
+        try { s.send(JSON.stringify({ event: TOURNAMENT_SYNCING_EVENT, data: payload })); } catch { /* 다음 틱이 치운다 */ }
+      }
+    }
+  }
+
   /**
    * 딜러 명령 하나를 실행하고 **반드시 상태를 돌려준다.**
    *
@@ -419,6 +544,14 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     tableId: string,
     action: DealerAction,
   ): Promise<TableState> {
+    // **복구 중에는 딜러 명령을 전부 받지 않는다**(T96). 핸드 시작은 깜깜한
+    // 좌석을 판에 넣고(30초 뒤 자동 폴드), 승자 입력은 리바인 창(15초)을 꺼진
+    // 태블릿으로 보낸다. 재개는 딜러가 다 돌아온 뒤라야 뜻이 있다.
+    const t = await this.prisma.tournament.findUnique({ where: { id: tournamentId }, select: { status: true } });
+    if (t?.status === TournamentStatus.SYNCING) {
+      throw new Error('딜러가 모두 돌아올 때까지 기다려 주세요.');
+    }
+
     switch (action.action) {
       case 'START_PRE_FLOP':
         return this.dealer.startPreFlop(tournamentId, tableId);
@@ -449,8 +582,15 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
   }
 
   @OnEvent('SEAT_LIST_UPDATED')
-  handleSeatListUpdated(payload: { tournamentId: string; state: any }) {
+  async handleSeatListUpdated(payload: { tournamentId: string; state: any }) {
     this.broadcastToTournament(payload.tournamentId, 'renderSeatList', payload.state);
+
+    // 좌석이 SYNCING 중에 전부 풀리면(T96) n이 0으로 떨어지는데, 그 변화는
+    // 딜러 접속·접속해제 어느 쪽에서도 일어나지 않는다 — 접속 이벤트만
+    // 기다리면 그 대회는 다음 부팅까지 영영 SYNCING에 머문다. `@OnEvent`
+    // 핸들러의 거부는 아무도 처리하지 않으므로 여기서 삼킨다 — 로그는
+    // `reportSync`의 체인이 이미 남긴다(M7), 여기서 또 찍지 않는다.
+    await this.reportSync(payload.tournamentId).catch(() => { /* reportSync가 이미 로그로 남긴다 */ });
   }
 
   /**

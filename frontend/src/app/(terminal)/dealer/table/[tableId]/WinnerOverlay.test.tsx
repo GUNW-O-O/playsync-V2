@@ -71,4 +71,22 @@ describe('WinnerOverlay', () => {
     render(<WinnerOverlay players={PLAYERS} onSubmit={vi.fn()} onCancel={vi.fn()} />);
     expect(screen.getByTestId('winner-pick-u2')).toBeDisabled();
   });
+
+  /**
+   * 재리뷰 m2. 오버레이는 열려 있는 동안 대회가 SYNCING에 들어갈 수 있다 —
+   * 열 때 이미 막은 조건(`DealerGameClient`의 `canResolveWinners`)은 그
+   * 이후의 변화를 못 잡는다. 서버 게이트(`WsGateway.runDealerAction`)는
+   * SYNCING이면 RESOLVE_WINNERS를 그대로 거절하므로, 화면도 제출 둘 다
+   * (배분·보드 하이) 직접 끈다.
+   */
+  it('submitDisabled면 배분과 보드 하이 둘 다 막는다', async () => {
+    render(
+      <WinnerOverlay players={PLAYERS} onSubmit={vi.fn()} onCancel={vi.fn()} submitDisabled />,
+    );
+
+    await userEvent.click(screen.getByTestId('winner-pick-u1'));
+
+    expect(screen.getByRole('button', { name: '배분' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /보드 하이/ })).toBeDisabled();
+  });
 });

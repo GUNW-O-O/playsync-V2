@@ -169,6 +169,14 @@ describe('시나리오 — 서버 장애로부터의 부분 복구', () => {
       // 확인한 함정).
       nextLevelAt: Date.now() - 1_000,
     });
+    // DB `startedAt`도 같이 되돌린다(T96) — `recoverTournament`는 Redis
+    // 기준점을 **대입**한다(`Tournament.startedAt + pausedMs`가 진실이다).
+    // DB를 그대로 두면 3단계에서 이 값이 덮여 위에서 세운 "90초 전"이
+    // 사라진다.
+    await h.prisma.tournament.update({
+      where: { id: h.tournamentId },
+      data: { startedAt: new Date(blindStartedAtBeforeRecovery) },
+    });
 
     // 실제로 Redis를 다시 읽어 확인한다(가짜 초록 방지) — 단, 확인 수단이
     // `checkAndSyncBlindLevel`이면 안 된다. 그 함수는 재계산할 때 지금
@@ -211,7 +219,10 @@ describe('시나리오 — 서버 장애로부터의 부분 복구', () => {
     await checkInvariants(h, '3. 복구 후 B', TABLE_CHIPS, table2Id);
   });
 
-  it('4. 블라인드 레벨이 정지 시간만큼 되돌아오고, 밀린 양은 테이블 수와 무관하다', async () => {
+  it('4. completeSync 뒤에 블라인드 레벨이 정지 시간만큼 되돌아오고, 밀린 양은 테이블 수와 무관하다', async () => {
+    // 재개는 n/n 뒤다(T96) — 3단계가 SYNCING을 켜기만 했고, 여기서 끈다.
+    await h.recovery.completeSync(h.tournamentId);
+
     // 90초 경과 - 40초 다운타임 보정 = 50초. 60초(레벨 0 duration) 미만이므로
     // 레벨이 0으로 되돌아가야 한다.
     const synced = await h.redisService.checkAndSyncBlindLevel(h.tournamentId);

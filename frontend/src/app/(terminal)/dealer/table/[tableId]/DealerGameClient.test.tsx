@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/mocks/server';
 import { DEALER_OFFSET_MS } from '@/lib/reconnect-policy';
-import { GamePhase, type TableState } from '@playsync/contract';
+import { GamePhase, TOURNAMENT_SYNCING_EVENT, type TableState } from '@playsync/contract';
 
 // 종료 덮개가 대기 화면으로 돌아간다(`TournamentClosedOverlay`). 좌석 쪽
 // `SeatGameClient.test.tsx`와 같은 배선이다.
@@ -520,6 +520,74 @@ describe('DealerGameClient', () => {
       socket.emitServerEvent('renderGame', baseState({ phase: GamePhase.FLOP }));
 
       expect(screen.queryByTestId('dealer-resume')).toBeNull();
+    });
+  });
+
+  /**
+   * 서버 복구 중 딜러 복귀(T96). `syncing: false`가 오기 전까지는 재개
+   * 버튼을 막는다 — `present === required`만 보고 열면, 서버가 아직 끝내지
+   * 못한 순간에 누른 재개가 거절된다(`TournamentSyncingSchema` 주석).
+   */
+  describe('서버 복구 중 딜러 복귀', () => {
+    it('복귀 진행을 보여주고, 다 돌아와야 재개 버튼이 열린다', async () => {
+      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.FLOP }));
+      socket.emitServerEvent(
+        'renderGame',
+        baseState({ phase: GamePhase.FLOP, resumePending: { downMs: 60_000 } }),
+      );
+
+      socket.emitServerEvent(TOURNAMENT_SYNCING_EVENT, { syncing: true, present: 7, required: 9 });
+
+      expect(screen.getByTestId('dealer-resume')).toHaveTextContent('딜러 7/9 복귀');
+      expect(screen.getByRole('button', { name: '이어서 진행' })).toBeDisabled();
+
+      socket.emitServerEvent(TOURNAMENT_SYNCING_EVENT, { syncing: false, present: 9, required: 9 });
+
+      expect(screen.getByRole('button', { name: '이어서 진행' })).not.toBeDisabled();
+    });
+
+    /**
+     * 최종 리뷰 I1. `planPause`는 차례 없는 테이블(WAITING 포함)에는
+     * `resumePending`을 붙이지 않아 위 배너가 안 뜬다 — 그런데 그 테이블도
+     * 서버 게이트(`WsGateway.runDealerAction`)는 SYNCING이면 명령을 그대로
+     * 거절한다. 배너 밖에 독립된 띠가 있어야 하고, 「핸드 시작」도 `sync`를
+     * 직접 봐야 한다.
+     */
+    it('정지 배너가 없는 WAITING 테이블도 복귀 진행을 보여주고 핸드 시작을 막는다', async () => {
+      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.WAITING }));
+
+      socket.emitServerEvent(TOURNAMENT_SYNCING_EVENT, { syncing: true, present: 7, required: 9 });
+
+      expect(screen.getByTestId('dealer-sync-strip')).toHaveTextContent('딜러 7/9 복귀');
+      expect(screen.getByRole('button', { name: '핸드 시작' })).toBeDisabled();
+
+      socket.emitServerEvent(TOURNAMENT_SYNCING_EVENT, { syncing: false, present: 9, required: 9 });
+
+      expect(screen.getByRole('button', { name: '핸드 시작' })).not.toBeDisabled();
+      expect(screen.queryByTestId('dealer-sync-strip')).toBeNull();
+    });
+
+    /**
+     * 재리뷰 m2. 서버 게이트(`WsGateway.runDealerAction`)는 SYNCING 동안
+     * 딜러 명령 여섯을 전부 거절하는데, 화면은 「핸드 시작」·「승자 결정」만
+     * `sync`를 봤다 — 킥·폴드·저장 재시도는 각자 다른 조건만 보고 있어서,
+     * 자리를 비운 사람을 내보내는 흔한 조작이 SYNCING 중에도 그대로 눌렸다.
+     */
+    it('킥·폴드·저장 재시도도 sync가 있으면 막는다', async () => {
+      const { socket } = await renderWithSocket(
+        baseState({ phase: GamePhase.FLOP, currentTurnSeatIndex: 3, dbSyncStatus: 'FAILED' }),
+      );
+      await userEvent.click(screen.getByTestId('seat-3'));
+
+      expect(screen.getByTestId('confirm-fold')).not.toBeDisabled();
+      expect(screen.getByTestId('confirm-kick')).not.toBeDisabled();
+      expect(screen.getByRole('button', { name: '저장 재시도' })).not.toBeDisabled();
+
+      socket.emitServerEvent(TOURNAMENT_SYNCING_EVENT, { syncing: true, present: 1, required: 2 });
+
+      expect(screen.getByTestId('confirm-fold')).toBeDisabled();
+      expect(screen.getByTestId('confirm-kick')).toBeDisabled();
+      expect(screen.getByRole('button', { name: '저장 재시도' })).toBeDisabled();
     });
   });
 });

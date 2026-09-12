@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { cookies } from 'next/headers';
-import { ClosedTournamentStatusSchema } from '@playsync/contract';
+import { ClosedTournamentStatusSchema, type TournamentStatus } from '@playsync/contract';
 import OtpReveal from './OtpReveal';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
@@ -24,7 +24,7 @@ type Participation = {
   tournament: {
     id: string;
     name: string;
-    status: string;
+    status: TournamentStatus;
     entryFee: number;
     startedAt: string | null;
   };
@@ -53,12 +53,15 @@ function yyyymmdd(iso: string): string {
   return iso.slice(0, 10);
 }
 
-/** 대회 상태를 사람이 읽는 말로. 그대로 두면 화면에 `PENDING`이 뜬다. */
-function statusLabel(status: string): string {
-  if (status === 'ONGOING') return '진행 중';
-  if (status === 'PENDING') return '시작 전';
-  return '종료';
-}
+// `Record`라 계약에 상태가 늘면 여기서 컴파일 에러가 난다. 함수로 가르던
+// 시절에는 새 상태(`SYNCING`)가 폴백 「종료」로 조용히 떨어졌다(T96).
+const STATUS_LABEL: Record<TournamentStatus, string> = {
+  PENDING: '시작 전',
+  ONGOING: '진행 중',
+  SYNCING: '복구 중',
+  FINISHED: '종료',
+  CANCELLED: '취소',
+};
 
 export default async function MyPage() {
   const rows = await fetchParticipations();
@@ -134,7 +137,7 @@ export default async function MyPage() {
                 <h3 className="text-[20px] leading-[1.4]">{row.tournament.name}</h3>
                 <p className="text-[14px] leading-[1.29] tracking-[0.16px] text-[var(--ink-muted)]">
                   참가비 {row.tournament.entryFee.toLocaleString()} ·{' '}
-                  {statusLabel(row.tournament.status)}
+                  {STATUS_LABEL[row.tournament.status]}
                 </p>
               </div>
 

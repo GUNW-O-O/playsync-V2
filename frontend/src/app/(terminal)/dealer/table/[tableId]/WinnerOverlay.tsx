@@ -26,6 +26,7 @@ export default function WinnerOverlay({
   sidePots = [],
   onSubmit,
   onCancel,
+  submitDisabled = false,
 }: {
   players: WinnerCandidate[];
   /**
@@ -35,6 +36,13 @@ export default function WinnerOverlay({
   sidePots?: { amount: number; relevantPlayerIds: string[] }[];
   onSubmit: (winnerGroups: string[][]) => void;
   onCancel: () => void;
+  /**
+   * 제출(배분·보드 하이) 둘 다 끈다. 오버레이가 열려 있는 동안 대회가
+   * SYNCING에 들어가면 서버 게이트(`WsGateway.runDealerAction`)가
+   * RESOLVE_WINNERS를 거절한다 — 열 때 이미 막은 조건(`canResolveWinners`)이
+   * 그 뒤의 변화까지 잡지 못한다(재리뷰 m2).
+   */
+  submitDisabled?: boolean;
 }) {
   // 마지막 원소가 지금 채우는 그룹이다. 자리를 누르면 여기에 쌓인다.
   const [groups, setGroups] = useState<string[][]>([[]]);
@@ -174,8 +182,9 @@ export default function WinnerOverlay({
           <div>
             <button
               type="button"
+              disabled={submitDisabled}
               onClick={boardHigh}
-              className="rounded border border-tb-line px-3 py-2 text-sm text-tb-muted"
+              className="rounded border border-tb-line px-3 py-2 text-sm text-tb-muted disabled:opacity-30"
             >
               보드 하이
             </button>
@@ -198,7 +207,7 @@ export default function WinnerOverlay({
             </button>
             <button
               type="button"
-              disabled={!canSubmit}
+              disabled={!canSubmit || submitDisabled}
               onClick={submit}
               className="rounded border border-tb-act bg-tb-act px-4 py-2 text-sm font-semibold text-[#06201a] disabled:opacity-40"
             >

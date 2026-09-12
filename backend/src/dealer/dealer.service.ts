@@ -19,6 +19,7 @@ import {
   NOT_CLOSED_TOURNAMENT_FILTER,
   asClosedTournamentWrite,
   isClosedTournament,
+  isLiveTournament,
 } from 'src/store/session/tournament-status';
 
 /**
@@ -116,7 +117,7 @@ export class DealerService {
         throw new ForbiddenException('이 대회에 속하지 않은 테이블입니다.');
       }
 
-      if (tournament.status === 'ONGOING') {
+      if (isLiveTournament(tournament.status)) {
         // 앉아 있는데 아직 `WAITING`인 사람을 올린다. T28 이후로는 착석이
         // 이미 올리므로 평소에는 0행이고, 남겨 두는 것은 옛 데이터를 위한
         // 보정이다.

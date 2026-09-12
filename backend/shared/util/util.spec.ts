@@ -53,6 +53,22 @@ describe('getCurrentBlindLevel — 빈 구조가 도달할 수 없음을 확인�
   });
 });
 
+/**
+ * `now`를 세 번째 인자로 받는다. 정지 중에는 이 값이 벽시계가 아니라
+ * `pausedAt`이 되어야 레벨이 그 시각에 멈춘다(T96) — 함수 내부에서
+ * `Date.now()`를 부르면 호출자가 그 시각을 통제할 수 없다.
+ */
+describe('getCurrentBlindLevel — now를 인자로 받는다(T96)', () => {
+  it('now를 받으면 그 시각의 레벨을 준다 — 벽시계와 무관하다', () => {
+    const structure = [
+      { lv: 1, sb: 100, ante: false, duration: 1 },
+      { lv: 2, sb: 200, ante: false, duration: 1 },
+    ];
+    const startedAt = Date.now() - 90_000; // 벽시계로는 레벨 2
+    expect(getCurrentBlindLevel(structure, startedAt, startedAt + 30_000).currentIndex).toBe(0);
+  });
+});
+
 describe('toWireBlindStructure', () => {
   /**
    * **경계에서 boolean이 금액이 된다.** DB는 "앤티가 붙나"를 저장하고

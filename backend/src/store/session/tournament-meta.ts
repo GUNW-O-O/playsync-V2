@@ -46,9 +46,12 @@ export interface TournamentMetaSource {
 export function buildTournamentMeta(
   game: TournamentMetaSource,
   blindBaseAt: number,
+  // 정지 중이면 그 시각의 레벨로 멈춘다(T96). 없으면 지금 기준으로 잰다 —
+  // 대회 시작(`initializeGame`)은 정지가 있을 수 없어 이 인자를 안 넘긴다.
+  pausedAt?: number | null,
 ): { dashboard: Dashboard; blindField: BlindField; payoutTable: PayoutTier[] } {
   const blindStructure = parseBlindStructure(game.blindStructure.structure);
-  const blindInfo = getCurrentBlindLevel(blindStructure, blindBaseAt);
+  const blindInfo = getCurrentBlindLevel(blindStructure, blindBaseAt, pausedAt ?? Date.now());
 
   // 마감을 **닫는** 유일한 코드는 Redis만 쓴다(`redis.service.ts`의
   // `checkAndSyncBlindLevel` — `curLv >= rebuyUntil`이면 `isRegistrationOpen`을
@@ -101,6 +104,7 @@ export function buildTournamentMeta(
     nextLevelAt: blindInfo.nextLevelAt,
     serverTime: Date.now(),
     blindStructure,
+    ...(pausedAt != null ? { pausedAt } : {}),
   };
 
   // **표를 함께 돌려준다.** Redis에 싣는 것은 결과가 아니라 규칙이다 —
