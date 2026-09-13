@@ -22,10 +22,70 @@ export class RecoveryService implements OnApplicationBootstrap {
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
-  ) {}
+  ) {
+    // T97. 백엔드가 살아 있는 채 Redis만 끊겼다 돌아오는 경로다.
+    // 핸들러는 인스턴스 메서드를 호출 시점에 찾는다 — 스펙이 스파이를 걸 수 있게.
+    this.redis.outage.on('down', (downSince: number) => { void this.onRedisDown(downSince); });
+    this.redis.outage.on('up', () => { void this.recoverFromOutage(); });
+  }
 
   async onApplicationBootstrap() {
     await this.recoverAll();
+  }
+
+  /**
+   * Redis가 끊겼다(T97). **DB는 살아 있으므로** 복귀를 기다리지 않고 대회를 켠다 —
+   * DB만 읽는 화면(참가자 `/me`)이 장애 중에 곧바로 「복구 중」을 띄운다.
+   * 실패하면 `recoverFromOutage`가 같은 조건부 update를 한 번 더 한다.
+   */
+  async onRedisDown(downSince: number): Promise<void> {
+    try {
+      await this.markSyncing(new Date(downSince));
+    } catch (e) {
+      this.logger.error('Redis 장애 — 대회를 SYNCING으로 켜지 못했다. 복귀 때 다시 한다', e as Error);
+    }
+  }
+
+  /** 진행 중 대회를 켠다. 이미 SYNCING이면 pausedAt을 덮지 않는다(부팅 1단계와 같은 조건). */
+  private async markSyncing(pausedAt: Date) {
+    await this.prisma.tournament.updateMany({
+      where: { status: TournamentStatus.ONGOING },
+      data: { status: TournamentStatus.SYNCING, pausedAt },
+    });
+  }
+
+  /**
+   * Redis가 돌아왔다(T97). 부팅과 같은 순서로 멈춰 세운다 — 다른 점은 둘이다.
+   * 스냅샷을 잃은 테이블을 재구성하지 않고(런타임에 락 없이 돌면 착석과
+   * 경합한다), 멈춰 세우기가 락을 탄다.
+   *
+   * 끝나면 `markRecovered` — 게이트웨이가 그 이벤트로 화면에 알리고 n/n을 센다.
+   * **대회 하나가 실패해도 끝낸다.** 게이트를 영영 닫아 두면 모든 테이블이 선다.
+   */
+  async recoverFromOutage(): Promise<void> {
+    const outage = this.redis.outage;
+    const generation = outage.generation;
+    const downSince = outage.downSince ?? Date.now();
+    try {
+      await this.markSyncing(new Date(downSince));
+      const tournaments = await this.prisma.tournament.findMany({
+        where: { status: TournamentStatus.SYNCING },
+        select: { id: true },
+      });
+      for (const t of tournaments) {
+        try {
+          // 이미 `resumePending`인 테이블은 건너뛴다 — 복구 중 다시 끊겨 스윕이
+          // 한 번 더 돌 때 세대를 두 번 올리지 않는다.
+          await this.freezeTournament(t.id, Date.now() - downSince, { overwrite: false });
+        } catch (e) {
+          this.logger.error(`Redis 장애 복구 실패 (tournament=${t.id})`, e as Error);
+        }
+      }
+    } catch (e) {
+      this.logger.error('Redis 장애 복구 자체가 실패했다', e as Error);
+    }
+    // 스윕 중에 또 끊겼으면 끝내지 않는다 — 다음 `up`이 처음부터 다시 한다.
+    if (outage.generation === generation) outage.markRecovered();
   }
 
   /**
@@ -111,6 +171,111 @@ export class RecoveryService implements OnApplicationBootstrap {
       where: { id: tournamentId, status: TournamentStatus.ONGOING },
       data: { status: TournamentStatus.SYNCING, pausedAt: pauseStartedAt },
     });
+
+    // 2. 블라인드 · 턴 시계. 부팅은 이미 멈춘 테이블(복구 중 재시작)의 정지
+    //    시간도 새로 쓴다 — 이번 다운타임이 딜러 화면에 보여야 한다.
+    const tables = await this.freezeTournament(tournamentId, downtime, { overwrite: true });
+
+    // 3. **테이블 단위**로 Redis 키 셋을 본다. 대회 하나 안에서 어떤 테이블은
+    //    살아 있고 어떤 테이블만 유실될 수 있다(부분 유실).
+    for (const table of tables) {
+      if (table.tablePlayers.length === 0) {
+        // 세울 게임 상태가 없다. 그래도 좌석 비트맵 **필드**가 없으면
+        // (Redis를 통째로 잃은 경우) 이 테이블이 좌석 목록에서 사라진다 —
+        // `getTournamentTables`는 hgetall이라 필드가 없는 테이블은 아예
+        // 안 보인다. 필드가 이미 있으면(정상적인 빈 테이블) 손대지 않는다.
+        const bitmap = await this.redis.getTableSeatStatus(tournamentId, table.id);
+        if (bitmap.length === 0) {
+          await this.redis.rebuildSeatBitmap(tournamentId, table.id, []);
+        }
+        // 스냅샷도 같은 이유로 세운다. 생성 경로는 T38 이후 빈 테이블에도 빈
+        // 스냅샷을 세우고(`session.service.ts`의 createSession·createTable),
+        // 그래서 "스냅샷이 없다"의 뜻이 유실 하나로 좁혀져 있다. 복구가 이
+        // 테이블만 비워 두면 재기동이 그 뜻을 다시 넓힌다 — 아무도 안 앉은
+        // 테이블에 딜러가 붙는 순간 `PlaysyncService.joinTable`이 맨 `Error`를
+        // 던져 500이 난다(`PlaysyncService.joinTable`). T38이 고친 결함이
+        // 재기동으로 되살아나는 것이다.
+        //
+        // 위 비트맵과 같은 모양으로 **없을 때만** 세운다. 정상적으로 살아 있는
+        // 빈 테이블의 스냅샷에는 직전 핸드가 남긴 버튼과 블라인드가 들어 있어,
+        // 덮어쓰면 다음 핸드가 버튼 0 · sb 100에서 시작한다. "스냅샷이 있으면
+        // 손대지 않는다"는 아래 좌석 있는 경로의 `rebuildSeatBitmap`과도 같은 규칙이다.
+        if (!(await this.redis.getSnapShot(table.id))) {
+          await this.redis.saveSnapshotUnlocked(
+            table.id,
+            createEmptyTableState(tournamentId),
+            'boot-recovery',
+          );
+        }
+        continue;
+      }
+
+      const existing = await this.redis.getSnapShot(table.id);
+      if (existing) {
+        // 턴 시계는 위 `freezeTournament`가 이미 멈췄다.
+        //
+        // **그래도 좌석 비트맵은 따로 본다.** 유실 판정을 스냅샷 유무 하나로
+        // 하면 이 부분 유실이 사각지대로 남는다 — 비트맵은
+        // `tournament:{id}:seat` 키 하나에 대회의 모든 테이블이 필드로 들어
+        // 있어서, 그 키만 잃는 일(필드 만료, maxmemory 축출, 부분 AOF 손상)이
+        // 스냅샷과 독립적으로 가능하다. 그러면 `getTournamentTables`가
+        // hgetall이라 이 테이블이 좌석 목록에서 통째로 사라지고, `entry`의
+        // 가드도 스냅샷 기준이라 막지 못하며, `UPDATE_SEAT_BIT`는 필드가 없으면
+        // 아무것도 하지 않으므로(설계상 옳다 — `RedisService`의 `UPDATE_SEAT_BIT`) **착석으로도
+        // 낫지 않는다.**
+        //
+        // **스냅샷에서 파생시킨다.** DB 좌석 행에는 참가가 끝난 잔재가 남을 수
+        // 있고(T29 이후 ELIMINATED·AWARDED의 좌석 행은 남는다), 시나리오
+        // 하네스가 단계마다 검사하는 불변식도 "좌석 비트맵 == 스냅샷"이다.
+        // 스냅샷이 살아 있는 이 분기에서는 그쪽이 권위다.
+        //
+        // 위 빈 테이블 분기와 같이 **없을 때만** 세운다. 있는 값을 스냅샷에
+        // 맞춰 고치는 것은 정합성 조정이지 유실 복구가 아니다 — 이 서비스는
+        // 무슨 장애였는지 추측하지 않고 지금 무엇이 없는지만 본다.
+        const bitmap = await this.redis.getTableSeatStatus(tournamentId, table.id);
+        if (bitmap.length === 0) {
+          const seated = existing.players
+            .map((p, seat) => (p ? seat : -1))
+            .filter((seat) => seat >= 0);
+          await this.redis.rebuildSeatBitmap(tournamentId, table.id, seated);
+          this.logger.warn(
+            `좌석 비트맵만 잃은 테이블을 스냅샷으로 되세웠다 (table=${table.id}, 좌석 ${seated.length}개)`,
+          );
+        }
+        continue;
+      }
+
+      // 테이블 단위로 격리한다. 한 테이블의 재구성이 실패해도(예: 앉힐
+      // PLAYING이 아무도 없다) 같은 대회의 다른 테이블까지 통째로 접히면
+      // 안 된다 — `recoverAll`의 대회 단위 catch만으로는 이 루프 중간에
+      // 던지는 순간 이후 테이블이 전부 스킵된다.
+      try {
+        await this.rebuildTable(tournamentId, table);
+      } catch (e) {
+        this.logger.error(`테이블 재구성 실패 (table=${table.id})`, e as Error);
+      }
+    }
+
+    // 앉은 테이블이 하나도 없으면 붙을 딜러가 없다. 접속 이벤트로 판정하면
+    // 영영 안 풀리므로 여기서 한 번 센다(T96).
+    const seatMaps = await this.redis.getTournamentTables(tournamentId);
+    if (!seatMaps.some((m) => m.seatStatus.some(Boolean))) {
+      await this.completeSync(tournamentId);
+    }
+  }
+
+  /**
+   * 대회 하나의 시계를 멈춰 세운다 — 블라인드 기준점을 DB에서 대입하고, 차례가
+   * 있던 테이블의 턴 시계를 멈춘다. **부팅과 Redis 복귀가 같이 쓴다**(T97).
+   * 스냅샷이 없는 테이블은 건드리지 않는다 — 재구성은 부팅 전용이다.
+   *
+   * @returns 그 대회의 테이블. 부팅이 이어서 비트맵 · 재구성을 본다.
+   */
+  private async freezeTournament(
+    tournamentId: string,
+    downMs: number,
+    opts: { overwrite: boolean },
+  ) {
     const t = await this.prisma.tournament.findUniqueOrThrow({
       where: { id: tournamentId },
       include: { blindStructure: true },
@@ -161,10 +326,9 @@ export class RecoveryService implements OnApplicationBootstrap {
       await this.redis.setTournamentMeta(tournamentId, dashboard, blindField, payoutTable);
     }
 
-    // 3. **테이블 단위**로 Redis 키 셋을 본다. 대회 하나 안에서 어떤 테이블은
-    //    살아 있고 어떤 테이블만 유실될 수 있다(부분 유실). orderBy는 순서
-    //    보장이 필요해서가 아니라(테이블마다 독립적으로 격리되므로 순서는
-    //    결과에 영향이 없다) 테스트를 결정적으로 만들기 위함이다.
+    // 3. 차례가 있던 테이블의 턴 시계. orderBy는 순서 보장이 필요해서가
+    //    아니라(테이블마다 독립적으로 격리되므로 순서는 결과에 영향이 없다)
+    //    테스트를 결정적으로 만들기 위함이다.
     const tables = await this.prisma.table.findMany({
       where: { tournamentId },
       orderBy: { tableOrder: 'asc' },
@@ -176,95 +340,17 @@ export class RecoveryService implements OnApplicationBootstrap {
     });
 
     for (const table of tables) {
-      if (table.tablePlayers.length === 0) {
-        // 세울 게임 상태가 없다. 그래도 좌석 비트맵 **필드**가 없으면
-        // (Redis를 통째로 잃은 경우) 이 테이블이 좌석 목록에서 사라진다 —
-        // `getTournamentTables`는 hgetall이라 필드가 없는 테이블은 아예
-        // 안 보인다. 필드가 이미 있으면(정상적인 빈 테이블) 손대지 않는다.
-        const bitmap = await this.redis.getTableSeatStatus(tournamentId, table.id);
-        if (bitmap.length === 0) {
-          await this.redis.rebuildSeatBitmap(tournamentId, table.id, []);
-        }
-        // 스냅샷도 같은 이유로 세운다. 생성 경로는 T38 이후 빈 테이블에도 빈
-        // 스냅샷을 세우고(`session.service.ts`의 createSession·createTable),
-        // 그래서 "스냅샷이 없다"의 뜻이 유실 하나로 좁혀져 있다. 복구가 이
-        // 테이블만 비워 두면 재기동이 그 뜻을 다시 넓힌다 — 아무도 안 앉은
-        // 테이블에 딜러가 붙는 순간 `PlaysyncService.joinTable`이 맨 `Error`를
-        // 던져 500이 난다(`PlaysyncService.joinTable`). T38이 고친 결함이
-        // 재기동으로 되살아나는 것이다.
-        //
-        // 위 비트맵과 같은 모양으로 **없을 때만** 세운다. 정상적으로 살아 있는
-        // 빈 테이블의 스냅샷에는 직전 핸드가 남긴 버튼과 블라인드가 들어 있어,
-        // 덮어쓰면 다음 핸드가 버튼 0 · sb 100에서 시작한다. "스냅샷이 있으면
-        // 손대지 않는다"는 아래 좌석 있는 경로의 `rebuildSeatBitmap`과도 같은 규칙이다.
-        if (!(await this.redis.getSnapShot(table.id))) {
-          await this.redis.saveSnapshotUnlocked(
-            table.id,
-            createEmptyTableState(tournamentId),
-            'boot-recovery',
-          );
-        }
-        continue;
-      }
-
-      const existing = await this.redis.getSnapShot(table.id);
-      if (existing) {
-        // **스냅샷에 시간이 하나 있다** — `actionDeadline`이다(T94). 예전에 이
-        // 자리 주석은 "스냅샷에는 시간이 없으므로 손댈 것이 없다"였고, 그
-        // 문장이 곧 결함이었다. 블라인드 시계는 위(2단계)에서 `pausedAt`에
-        // 얼려 두는데(더 이상 밀지 않는다) 액션 시계만 그대로 두면, 돌아온
-        // 사람이 누른 버튼이 마감을 지나 `TIME_OUT`으로 바뀐다
-        // (`PlaysyncService.handleAction`).
-        await this.pauseTurnClock(table.id, existing, downtime);
-        //
-        // **그래도 좌석 비트맵은 따로 본다.** 유실 판정을 스냅샷 유무 하나로
-        // 하면 이 부분 유실이 사각지대로 남는다 — 비트맵은
-        // `tournament:{id}:seat` 키 하나에 대회의 모든 테이블이 필드로 들어
-        // 있어서, 그 키만 잃는 일(필드 만료, maxmemory 축출, 부분 AOF 손상)이
-        // 스냅샷과 독립적으로 가능하다. 그러면 `getTournamentTables`가
-        // hgetall이라 이 테이블이 좌석 목록에서 통째로 사라지고, `entry`의
-        // 가드도 스냅샷 기준이라 막지 못하며, `UPDATE_SEAT_BIT`는 필드가 없으면
-        // 아무것도 하지 않으므로(설계상 옳다 — `RedisService`의 `UPDATE_SEAT_BIT`) **착석으로도
-        // 낫지 않는다.**
-        //
-        // **스냅샷에서 파생시킨다.** DB 좌석 행에는 참가가 끝난 잔재가 남을 수
-        // 있고(T29 이후 ELIMINATED·AWARDED의 좌석 행은 남는다), 시나리오
-        // 하네스가 단계마다 검사하는 불변식도 "좌석 비트맵 == 스냅샷"이다.
-        // 스냅샷이 살아 있는 이 분기에서는 그쪽이 권위다.
-        //
-        // 위 빈 테이블 분기와 같이 **없을 때만** 세운다. 있는 값을 스냅샷에
-        // 맞춰 고치는 것은 정합성 조정이지 유실 복구가 아니다 — 이 서비스는
-        // 무슨 장애였는지 추측하지 않고 지금 무엇이 없는지만 본다.
-        const bitmap = await this.redis.getTableSeatStatus(tournamentId, table.id);
-        if (bitmap.length === 0) {
-          const seated = existing.players
-            .map((p, seat) => (p ? seat : -1))
-            .filter((seat) => seat >= 0);
-          await this.redis.rebuildSeatBitmap(tournamentId, table.id, seated);
-          this.logger.warn(
-            `좌석 비트맵만 잃은 테이블을 스냅샷으로 되세웠다 (table=${table.id}, 좌석 ${seated.length}개)`,
-          );
-        }
-        continue;
-      }
-
-      // 테이블 단위로 격리한다. 한 테이블의 재구성이 실패해도(예: 앉힐
-      // PLAYING이 아무도 없다) 같은 대회의 다른 테이블까지 통째로 접히면
-      // 안 된다 — `recoverAll`의 대회 단위 catch만으로는 이 루프 중간에
-      // 던지는 순간 이후 테이블이 전부 스킵된다.
-      try {
-        await this.rebuildTable(tournamentId, table);
-      } catch (e) {
-        this.logger.error(`테이블 재구성 실패 (table=${table.id})`, e as Error);
+      // **스냅샷에 시간이 하나 있다** — `actionDeadline`이다(T94). 예전에 이
+      // 자리 주석은 "스냅샷에는 시간이 없으므로 손댈 것이 없다"였고, 그
+      // 문장이 곧 결함이었다. 블라인드 시계는 위(2단계)에서 `pausedAt`에
+      // 얼려 두는데(더 이상 밀지 않는다) 액션 시계만 그대로 두면, 돌아온
+      // 사람이 누른 버튼이 마감을 지나 `TIME_OUT`으로 바뀐다
+      // (`PlaysyncService.handleAction`).
+      if (table.tablePlayers.length > 0) {
+        await this.pauseTable(table.id, downMs, opts);
       }
     }
-
-    // 앉은 테이블이 하나도 없으면 붙을 딜러가 없다. 접속 이벤트로 판정하면
-    // 영영 안 풀리므로 여기서 한 번 센다(T96).
-    const seatMaps = await this.redis.getTournamentTables(tournamentId);
-    if (!seatMaps.some((m) => m.seatStatus.some(Boolean))) {
-      await this.completeSync(tournamentId);
-    }
+    return tables;
   }
 
   /**
@@ -334,24 +420,38 @@ export class RecoveryService implements OnApplicationBootstrap {
    *
    * 실패해도 대회를 접지 않는다. 이 테이블이 안 멈춘 것은 나쁘지만, 그
    * 때문에 다른 테이블의 복구까지 잃는 것은 더 나쁘다.
+   *
+   * **락을 탄다**(T97). Redis 복귀 스윕은 런타임이라 착석·액션과 경합한다.
+   * 부팅에는 경합 상대가 없어 락이 비용일 뿐이지만, 한 벌로 둔다.
+   *
+   * @param opts.overwrite 이미 `resumePending`인 테이블도 다시 쓰는가. 부팅은
+   *   `true` — 복구 중 재시작이면 이번 다운타임을 새로 싣는다. Redis 복귀는
+   *   `false` — 복구 중 다시 끊겨 스윕이 한 번 더 돌 때 세대를 두 번 올리지 않는다.
    */
-  private async pauseTurnClock(
+  private async pauseTable(
     tableId: string,
-    state: TableState,
     downMs: number,
+    opts: { overwrite: boolean },
   ): Promise<void> {
-    const plan = planPause(state);
-    if (!plan) return;
-
     try {
-      state.timerEpoch = plan.epoch;
-      state.actionDeadline = undefined;
-      state.resumePending = { downMs };
-      await this.redis.saveSnapshotUnlocked(tableId, state, 'boot-recovery');
-
-      this.logger.log(
-        `턴 시계를 멈췄다 — 딜러의 재개를 기다린다 (table=${tableId}, 세대 ${plan.epoch}, 정지 ${downMs}ms)`,
-      );
+      // `mutateSnapshot`은 안 썼을 때도 읽은 상태를 돌려주므로 "이번에 멈췄다"는
+      // 따로 들고 나온다(`PlaysyncService.handleAction`의 `acted`와 같다).
+      let epoch: number | null = null;
+      await this.redis.mutateSnapshot(tableId, async (state) => {
+        if (!state || (state.resumePending && !opts.overwrite)) return null;
+        const plan = planPause(state);
+        if (!plan) return null;
+        state.timerEpoch = plan.epoch;
+        state.actionDeadline = undefined;
+        state.resumePending = { downMs };
+        epoch = plan.epoch;
+        return state;
+      });
+      if (epoch !== null) {
+        this.logger.log(
+          `턴 시계를 멈췄다 — 딜러의 재개를 기다린다 (table=${tableId}, 세대 ${epoch}, 정지 ${downMs}ms)`,
+        );
+      }
     } catch (e) {
       this.logger.error(`턴 시계 정지 실패 (table=${tableId})`, e as Error);
     }

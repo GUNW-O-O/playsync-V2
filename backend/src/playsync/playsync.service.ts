@@ -3,6 +3,7 @@ import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nest
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PlayerStatus, Prisma, Role, TransactionType } from '@prisma/client';
 import { Queue } from 'bullmq';
+import { SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
 import { PlayerActionDto } from 'shared/dto/playsync.dto';
 import { Dashboard } from 'shared/types/tournamentMeta';
 import { TableEngine } from 'src/game-engine/table-engine';
@@ -115,8 +116,21 @@ export class PlaysyncService {
     // 상태가 돌아온다).
     let acted = false;
 
+    // **Redis 장애 중에는 받지 않는다**(T97). 끊긴 동안은 어차피 못 쓰고,
+    // 돌아온 직후 복구 스윕 전에는 **이미 지난 마감**으로 사람이 폴드된다.
+    const outage = this.redis.outage;
+    const generation = outage.generation;
+    if (!outage.isUp()) throw new Error(SERVER_RECOVERING_MESSAGE);
+
     const state = await this.redis.mutateSnapshot(tableId, async (state) => {
       if (!state) throw new Error(`Table ${tableId} not found`);
+
+      // 락을 기다리는 사이 끊겼다 돌아왔을 수 있다. 끊기기 전에 나가 ioredis가
+      // 들고 있던 명령이 복구 뒤 여기 닿으면, 그 사람의 판단은 장애 전 화면을
+      // 보고 한 것이다 — 반영하지 않는다.
+      if (outage.generation !== generation || !outage.isUp()) {
+        throw new Error(SERVER_RECOVERING_MESSAGE);
+      }
 
       const playerIdx = state.players.findIndex(p => p?.id === userId);
       if (playerIdx === -1) throw new Error('테이블에 없는 유저입니다.');

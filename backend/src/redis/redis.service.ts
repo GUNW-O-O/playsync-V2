@@ -10,10 +10,16 @@ import {
   currentRegistrationLevel,
   isRegistrationOpenAtLevel,
 } from "src/store/session/registration";
+import { outageOf, RedisOutage } from "./outage";
 
 @Injectable()
 export class RedisService {
-  constructor(@Inject('REDIS_CLIENT') private readonly redis: Redis) { }
+  /** Redis 장애 상태(T97). 생성자 시그니처를 늘리지 않으려고 필드로 든다. */
+  readonly outage: RedisOutage;
+
+  constructor(@Inject('REDIS_CLIENT') private readonly redis: Redis) {
+    this.outage = outageOf(redis);
+  }
 
   private getInfoKey(id: string) {
     return `tournament:${id}:info`;
@@ -614,7 +620,9 @@ export class RedisService {
    * 자리가 조용히 하나 더 생기는 것을 막는다.
    *
    * - `boot-recovery`: `RecoveryService`는 `app.listen()` 이전에 돈다.
-   *   경합할 상대가 아직 존재하지 않는다.
+   *   경합할 상대가 아직 존재하지 않는다. 같은 서비스의 런타임 경로(Redis
+   *   복귀 스윕 `recoverFromOutage`, T97)는 이 예외를 쓰지 않는다 — 턴 시계
+   *   정지(`pauseTable`)는 부팅에서도 `mutateSnapshot`을 탄다.
    * - `table-created`: 방금 INSERT한 테이블에 빈 스냅샷을 세운다. 그 테이블을
    *   아는 경로가 아직 없다(브로드캐스트보다 먼저 쓰는 이유도 같다).
    *
