@@ -67,9 +67,13 @@ const outages = new WeakMap<object, RedisOutage>();
 
 /**
  * 클라이언트 하나에 장애 상태 하나. 장애는 **연결**의 성질이라, 같은 클라이언트를
- * 쓰는 `RedisService`가 여럿이어도 같은 상태를 봐야 한다. 프로덕션은 클라이언트와
- * 서비스가 하나씩이지만, 통합 테스트는 한 클라이언트에 서비스를 테스트마다 새로
- * 세운다 — 매번 구독하면 클라이언트에 리스너가 쌓인다.
+ * 쓰는 `RedisService`가 여럿이어도 같은 상태를 봐야 한다.
+ *
+ * **프로덕션에도 인스턴스가 둘이다.** `RedisModule`의 것과 별도로 `DealerModule`이
+ * `providers`에 `RedisService`를 따로 둔다 — 같은 `REDIS_CLIENT` 위에 둘이다.
+ * 인스턴스마다 상태를 들면 복구 스윕이 한쪽만 `markRecovered`하고, 다른 쪽은
+ * `recovering`에 영영 남아 그쪽을 쓰는 경로가 전부 거절된다. 통합 테스트는 한
+ * 클라이언트에 서비스를 테스트마다 새로 세우므로, 매번 구독하면 리스너도 쌓인다.
  */
 export function outageOf(client: Pick<Redis, 'on' | 'status'>): RedisOutage {
   let outage = outages.get(client);

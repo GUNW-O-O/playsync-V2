@@ -19,6 +19,14 @@ import {
 export class RecoveryService implements OnApplicationBootstrap {
   private readonly logger = new Logger(RecoveryService.name);
 
+  /**
+   * 부팅 복구(`recoverAll`)가 도는 중인가(T97). `onApplicationBootstrap`이 켜고
+   * 끝나면 끈다. **`new`로 세운 곳(테스트 · 시나리오 하네스)은 부팅이 없으므로
+   * 끝난 것으로 본다** — 그래서 기본값이 비어 있다.
+   */
+  private boot: Promise<void> | null = null;
+  private booting = false;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
@@ -30,7 +38,9 @@ export class RecoveryService implements OnApplicationBootstrap {
   }
 
   async onApplicationBootstrap() {
-    await this.recoverAll();
+    this.booting = true;
+    this.boot = this.recoverAll().finally(() => { this.booting = false; });
+    await this.boot;
   }
 
   /**
@@ -39,6 +49,13 @@ export class RecoveryService implements OnApplicationBootstrap {
    * 실패하면 `recoverFromOutage`가 같은 조건부 update를 한 번 더 한다.
    */
   async onRedisDown(downSince: number): Promise<void> {
+    // **부팅 복구가 도는 동안에는 무시한다.** Redis가 죽은 채 프로세스가 뜨면
+    // 이 이벤트가 부팅 1단계보다 먼저 올 수 있고, 그러면 `pausedAt`이 "지금"으로
+    // 찍힌다. 프로세스가 멎은 구간의 진실은 부팅이 읽는 마지막 하트비트다 —
+    // 부팅 1단계는 ONGOING일 때만 쓰는 조건부 update라, 여기서 먼저 SYNCING으로
+    // 켜 버리면 그 하트비트 시각으로 덮을 길이 없다. 부팅 중에 끊긴 사실은
+    // `RedisOutage`가 기억하고, 돌아오면 `recoverFromOutage`가 부팅을 기다렸다 돈다.
+    if (this.booting) return;
     try {
       await this.markSyncing(new Date(downSince));
     } catch (e) {
@@ -65,6 +82,9 @@ export class RecoveryService implements OnApplicationBootstrap {
   async recoverFromOutage(): Promise<void> {
     const outage = this.redis.outage;
     const generation = outage.generation;
+    // 부팅 복구가 아직 돌고 있으면 끝나기를 기다린다 — 부팅이 대회를 켜고 테이블을
+    // 세운 뒤에 멈춰 세워야 한다(`onRedisDown`이 부팅 중에 무시하는 것과 짝이다).
+    await this.boot;
     const downSince = outage.downSince ?? Date.now();
     try {
       await this.markSyncing(new Date(downSince));
@@ -438,7 +458,16 @@ export class RecoveryService implements OnApplicationBootstrap {
       // 따로 들고 나온다(`PlaysyncService.handleAction`의 `acted`와 같다).
       let epoch: number | null = null;
       await this.redis.mutateSnapshot(tableId, async (state) => {
-        if (!state || (state.resumePending && !opts.overwrite)) return null;
+        if (!state) {
+          // 런타임은 스냅샷을 잃은 테이블을 다시 세우지 않는다(락 없이 돌면 착석과
+          // 경합한다) — 남기는 것은 로그뿐이다. 부팅(`overwrite`)은 이어서
+          // `recoverTournament`가 재구성하므로 여기서 말하지 않는다.
+          if (!opts.overwrite) {
+            this.logger.warn(`Redis 복귀 — 스냅샷이 없는 테이블은 멈추지도 세우지도 않는다 (table=${tableId})`);
+          }
+          return null;
+        }
+        if (state.resumePending && !opts.overwrite) return null;
         const plan = planPause(state);
         if (!plan) return null;
         state.timerEpoch = plan.epoch;

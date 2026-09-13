@@ -128,6 +128,11 @@ export class PlaysyncService {
       // 락을 기다리는 사이 끊겼다 돌아왔을 수 있다. 끊기기 전에 나가 ioredis가
       // 들고 있던 명령이 복구 뒤 여기 닿으면, 그 사람의 판단은 장애 전 화면을
       // 보고 한 것이다 — 반영하지 않는다.
+      //
+      // **이 검사가 막는 것은 검사 전에 끊긴 경우뿐이다.** 검사를 지난 뒤
+      // `writeSnapshot`이 나가기 전에 끊기면, 그 쓰기는 ioredis 오프라인 큐에
+      // 남았다가 다시 붙는 순간 그대로 실행될 수 있다(스펙의 범위 밖 「7초보다
+      // 짧은 장애」). 그 사이 스윕은 이 요청이 쥔 락을 기다린다.
       if (outage.generation !== generation || !outage.isUp()) {
         throw new Error(SERVER_RECOVERING_MESSAGE);
       }

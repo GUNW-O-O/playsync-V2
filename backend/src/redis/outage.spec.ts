@@ -1,5 +1,6 @@
 import { EventEmitter } from 'events';
 import { RedisOutage } from './outage';
+import { RedisService } from './redis.service';
 
 /** ioredis 클라이언트 대역. 이벤트와 `status`만 쓴다. */
 function fakeClient(status = 'connecting') {
@@ -82,5 +83,14 @@ describe('RedisOutage', () => {
     client.emit('close');
     client.emit('end');
     expect([o.phase, o.generation]).toEqual(['up', 0]);
+  });
+
+  it('같은 클라이언트의 RedisService 둘은 장애 상태 하나를 같이 본다', () => {
+    // 프로덕션도 둘이다(`RedisModule` · `DealerModule`). 따로 들면 한쪽만 복구된다.
+    const client = fakeClient('ready');
+    const a = new RedisService(client as never);
+    const b = new RedisService(client as never);
+    client.emit('reconnecting');
+    expect([a.outage === b.outage, b.outage.phase, client.listenerCount('ready')]).toEqual([true, 'down', 1]);
   });
 });
