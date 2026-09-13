@@ -2,6 +2,7 @@ import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { PlayerStatus, TournamentStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
+import type { OutagePhase } from 'src/redis/outage';
 import { buildTournamentMeta } from 'src/store/session/tournament-meta';
 import { LIVE_TOURNAMENT_STATUSES } from 'src/store/session/tournament-status';
 import { deriveAnteAmount } from 'shared/util/util';
@@ -26,6 +27,12 @@ export class RecoveryService implements OnApplicationBootstrap {
    */
   private boot: Promise<void> | null = null;
   private booting = false;
+  /**
+   * 지금 장애가 **프로세스가 뜬 뒤 한 번도 붙기 전에** 시작됐나. 그 구간의 정지
+   * 시작은 부팅이 읽는 하트비트이므로, 이 장애의 감지 · 복귀는 대회를 켜지 않는다.
+   * 복귀 스윕이 끝나면(`markRecovered`) 내린다.
+   */
+  private outageFromBoot = false;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -33,7 +40,9 @@ export class RecoveryService implements OnApplicationBootstrap {
   ) {
     // T97. 백엔드가 살아 있는 채 Redis만 끊겼다 돌아오는 경로다.
     // 핸들러는 인스턴스 메서드를 호출 시점에 찾는다 — 스펙이 스파이를 걸 수 있게.
-    this.redis.outage.on('down', (downSince: number) => { void this.onRedisDown(downSince); });
+    this.redis.outage.on('down', (downSince: number, previous: OutagePhase) => {
+      void this.onRedisDown(downSince, previous);
+    });
     this.redis.outage.on('up', () => { void this.recoverFromOutage(); });
   }
 
@@ -48,14 +57,21 @@ export class RecoveryService implements OnApplicationBootstrap {
    * DB만 읽는 화면(참가자 `/me`)이 장애 중에 곧바로 「복구 중」을 띄운다.
    * 실패하면 `recoverFromOutage`가 같은 조건부 update를 한 번 더 한다.
    */
-  async onRedisDown(downSince: number): Promise<void> {
+  async onRedisDown(downSince: number, previous: OutagePhase): Promise<void> {
     // **부팅 복구가 도는 동안에는 무시한다.** Redis가 죽은 채 프로세스가 뜨면
     // 이 이벤트가 부팅 1단계보다 먼저 올 수 있고, 그러면 `pausedAt`이 "지금"으로
     // 찍힌다. 프로세스가 멎은 구간의 진실은 부팅이 읽는 마지막 하트비트다 —
     // 부팅 1단계는 ONGOING일 때만 쓰는 조건부 update라, 여기서 먼저 SYNCING으로
     // 켜 버리면 그 하트비트 시각으로 덮을 길이 없다. 부팅 중에 끊긴 사실은
     // `RedisOutage`가 기억하고, 돌아오면 `recoverFromOutage`가 부팅을 기다렸다 돈다.
-    if (this.booting) return;
+    //
+    // **`onApplicationBootstrap`이 불리기 전에도 올 수 있다.** `REDIS_CLIENT`는 DI
+    // 중에 만들어져 곧바로 붙으러 가므로, Redis가 죽은 채 뜨면 `reconnecting`이
+    // 부팅 복구보다 먼저 온다. 그래서 `booting`만으로는 못 막고, 끊기기 직전 상태가
+    // `booting`(한 번도 붙은 적 없음)인지를 함께 본다. `booting`을 기본 true로 두지
+    // 않는 이유는 `new`로 세운 곳(시나리오 하네스)이 부팅을 부르지 않기 때문이다.
+    if (previous === 'booting') this.outageFromBoot = true;
+    if (this.booting || previous === 'booting') return;
     try {
       await this.markSyncing(new Date(downSince));
     } catch (e) {
@@ -87,7 +103,9 @@ export class RecoveryService implements OnApplicationBootstrap {
     await this.boot;
     const downSince = outage.downSince ?? Date.now();
     try {
-      await this.markSyncing(new Date(downSince));
+      // 부팅 전에 시작된 장애면 켜지 않는다 — `onRedisDown`이 거른 것과 같은 이유다.
+      // 부팅이 아직 안 불렸어도(돌아온 것이 DI 도중) 그 부팅이 하트비트로 켠다.
+      if (!this.outageFromBoot) await this.markSyncing(new Date(downSince));
       const tournaments = await this.prisma.tournament.findMany({
         where: { status: TournamentStatus.SYNCING },
         select: { id: true },
@@ -105,7 +123,10 @@ export class RecoveryService implements OnApplicationBootstrap {
       this.logger.error('Redis 장애 복구 자체가 실패했다', e as Error);
     }
     // 스윕 중에 또 끊겼으면 끝내지 않는다 — 다음 `up`이 처음부터 다시 한다.
-    if (outage.generation === generation) outage.markRecovered();
+    if (outage.generation === generation) {
+      this.outageFromBoot = false;
+      outage.markRecovered();
+    }
   }
 
   /**

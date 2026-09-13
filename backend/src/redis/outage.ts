@@ -44,12 +44,18 @@ export class RedisOutage extends EventEmitter {
     this.emit('recovered');
   }
 
+  /**
+   * `down` 이벤트는 `(downSince, previous)`를 싣는다. `previous`가 `'booting'`이면
+   * 프로세스가 뜬 뒤 한 번도 붙은 적이 없다는 뜻이다 — 그 구간은 부팅 복구의 몫이다
+   * (`RecoveryService.onRedisDown`). 첫 인자만 받는 리스너는 그대로 돈다.
+   */
   private onLost() {
     if (this.phase === 'down') return;
+    const previous = this.phase;
     this.generation += 1;
     this.downSince ??= this.now();
     this.phase = 'down';
-    this.emit('down', this.downSince);
+    this.emit('down', this.downSince, previous);
   }
 
   private onReady() {

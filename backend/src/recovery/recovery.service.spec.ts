@@ -34,13 +34,13 @@ describe('RecoveryService — 부팅 중 Redis 장애', () => {
     const { outage, updateMany, recovery, finishBoot } = setup();
     const boot = recovery.onApplicationBootstrap();
 
-    outage.emit('down', 1000);
+    outage.emit('down', 1000, 'up');
     await flush();
     expect(`부팅 중 update ${updateMany.mock.calls.length}`).toBe('부팅 중 update 0');
 
     finishBoot();
     await boot;
-    outage.emit('down', 2000);
+    outage.emit('down', 2000, 'up');
     await flush();
     expect(updateMany).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ pausedAt: new Date(2000) }) }),
@@ -63,9 +63,29 @@ describe('RecoveryService — 부팅 중 Redis 장애', () => {
       .toBe('부팅 뒤 스윕 1 복구 1');
   });
 
-  it('부팅을 거치지 않고 new로 세우면 부팅은 끝난 것이다 (반대 입력)', async () => {
+  it('부팅을 부르지 않았어도 up에서 끊긴 down은 대회를 켠다 (반대 입력)', async () => {
+    // 시나리오 하네스는 `new`로 세우고 `onApplicationBootstrap`을 부르지 않는다.
     const { outage, updateMany } = setup();
-    outage.emit('down', 3000);
+    outage.emit('down', 3000, 'up');
+    await flush();
+    expect(updateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('한 번도 붙기 전(booting)에 끊긴 down은 부팅이 불리기 전이어도 대회를 건드리지 않는다', async () => {
+    // Redis가 죽은 채 프로세스가 뜨면 `reconnecting`은 DI 도중, 부팅 복구보다 먼저 온다.
+    const { outage, updateMany } = setup();
+    outage.emit('down', 4000, 'booting');
+    await flush();
+    expect(`down update ${updateMany.mock.calls.length}`).toBe('down update 0');
+
+    // DI 도중에 돌아와도 스윕이 대회를 켜지 않는다 — 켜는 것은 뒤이을 부팅이다.
+    outage.emit('up');
+    await flush();
+    expect(`up update ${updateMany.mock.calls.length} 복구 ${outage.markRecovered.mock.calls.length}`)
+      .toBe('up update 0 복구 1');
+
+    // 그 장애가 끝난 뒤의 런타임 장애는 다시 켠다.
+    outage.emit('down', 5000, 'up');
     await flush();
     expect(updateMany).toHaveBeenCalledTimes(1);
   });

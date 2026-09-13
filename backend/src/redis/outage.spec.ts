@@ -30,7 +30,8 @@ describe('RedisOutage', () => {
     o.on('down', down);
     client.emit('reconnecting');
     expect([o.phase, o.generation, o.downSince, o.isUp()]).toEqual(['down', 1, 5000, false]);
-    expect(down).toHaveBeenCalledWith(5000);
+    // 둘째 인자는 끊기기 직전 상태다. 첫 인자만 받는 리스너도 그대로 돈다.
+    expect(down).toHaveBeenCalledWith(5000, 'up');
   });
 
   it('down에서 ready → recovering, up 발행. markRecovered → up, recovered 발행', () => {
@@ -54,7 +55,10 @@ describe('RedisOutage', () => {
     client.emit('reconnecting');
     client.emit('ready');
     now = 9000;
+    const down = jest.fn();
+    o.on('down', down);
     client.emit('reconnecting');
+    expect(down).toHaveBeenCalledWith(1000, 'recovering');
     expect([o.phase, o.generation, o.downSince]).toEqual(['down', 2, 1000]);
   });
 
@@ -71,8 +75,11 @@ describe('RedisOutage', () => {
     const client = fakeClient();
     const o = new RedisOutage(client as never, () => 7);
     const up = jest.fn();
+    const down = jest.fn();
     o.on('up', up);
+    o.on('down', down);
     client.emit('reconnecting');
+    expect(down).toHaveBeenCalledWith(7, 'booting');
     client.emit('ready');
     expect([o.phase, up.mock.calls.length]).toEqual(['recovering', 1]);
   });
