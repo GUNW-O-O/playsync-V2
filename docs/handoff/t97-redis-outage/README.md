@@ -9,6 +9,17 @@
 **Redis만 죽었다 돌아올 때 차례였던 사람이 자동 폴드되던 결함(T97, T98·T99 동반)을 고치는 중이다.**
 4태스크 중 Task 1 완료, Task 2는 리뷰 반려 뒤 수정 전, Task 3·4는 시작 전.
 
+## 지금 즉시 할 일 — Task 2 수정
+
+1. `git switch fix/t97-redis-outage` — 원격에 있다
+2. **`task-2-review.md`를 연다.** 고칠 것 넷(I1 + M1·M2·M4)과 수정 방법, 돌릴 테스트가 전부 거기 있다
+   - 핵심은 I1: 기존 테스트(M4)가 남긴 실제 게이트웨이·`RecoveryService`의 장애 리스너가 새 테스트와 같은
+     대회 행을 써서 **새 테스트가 타이밍으로 통과한다.** `onModuleDestroy`에서 리스너를 떼고 M4가 정리한다
+3. 요구사항 원문은 계획서의 `### Task 2`, 이미 한 일은 `task-2-report.md`
+4. 고친 뒤 수정 범위만 재리뷰한다 — 기준 커밋은 **`45d419d`**. 그 뒤에 이 인수인계 커밋(`docs/handoff`)이
+   끼어 있으니 diff에서 뺀다: `git diff 45d419d..HEAD -- . ':!docs/handoff'`
+5. Task 2가 통과하면 Task 3 → Task 4 → 메인 몫(최종 리뷰 → 기준선 → SSOT → PR). 넘길 판정은 `progress.md` 맨 위
+
 ## 읽는 순서
 
 1. `docs/tickets-recovery.md`의 T97~T99 — 무엇이 깨졌나(2026-09-13 실측)
