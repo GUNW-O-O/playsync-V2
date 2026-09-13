@@ -28,9 +28,11 @@ export class RecoveryService implements OnApplicationBootstrap {
   private boot: Promise<void> | null = null;
   private booting = false;
   /**
-   * 지금 장애가 **프로세스가 뜬 뒤 한 번도 붙기 전에** 시작됐나. 그 구간의 정지
-   * 시작은 부팅이 읽는 하트비트이므로, 이 장애의 감지 · 복귀는 대회를 켜지 않는다.
-   * 복귀 스윕이 끝나면(`markRecovered`) 내린다.
+   * **부팅 전에** 장애가 있었나 — 프로세스가 뜬 뒤 한 번도 붙기 전에 끊겼다. 부팅
+   * 복구가 하트비트로 **부팅 전 구간 전체**를 계상하므로, 이것이 켜져 있는 동안의
+   * 장애 감지 · 복귀는 대회를 켜지 않는다. 그 사이 다시 끊겨도(`previous`가
+   * `recovering`) 마찬가지다. **부팅 복구가 끝나야만 내린다**(`onApplicationBootstrap`)
+   * — 스윕이 끝났다고 내리면 부팅 전의 두 번째 장애가 이른 `pausedAt`을 쓴다.
    */
   private outageFromBoot = false;
 
@@ -48,7 +50,11 @@ export class RecoveryService implements OnApplicationBootstrap {
 
   async onApplicationBootstrap() {
     this.booting = true;
-    this.boot = this.recoverAll().finally(() => { this.booting = false; });
+    this.boot = this.recoverAll().finally(() => {
+      this.booting = false;
+      // 부팅 전 장애는 방금 끝난 부팅 복구가 계상했다. 이제부터는 런타임 장애다.
+      this.outageFromBoot = false;
+    });
     await this.boot;
   }
 
@@ -70,8 +76,10 @@ export class RecoveryService implements OnApplicationBootstrap {
     // 부팅 복구보다 먼저 온다. 그래서 `booting`만으로는 못 막고, 끊기기 직전 상태가
     // `booting`(한 번도 붙은 적 없음)인지를 함께 본다. `booting`을 기본 true로 두지
     // 않는 이유는 `new`로 세운 곳(시나리오 하네스)이 부팅을 부르지 않기 때문이다.
+    // 한 번 부팅 전 장애로 표시되면 부팅 복구가 끝날 때까지 뒤이은 장애(`recovering`에서
+    // 끊긴 것)도 같은 창에 속한다.
     if (previous === 'booting') this.outageFromBoot = true;
-    if (this.booting || previous === 'booting') return;
+    if (this.booting || this.outageFromBoot) return;
     try {
       await this.markSyncing(new Date(downSince));
     } catch (e) {
@@ -123,10 +131,7 @@ export class RecoveryService implements OnApplicationBootstrap {
       this.logger.error('Redis 장애 복구 자체가 실패했다', e as Error);
     }
     // 스윕 중에 또 끊겼으면 끝내지 않는다 — 다음 `up`이 처음부터 다시 한다.
-    if (outage.generation === generation) {
-      this.outageFromBoot = false;
-      outage.markRecovered();
-    }
+    if (outage.generation === generation) outage.markRecovered();
   }
 
   /**

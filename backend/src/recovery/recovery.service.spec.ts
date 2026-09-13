@@ -24,7 +24,7 @@ function setup() {
   jest.spyOn(recovery, 'recoverAll').mockImplementationOnce(
     () => new Promise<void>((r) => { finishBoot = r; }),
   );
-  return { outage, updateMany, recovery, finishBoot: () => finishBoot() };
+  return { outage, updateMany, findMany, recovery, finishBoot: () => finishBoot() };
 }
 
 const flush = () => new Promise((r) => setImmediate(r));
@@ -83,10 +83,30 @@ describe('RecoveryService — 부팅 중 Redis 장애', () => {
     await flush();
     expect(`up update ${updateMany.mock.calls.length} 복구 ${outage.markRecovered.mock.calls.length}`)
       .toBe('up update 0 복구 1');
+  });
 
-    // 그 장애가 끝난 뒤의 런타임 장애는 다시 켠다.
-    outage.emit('down', 5000, 'up');
+  it('부팅 전 장애의 스윕 도중 다시 끊겨도(recovering) 대회를 건드리지 않고, 부팅 복구가 끝나야 풀린다', async () => {
+    const { outage, updateMany, findMany, recovery, finishBoot } = setup();
+    let releaseSweep!: () => void;
+    findMany.mockImplementationOnce(() => new Promise((r) => { releaseSweep = () => r([]); }));
+
+    outage.emit('down', 4000, 'booting');
     await flush();
-    expect(updateMany).toHaveBeenCalledTimes(1);
+    outage.emit('up');            // 스윕이 대회 조회에서 멈춰 있다
+    await flush();
+    outage.generation = 2;          // 그 사이 다시 끊겼다
+    outage.emit('down', 4000, 'recovering');
+    await flush();
+    releaseSweep();
+    await flush();
+    expect(`부팅 전 update ${updateMany.mock.calls.length} 복구 ${outage.markRecovered.mock.calls.length}`)
+      .toBe('부팅 전 update 0 복구 0');
+
+    const boot = recovery.onApplicationBootstrap();
+    finishBoot();
+    await boot;
+    outage.emit('down', 9000, 'up');
+    await flush();
+    expect(`부팅 뒤 update ${updateMany.mock.calls.length}`).toBe('부팅 뒤 update 1');
   });
 });
