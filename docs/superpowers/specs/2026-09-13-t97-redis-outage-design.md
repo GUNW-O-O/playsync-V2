@@ -69,12 +69,13 @@ Redis 복귀     ─ 상태 recovering
 
 | 지금 | 입력 | 다음 | 부수효과 |
 |---|---|---|---|
-| up | `close` | down | 세대 +1, 감지 시각 기록, `redis.down` 발행 |
+| up | `reconnecting` | down | 세대 +1, 감지 시각 기록, `redis.down` 발행 |
 | down | `ready` | recovering | `redis.up` 발행 |
 | recovering | 복구 끝 | up | `redis.recovered` 발행 |
-| recovering | `close` | down | 세대 +1, **감지 시각은 첫 장애의 것을 유지** |
+| recovering | `reconnecting` | down | 세대 +1, **감지 시각은 첫 장애의 것을 유지** |
 | (부팅 전) | 첫 `ready` | up | 없음 — 부팅 복구가 따로 돈다 |
-| 아무 상태 | 종료 중의 `close`(`quit` · 모듈 종료) | 그대로 | 없음 — 안 거르면 종료할 때마다 대회가 `SYNCING`이 된다 |
+| (부팅 전) | `reconnecting` | down | 부팅 중 끊겼다 — 돌아오면 런타임 복구가 돈다 |
+| 아무 상태 | `close` · `end` (`quit` · 모듈 종료) | 그대로 | 없음 — `close`로 감지하면 종료할 때마다 대회가 `SYNCING`이 된다. ioredis는 스스로 닫을 때 `reconnecting`을 내지 않는다 |
 
 **막는 자리는 둘이다.**
 
