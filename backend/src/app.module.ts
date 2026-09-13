@@ -3,6 +3,7 @@ import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { throttlerOptions } from './auth/throttle';
 import { PrismaExceptionFilter } from './common/prisma-exception.filter';
+import { RedisOutageFilter } from './common/redis-outage.filter';
 import { DealerModule } from './dealer/dealer.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { RedisModule } from './redis/redis.module';
@@ -66,6 +67,11 @@ const loadMetrics = process.env.LOAD_METRICS === '1' ? [MetricsModule] : [];
     // 않아, 거기 건 줄은 지워져도 아무도 울지 않는다. 모듈에 걸면 등록
     // 자체를 스펙이 볼 수 있다(`app.module.filter.spec.ts`).
     { provide: APP_FILTER, useClass: PrismaExceptionFilter },
+    // T97. Redis 장애 중에 난 오류를 503 「복구 중」으로 내린다.
+    // `PrismaExceptionFilter` 아래에 둔다 — `RedisOutageFilter`는 Prisma
+    // 오류를 만나면 스스로 그 필터에 위임하므로(`redis-outage.filter.ts`),
+    // 이 등록이 Prisma 오류의 응답 모양을 바꾸지 않는다.
+    { provide: APP_FILTER, useClass: RedisOutageFilter },
   ],
 })
 export class AppModule {}

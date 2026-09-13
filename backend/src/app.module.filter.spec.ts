@@ -1,5 +1,6 @@
 import { APP_FILTER } from '@nestjs/core';
 import { PrismaExceptionFilter } from './common/prisma-exception.filter';
+import { RedisOutageFilter } from './common/redis-outage.filter';
 
 /**
  * **필터가 실제로 앱에 걸려 있는가.**
@@ -25,6 +26,23 @@ describe('AppModule의 전역 예외 필터', () => {
         p !== null &&
         (p as { provide?: unknown }).provide === APP_FILTER &&
         (p as { useClass?: unknown }).useClass === PrismaExceptionFilter,
+    );
+
+    expect(registered).toBe(true);
+  });
+
+  it('Redis 장애 필터를 APP_FILTER로 건다(T97)', () => {
+    process.env.JWT_SECRET = process.env.JWT_SECRET ?? 'test-only-not-a-real-secret';
+    const { AppModule } = require('./app.module') as typeof import('./app.module');
+
+    const providers = Reflect.getMetadata('providers', AppModule) as unknown[];
+
+    const registered = providers.some(
+      (p) =>
+        typeof p === 'object' &&
+        p !== null &&
+        (p as { provide?: unknown }).provide === APP_FILTER &&
+        (p as { useClass?: unknown }).useClass === RedisOutageFilter,
     );
 
     expect(registered).toBe(true);

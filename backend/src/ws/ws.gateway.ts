@@ -8,10 +8,13 @@ import {
   KEEPALIVE_EVENT,
   PlayerActionSchema,
   RebuyResponseSchema,
+  ServerOutageSchema,
   TableStateSchema,
   TableState as WireTableState,
   TournamentClosedSchema,
   TournamentSyncingSchema,
+  SERVER_OUTAGE_EVENT,
+  SERVER_RECOVERING_MESSAGE,
   TOURNAMENT_SYNCING_EVENT,
 } from '@playsync/contract';
 import { DealerService } from 'src/dealer/dealer.service';
@@ -53,7 +56,12 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     private readonly eventEmitter: EventEmitter2,
     private readonly prisma: PrismaService,
     private readonly recovery: RecoveryService,
-  ) { }
+  ) {
+    // T97. 끊긴 순간과 복구가 끝난 순간을 화면에 알린다. 복구 뒤 n/n은
+    // 부팅 뒤와 같은 재집계로 센다 — 소켓이 안 끊겼으므로 보통 곧바로 찬다.
+    this.redis.outage.on('down', () => this.broadcastOutage(true));
+    this.redis.outage.on('recovered', () => { void this.afterOutage(); });
+  }
 
   private pingTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -235,6 +243,12 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
         const wire = this.toWireState(state);
         if (wire) client.send(JSON.stringify({ event: 'renderGame', data: wire }));
 
+        // 복구 중에 붙었다(T97). 서버가 새 이벤트를 보장할 수 없는 자리라 붙는
+        // 쪽이 매번 확인한다 — T96 `recount`의 joiner와 같은 이유다.
+        if (!this.redis.outage.isUp()) {
+          client.send(JSON.stringify({ event: SERVER_OUTAGE_EVENT, data: ServerOutageSchema.parse({ down: true }) }));
+        }
+
         // 딜러가 돌아왔다 — 그 대회가 SYNCING이면 다시 세어 본다(T96).
         // 부수 작업(집계)의 순간 장애가 바깥 catch로 새면, 방금 인증에
         // 성공한 딜러 소켓이 "인증 실패"로 끊긴다(M1) — 여기서 삼킨다.
@@ -351,6 +365,35 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     return { ...parsed.data, serverTime: Date.now() };
   }
 
+  /** 테이블 방의 소켓 전원에게. 소켓 화면은 좌석·딜러 둘뿐이다. */
+  private broadcastOutage(down: boolean) {
+    const data = ServerOutageSchema.parse({ down });
+    for (const tableId of [...this.tableSessions.keys()]) {
+      this.broadcastToTable(tableId, SERVER_OUTAGE_EVENT, data);
+    }
+  }
+
+  /**
+   * 복구가 끝났다(T97). 멈춘 테이블의 새 스냅샷을 다시 그리게 하고, 대회마다
+   * n/n을 센다. **Redis를 다시 읽는다** — 스윕이 쓴 `resumePending`이 거기 있다.
+   */
+  private async afterOutage() {
+    this.broadcastOutage(false);
+    for (const tableId of [...this.tableSessions.keys()]) {
+      try {
+        this.broadcastRenderGame(tableId, await this.redis.getSnapShot(tableId));
+      } catch (e) {
+        this.logger.error(`복구 뒤 renderGame 실패 (table=${tableId})`, e as Error);
+      }
+    }
+    const live = await this.prisma.tournament
+      .findMany({ where: { status: TournamentStatus.SYNCING }, select: { id: true } })
+      .catch((e) => { this.logger.error('복구 뒤 대회 조회 실패', e); return []; });
+    for (const t of live) {
+      await this.reportSync(t.id).catch(() => { /* reportSync가 이미 로그로 남긴다 */ });
+    }
+  }
+
   /** `renderGame` 브로드캐스트의 유일한 입구. */
   private broadcastRenderGame(tableId: string, state: unknown) {
     const wire = this.toWireState(state);
@@ -392,6 +435,10 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
   async handlePlayerAction(@ConnectedSocket() client: any, @MessageBody() data: any) {
     const { tableId, userId, role } = client;
 
+    // T97. Redis 장애 중에는 좌석 액션을 즉시 거절한다 — 예전엔 ioredis가
+    // 7초 재시도한 뒤 원문 에러를 냈다.
+    if (!this.redis.outage.isUp()) return { event: 'error', data: SERVER_RECOVERING_MESSAGE };
+
     // 딜러 토큰의 sub는 딜러 세션 id라 좌석과 매칭되지 않는다. 서비스가
     // 걸러내기는 하지만, 권한 판단은 경계에서 명시적으로 하는 편이 읽기 쉽다.
     if (role === Role.DEALER) {
@@ -423,6 +470,10 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
   @SubscribeMessage('DEALER_ACTION')
   async handleDealerAction(@ConnectedSocket() client: any, @MessageBody() data: any) {
     const { tableId, role, tournamentId } = client;
+
+    // T97. `recovering` 동안에도 딜러 명령을 받지 않는다 — 재개는 딜러가
+    // 다 돌아온 뒤라야 뜻이 있다(SYNCING 가드와 같은 이유).
+    if (!this.redis.outage.isUp()) return { event: 'error', data: SERVER_RECOVERING_MESSAGE };
 
     if (role !== Role.DEALER) return { event: 'error', data: '딜러만 가능한 액션입니다.' };
 

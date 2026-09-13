@@ -15,7 +15,7 @@ import { PrismaClient, Role, TournamentStatus } from '@prisma/client';
 import { createTestRedis, flushTestRedis } from '../../test/helpers/redis';
 import { closeTestPrisma, createTestPrisma, truncateAll } from '../../test/helpers/prisma';
 import { RecoveryService } from 'src/recovery/recovery.service';
-import { TOURNAMENT_SYNCING_EVENT } from '@playsync/contract';
+import { SERVER_OUTAGE_EVENT, SERVER_RECOVERING_MESSAGE, TOURNAMENT_SYNCING_EVENT } from '@playsync/contract';
 
 /**
  * 게이트웨이의 인바운드 경계.
@@ -1304,6 +1304,96 @@ describe('WsGateway 인바운드 경계', () => {
       } finally {
         findUniqueSpy.mockRestore();
       }
+    });
+
+    /**
+     * T97. Redis 복구가 끝난 뒤(`outage`의 `recovered`)에도 n/n 재집계는
+     * 부팅 뒤와 같은 함수(`reportSync`)를 탄다 — 소켓이 안 끊겼으므로
+     * 딜러 둘이 이미 붙어 있으면 곧바로 찬다.
+     */
+    it('recovered 뒤 딜러가 이미 n/n이면 completeSync를 부른다(T97)', async () => {
+      await seedSyncingTournament();
+      await seedSeats();
+      const tableDealer = await connect(await dealerTicket(TABLE), TABLE);
+      const otherDealer = await connect(await dealerTicket(OTHER_TABLE), OTHER_TABLE);
+      jest.clearAllMocks();
+
+      (gateway as any).redis.outage.emit('recovered');
+      await waitUntil(() => recovery.completeSync.mock.calls.length > 0);
+
+      expect(recovery.completeSync).toHaveBeenCalledWith(TOURNAMENT);
+      expect(lastSyncingPayload(tableDealer)).toEqual({ syncing: false, present: 2, required: 2 });
+      expect(lastSyncingPayload(otherDealer)).toEqual({ syncing: false, present: 2, required: 2 });
+    });
+  });
+
+  /**
+   * Redis 장애(T97). `RecoveryService`는 부팅과 런타임 복구의 실제 전이를
+   * 이미 검증한다(`redis/outage.spec.ts` · 시나리오) — 여기서는 **게이트웨이가
+   * 상태를 읽고 이벤트에 반응하는가**만 본다. 상태를 바꾸는 방법은 `outage`에
+   * 직접 `emit`하고 `phase`를 대입하는 것이다(게이트웨이 계층의 단위 관심사).
+   */
+  describe('Redis 장애 (T97)', () => {
+    function outage() {
+      return (gateway as any).redis.outage as import('src/redis/outage').RedisOutage;
+    }
+    function events(client: { send: jest.Mock }, name: string) {
+      return client.send.mock.calls.map(([raw]: [string]) => JSON.parse(raw)).filter((m: any) => m.event === name);
+    }
+
+    beforeEach(async () => {
+      (gateway as any).tableSessions.clear();
+      await redis.set(`table:state:${TABLE}`, JSON.stringify(makeState()));
+    });
+    afterEach(() => { outage().phase = 'up'; });
+
+    it('down이면 좌석 액션을 즉시 한국어로 거절한다', async () => {
+      const seat = await connect(await seatTicket('alice'));
+      outage().phase = 'down';
+      const res = await gateway.handlePlayerAction(seat, { action: 'CALL' });
+      expect(res).toEqual({ event: 'error', data: SERVER_RECOVERING_MESSAGE });
+    });
+
+    it('recovering이어도 딜러 명령을 거절한다', async () => {
+      const d = await connect(await dealerTicket(TABLE));
+      outage().phase = 'recovering';
+      const res = await gateway.handleDealerAction(d, { action: 'START_PRE_FLOP' });
+      expect(res).toEqual({ event: 'error', data: SERVER_RECOVERING_MESSAGE });
+      expect(dealer.startPreFlop).not.toHaveBeenCalled();
+    });
+
+    it('up이면 거절하지 않는다 (반대 입력)', async () => {
+      const seat = await connect(await seatTicket('alice'));
+      const res = await gateway.handlePlayerAction(seat, { action: 'CALL' });
+      expect(res?.data).not.toBe(SERVER_RECOVERING_MESSAGE);
+    });
+
+    it('down 이벤트에 테이블 소켓 전원이 down:true를 받는다', async () => {
+      const seat = await connect(await seatTicket('alice'));
+      const d = await connect(await dealerTicket(TABLE));
+      outage().emit('down', Date.now());
+      expect(events(seat, SERVER_OUTAGE_EVENT).at(-1)?.data).toEqual({ down: true });
+      expect(events(d, SERVER_OUTAGE_EVENT).at(-1)?.data).toEqual({ down: true });
+    });
+
+    it('recovered 이벤트에 down:false와 renderGame을 받는다', async () => {
+      const seat = await connect(await seatTicket('alice'));
+      seat.send.mockClear();
+      outage().emit('recovered');
+      await new Promise((r) => setTimeout(r, 50));
+      expect(events(seat, SERVER_OUTAGE_EVENT).at(-1)?.data).toEqual({ down: false });
+      expect(events(seat, 'renderGame').length).toBeGreaterThan(0);
+    });
+
+    it('recovering 중에 붙은 소켓은 붙자마자 down:true를 받는다', async () => {
+      outage().phase = 'recovering';
+      const seat = await connect(await seatTicket('alice'));
+      expect(events(seat, SERVER_OUTAGE_EVENT).at(-1)?.data).toEqual({ down: true });
+    });
+
+    it('up일 때 붙은 소켓에는 serverOutage를 보내지 않는다 (반대 입력)', async () => {
+      const seat = await connect(await seatTicket('alice'));
+      expect(events(seat, SERVER_OUTAGE_EVENT)).toHaveLength(0);
     });
   });
 });
