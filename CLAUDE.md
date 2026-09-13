@@ -20,7 +20,8 @@
 
 | 문서 | 언제 |
 |---|---|
-| [`docs/tickets-audit.md`](./docs/tickets-audit.md) | **이미 깨져 있는 것.** 결함 대장이고, 상태 열이 진행 현황이다 |
+| [`docs/tickets-audit.md`](./docs/tickets-audit.md) | **이미 깨져 있는 것.** 전수검사와 그 후속의 결함 대장. 상태 열이 진행 현황이다 |
+| [`docs/tickets-recovery.md`](./docs/tickets-recovery.md) | 서버·Redis가 멎었다 돌아오는 경로의 결함 대장(T93~) |
 | [`docs/backlog.md`](./docs/backlog.md) | **하기로 정한 방향**과 안 하기로 한 것의 근거 |
 | `docs/superpowers/plans/` · `specs/` | 티켓의 계획과 설계. 스킬이 만든다 |
 | [`docs/threat-model.md`](./docs/threat-model.md) | 신뢰 경계 |
@@ -32,6 +33,12 @@
 
 같은 내용을 두 곳에 쓰지 않는다. 두 벌이 되면 어긋난다.
 
+**문서 하나는 주제 하나를 든다. 가볍게, 핵심만.** 성격이 다른 것을 있는 문서에
+계속 붙여 키우지 않고 새 문서를 연다. `tickets-audit.md`가 그렇게 물렸다 —
+전수검사(T58~T71)로 시작해 작업·촬영·실측에서 나온 티켓이 붙어 2,400줄이
+넘었고, 제목과 머리말이 내용과 어긋났다(2026-09-13). 완료된 티켓의 긴 본문이
+spec·plan·`domain.md`에 이미 있으면 한 줄과 포인터로 줄인다.
+
 ### 티켓을 어디에 기록하나
 
 `docs/tickets-next.md`를 폐기하면서 정했다(2026-08-20). 그 문서는 네 가지를
@@ -41,9 +48,9 @@
 
 | 무엇 | 어디 |
 |---|---|
-| 무엇을 할지 | `tickets-audit.md`(결함) · `backlog.md`(방향) |
+| 무엇을 할지 | `tickets-audit.md` · `tickets-recovery.md`(결함) · `backlog.md`(방향) |
 | 계획 · 설계 | `docs/superpowers/plans/` · `specs/` |
-| 진행 상태 | `tickets-audit.md`의 상태 열 (`대기` → `완료 (#PR)`) |
+| 진행 상태 | 결함 대장의 상태 열 (`대기` → `완료 (#PR)`) |
 | 지금 코드의 규칙 | `domain.md` |
 | 판단 과정 | `docs/chat-log*.md` (세션 대화를 걸러 커밋한다) |
 | 무엇을 했나 | PR 본문 + 커밋 |
