@@ -5,7 +5,7 @@
 > "정확하게 돌아간다"는 기준선에 도달했다.
 >
 > 이 문서는 **그 다음에 할 일**이다. 방향을 적고, 이미 깨져 있는 것은
-> [`tickets-audit.md`](./tickets-audit.md)에 적는다.
+> [`tickets-audit.md`](./tickets-audit.md) · [`tickets-recovery.md`](./tickets-recovery.md)에 적는다.
 >
 > **완료 항목의 판단 과정은 `chat-log2.md`(T22~T36) · `chat-log3.md`(T37~T55) ·
 > `chat-log4.md`(T58~T86)에 있다.** 예전에는 항목마다 `tickets-next.md`의 티켓 번호를 달았는데, 그 문서를
@@ -1387,7 +1387,8 @@ T85가 대회 종료를 단말에 알리게 만들었다(#97). **그 이벤트�
 
 | | |
 |---|---|
-| [`tickets-audit.md`](./tickets-audit.md) | **이미 깨져 있는 것**(T58~). 방향이 아니라 결함 |
+| [`tickets-audit.md`](./tickets-audit.md) | **이미 깨져 있는 것**(T58~T92). 방향이 아니라 결함 |
+| [`tickets-recovery.md`](./tickets-recovery.md) | 장애 복구 경로의 결함(T93~) |
 | [`domain.md`](./domain.md) | 지금 코드의 규칙과 좌표 |
 | [`chat-log2.md`](./chat-log2.md) · [`chat-log3.md`](./chat-log3.md) · [`chat-log4.md`](./chat-log4.md) | 완료 항목의 판단 과정 |
 | [`../README.md`](../README.md) | 도메인 전제와 구조 |
