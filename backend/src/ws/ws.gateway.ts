@@ -8,10 +8,13 @@ import {
   KEEPALIVE_EVENT,
   PlayerActionSchema,
   RebuyResponseSchema,
+  ServerOutageSchema,
   TableStateSchema,
   TableState as WireTableState,
   TournamentClosedSchema,
   TournamentSyncingSchema,
+  SERVER_OUTAGE_EVENT,
+  SERVER_RECOVERING_MESSAGE,
   TOURNAMENT_SYNCING_EVENT,
 } from '@playsync/contract';
 import { DealerService } from 'src/dealer/dealer.service';
@@ -45,6 +48,12 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
   private tournamentSessions = new Map<string, Set<WebSocket>>();
   // 개별 테이블 (게임 플레이용)
   private tableSessions = new Map<string, Set<WebSocket>>();
+
+  // T97. `off`로 떼려면 리스너 참조를 들고 있어야 한다 — 인라인 화살표 함수는
+  // 매번 새 함수라 `off`에 같은 값을 못 준다(`onModuleDestroy` 참고).
+  private readonly onOutageDown = () => this.broadcastOutage(true);
+  private readonly onOutageRecovered = () => { void this.afterOutage(); };
+
   constructor(
     private readonly dealer: DealerService,
     private readonly playsync: PlaysyncService,
@@ -53,7 +62,12 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     private readonly eventEmitter: EventEmitter2,
     private readonly prisma: PrismaService,
     private readonly recovery: RecoveryService,
-  ) { }
+  ) {
+    // T97. 끊긴 순간과 복구가 끝난 순간을 화면에 알린다. 복구 뒤 n/n은
+    // 부팅 뒤와 같은 재집계로 센다 — 소켓이 안 끊겼으므로 보통 곧바로 찬다.
+    this.redis.outage.on('down', this.onOutageDown);
+    this.redis.outage.on('recovered', this.onOutageRecovered);
+  }
 
   private pingTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -77,6 +91,10 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
   onModuleDestroy() {
     if (this.pingTimer) clearInterval(this.pingTimer);
     this.pingTimer = null;
+    // T97. 안 떼면 이 인스턴스가 공유 `RedisOutage`에 영원히 남는다 — 테스트가
+    // 게이트웨이를 `new`로 여러 번 세우는 자리(M4)에서 리스너가 쌓인다.
+    this.redis.outage.off('down', this.onOutageDown);
+    this.redis.outage.off('recovered', this.onOutageRecovered);
   }
 
   /** 한 틱. 두 방(대회 · 테이블)의 소켓 전부. */
@@ -235,6 +253,12 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
         const wire = this.toWireState(state);
         if (wire) client.send(JSON.stringify({ event: 'renderGame', data: wire }));
 
+        // 복구 중에 붙었다(T97). 서버가 새 이벤트를 보장할 수 없는 자리라 붙는
+        // 쪽이 매번 확인한다 — T96 `recount`의 joiner와 같은 이유다.
+        if (!this.redis.outage.isUp()) {
+          client.send(JSON.stringify({ event: SERVER_OUTAGE_EVENT, data: ServerOutageSchema.parse({ down: true }) }));
+        }
+
         // 딜러가 돌아왔다 — 그 대회가 SYNCING이면 다시 세어 본다(T96).
         // 부수 작업(집계)의 순간 장애가 바깥 catch로 새면, 방금 인증에
         // 성공한 딜러 소켓이 "인증 실패"로 끊긴다(M1) — 여기서 삼킨다.
@@ -351,6 +375,35 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     return { ...parsed.data, serverTime: Date.now() };
   }
 
+  /** 테이블 방의 소켓 전원에게. 소켓 화면은 좌석·딜러 둘뿐이다. */
+  private broadcastOutage(down: boolean) {
+    const data = ServerOutageSchema.parse({ down });
+    for (const tableId of [...this.tableSessions.keys()]) {
+      this.broadcastToTable(tableId, SERVER_OUTAGE_EVENT, data);
+    }
+  }
+
+  /**
+   * 복구가 끝났다(T97). 멈춘 테이블의 새 스냅샷을 다시 그리게 하고, 대회마다
+   * n/n을 센다. **Redis를 다시 읽는다** — 스윕이 쓴 `resumePending`이 거기 있다.
+   */
+  private async afterOutage() {
+    this.broadcastOutage(false);
+    for (const tableId of [...this.tableSessions.keys()]) {
+      try {
+        this.broadcastRenderGame(tableId, await this.redis.getSnapShot(tableId));
+      } catch (e) {
+        this.logger.error(`복구 뒤 renderGame 실패 (table=${tableId})`, e as Error);
+      }
+    }
+    const live = await this.prisma.tournament
+      .findMany({ where: { status: TournamentStatus.SYNCING }, select: { id: true } })
+      .catch((e) => { this.logger.error('복구 뒤 대회 조회 실패', e); return []; });
+    for (const t of live) {
+      await this.reportSync(t.id).catch(() => { /* reportSync가 이미 로그로 남긴다 */ });
+    }
+  }
+
   /** `renderGame` 브로드캐스트의 유일한 입구. */
   private broadcastRenderGame(tableId: string, state: unknown) {
     const wire = this.toWireState(state);
@@ -392,6 +445,10 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
   async handlePlayerAction(@ConnectedSocket() client: any, @MessageBody() data: any) {
     const { tableId, userId, role } = client;
 
+    // T97. Redis 장애 중에는 좌석 액션을 즉시 거절한다 — 예전엔 ioredis가
+    // 7초 재시도한 뒤 원문 에러를 냈다.
+    if (!this.redis.outage.isUp()) return { event: 'error', data: SERVER_RECOVERING_MESSAGE };
+
     // 딜러 토큰의 sub는 딜러 세션 id라 좌석과 매칭되지 않는다. 서비스가
     // 걸러내기는 하지만, 권한 판단은 경계에서 명시적으로 하는 편이 읽기 쉽다.
     if (role === Role.DEALER) {
@@ -423,6 +480,10 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
   @SubscribeMessage('DEALER_ACTION')
   async handleDealerAction(@ConnectedSocket() client: any, @MessageBody() data: any) {
     const { tableId, role, tournamentId } = client;
+
+    // T97. `recovering` 동안에도 딜러 명령을 받지 않는다 — 재개는 딜러가
+    // 다 돌아온 뒤라야 뜻이 있다(SYNCING 가드와 같은 이유).
+    if (!this.redis.outage.isUp()) return { event: 'error', data: SERVER_RECOVERING_MESSAGE };
 
     if (role !== Role.DEALER) return { event: 'error', data: '딜러만 가능한 액션입니다.' };
 
@@ -494,6 +555,19 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
    *   서버가 새 이벤트를 보낼 자리가 없어, 붙는 순간 스스로 확인하게 한다.
    */
   private async recount(tournamentId: string, joiner?: WebSocket) {
+    // T97 최종 리뷰 I1. `recovering` 동안은 ioredis가 이미 다시 붙어 이
+    // 함수의 Redis·DB 읽기는 멀쩡히 도는데, 복구 스윕(`RecoveryService.
+    // recoverFromOutage`)이 아직 `freezeTournament`로 테이블을 얼리기
+    // 전이다. 그 창에서 n/n을 세어 `completeSync`를 부르면 스윕의
+    // `findMany({ status: SYNCING })`가 이 대회를 못 보고 지나가 테이블이
+    // 영영 얼지 않고, 복구 뒤 낡은 마감이 차례인 사람을 접는다 — 이 티켓이
+    // 닫는 결함 그대로다. 그래서 `up`이 아니면 여기서 아무것도 세지 않고
+    // 돌아간다. `afterOutage`가 `markRecovered`로 `up`이 된 뒤 SYNCING
+    // 대회를 다시 훑어 `reportSync`를 부르므로 n/n은 그때 다시 채워진다.
+    // joiner(방금 접속한 딜러)는 `handleConnection`에서 이미
+    // `serverOutage {down:true}`를 받아 화면이 막혀 있으므로, 여기서
+    // SYNCING 띠를 못 받아도 화면상 문제가 없다.
+    if (!this.redis.outage.isUp()) return;
     const t = await this.prisma.tournament.findUnique({ where: { id: tournamentId }, select: { status: true } });
     if (t?.status !== TournamentStatus.SYNCING) {
       if (joiner && joiner.readyState === WebSocket.OPEN) {

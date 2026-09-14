@@ -36,6 +36,11 @@ describe('RecoveryService', () => {
     // `maxRetriesPerRequest: null`은 BullMQ가 요구하는 연결 설정이다.
     queueConnection = createTestRedis({ maxRetriesPerRequest: null });
     queue = new Queue('player-timeout', { connection: queueConnection });
+    // 테스트마다 새로 세우지 않는다. `RecoveryService`는 생성자에서 클라이언트의
+    // 장애 상태(`RedisService.outage`)를 구독하므로(T97), 매번 세우면 한 클라이언트에
+    // 구독이 쌓인다. 둘 다 상태가 없어 다시 세울 이유도 없다.
+    redisService = new RedisService(redis);
+    recovery = new RecoveryService(prisma as unknown as PrismaService, redisService);
   });
 
   afterAll(async () => {
@@ -50,8 +55,6 @@ describe('RecoveryService', () => {
     await flushTestRedis(redis);
     await queue.obliterate({ force: true });
     seq = 0;
-    redisService = new RedisService(redis);
-    recovery = new RecoveryService(prisma as unknown as PrismaService, redisService);
   });
 
   async function setHeartbeatAgo(ms: number) {

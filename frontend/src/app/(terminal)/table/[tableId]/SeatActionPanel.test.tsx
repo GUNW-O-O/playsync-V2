@@ -223,4 +223,78 @@ describe('SeatActionPanel', () => {
 
     for (const slot of SLOTS) expect(screen.getByTestId(slot)).toBeInTheDocument();
   });
+
+  /**
+   * 서버 장애(T97). 내 차례라도 서버가 못 받으므로 버튼을 전부 막고, 턴
+   * 게이지도 그리지 않는다 — 남은 시간이 흐르는 그림은 "곧 자동
+   * 폴드된다"는 거짓 압박이다.
+   */
+  describe('서버 장애(T97)', () => {
+    it('outage면 폴드·체크·레이즈·올인이 전부 막힌다', () => {
+      render(
+        <SeatActionPanel
+          // currentBet 0 · bet 0이면 콜할 것이 없어 체크 칸이 그려진다.
+          state={baseState({ currentBet: 0, actionDeadline: Date.now() + 15_000 })}
+          mySeatIndex={0}
+          onAction={vi.fn()}
+          outage
+        />,
+      );
+
+      expect(screen.getByRole('button', { name: '폴드' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: '체크' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: /^레이즈/ })).toBeDisabled();
+      expect(screen.getByRole('button', { name: '올인' })).toBeDisabled();
+    });
+
+    it('콜 차례에서도 콜·올인 콜이 막힌다', () => {
+      const { rerender } = render(
+        <SeatActionPanel
+          state={baseState({ currentBet: 200, players: seats({ bet: 0 }) })}
+          mySeatIndex={0}
+          onAction={vi.fn()}
+          outage
+        />,
+      );
+      expect(screen.getByRole('button', { name: /^콜/ })).toBeDisabled();
+
+      // 콜이 곧 올인인 경우도 같이 본다 — 다른 갈래(goingToAllIn)라서다.
+      rerender(
+        <SeatActionPanel
+          state={baseState({ currentBet: 200, players: seats({ stack: 50, bet: 0 }) })}
+          mySeatIndex={0}
+          onAction={vi.fn()}
+          outage
+        />,
+      );
+      expect(screen.getByRole('button', { name: '올인 콜' })).toBeDisabled();
+    });
+
+    it('턴 게이지를 그리지 않는다', () => {
+      render(
+        <SeatActionPanel
+          state={baseState({ actionDeadline: Date.now() + 15_000 })}
+          mySeatIndex={0}
+          onAction={vi.fn()}
+          outage
+        />,
+      );
+
+      expect(screen.getByTestId('action-timer-slot')).toBeEmptyDOMElement();
+    });
+
+    /** 반대 입력. outage가 없으면 지금까지의 버튼 판정이 그대로 살아 있다. */
+    it('outage가 아니면 막지 않는다', () => {
+      render(
+        <SeatActionPanel
+          state={baseState({ actionDeadline: Date.now() + 15_000 })}
+          mySeatIndex={0}
+          onAction={vi.fn()}
+        />,
+      );
+
+      expect(screen.getByRole('button', { name: '폴드' })).not.toBeDisabled();
+      expect(screen.getByTestId('action-timer-slot')).not.toBeEmptyDOMElement();
+    });
+  });
 });

@@ -1,8 +1,12 @@
 import { cookies } from 'next/headers';
 import SeatGameClient from './SeatGameClient';
-import { TableState } from '@playsync/contract';
+import { SERVER_RECOVERING_MESSAGE, TableState } from '@playsync/contract';
+import { isServerRecovering } from '@/lib/server-outage';
 
 type InitialGameData = { tableState: TableState; seatIndex: number };
+/** 서버 장애(T97). SSR 조회가 503이면 아예 못 받은 것이 아니라 서버가
+ * 복구 중이라는 뜻이다 — 「불러오지 못했습니다」와 다른 안내를 그린다. */
+type GameDataResult = InitialGameData | { kind: 'recovering' } | null;
 
 /**
  * 첫 화면에 그릴 스냅샷. **실패는 `null`이다.**
@@ -17,7 +21,7 @@ type InitialGameData = { tableState: TableState; seatIndex: number };
  * `PlaysyncService.joinTable`은 스냅샷이 없으면 던지므로 정상 경로에 그런
  * 본문이 없지만, 없으면 그 결과가 401·500과 똑같이 빈 펠트다.
  */
-async function getInitialGameData(tableId: string): Promise<InitialGameData | null> {
+async function getInitialGameData(tableId: string): Promise<GameDataResult> {
   const cookieStore = await cookies();
   const token = cookieStore.get('dealerToken')?.value || cookieStore.get('accessToken')?.value;
 
@@ -28,6 +32,8 @@ async function getInitialGameData(tableId: string): Promise<InitialGameData | nu
     headers: { 'Authorization': `Bearer ${token}` },
     cache: 'no-store'
   });
+
+  if (isServerRecovering(res)) return { kind: 'recovering' };
 
   if (!res.ok) {
     console.error(`테이블 상태를 불러오지 못했습니다. (${res.status})`);
@@ -83,7 +89,9 @@ async function getTableContext(
 
 export default async function GamePage({ params }: { params: Promise<{ tableId: string }> }) {
   const { tableId } = await params;
-  const initialData = await getInitialGameData(tableId);
+  const gameData = await getInitialGameData(tableId);
+  const recovering = gameData !== null && 'kind' in gameData;
+  const initialData = gameData !== null && 'kind' in gameData ? null : gameData;
   const { storeId, tableOrder } = await getTableContext(
     initialData?.tableState?.tournamentId,
     tableId,
@@ -91,7 +99,9 @@ export default async function GamePage({ params }: { params: Promise<{ tableId: 
 
   return (
     <main className="h-screen overflow-hidden bg-tb-bg">
-      {initialData ? (
+      {recovering ? (
+        <p className="p-8 text-tb-ink">{SERVER_RECOVERING_MESSAGE}</p>
+      ) : initialData ? (
         <SeatGameClient
           tableId={tableId}
           initialData={initialData.tableState}

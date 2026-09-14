@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/mocks/server';
+import { SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
 
 const cookieStore = { get: vi.fn() };
 vi.mock('next/headers', () => ({
@@ -135,5 +136,66 @@ describe('상점 콘솔 대회 상세 — storeId 소유권(T66)', () => {
 
     expect(element.props.seatError).toBe('로그인이 필요합니다.');
     expect(element.props.tournament).toBeNull();
+  });
+});
+
+/**
+ * 서버 장애(T97). `fetchSeatOccupants`는 다른 세 조회와 달리 백엔드 본문의
+ * `message`를 그대로 `seatError`에 싣는다(`failureMessage`) — 503 본문의
+ * 문구가 이미 `SERVER_RECOVERING_MESSAGE`라(Task 2), 이 조회는 **콘솔 페이지가
+ * 손대지 않아도** 이미 옳다. 그 사실을 여기서 못 박는다. 소유권 확인이 안 된
+ * 것이니 다른 세 조회는 기존처럼 null/[]로 접는다 — `seatError`가 페이지의
+ * 문지기다(T66).
+ */
+describe('상점 콘솔 대회 상세 — 서버 장애(T97)', () => {
+  beforeEach(() => {
+    cookieStore.get.mockReset();
+  });
+
+  it('좌석 조회가 503이면 seatError에 복구 문구가 실리고 나머지는 null/[]로 접는다', async () => {
+    const token = fakeToken({ sub: 'owner-a', nickname: 'A 사장', role: 'STORE_ADMIN' });
+    cookieStore.get.mockImplementation((name: string) =>
+      name === 'accessToken' ? { value: token } : undefined,
+    );
+    server.use(
+      http.get('http://backend.test/tournaments/trn-1', () =>
+        HttpResponse.json({
+          tournament: {
+            id: 'trn-1',
+            name: '남의 대회',
+            status: 'PENDING',
+            isRegistrationOpen: true,
+            rebuyUntil: 5,
+            entryFee: 5000,
+            startStack: 10000,
+          },
+          seatStatus: [],
+        }),
+      ),
+      http.get('http://backend.test/dealer/trn-1', () =>
+        HttpResponse.json({ id: 'trn-1', tables: [{ id: 'tbl-1', tableOrder: 1 }] }),
+      ),
+      http.get('http://backend.test/playsync/dashboard/trn-1', () =>
+        new HttpResponse('', { status: 200 }),
+      ),
+      http.get('http://backend.test/store/sessions/trn-1/finish-preview', () =>
+        HttpResponse.json({ statusCode: 404, message: '세션을 찾을 수 없습니다.' }, { status: 404 }),
+      ),
+      http.get('http://backend.test/store/sessions/trn-1/seats', () =>
+        HttpResponse.json(
+          { statusCode: 503, message: SERVER_RECOVERING_MESSAGE, error: 'Service Unavailable' },
+          { status: 503 },
+        ),
+      ),
+    );
+
+    const element = await ConsoleTournamentPage({
+      params: Promise.resolve({ storeId: 'store-a', tournamentId: 'trn-1' }),
+    });
+
+    expect(element.props.seatError).toBe(SERVER_RECOVERING_MESSAGE);
+    expect(element.props.tournament).toBeNull();
+    expect(element.props.dashboard).toBeNull();
+    expect(element.props.tables).toEqual([]);
   });
 });

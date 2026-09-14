@@ -3,6 +3,7 @@ import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { throttlerOptions } from './auth/throttle';
 import { PrismaExceptionFilter } from './common/prisma-exception.filter';
+import { RedisOutageFilter } from './common/redis-outage.filter';
 import { DealerModule } from './dealer/dealer.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { RedisModule } from './redis/redis.module';
@@ -66,6 +67,16 @@ const loadMetrics = process.env.LOAD_METRICS === '1' ? [MetricsModule] : [];
     // 않아, 거기 건 줄은 지워져도 아무도 울지 않는다. 모듈에 걸면 등록
     // 자체를 스펙이 볼 수 있다(`app.module.filter.spec.ts`).
     { provide: APP_FILTER, useClass: PrismaExceptionFilter },
+    // T97. Redis 장애 중에 난 오류를 503 「복구 중」으로 내린다. 등록은
+    // `PrismaExceptionFilter` 아래지만, **등록 순서가 필터를 고르지 않는다** —
+    // Nest는 전역 필터 배열을 뒤집어(`router-exception-filters.js`의
+    // `filters.reverse()`) 뒤에 등록한 catch-all(`@Catch()`인 이 필터)을
+    // 항상 먼저 뽑는다. Prisma 오류가 여전히 `PrismaExceptionFilter`와 같은
+    // 응답을 내는 것은 이 등록 위치 때문이 아니라, `RedisOutageFilter.catch`가
+    // Prisma 오류를 만나면 그 필터에 **직접 위임하기 때문이다**
+    // (`redis-outage.filter.ts`) — 위임이 없으면 이 필터가 항상 먼저 뽑혀
+    // Prisma 매핑 자체가 죽는다.
+    { provide: APP_FILTER, useClass: RedisOutageFilter },
   ],
 })
 export class AppModule {}

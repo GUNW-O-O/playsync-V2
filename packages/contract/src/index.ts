@@ -18,3 +18,4 @@ export * from "./tournament-closed";
 export * from "./keepalive";
 export * from "./tournament-status";
 export * from "./tournament-syncing";
+export * from "./server-outage";

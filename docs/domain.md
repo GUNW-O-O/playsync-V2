@@ -195,6 +195,33 @@ t=0에 둘이 같은 것은 우연이지 불변식이 아니다. 근거 주석�
 - **Redis 기준점은 부팅마다 DB에서 대입한다.** `completeSync`의 Redis 쓰기가
   실패하면 시계가 멈춘 채 남고, 다음 부팅의 대입이 고친다.
 
+### Redis만 죽었다 돌아와도 같은 길을 탄다 — 짧은 부팅
+
+백엔드가 살아 있고 Redis만 죽으면 부팅이 없다. 그래서 **장애를 짧은 부팅으로
+다룬다**(T97). 설계와 기각한 안은 [스펙](./superpowers/specs/2026-09-13-t97-redis-outage-design.md).
+
+- **장애는 연결의 성질이다.** `RedisService.outage`가 ioredis 이벤트로
+  up → down → recovering → up을 든다(`redis/outage.ts`). 클라이언트 하나에 상태 하나
+  (`outageOf`) — 운영에는 같은 클라이언트 위에 `RedisService`가 둘(`RedisModule` ·
+  `DealerModule`)이라, 따로 들면 한쪽만 장애를 안다.
+- **끊기면 DB만 쓴다.** `RecoveryService.onRedisDown`이 진행 중 대회를 `SYNCING`으로,
+  `pausedAt`은 감지 시각. 게이트웨이는 좌석·딜러 액션을 즉시 거절하고
+  `serverOutage {down:true}`를 방송한다. REST는 `RedisOutageFilter`가 503으로 내린다 —
+  **up일 때 난 오류는 건드리지 않는다**, 진짜 결함을 장애로 가리지 않으려고.
+- **돌아오면 부팅과 같은 함수로 멈춰 세운다.** `recoverFromOutage`가 대회마다
+  `freezeTournament`(블라인드 대입 + 테이블별 `pauseTable`)를 돌고, 게이트웨이가
+  `recovered`를 받아 `renderGame`·`down:false`를 방송하고 n/n을 다시 센다. 재개는
+  딜러다(T95 그대로).
+- **막는 자리는 둘이다.** 게이트웨이의 즉시 거절, 그리고 `handleAction` 락 안의
+  **장애 세대** 비교 — 끊기기 전에 나간 명령과 복구 직후 발화한 낡은 타임아웃 잡이
+  여기서 막힌다.
+- **n/n 재집계는 up일 때만 돈다.** 복구 중에 딜러가 붙어 `completeSync`가 먼저
+  돌면 대회가 스윕 목록에서 빠져 테이블이 안 멈추고, 낡은 마감이 차례였던 사람을
+  폴드시킨다 — T97 그 자체다. 복구가 끝나면 게이트웨이가 한 번 다시 센다.
+- **부팅 전에 시작된 장애는 부팅 복구의 것이다.** 하트비트가 프로세스 정지 시간의
+  진실이라, 부팅 복구가 끝날 때까지 `onRedisDown`은 대회를 건드리지 않는다.
+- **이 가드는 프로세스 메모리에 있다.** 인스턴스가 여럿이 되면 다시 짠다(`backlog.md` B9).
+
 상태 쪽에서 **`buttonUser`만 특별하다.** 나머지 필드는 전부 DB에서 파생된다 —
 좌석은 `TablePlayer`, 스택은 `TournamentParticipation`, 팟과 차례는 핸드 경계에서
 정당하게 0이다. 버튼만 "직전 핸드가 어디였나"라 **역사의 함수**다. DB가 들지
@@ -206,8 +233,11 @@ t=0에 둘이 같은 것은 우연이지 불변식이 아니다. 근거 주석�
 그 사실을 코드에 적어 둔다(T42). 근거는 `recoverAll()`의 호출자가
 `OnApplicationBootstrap` 하나뿐이고 그것이 `app.listen()` 이전이라 경합 상대가
 없다는 것 — **호출자를 늘리면 이 근거가 깨진다.** `RecoveryService`에 런타임
-호출자(`completeSync`, 게이트웨이가 부른다)가 생겼지만 그것은 스냅샷을 쓰지 않고
-대회 행과 블라인드만 만진다.
+호출자가 둘 생겼다. `completeSync`(게이트웨이가 부른다)는 스냅샷을 쓰지 않고 대회
+행과 블라인드만 만진다. `recoverFromOutage`(Redis 복귀)는 스냅샷을 쓰지만
+**락을 탄다** — 멈춰 세우기(`pauseTable`)는 부팅과 런타임 모두 `mutateSnapshot`으로
+한 벌이다(T97). 스냅샷을 잃은 테이블의 재구성(`rebuildTable`)과 빈 테이블 스냅샷은
+**부팅 전용으로 남는다** — 런타임에서 락 없이 돌면 착석과 경합한다.
 
 예외가 좌석 입장이었다. 스냅샷이 없으면 빈 상태를 만들어 진행하던 경로가
 복구와 겹치면 이미 앉은 사람을 지운다. `shouldBlockEmptySnapshot`

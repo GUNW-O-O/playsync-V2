@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { DealerAction } from '@playsync/contract';
+import { DealerAction, SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
 import Felt from '@/component/felt/Felt';
 import { formatDuration } from '@/lib/format-duration';
 import { useTableSocket } from '@/lib/use-table-socket';
@@ -93,7 +93,7 @@ export default function DealerGameClient({
    * **딜러는 좌석보다 늦게 붙는다**(`reconnect-policy.ts`). 먼저 붙으면 아홉
    * 중 둘만 찬 테이블을 보게 되고, 사람이 판을 이르게 재개하는 순간이 거기다.
    */
-  const { socketRef, connectionError, reconnecting } = useTableSocket({
+  const { socketRef, connectionError, reconnecting, outage } = useTableSocket({
     tableId,
     role: 'dealer',
     defaultError: DEFAULT_CONNECTION_ERROR,
@@ -206,12 +206,17 @@ export default function DealerGameClient({
   // SYNCING이면 서버 게이트(`WsGateway.runDealerAction`)가 명령을 그대로
   // 거절한다. 배너가 없어도 게이트는 있으므로, 버튼도 `sync`를 직접 봐야
   // 딜러가 이유 없이 거절당하는 일이 없다.
-  const canStartHand = gameState?.phase === GamePhase.WAITING && closed === null && sync === null;
+  const canStartHand =
+    gameState?.phase === GamePhase.WAITING && closed === null && sync === null && !outage;
   // **기다리는 동안은 승자 결정을 막는다.** 스냅샷은 이미 `HAND_END`라 이
   // 조건이 대개 거짓이지만, 늦게 도착한 쇼다운 프레임 하나면 버튼이 다시
   // 켜지고 그것을 누른 딜러는 「쇼다운 상태가 아닙니다」만 받는다.
   const canResolveWinners =
-    gameState?.phase === GamePhase.SHOWDOWN && closed === null && !rebuyPending && sync === null;
+    gameState?.phase === GamePhase.SHOWDOWN &&
+    closed === null &&
+    !rebuyPending &&
+    sync === null &&
+    !outage;
 
   // 폴드는 베팅 라운드에서만 뜻이 있다. `TableEngine.act`가 그 밖의 페이즈를
   // 통째로 던지므로, 거절을 받고 나서 알게 하지 않고 여기서 미리 끈다.
@@ -253,6 +258,21 @@ export default function DealerGameClient({
       )}
 
       {/*
+        **서버 장애(T97).** Redis가 죽으면 게이트웨이가 테이블 소켓 전원에게
+        `serverOutage`를 뿌린다. 정지 배너(`resumePending`)·SYNCING 띠와는
+        별도로 그린다 — 서로 다른 사건이고, 둘 다 사람에게 필요한 설명이다.
+      */}
+      {outage && (
+        <div
+          data-testid="server-outage-banner"
+          role="status"
+          className="absolute inset-x-0 top-0 z-50 bg-err px-4 py-2 text-center text-sm font-medium text-white"
+        >
+          {SERVER_RECOVERING_MESSAGE}
+        </div>
+      )}
+
+      {/*
         **서버가 멈췄다 돌아온 테이블은 딜러가 연다**(T95).
 
         자동으로 풀지 않는 이유는 그 시각을 감으로 잡아야 하기 때문이다 —
@@ -283,7 +303,7 @@ export default function DealerGameClient({
           </span>
           <button
             type="button"
-            disabled={sync !== null}
+            disabled={sync !== null || outage}
             onClick={resumeTable}
             className="shrink-0 border border-white px-4 py-2 text-sm font-semibold disabled:opacity-40"
           >
@@ -393,8 +413,9 @@ export default function DealerGameClient({
                   data-testid="confirm-fold"
                   // 서버 게이트(`WsGateway.runDealerAction`)가 SYNCING 동안
                   // DEALER_FOLD를 거절한다. `sync`도 직접 봐야 딜러가 이유
-                  // 없이 거절당하는 일이 없다(재리뷰 m2).
-                  disabled={!isBettingRound || sync !== null}
+                  // 없이 거절당하는 일이 없다(재리뷰 m2). 서버 장애(T97) 중도
+                  // 같은 이유로 막는다.
+                  disabled={!isBettingRound || sync !== null || outage}
                   onClick={confirmFold}
                   className="flex-1 rounded border border-tb-line py-2 text-xs text-tb-ink disabled:opacity-30"
                 >
@@ -404,7 +425,8 @@ export default function DealerGameClient({
                   type="button"
                   data-testid="confirm-kick"
                   // 서버 게이트가 SYNCING 동안 DEALER_KICK도 거절한다(재리뷰 m2).
-                  disabled={sync !== null}
+                  // 서버 장애(T97) 중도 같은 이유로 막는다.
+                  disabled={sync !== null || outage}
                   onClick={confirmKick}
                   className="flex-1 rounded border border-tb-line py-2 text-xs text-tb-ink disabled:opacity-30"
                 >
@@ -460,7 +482,8 @@ export default function DealerGameClient({
             <button
               type="button"
               // 서버 게이트가 SYNCING 동안 RETRY_CHECKPOINT도 거절한다(재리뷰 m2).
-              disabled={dbSyncStatus === 'RETRYING' || sync !== null}
+              // 서버 장애(T97) 중도 같은 이유로 막는다.
+              disabled={dbSyncStatus === 'RETRYING' || sync !== null || outage}
               onClick={retryCheckpoint}
               className="h-14 flex-1 border border-err text-sm text-tb-ink disabled:opacity-30"
             >
@@ -488,8 +511,8 @@ export default function DealerGameClient({
           // 오버레이는 열려 있는 동안 `sync`가 나중에 도착할 수 있다 —
           // 열 때는 `canResolveWinners`가 이미 막았어도, 열려 있는 채로
           // SYNCING이 시작되면 서버 게이트가 RESOLVE_WINNERS를 거절한다
-          // (재리뷰 m2).
-          submitDisabled={sync !== null}
+          // (재리뷰 m2). 서버 장애(T97) 중도 같은 이유로 막는다.
+          submitDisabled={sync !== null || outage}
         />
       )}
 

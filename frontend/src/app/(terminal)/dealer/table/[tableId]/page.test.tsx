@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/mocks/server';
+import { SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
 
 // 좌석 쪽 `page.test.tsx`와 같은 이유로 자리표시자를 세운다 —
 // `DealerGameClient`는 'use client'고 브라우저 전용 의존성을 끌고 온다.
@@ -72,5 +73,27 @@ describe('DealerGamePage', () => {
     render(element);
 
     expect(screen.getByTestId('dealer-game-client')).toBeInTheDocument();
+  });
+
+  /**
+   * 서버 장애(T97). 좌석 화면의 같은 검사(`table/[tableId]/page.test.tsx`)와
+   * 짝이다.
+   */
+  it('503이면 복구 문구를 그린다', async () => {
+    server.use(
+      http.get('http://backend.test/playsync/tbl-1', () =>
+        HttpResponse.json(
+          { statusCode: 503, message: SERVER_RECOVERING_MESSAGE, error: 'Service Unavailable' },
+          { status: 503 },
+        ),
+      ),
+    );
+
+    const element = await DealerGamePage({ params: Promise.resolve({ tableId: 'tbl-1' }) });
+    render(element);
+
+    expect(screen.queryByTestId('dealer-game-client')).not.toBeInTheDocument();
+    expect(screen.getByText(SERVER_RECOVERING_MESSAGE)).toBeInTheDocument();
+    expect(screen.queryByText(/테이블 정보를 불러오지 못했습니다/)).not.toBeInTheDocument();
   });
 });

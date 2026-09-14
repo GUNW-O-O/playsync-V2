@@ -1,8 +1,10 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
 import Keypad from '@/component/Keypad';
 import { apiFetch } from '@/lib/api';
+import { isServerRecovering } from '@/lib/server-outage';
 
 /** 백엔드 `PLAYER_OTP_LENGTH`(`backend/src/payment/player-otp.ts`)와 같은 값.
  * contract 패키지에 없다 — 참가 OTP 발급은 백엔드 전용 흐름이라 프론트가
@@ -76,6 +78,13 @@ export default function WaitingClient({
   const [otp, setOtp] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  /**
+   * 서버 장애(T97). 좌석 폴링은 평소 화면에 아무것도 띄우지 않는다(다음
+   * 주기가 낫는다) — 그런데 서버 전체가 장애면 그 전제가 깨진다. `error`와
+   * 별도로 두는 이유는, `error`는 OTP·자리 선택 실패의 자리라 폴링 성공이
+   * 그것까지 지우면 방금 뜬 실패 안내가 조용히 사라진다.
+   */
+  const [pollOutage, setPollOutage] = useState(false);
 
   const tournament = tournaments.find((t) => t.id === tournamentId) ?? null;
 
@@ -104,14 +113,12 @@ export default function WaitingClient({
     // 잡지 않으면 처리되지 않은 프라미스 거부 하나만 남고, 화면은 **앞 대회의
     // 테이블 목록을 그대로 든 채** 아무 안내도 안 띄운다 — 앉을 사람이 없어진
     // 자리를 고르고 있는다(`ConsoleClient.run`과 같은 결함, T70).
-    let session: { tables?: Table[] } | null;
-    let nextSeatMap: SeatMapEntry[];
+    let sessionRes: Response;
+    let seatsRes: Response;
     try {
-      [session, nextSeatMap] = await Promise.all([
-        apiFetch(`/api/dealer/${id}`, { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)),
-        apiFetch(`/api/tournaments/${id}/seats`, { cache: 'no-store' }).then((r) =>
-          r.ok ? r.json() : [],
-        ),
+      [sessionRes, seatsRes] = await Promise.all([
+        apiFetch(`/api/dealer/${id}`, { cache: 'no-store' }),
+        apiFetch(`/api/tournaments/${id}/seats`, { cache: 'no-store' }),
       ]);
     } catch {
       if (tournamentRequestRef.current === requestId) setError(NETWORK_ERROR);
@@ -120,6 +127,16 @@ export default function WaitingClient({
 
     // 그 사이 다른 대회를 또 골랐다면 이 응답은 낡았다 — 버린다.
     if (tournamentRequestRef.current !== requestId) return;
+
+    // 서버 장애(T97). 기존 `!res.ok` 분기(조용히 빈 목록)보다 앞에 둔다 —
+    // 둘 중 하나라도 503이면 장애 문구를 띄운다.
+    if (isServerRecovering(sessionRes) || isServerRecovering(seatsRes)) {
+      setError(SERVER_RECOVERING_MESSAGE);
+      return;
+    }
+
+    const session = sessionRes.ok ? ((await sessionRes.json()) as { tables?: Table[] }) : null;
+    const nextSeatMap: SeatMapEntry[] = seatsRes.ok ? await seatsRes.json() : [];
 
     const nextTables = session?.tables ?? [];
     setTables(nextTables);
@@ -148,7 +165,15 @@ export default function WaitingClient({
       // 없고, 네트워크가 튈 때마다 처리되지 않은 프라미스 거부가 샌다.
       try {
         const res = await apiFetch(`/api/tournaments/${tournamentId}/seats`, { cache: 'no-store' });
-        if (!cancelled && res.ok) {
+        if (cancelled) return;
+        // 서버 장애(T97). 기존 `!res.ok` 분기(조용히 머문다)보다 앞에 둔다 —
+        // 장애만은 예외로 알린다.
+        if (isServerRecovering(res)) {
+          setPollOutage(true);
+          return;
+        }
+        if (res.ok) {
+          setPollOutage(false);
           setSeatMap(await res.json());
         }
       } catch {
@@ -223,6 +248,16 @@ export default function WaitingClient({
         <span className="text-sm text-tb-muted">플레이싱크</span>
         <span className="text-xs text-tb-sub">전체화면 · 화면 꺼짐 방지</span>
       </div>
+
+      {/*
+        서버 장애(T97). 좌석 폴링은 평소 아무것도 안 띄운다 — 이 문구만
+        예외다.
+      */}
+      {pollOutage && (
+        <p role="status" className="border-b border-tb-line bg-err/10 px-6 py-1.5 text-xs text-err">
+          {SERVER_RECOVERING_MESSAGE}
+        </p>
+      )}
 
       <div className="flex flex-1 min-h-0">
         <div className="flex min-w-0 grow flex-col justify-center gap-4 px-6 py-5">

@@ -1,11 +1,21 @@
+import { SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
+import { isServerRecovering } from '@/lib/server-outage';
 import DealerWaitingClient from './DealerWaitingClient';
 import { authenticateDealer } from './action';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
 
-async function json(path: string) {
+/**
+ * 서버 장애(T97). 좌석 대기 화면의 같은 이름 함수(`table/page.tsx`)와
+ * 같은 이유다 — "없다"(404 등)와 "지금 복구 중이다"(503)를 갈라 그린다.
+ */
+type JsonResult<T> = { kind: 'ok'; data: T } | { kind: 'recovering' } | { kind: 'miss' };
+
+async function json<T>(path: string): Promise<JsonResult<T>> {
   const res = await fetch(`${BACKEND_URL}${path}`, { cache: 'no-store' });
-  return res.ok ? res.json() : null;
+  if (isServerRecovering(res)) return { kind: 'recovering' };
+  if (!res.ok) return { kind: 'miss' };
+  return { kind: 'ok', data: (await res.json()) as T };
 }
 
 /**
@@ -33,9 +43,22 @@ export default async function DealerWaitingPage({
       </main>
     );
 
-  const tournaments = (await json(`/tournaments/stores/${store}`)) ?? [];
+  const tournamentsResult = await json<{ id: string; name: string; status: string }[]>(
+    `/tournaments/stores/${store}`,
+  );
+  if (tournamentsResult.kind === 'recovering') {
+    return <main className="p-8 text-tb-ink">{SERVER_RECOVERING_MESSAGE}</main>;
+  }
+  const tournaments = tournamentsResult.kind === 'ok' ? tournamentsResult.data : [];
   const current = tournaments[0] ?? null;
-  const session = current ? await json(`/dealer/${current.id}`) : null;
+
+  const sessionResult = current
+    ? await json<{ tables?: { id: string; tableOrder: number }[] }>(`/dealer/${current.id}`)
+    : null;
+  if (sessionResult?.kind === 'recovering') {
+    return <main className="p-8 text-tb-ink">{SERVER_RECOVERING_MESSAGE}</main>;
+  }
+  const session = sessionResult?.kind === 'ok' ? sessionResult.data : null;
 
   return (
     <main className="h-screen overflow-hidden bg-tb-bg">

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/mocks/server';
+import { SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
 
 process.env.BACKEND_URL = 'http://backend.test';
 
@@ -102,5 +103,41 @@ describe('대회 찾기 — 상점의 대회 목록', () => {
 
     expect(screen.getByText('등록 마감')).toBeInTheDocument();
     expect(screen.queryByText('등록 열림')).not.toBeInTheDocument();
+  });
+
+  /**
+   * 서버 장애(T97). 「대회를 불러오지 못했습니다」는 원래 실패 전반의
+   * 안내였는데, 서버 장애만은 복구 문구로 갈라 참가자가 다시 시도할
+   * 시점을 알게 한다.
+   */
+  it('목록 조회가 503이면 복구 문구가 뜬다', async () => {
+    server.use(
+      http.get('http://backend.test/tournaments/stores', () =>
+        HttpResponse.json([{ id: 's1', name: '테스트 상점' }]),
+      ),
+      http.get('http://backend.test/tournaments/stores/s1', () =>
+        HttpResponse.json({ message: SERVER_RECOVERING_MESSAGE }, { status: 503 }),
+      ),
+    );
+
+    render(await renderStore());
+
+    expect(screen.getByText(SERVER_RECOVERING_MESSAGE)).toBeInTheDocument();
+    expect(screen.queryByText('대회를 불러오지 못했습니다.')).not.toBeInTheDocument();
+  });
+
+  /** 반대 입력. 500 등 다른 실패는 기존 문구 그대로다. */
+  it('목록 조회가 500이면 기존 문구가 뜬다', async () => {
+    server.use(
+      http.get('http://backend.test/tournaments/stores', () =>
+        HttpResponse.json([{ id: 's1', name: '테스트 상점' }]),
+      ),
+      http.get('http://backend.test/tournaments/stores/s1', () => new HttpResponse(null, { status: 500 })),
+    );
+
+    render(await renderStore());
+
+    expect(screen.getByText('대회를 불러오지 못했습니다.')).toBeInTheDocument();
+    expect(screen.queryByText(SERVER_RECOVERING_MESSAGE)).not.toBeInTheDocument();
   });
 });

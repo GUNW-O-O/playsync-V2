@@ -1,9 +1,11 @@
 import Link from 'next/link';
 import {
   ClosedTournamentStatusSchema,
+  SERVER_RECOVERING_MESSAGE,
   type ClosedTournamentStatus,
   type TournamentStatus,
 } from '@playsync/contract';
+import { isServerRecovering } from '@/lib/server-outage';
 import JoinPanel from './JoinPanel';
 import { joinTournament } from './action';
 
@@ -47,8 +49,14 @@ const CLOSED_STATUS_LABEL: Record<ClosedTournamentStatus, string> = {
   FINISHED: '종료된 대회',
 };
 
-async function fetchTournament(id: string): Promise<TournamentDetail | null> {
+/**
+ * 서버 장애(T97). 조회가 503이면 대회가 없는 것이 아니라 서버가 복구
+ * 중이라는 뜻이다 — 「대회를 찾을 수 없습니다」로 말하면 참가자가 다른
+ * 대회를 찾으러 나간다. 그래서 `null`(없음)과 별도의 값으로 넓힌다.
+ */
+async function fetchTournament(id: string): Promise<TournamentDetail | { kind: 'recovering' } | null> {
   const res = await fetch(`${BACKEND_URL}/tournaments/${id}`, { cache: 'no-store' });
+  if (isServerRecovering(res)) return { kind: 'recovering' };
   if (!res.ok) return null;
   // 봉투를 벗긴다. 예전에 이걸 빠뜨려 `tournamentId`가 undefined로 나간 적이 있다.
   const envelope = (await res.json()) as { tournament: TournamentDetail | null };
@@ -68,7 +76,21 @@ export default async function TournamentDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const tournament = await fetchTournament(id);
+  const tournamentResult = await fetchTournament(id);
+
+  if (tournamentResult && 'kind' in tournamentResult) {
+    return (
+      <div className="flex flex-col items-start gap-3 p-6">
+        <p className="text-[16px] leading-[1.5] tracking-[0.16px] text-[var(--ink-muted)]">
+          {SERVER_RECOVERING_MESSAGE}
+        </p>
+        <p className="text-[14px] leading-[1.29] tracking-[0.16px] text-[var(--ink-subtle)]">
+          잠시 후 새로고침해 주세요.
+        </p>
+      </div>
+    );
+  }
+  const tournament = tournamentResult;
 
   if (!tournament) {
     return (

@@ -16,6 +16,7 @@
     "dev:frontend": "npm run dev -w frontend",
     "test": "npm run test -w @playsync/contract && npm run test -w backend && npm run test -w frontend",
     "test:int": "npm run test:int -w backend",
+    "test:outage": "npm run test:outage -w backend",
     "test:e2e": "npm run test:e2e -w frontend",
     "load:up": "docker compose -f backend/docker-compose.test.yml --profile load up -d --build",
     "load:metrics": "curl -s http://127.0.0.1:3001/internal/metrics",

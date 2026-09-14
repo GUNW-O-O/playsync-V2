@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/mocks/server';
+import { SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
 
 // SeatGameClient는 'use client' 컴포넌트고 Felt·SeatActionPanel 등 브라우저
 // 전용 의존성을 끌고 온다. 이 테스트가 보려는 건 page.tsx가 SeatGameClient에
@@ -184,6 +185,28 @@ describe('GamePage', () => {
       render(element);
 
       expect(screen.getByTestId('seat-game-client')).toBeInTheDocument();
+    });
+
+    /**
+     * 서버 장애(T97). 503은 401·500과 다른 안내다 — 「불러오지 못했습니다」는
+     * 원인 불명의 실패를 가리키는데, 장애는 원인이 분명하고 곧 낫는다.
+     */
+    it('503이면 복구 문구를 그린다', async () => {
+      server.use(
+        http.get('http://backend.test/playsync/tbl-1', () =>
+          HttpResponse.json(
+            { statusCode: 503, message: SERVER_RECOVERING_MESSAGE, error: 'Service Unavailable' },
+            { status: 503 },
+          ),
+        ),
+      );
+
+      const element = await GamePage({ params: Promise.resolve({ tableId: 'tbl-1' }) });
+      render(element);
+
+      expect(screen.queryByTestId('seat-game-client')).not.toBeInTheDocument();
+      expect(screen.getByText(SERVER_RECOVERING_MESSAGE)).toBeInTheDocument();
+      expect(screen.queryByText(/테이블 정보를 불러오지 못했습니다/)).not.toBeInTheDocument();
     });
   });
 });
