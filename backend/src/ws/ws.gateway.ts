@@ -61,8 +61,15 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
   // 대기의 끝이고, 그때는 `PlaysyncService.waitForRebuyResponse`도 함께
   // 끊겨 서버가 더 기다리지 않으므로 잃을 것이 없다. 추가 타이머는 두지
   // 않는다 — 만료된 항목은 읽는 자리(재전송 시도)에서 지운다.
+  //
+  // `generation`은 와이어로 나가지 않는다(M2, 최종 리뷰) — 기록 당시의
+  // `RedisOutage.generation`이다. `markRecovered`와 `markRebuyInterrupted`의
+  // 쓰기 사이에는 스냅샷의 `rebuyPending`이 아직 그 사람을 이고 마감도 살아
+  // 있을 수 있지만, 서버는 이미 그 대기를 인터럽트로 접었다 — 이 세대가
+  // 그때의 것과 다르면(장애가 한 번 났다 갔으면 항상 다르다, `onLost`가 감지
+  // 즉시 올리므로) 아무도 듣지 않는 낡은 프롬프트다.
   private readonly pendingRebuyPrompts = new Map<string, {
-    deadline: number; userPoints: any; entryFee: number; tournamentName: string;
+    deadline: number; userPoints: any; entryFee: number; tournamentName: string; generation: number;
   }>();
 
   constructor(
@@ -443,16 +450,19 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     }
   }
   // 유저 브로드캐스트 유틸리티
+  //
+  // I1(최종 리뷰): 여기서 첫 소켓을 찾고 멈추면(과거의 `break`), 좀비 소켓이
+  // keepalive 스윕(10~20초) 전까지 테이블 집합에 OPEN 상태로 먼저 들어 있는 채
+  // 남아 있는 동안 재접속한 새 소켓은 이벤트를 못 받는다 — 재접속 시점의
+  // `resendPendingRebuyPrompt`는 이미 끝난 뒤라 다시 보낼 길이 없다. 같은
+  // userId의 OPEN 소켓 전부에 보낸다.
   private sendToTableUser(tableId: string, userId: string, event: string, data: any) {
     const sessions = this.tableSessions.get(tableId);
     if (sessions) {
-      // 해당 테이블에 접속한 소켓들 중 userId가 일치하는 소켓 검색
+      // 해당 테이블에 접속한 소켓들 중 userId가 일치하는 소켓 전부에 보낸다
       for (const socket of sessions) {
-        if ((socket as any).userId === userId) {
-          if (socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ event, data }));
-          }
-          break; // 찾았으면 루프 종료
+        if ((socket as any).userId === userId && socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ event, data }));
         }
       }
     }
@@ -507,7 +517,18 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     // 이미 새 프롬프트를 기다리는데 단말은 답할 수 없는 낡은 팝업을 본다.
     if (prompt.deadline < rebuyPending.deadline) return;
 
-    client.send(JSON.stringify({ event: 'REBUY_PROMPT', data: prompt }));
+    // **세대가 다르면 서버가 더는 기다리지 않는 프롬프트다(M2).** 복구
+    // 직후부터 `markRebuyInterrupted`의 쓰기가 끝나기까지, 스냅샷은 아직
+    // 이번 사람의 `rebuyPending`을 이고 마감도 미래일 수 있지만
+    // `processRebuy`는 이미 `interrupted`로 끝나 리스너를 뗐다 — 응답을
+    // 보내도 아무도 안 듣고 조용히 버려진다.
+    if (prompt.generation !== this.redis.outage.generation) {
+      this.pendingRebuyPrompts.delete(key);
+      return;
+    }
+
+    const { deadline, userPoints, entryFee, tournamentName } = prompt;
+    client.send(JSON.stringify({ event: 'REBUY_PROMPT', data: { deadline, userPoints, entryFee, tournamentName } }));
   }
 
   @SubscribeMessage('PLAYER_ACTION')
@@ -811,7 +832,11 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
       tournamentName: payload.tournamentName,
     };
     // 재접속 대비 적어 둔다. 새 프롬프트는 같은 키(테이블·사람)를 덮는다.
-    this.pendingRebuyPrompts.set(this.rebuyPromptKey(payload.tableId, payload.userId), prompt);
+    // 세대는 기록에만 싣는다 — 와이어로 나가는 `prompt`에는 넣지 않는다(M2).
+    this.pendingRebuyPrompts.set(
+      this.rebuyPromptKey(payload.tableId, payload.userId),
+      { ...prompt, generation: this.redis.outage.generation },
+    );
     this.sendToTableUser(payload.tableId, payload.userId, 'REBUY_PROMPT', prompt);
   }
 
