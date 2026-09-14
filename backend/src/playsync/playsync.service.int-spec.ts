@@ -584,6 +584,16 @@ describe('PlaysyncService.processRebuy', () => {
       expect(`${result} 팝업 ${prompted.mock.calls.length}`).toBe('interrupted 팝업 0');
     });
 
+    it('들어올 때는 up이어도 이 판을 시작한 세대와 다르면 묻지도 않고 중단이다', async () => {
+      const prompted = jest.fn();
+      emitter.on('rebuy.request.sent', prompted);
+      const staleGeneration = outage().generation - 1;
+
+      const result = await service.processRebuy(TOURNAMENT, TABLE, USER, 1000, 10000, 'T', staleGeneration);
+
+      expect(`${result} 팝업 ${prompted.mock.calls.length}`).toBe('interrupted 팝업 0');
+    });
+
     it('기다리는 중에 끊기면 마감을 기다리지 않고 곧바로 중단이다', async () => {
       process.env.REBUY_TIMEOUT_MS = '60000';
       try {
@@ -623,6 +633,42 @@ describe('PlaysyncService.processRebuy', () => {
       answerWhenPrompted(true);
 
       expect(await callProcessRebuy()).toBe('applied');
+    });
+
+    /**
+     * **쓰기는 나갔는데 락 해제가 끊긴 경우(T100 리뷰 I1).** `mutateSnapshot`은
+     * `withTableLock`의 `finally`에서 `releaseTableLock`(Lua EVAL)을 부른다.
+     * SET은 이미 성공했는데 그 직후 이 EVAL이 끊기면, `processRebuy`는 칩이
+     * 스냅샷에 남은 채로 `interrupted`를 돌려주게 된다 — "아무것도 확정하지
+     * 않았다"는 계약이 깨진다. 그래서 이 경로는 복구(`whenUp`)를 기다렸다가
+     * 넣은 칩을 되돌린다.
+     */
+    it('쓰기가 나간 뒤 락 해제가 끊기면, 복구를 기다렸다가 칩을 되돌린다', async () => {
+      const tx = jest.spyOn(service, 'executeRebuyTransaction');
+      answerWhenPrompted(true);
+      // `releaseTableLock`은 private다 — mutateSnapshot이 SET을 이미 마친
+      // 뒤(withTableLock의 finally)에 부르는 유일한 자리라 이 자리를 끊는다.
+      jest
+        .spyOn(redisService as unknown as { releaseTableLock: () => Promise<void> }, 'releaseTableLock')
+        .mockImplementationOnce(async () => {
+          // 실제로는 지워진다(끊긴 것은 응답뿐이다) — 락을 지우지 않으면
+          // 되돌리기(revertRebuy)가 같은 락을 다시 못 잡아 이 테스트 자체가
+          // 락 획득 실패로 죽는다.
+          await redis.del(lockKey);
+          simulateDown();
+          // whenUp이 걸린 뒤에야 풀리도록 다음 틱으로 미룬다.
+          setImmediate(() => {
+            outage().phase = 'recovering';
+            outage().markRecovered();
+          });
+          throw new Error('락 해제 끊김');
+        });
+
+      const result = await callProcessRebuy();
+
+      expect(`${result} DB ${tx.mock.calls.length}`).toBe('interrupted DB 0');
+      const state: TableState = JSON.parse((await redis.get(stateKey))!);
+      expect(state.players[0]!.stack).toBe(0);
     });
   });
 

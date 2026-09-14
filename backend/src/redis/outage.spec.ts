@@ -142,4 +142,18 @@ describe('RedisOutage — 기다리는 쪽', () => {
     for (let i = 0; i < 50; i++) o.onceDown(() => {});
     expect(o.listenerCount('down')).toBe(0);
   });
+
+  it('던지는 onceDown 대기자가 있어도 다른 대기자와 down 이벤트는 마저 돈다', () => {
+    const client = fakeClient('ready');
+    const o = new RedisOutage(client as never, () => 0);
+    const down = jest.fn();
+    o.on('down', down);
+    o.onceDown(() => { throw new Error('던짐'); });
+    const second = jest.fn();
+    o.onceDown(second);
+
+    client.emit('reconnecting');
+
+    expect(`${second.mock.calls.length} ${down.mock.calls.length}`).toBe('1 1');
+  });
 });

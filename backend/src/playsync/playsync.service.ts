@@ -722,7 +722,19 @@ export class PlaysyncService {
         return state;
       });
     } catch (error) {
-      // 락·읽기·쓰기가 장애로 던졌다. 돈은 아직 안 움직였다.
+      // 락·읽기·쓰기가 장애로 던졌다. `verdict`가 여전히 `applied`가 아니면
+      // 콜백이 칩을 넣기 전에 던진 것이라 돈은 아직 안 움직였다. `applied`면
+      // 얘기가 다르다 — `withTableLock`은 락 해제(`releaseTableLock`)를
+      // `finally`에서 부르므로, SET이 이미 나갔는데 그 응답이나 해제가 끊겨도
+      // 이 catch로 떨어진다. 그러면 스냅샷엔 칩이 남고 DB는 못 뺐다. 복구를
+      // 기다렸다가 되돌린다 — `revertRebuy`의 가드(스택이 되돌릴 만큼 없으면
+      // 손대지 않는다)가 SET이 실제로 났는지와 정확히 일치한다. 리바인은
+      // 스택 0인 사람만 겨냥하므로 스택 >= amount면 났고, 0이면 안 났다.
+      if (verdict === 'applied') {
+        await outage.whenUp();
+        await this.revertRebuy(tableId, userId, startStack);
+        return 'interrupted';
+      }
       if (!outage.isUp() || outage.generation !== generation) return 'interrupted';
       throw error;
     }

@@ -63,7 +63,9 @@ export class RedisOutage extends EventEmitter {
     this.downSince = null;
     const up = [...this.upWaiters];
     this.upWaiters.clear();
-    for (const fn of up) fn();
+    // 대기자 하나가 던져도 나머지와 emit('recovered')는 마저 돈다 — 이 자리엔
+    // 로거가 없어 조용히 삼킨다.
+    for (const fn of up) { try { fn(); } catch { /* 무시 */ } }
     this.emit('recovered');
   }
 
@@ -80,7 +82,9 @@ export class RedisOutage extends EventEmitter {
     this.phase = 'down';
     const down = [...this.downWaiters];
     this.downWaiters.clear();
-    for (const fn of down) fn();
+    // 대기자 하나가 던져도 나머지와 emit('down')은 마저 돈다 — 이 자리엔
+    // 로거가 없어 조용히 삼킨다.
+    for (const fn of down) { try { fn(); } catch { /* 무시 */ } }
     this.emit('down', this.downSince, previous);
   }
 
