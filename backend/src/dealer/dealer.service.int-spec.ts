@@ -3,7 +3,7 @@ import { Queue } from 'bullmq';
 import Redis from 'ioredis';
 import { DealerService } from './dealer.service';
 import { OtpAttempts } from './otp-attempts';
-import { PlaysyncService } from 'src/playsync/playsync.service';
+import { PlaysyncService, RebuyOutcome } from 'src/playsync/playsync.service';
 import { RedisService } from 'src/redis/redis.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -369,7 +369,7 @@ describe('DealerService 동시성', () => {
       let lockDuringRebuy = -1;
       jest.spyOn(playsync, 'processRebuy').mockImplementation(async () => {
         lockDuringRebuy = await redis.exists(`lock:table:state:${TABLE}`);
-        return 0;
+        return 'declined' as const;
       });
 
       await dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
@@ -389,7 +389,7 @@ describe('DealerService 동시성', () => {
         await dealer.startPreFlop(TOURNAMENT, TABLE).catch(() => { startRejected = true; });
         const mid: TableState = JSON.parse((await redis.get(stateKey))!);
         phaseDuringRebuy = mid.phase;
-        return 0;
+        return 'declined' as const;
       });
 
       await dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
@@ -414,7 +414,7 @@ describe('DealerService 동시성', () => {
       jest.spyOn(playsync, 'processRebuy').mockImplementation(async () => {
         const mid: TableState = JSON.parse((await redis.get(stateKey))!);
         pendingDuringRebuy = mid.rebuyPending;
-        return 0;
+        return 'declined' as const;
       });
 
       await dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
@@ -432,7 +432,7 @@ describe('DealerService 동시성', () => {
     it('리바인이 끝나면 표시가 사라진다', async () => {
       await seedMeta(true);
       await redis.set(stateKey, JSON.stringify(showdownState()));
-      jest.spyOn(playsync, 'processRebuy').mockResolvedValue(0);
+      jest.spyOn(playsync, 'processRebuy').mockResolvedValue('declined');
 
       await dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
 
@@ -612,7 +612,7 @@ describe('DealerService 동시성', () => {
           new TableEngine(mid).applyRebuy('carol', 10000);
           await redisService.saveSnapshotUnlocked(TABLE, mid, 'table-created');
         });
-        return 10000;
+        return 'applied' as const;
       });
 
       let eliminatedIds: string[] = [];
@@ -625,6 +625,197 @@ describe('DealerService 동시성', () => {
       expect(eliminatedIds).toEqual([]);
       const state: TableState = JSON.parse((await redis.get(stateKey))!);
       expect(state.players[2]!.stack).toBe(10000);
+    });
+
+    describe('장애가 리바인을 끊으면 (T100)', () => {
+      async function until(pred: () => boolean | Promise<boolean>, ms = 5000) {
+        const start = Date.now();
+        while (!(await pred())) {
+          if (Date.now() - start > ms) throw new Error('until timeout');
+          await new Promise((r) => setTimeout(r, 20));
+        }
+      }
+      const saved = async (): Promise<TableState> => JSON.parse((await redis.get(stateKey))!);
+      const outage = () => redisService.outage;
+      /** 실제 끊김 없이 전이만 일으킨다(진짜 down/generation 증가) — 이 describe는 복구 스윕이 없어 진짜로 끊으면 up으로 못 돌아온다. */
+      function simulateDown() {
+        (outage() as unknown as { onLost(): void }).onLost();
+      }
+
+      // **공유 상태다.** `redisService.outage`는 클라이언트당 하나라 이
+      // describe의 테스트들이 직접 만졌으면 다음 테스트로 새지 않게 되돌린다.
+      // `whenUp` 대기자가 남아 있으면(테스트가 markRecovered 전에 실패해도)
+      // 여기서 풀어 다음 테스트가 영원히 기다리지 않게 한다.
+      afterEach(() => {
+        const o = outage();
+        if (o.phase !== 'up') {
+          o.phase = 'recovering';
+          o.markRecovered();
+        }
+        o.downSince = null;
+      });
+
+      it('재개 전에는 다시 묻지 않고, 재개하면 중단된 사람에게만 다시 묻는다', async () => {
+        await seedMeta(true);
+        await redis.set(stateKey, JSON.stringify(showdownState()));
+        const outcomes: RebuyOutcome[] = ['interrupted', 'declined'];
+        const rebuy = jest.spyOn(playsync, 'processRebuy').mockImplementation(async () => outcomes.shift()!);
+
+        const settling = dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
+
+        await until(async () => (await saved()).resumePending !== undefined);
+        const paused = await saved();
+        expect(`재개 전 호출 ${rebuy.mock.calls.length} 리바인표시 ${paused.rebuyPending === undefined} 페이즈 ${paused.phase}`)
+          .toBe(`재개 전 호출 1 리바인표시 true 페이즈 ${GamePhase.HAND_END}`);
+
+        await dealer.resumeTable(TABLE);
+        await settling;
+
+        expect(`재개 뒤 호출 ${rebuy.mock.calls.length} 대상 ${rebuy.mock.calls[1]![2]}`).toBe('재개 뒤 호출 2 대상 carol');
+      });
+
+      it('중단 뒤 칩이 이미 들어가 있으면 다시 묻지 않는다 (반대 입력)', async () => {
+        await seedMeta(true);
+        await redis.set(stateKey, JSON.stringify(showdownState()));
+        const rebuy = jest.spyOn(playsync, 'processRebuy').mockResolvedValueOnce('interrupted');
+
+        const settling = dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
+        await until(async () => (await saved()).resumePending !== undefined);
+
+        // 오프라인 큐가 늦게 실행한 칩 쓰기(검수 S6) — 재개 전에 스택이 생겼다.
+        const landed = await saved();
+        landed.players[2]!.stack = 10000;
+        await redis.set(stateKey, JSON.stringify(landed));
+
+        await dealer.resumeTable(TABLE);
+        await settling;
+
+        expect(`호출 ${rebuy.mock.calls.length}`).toBe('호출 1');
+      });
+
+      it('리바인 고리가 도는 동안 체크포인트 재시도는 거절한다', async () => {
+        await seedMeta(true);
+        await redis.set(stateKey, JSON.stringify(showdownState()));
+        let retry: unknown = null;
+        jest.spyOn(playsync, 'processRebuy').mockImplementation(async () => {
+          retry = await dealer.retryCheckpoint(TABLE).then(() => 'passed', (e: Error) => e.message);
+          return 'declined';
+        });
+
+        await dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
+
+        expect(retry).toBe('리바인을 기다리는 중입니다.');
+      });
+
+      it('재개 대기 중에도 체크포인트 재시도는 거절한다', async () => {
+        await seedMeta(true);
+        await redis.set(stateKey, JSON.stringify(showdownState()));
+        jest.spyOn(playsync, 'processRebuy').mockResolvedValueOnce('interrupted').mockResolvedValue('declined');
+
+        const settling = dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
+        await until(async () => (await saved()).resumePending !== undefined);
+
+        await expect(dealer.retryCheckpoint(TABLE)).rejects.toThrow('리바인을 기다리는 중입니다.');
+
+        await dealer.resumeTable(TABLE);
+        await settling;
+      });
+
+      /**
+       * **D3 재시도 촉매 하나(검수 I1).** `askRebuyRound`의 `markRebuyPending`
+       * catch는 장애가 표시를 세우기 **전에** 끊었을 때를 잡는다. 지금까지는
+       * 이 catch를 지워도 모든 테스트가 초록이었다 — 아무도 `markRebuyPending`
+       * 자체를 장애로 실패시키지 않았기 때문이다.
+       *
+       * `whenUp`이 실제로 걸리는지도 함께 본다: 복구(`markRecovered`) 전에는
+       * `resumePending`도, `processRebuy` 재호출도 없어야 한다.
+       */
+      it('markRebuyPending이 장애로 던지면 라운드 전체가 중단으로 처리되고, 복구·재개 뒤에 다시 묻는다 (검수 I1)', async () => {
+        await seedMeta(true);
+        await redis.set(stateKey, JSON.stringify(showdownState()));
+        const rebuy = jest.spyOn(playsync, 'processRebuy').mockResolvedValue('declined');
+
+        const originalMarkPending = playsync.markRebuyPending.bind(playsync);
+        let failedOnce = false;
+        const markPending = jest
+          .spyOn(playsync, 'markRebuyPending')
+          .mockImplementation(async (tid: string, ids: string[] | null) => {
+            if (!failedOnce && ids !== null) {
+              failedOnce = true;
+              simulateDown();
+              throw new Error('markRebuyPending 장애 (검수 I1)');
+            }
+            return originalMarkPending(tid, ids);
+          });
+
+        const settling = dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
+
+        await until(() => markPending.mock.calls.length >= 1);
+        // 복구 전: 이 라운드는 처음부터 못 물었으니 processRebuy가 한 번도
+        // 안 불렸고, 표시를 못 세웠으니 재개 대기도 아직 없다.
+        expect(`복구 전 리바인호출 ${rebuy.mock.calls.length} 재개대기 ${(await saved()).resumePending === undefined}`)
+          .toBe('복구 전 리바인호출 0 재개대기 true');
+
+        outage().phase = 'recovering';
+        outage().markRecovered();
+        await until(async () => (await saved()).resumePending !== undefined);
+        // whenUp이 진짜로 걸렸다면, 복구 직후에도 아직 dealer.resumeTable을
+        // 누르지 않았으므로 라운드 2는 시작되지 않는다.
+        expect(rebuy.mock.calls.length).toBe(0);
+        expect((await saved()).resumePending!.downMs).toBeGreaterThan(0);
+
+        await dealer.resumeTable(TABLE);
+        await settling;
+
+        expect(`호출 ${rebuy.mock.calls.length} 대상 ${rebuy.mock.calls[0]![2]}`).toBe('호출 1 대상 carol');
+      });
+
+      /**
+       * **D3 재시도 촉매 둘(검수 I1).** `holdForDealer`의 `markRebuyInterrupted`
+       * catch는 복구 **직후 또** 끊긴 경우를 잡는다. 지우면 첫 재시도의 실패가
+       * 그대로 `resolveWinners`까지 던져 올라간다.
+       */
+      it('markRebuyInterrupted이 장애로 던지면 up이 될 때까지 재시도하고, 복구·재개 뒤에 다시 묻는다 (검수 I1)', async () => {
+        await seedMeta(true);
+        await redis.set(stateKey, JSON.stringify(showdownState()));
+        const rebuy = jest
+          .spyOn(playsync, 'processRebuy')
+          .mockResolvedValueOnce('interrupted')
+          .mockResolvedValueOnce('declined');
+
+        const originalMarkInterrupted = playsync.markRebuyInterrupted.bind(playsync);
+        let failedOnce = false;
+        const markInterrupted = jest
+          .spyOn(playsync, 'markRebuyInterrupted')
+          .mockImplementation(async (tid: string, downMs: number) => {
+            if (!failedOnce) {
+              failedOnce = true;
+              simulateDown();
+              throw new Error('markRebuyInterrupted 장애 (검수 I1)');
+            }
+            return originalMarkInterrupted(tid, downMs);
+          });
+
+        const settling = dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
+
+        await until(() => markInterrupted.mock.calls.length >= 1);
+        expect(`복구 전 재시도 ${markInterrupted.mock.calls.length} 재개대기 ${(await saved()).resumePending === undefined}`)
+          .toBe('복구 전 재시도 1 재개대기 true');
+
+        outage().phase = 'recovering';
+        outage().markRecovered();
+        await until(async () => (await saved()).resumePending !== undefined);
+        expect(markInterrupted.mock.calls.length).toBe(2);
+        // whenUp이 진짜로 걸렸다면, 재개를 누르기 전까지는 라운드 2가
+        // 시작되지 않아 processRebuy 호출 수가 그대로다(라운드 1의 1회뿐).
+        expect(rebuy.mock.calls.length).toBe(1);
+        expect((await saved()).resumePending!.downMs).toBeGreaterThan(0);
+
+        await dealer.resumeTable(TABLE);
+        await settling;
+
+        expect(`호출 ${rebuy.mock.calls.length}`).toBe('호출 2');
+      });
     });
   });
 });

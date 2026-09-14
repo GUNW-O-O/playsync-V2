@@ -35,6 +35,18 @@ function rebuyTimeoutMs(): number {
   return Number(process.env.REBUY_TIMEOUT_MS ?? 15000);
 }
 
+/**
+ * 리바인 한 사람의 결과(T100). 금액이 아니라 **다시 물을지**를 가르는 값이다 —
+ * `DealerService.resolveWinners`가 `interrupted`만 딜러의 재개 뒤에 다시 묻는다.
+ *
+ * - `applied`: 칩이 들어가고 돈이 빠졌다
+ * - `declined`: 본인이 거절했다(게이트웨이는 up일 때만 응답을 받는다)
+ * - `timeout`: 장애 없이 마감이 지났다
+ * - `skipped`: 묻지 않았거나 반영할 수 없었다 — 포인트 부족, DB 거절(칩은 되돌렸다), 스냅샷·좌석 없음
+ * - `interrupted`: Redis 장애가 끼었다. 아무것도 확정하지 않았다
+ */
+export type RebuyOutcome = 'applied' | 'declined' | 'timeout' | 'skipped' | 'interrupted';
+
 @Injectable()
 export class PlaysyncService {
   private readonly logger = new Logger(PlaysyncService.name);
@@ -445,6 +457,28 @@ export class PlaysyncService {
     }
   }
 
+  /**
+   * 장애가 리바인 창을 끊었다 — 테이블을 **딜러의 재개를 기다리는** 상태로 둔다(T100).
+   *
+   * `markRebuyPending`과 같은 자리·같은 모양이다. `resumePending`은 T95의 정지
+   * 표시 그대로라 좌석은 「딜러가 판을 다시 열기를 기다리는 중」을, 딜러는 정지
+   * 배너와 「이어서 진행」을 이미 그린다. 리바인 표시는 지운다 — 남기면 지난
+   * 마감의 카운트다운이 0에 멈춘 채 남는다.
+   *
+   * 이미 서 있는 `resumePending`은 덮지 않는다. 먼저 멈춘 시간이 진짜다.
+   */
+  public async markRebuyInterrupted(tableId: string, downMs: number) {
+    const state = await this.redis.mutateSnapshot(tableId, async (snapshot) => {
+      if (!snapshot) return null;
+      delete snapshot.rebuyPending;
+      snapshot.resumePending ??= { downMs };
+      return snapshot;
+    });
+    if (state) {
+      this.eventEmitter.emit('game.state.updated', { tableId, state });
+    }
+  }
+
 
   /**
    * 탈락을 확정하고 등수와 상금을 매긴다.
@@ -640,9 +674,14 @@ export class PlaysyncService {
    *
    * **테이블 락을 쥐지 않은 채로 불러야 한다.** 응답 대기는 사람을 기다리는
    * I/O고, 그 구간을 락 안에 두면 최대 15초 동안 테이블 전체가 멎는다.
-   * 락은 응답이 온 뒤 스택을 반영하는 순간에만 짧게 잡는다.
    *
-   * @returns 반영된 리바인 금액. 거절·시간초과·실패는 모두 0.
+   * **쓰는 순서는 스냅샷 → DB → 전광판이다(T100).** 예전에는 DB가 먼저라, Redis가
+   * 죽은 순간에 수락하면 포인트는 빠지고 칩은 못 들어갔다. 스냅샷을 먼저 쓰면
+   * 장애가 **돈이 움직이기 전에** 첫 쓰기를 멈춘다. 대신 DB가 거절하면 넣은 칩을
+   * 되돌린다(`revertRebuy`). 전광판(`rebuyPlayer`)은 없는 키를 만들므로 DB 뒤다.
+   *
+   * @param generation 이 리바인 판을 시작할 때의 장애 세대. 락 안에서 달라졌으면
+   *   그 사이에 끊겼다는 뜻이라 쓰지 않는다(`handleAction`의 세대 가드와 같다).
    */
   public async processRebuy(
     tournamentId: string,
@@ -651,48 +690,122 @@ export class PlaysyncService {
     entryFee: number,
     startStack: number,
     tournamentName: string,
-  ): Promise<number> {
+    generation: number = this.redis.outage.generation,
+  ): Promise<RebuyOutcome> {
     const userPoints = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { points: true }
     });
     if (!userPoints) throw new Error('플레이어 정보 오류');
-    if (userPoints.points < entryFee) {
-      return 0;
-    }
+    if (userPoints.points < entryFee) return 'skipped';
 
-    const accepted = await this.waitForRebuyResponse(
-      userId, tableId, userPoints, entryFee, tournamentName,
+    const answer = await this.waitForRebuyResponse(
+      userId, tableId, userPoints, entryFee, tournamentName, generation,
     );
-    if (!accepted) return 0;
+    if (answer !== 'accepted') return answer;
 
-    let resultStack: number;
+    // 1. 스냅샷에 칩 — 락 안에서 장애를 다시 본다.
+    const outage = this.redis.outage;
+    // `as`로 넓힌다 — 주석 타입만 달면 TS가 초기값 'skipped'로 좁혀, 콜백 안의
+    // 대입을 못 보고 아래 비교를 「겹치지 않는 타입」 오류로 막는다.
+    let verdict = 'skipped' as 'applied' | 'skipped' | 'interrupted';
+    let applied: TableState | null;
     try {
-      resultStack = await this.executeRebuyTransaction(
+      applied = await this.redis.mutateSnapshot(tableId, async (state) => {
+        if (outage.generation !== generation || !outage.isUp()) {
+          verdict = 'interrupted';
+          return null;
+        }
+        if (!state || !state.players.some(p => p?.id === userId)) return null;
+        new TableEngine(state).applyRebuy(userId, startStack);
+        verdict = 'applied';
+        return state;
+      });
+    } catch (error) {
+      // 락·읽기·쓰기가 장애로 던졌다. `verdict`가 여전히 `applied`가 아니면
+      // 콜백이 칩을 넣기 전에 던진 것이라 돈은 아직 안 움직였다. `applied`면
+      // 얘기가 다르다 — `withTableLock`은 락 해제(`releaseTableLock`)를
+      // `finally`에서 부르므로, SET이 이미 나갔는데 그 응답이나 해제가 끊겨도
+      // 이 catch로 떨어진다. 그러면 스냅샷엔 칩이 남고 DB는 못 뺐다. 복구를
+      // 기다렸다가 되돌린다 — `revertRebuy`의 가드(스택이 되돌릴 만큼 없으면
+      // 손대지 않는다)가 SET이 실제로 났는지와 정확히 일치한다. 리바인은
+      // 스택 0인 사람만 겨냥하므로 스택 >= amount면 났고, 0이면 안 났다.
+      if (verdict === 'applied') {
+        // 이 시점에 이미 up이고 세대도 그대로면 장애로 설명되지 않는 오류다
+        // — 락 해제(Lua EVAL)나 SET 자체의 진짜 결함일 수 있다. 장애가 아닌데
+        // 조용히 `interrupted`로 접으면 「0초 멈췄다」 배너만 남고 원인은
+        // 로그에도 없다(T100 리뷰 M-i).
+        if (outage.isUp() && outage.generation === generation) {
+          this.logger.warn(
+            `리바인 확정 중 장애로 설명되지 않는 오류 — 칩을 되돌린다 (table=${tableId}, user=${userId}): ${error.message}`,
+          );
+        }
+        await outage.whenUp();
+        await this.revertRebuy(tableId, userId, startStack);
+        return 'interrupted';
+      }
+      if (!outage.isUp() || outage.generation !== generation) return 'interrupted';
+      throw error;
+    }
+    if (verdict !== 'applied') return verdict;
+
+    // 2. DB — 거절되면 1을 되돌린다.
+    try {
+      await this.executeRebuyTransaction(
         tournamentId, tableId, userId, entryFee, startStack, tournamentName,
       );
     } catch (error) {
-      // 참가자는 리바인 팝업에서 수락했는데 돈이 빠지지 않았다. 스택도 안 늘어
-      // 정합성은 맞지만, 왜 안 됐는지는 여기 말고 남는 곳이 없다.
-      this.logger.error(`리바인 트랜잭션 실패 (table=${tableId}, user=${userId}): ${error.message}`);
-      return 0;
-    }
-    if (resultStack <= 0) return 0;
-
-    // 반영이 먼저, 전파가 나중이다. 예전에는 트랜잭션 직후 전파하고 스택 반영은
-    // 엔진이 콜백 반환 뒤에 했다 — 나가는 상태의 스택이 아직 0이었다.
-    const state = await this.redis.mutateSnapshot(tableId, async (state) => {
-      if (!state) return null;
-      new TableEngine(state).applyRebuy(userId, resultStack);
-      return state;
-    });
-    // 전파는 쓰기 뒤다(위 handleAction과 같은 이유). 스냅샷이 없어 아무것도
-    // 하지 않았으면 보낼 것도 없다.
-    if (state) {
-      this.eventEmitter.emit('game.state.updated', { tableId, state });
+      this.logger.error(`리바인 트랜잭션 거절 — 칩을 되돌린다 (table=${tableId}, user=${userId}): ${error.message}`);
+      await this.revertRebuy(tableId, userId, startStack);
+      return 'skipped';
     }
 
-    return resultStack;
+    // 3은 `executeRebuyTransaction` 안(커밋 뒤). 4. 전파는 돈이 빠진 뒤다 —
+    // 커밋 전의 칩을 화면에 먼저 보이지 않는다.
+    //
+    // **`applied`(1단계에서 잡은 객체)가 아니라 다시 읽은 스냅샷을 쏜다**(T100
+    // 리뷰 M-b). 응답 대기·DB 커밋은 사람마다 따로 도는 I/O라, 두 리바인이
+    // 겹치면 늦게 커밋한 쪽이 들고 있는 `applied`는 그 사이 상대가 넣은 칩을
+    // 모른다 — 그 낡은 객체를 쏘면 상대가 성공했는데도 화면은 그 사람을 0으로
+    // 되돌린다. 다시 읽으면 그 시점까지의 진짜 상태가 나간다.
+    //
+    // 읽기 자체가 실패해도(장애·닫힌 대회) 돈은 이미 맞다 — DB 커밋이 끝난
+    // 뒤이므로 이 실패는 화면 갱신 하나를 건너뛸 뿐이다.
+    if (applied) {
+      const fresh = await this.redis.getSnapShot(tableId).catch((error) => {
+        this.logger.warn(
+          `리바인 커밋 뒤 최신 스냅샷을 읽지 못해 전파를 건너뛴다 (table=${tableId}, user=${userId}): ${error.message}`,
+        );
+        return null;
+      });
+      if (fresh) {
+        this.eventEmitter.emit('game.state.updated', { tableId, state: fresh });
+      }
+    }
+    return 'applied';
+  }
+
+  /**
+   * DB가 거절한 리바인의 칩을 스냅샷에서 뺀다(T100).
+   *
+   * **뺄 만큼 없으면 손대지 않는다.** 그 사이 스택이 줄었다면 무언가가 이미
+   * 바뀐 것이고, 음수로 만들면 칩 총량이 깨진다. 되돌리기 자체가 실패하면
+   * (이중 장애) 칩이 돈 없이 남는다 — 알 수 있는 곳이 로그뿐이라 `error`로 남긴다.
+   */
+  private async revertRebuy(tableId: string, userId: string, amount: number) {
+    try {
+      const state = await this.redis.mutateSnapshot(tableId, async (snapshot) => {
+        const player = snapshot?.players.find(p => p?.id === userId);
+        if (!snapshot || !player || player.stack < amount) return null;
+        player.stack -= amount;
+        return snapshot;
+      });
+      if (state) {
+        this.eventEmitter.emit('game.state.updated', { tableId, state });
+      }
+    } catch (error) {
+      this.logger.error(`리바인 되돌리기 실패 — 칩이 돈 없이 남았을 수 있다 (table=${tableId}, user=${userId})`, error);
+    }
   }
 
   /**
@@ -709,28 +822,42 @@ export class PlaysyncService {
     userPoints: { points: number },
     entryFee: number,
     tournamentName: string,
-  ): Promise<boolean> {
-    return new Promise<boolean>((resolve) => {
+    generation: number,
+  ): Promise<'accepted' | 'declined' | 'timeout' | 'interrupted'> {
+    const outage = this.redis.outage;
+    // 이미 끊겼거나 이 판을 시작한 뒤 한 번 끊겼다 — 묻지 않는다. 물으면 답을
+    // 받아도 반영할 수 없고, 사람은 눌렀는데 아무 일도 없는 화면을 본다.
+    if (!outage.isUp() || outage.generation !== generation) {
+      return Promise.resolve('interrupted');
+    }
+
+    return new Promise((resolve) => {
       const eventName = `rebuy_res_${userId}`;
       const timeoutMs = rebuyTimeoutMs();
       let settled = false;
 
-      const settle = (accept: boolean) => {
+      const settle = (answer: 'accepted' | 'declined' | 'timeout' | 'interrupted') => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        offDown();
         // 핵심. `once`는 "실행되면 제거"라, 시간 초과로 끝난 경우 리스너가
         // 그대로 남는다. 리바인이 일어날 때마다 하나씩 영구 누적됐다.
         this.eventEmitter.removeListener(eventName, handler);
-        resolve(accept);
+        resolve(answer);
       };
 
-      const handler = (accept: boolean) => settle(accept);
+      const handler = (accept: boolean) => settle(accept ? 'accepted' : 'declined');
 
       const timer = setTimeout(() => {
         this.logger.log(`리바인 응답 시간초과 (user=${userId})`);
-        settle(false);
+        settle('timeout');
       }, timeoutMs);
+
+      // **장애가 오면 마감을 기다리지 않는다**(T100). 서버 타이머는 프로세스
+      // 메모리라 장애와 무관하게 흐르고, 그대로 두면 화면이 「기다리라」고 하는
+      // 동안 거절로 세어 탈락시킨다.
+      const offDown = outage.onceDown(() => settle('interrupted'));
 
       // 리스너를 먼저 등록한 뒤 팝업을 띄운다. 순서가 반대면 응답이 아주 빨리
       // 돌아온 경우 받을 사람이 없다.
@@ -747,7 +874,7 @@ export class PlaysyncService {
         });
       } catch (error) {
         this.logger.warn(`리바인 팝업 전송 실패 (user=${userId}): ${error.message}`);
-        settle(false);
+        settle('declined');
       }
     });
   }
@@ -802,8 +929,15 @@ export class PlaysyncService {
 
       return { success: true, startStack };
     });
+    // 3. 전광판 — **커밋 뒤, 던지지 않는다**(T100). 파산자 풀·등수·상금은 전부
+    // DB에서 읽으므로(`eliminatePlayer`) 여기가 실패해도 돈은 맞다. 예전에는
+    // 이것이 던져서 **커밋된 리바인**을 호출자가 실패로 보고 칩을 안 넣었다.
     if (result.success) {
-      await this.redis.rebuyPlayer(tournamentId, entryFee, startStack);
+      try {
+        await this.redis.rebuyPlayer(tournamentId, entryFee, startStack);
+      } catch (error) {
+        this.logger.error(`리바인 전광판 반영 실패 — 돈과 칩은 맞다 (tournament=${tournamentId})`, error);
+      }
     }
     return result.success ? startStack : 0;
   }

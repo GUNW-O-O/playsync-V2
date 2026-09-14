@@ -25,6 +25,26 @@ export class RedisOutage extends EventEmitter {
   /** 이번 장애가 **처음** 감지된 시각. 복구 중 다시 끊겨도 덮지 않는다. */
   downSince: number | null = null;
 
+  /**
+   * 끊김·복구를 **기다리는 쪽**(T100). `EventEmitter` 리스너로 달지 않는다 —
+   * 리바인 창마다 파산자마다 하나씩이라 동시 창이 많으면 기본 한도(10)를 넘어
+   * 경고가 나고, 그 경고는 진짜 누수를 찾는 도구라 끄지 않는다.
+   */
+  private readonly downWaiters = new Set<() => void>();
+  private readonly upWaiters = new Set<() => void>();
+
+  /** 다음 끊김에 한 번 부른다. 반환값을 부르면 구독을 푼다. */
+  onceDown(fn: () => void): () => void {
+    this.downWaiters.add(fn);
+    return () => { this.downWaiters.delete(fn); };
+  }
+
+  /** up이면 곧바로, 아니면 복구 스윕이 끝날 때(`markRecovered`) 풀린다. */
+  whenUp(): Promise<void> {
+    if (this.isUp()) return Promise.resolve();
+    return new Promise((resolve) => { this.upWaiters.add(resolve); });
+  }
+
   constructor(client: Pick<Redis, 'on' | 'status'>, private readonly now: () => number = Date.now) {
     super();
     this.phase = client.status === 'ready' ? 'up' : 'booting';
@@ -41,6 +61,11 @@ export class RedisOutage extends EventEmitter {
     if (this.phase !== 'recovering') return;
     this.phase = 'up';
     this.downSince = null;
+    const up = [...this.upWaiters];
+    this.upWaiters.clear();
+    // 대기자 하나가 던져도 나머지와 emit('recovered')는 마저 돈다 — 이 자리엔
+    // 로거가 없어 조용히 삼킨다.
+    for (const fn of up) { try { fn(); } catch { /* 무시 */ } }
     this.emit('recovered');
   }
 
@@ -55,6 +80,11 @@ export class RedisOutage extends EventEmitter {
     this.generation += 1;
     this.downSince ??= this.now();
     this.phase = 'down';
+    const down = [...this.downWaiters];
+    this.downWaiters.clear();
+    // 대기자 하나가 던져도 나머지와 emit('down')은 마저 돈다 — 이 자리엔
+    // 로거가 없어 조용히 삼킨다.
+    for (const fn of down) { try { fn(); } catch { /* 무시 */ } }
     this.emit('down', this.downSince, previous);
   }
 

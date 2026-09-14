@@ -1427,6 +1427,29 @@ describe('WsGateway 인바운드 경계', () => {
       expect(res?.data).not.toBe(SERVER_RECOVERING_MESSAGE);
     });
 
+    it('down이면 리바인 응답을 즉시 거절하고 흘려보내지 않는다 (T100)', async () => {
+      const seat = await connect(await seatTicket('alice'));
+      const emit = jest.spyOn((gateway as any).eventEmitter, 'emit');
+      outage().phase = 'down';
+
+      const res = gateway.handleRebuyResponse(seat, { accept: true });
+
+      expect(res).toEqual({ event: 'error', data: SERVER_RECOVERING_MESSAGE });
+      expect(emit.mock.calls.some(([name]) => String(name).startsWith('rebuy_res_'))).toBe(false);
+      emit.mockRestore();
+    });
+
+    it('up이면 리바인 응답을 흘려보낸다 (반대 입력, T100)', async () => {
+      const seat = await connect(await seatTicket('alice'));
+      const emit = jest.spyOn((gateway as any).eventEmitter, 'emit');
+
+      const res = gateway.handleRebuyResponse(seat, { accept: true });
+
+      expect(res).toBeUndefined();
+      expect(emit).toHaveBeenCalledWith('rebuy_res_alice', true);
+      emit.mockRestore();
+    });
+
     it('down 이벤트에 테이블 소켓 전원이 down:true를 받는다', async () => {
       const seat = await connect(await seatTicket('alice'));
       const d = await connect(await dealerTicket(TABLE));

@@ -10,7 +10,8 @@ import { verifyDealerOtp } from 'src/dealer/dealer-otp';
 import { OtpAttempts } from 'src/dealer/otp-attempts';
 import { TableEngine } from 'src/game-engine/table-engine';
 import { ActionType, GamePhase, TablePlayer, TableState } from 'src/game-engine/types';
-import { PlaysyncService } from 'src/playsync/playsync.service';
+import { Dashboard } from 'shared/types/tournamentMeta';
+import { PlaysyncService, RebuyOutcome } from 'src/playsync/playsync.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { FINAL_TABLE_DEALER_BLOCKED, isFinalTable } from 'src/store/session/final-table';
@@ -41,6 +42,20 @@ const SNAPSHOT_MISSING = '테이블 상태를 찾을 수 없습니다. 진행을
 @Injectable()
 export class DealerService {
   private readonly logger = new Logger(DealerService.name);
+
+  /**
+   * 리바인 고리가 도는 테이블(T100). **메모리다 — 스냅샷 표시로 막지 않는다.**
+   *
+   * 고리는 이제 「장애 + 딜러 재개」만큼 길 수 있고, 그동안 `retryCheckpoint`가
+   * 들어오면 `finishHand`가 판을 `WAITING`으로 넘겨 다음 핸드가 시작된 판에
+   * 리바인 칩이 들어간다. `rebuyPending`으로 막으면 그 표시는 Redis가 힘들 때
+   * 못 지워지고, 그러면 나올 길이 막다른 골목이 된다(T62). 메모리 표시는
+   * `finally`에서 반드시 지워지고, 프로세스가 죽으면 고리도 함께 사라진다.
+   */
+  private readonly rebuyInFlight = new Set<string>();
+
+  /** 테이블별 「딜러가 다시 열었다」 대기(T100). `resumeTable`이 푼다. */
+  private readonly resumeWaiters = new Map<string, () => void>();
 
   constructor(
     @InjectQueue('player-timeout') private timeoutQueue: Queue,
@@ -460,42 +475,7 @@ export class DealerService {
     // 2. 리바인 — 락 밖. 전원에게 동시에 묻고 같은 마감을 준다.
     //    수락한 사람은 남을 기다리지 않고 그 즉시 반영·전파된다.
     if (tournamentInfo.isRegistrationOpen && brokePlayerIds.length > 0) {
-      /*
-        **판이 멈춘 이유를 스냅샷에 남긴다.**
-
-        이 대기는 최대 15초이고 그동안 아무것도 전파되지 않았다 — 1단계가
-        `SHOWDOWN → HAND_END`로 넘겨 놓고도 `mutateSnapshot`은 브로드캐스트를
-        하지 않기 때문이다. 그래서 테이블 전원이 낡은 쇼다운 화면을 들고
-        멈춰 있었고, 딜러 화면은 「승자 결정」이 활성인 채로 남아 다시 누르면
-        `TableEngine.resolveWinner`의 페이즈 가드에 걸려 거절당했다.
-
-        **표시를 남기는 것이 그 전이까지 함께 실어 보낸다** — 딜러 배지가
-        「핸드 종료」로 먼저 바뀐다.
-
-        묻는 대상과 마감을 `processRebuy`보다 **먼저** 정한다. 그쪽은 사람마다
-        따로 도는데, 화면이 보여줄 것은 「이 테이블이 누군가를 기다린다」
-        하나라서 마감이 하나여야 한다.
-      */
-      await this.playsync.markRebuyPending(tableId, brokePlayerIds);
-      try {
-        await Promise.all(
-          brokePlayerIds.map(playerId =>
-            this.playsync.processRebuy(
-              tournamentId,
-              tableId,
-              playerId,
-              tournamentInfo.entryFee,
-              tournamentInfo.startStack,
-              tournamentInfo.tournamentName,
-            ),
-          ),
-        );
-      } finally {
-        // **어떻게 끝나든 지운다.** 수락·거절·시간초과가 각각 다른 자리에서
-        // 끝나고(`processRebuy`), 그중 하나가 던져도 표시가 남으면 다음 핸드가
-        // 도는 내내 화면이 「리바인을 기다립니다」를 띄운다.
-        await this.playsync.markRebuyPending(tableId, null);
-      }
+      await this.askRebuys(tournamentId, tableId, brokePlayerIds, tournamentInfo);
     }
 
     // 3. 탈락 확정 — 락 안. 스냅샷은 아직 HAND_END다.
@@ -535,6 +515,124 @@ export class DealerService {
   }
 
   /**
+   * 파산자에게 리바인을 묻는다. **장애가 끼면 딜러가 판을 다시 열 때 다시 묻는다**(T100).
+   *
+   * **판이 멈춘 이유를 스냅샷에 남긴다.**
+   *
+   * 이 대기는 최대 15초이고 그동안 아무것도 전파되지 않았다 — 1단계가
+   * `SHOWDOWN → HAND_END`로 넘겨 놓고도 `mutateSnapshot`은 브로드캐스트를
+   * 하지 않기 때문이다. 그래서 테이블 전원이 낡은 쇼다운 화면을 들고
+   * 멈춰 있었고, 딜러 화면은 「승자 결정」이 활성인 채로 남아 다시 누르면
+   * `TableEngine.resolveWinner`의 페이즈 가드에 걸려 거절당했다.
+   *
+   * **표시를 남기는 것이 그 전이까지 함께 실어 보낸다** — 딜러 배지가
+   * 「핸드 종료」로 먼저 바뀐다.
+   *
+   * 묻는 대상과 마감을 `processRebuy`보다 **먼저** 정한다. 그쪽은 사람마다
+   * 따로 도는데, 화면이 보여줄 것은 「이 테이블이 누군가를 기다린다」
+   * 하나라서 마감이 하나여야 한다.
+   *
+   * **자격은 핸드 끝에 정해진다.** `isRegistrationOpen`을 다시 읽지 않는다 — 재개가
+   * 늦어 리바인 레벨이 지났어도, 장애가 그 자격을 빼앗으면 막으려는 결함이다.
+   *
+   * **다시 묻는 대상은 중단 ∧ 아직 앉아 있음 ∧ 스택 ≤ 0.** 대기 중 킥된 사람과,
+   * 칩 쓰기가 오프라인 큐에서 늦게 들어간 사람(이중 지급)을 거른다.
+   */
+  private async askRebuys(
+    tournamentId: string,
+    tableId: string,
+    brokePlayerIds: string[],
+    tournamentInfo: Dashboard,
+  ) {
+    const outage = this.redis.outage;
+    this.rebuyInFlight.add(tableId);
+    try {
+      let asked = brokePlayerIds;
+      while (asked.length > 0) {
+        const generation = outage.generation;
+        const outcomes = await this.askRebuyRound(tournamentId, tableId, asked, tournamentInfo, generation);
+        const interrupted = asked.filter((_, i) => outcomes[i] === 'interrupted');
+        if (interrupted.length === 0) break;
+
+        // **지금이 아니라 장애가 시작된 시각이다**(T100 리뷰 M-f). 이 줄
+        // 바로 위 `Promise.all`(`askRebuyRound` 안)이 I1의 `whenUp` 경로를
+        // 탄 처리를 하나라도 안고 있으면, 그 처리는 **복구가 끝난 뒤에야**
+        // 돌아온다 — 그러면 `Date.now()`는 이미 복구된 시각이라 배너가
+        // 「서버가 0초 멈췄다」로 읽힌다. `downSince`가 아직 서 있으면(흔한
+        // 경로 — 장애가 감지되자마자 중단으로 접어 아직 안 끝났다) 그 값이
+        // 진짜 시작 시각이다. 이미 지워졌으면(방금 그 드문 경로) 잴 수 있는
+        // 것이 없으니 지금을 쓴다 — 0에 가깝게 보이는 것은 그대로 남는다.
+        const stoppedAt = outage.downSince ?? Date.now();
+        // **대기를 먼저 건다**(검수 D2). `resumePending`을 쓴 뒤에 걸면 그 사이에
+        // 누른 재개가 풀 대상을 못 찾고, 이 고리는 영영 기다린다. 먼저 걸면 그
+        // 전의 재개는 `resumePending`이 없어 `resumeTable`이 거절한다.
+        const resumed = new Promise<void>((resolve) => this.resumeWaiters.set(tableId, resolve));
+        await this.holdForDealer(tableId, stoppedAt);
+        await resumed;
+        asked = await this.stillBroke(tableId, interrupted);
+      }
+    } finally {
+      this.rebuyInFlight.delete(tableId);
+      this.resumeWaiters.delete(tableId);
+      // **어떻게 끝나든 지운다.** 수락·거절·시간초과가 각각 다른 자리에서
+      // 끝나고(`processRebuy`), 그중 하나가 던져도 표시가 남으면 다음 핸드가
+      // 도는 내내 화면이 「리바인을 기다립니다」를 띄운다.
+      await this.playsync.markRebuyPending(tableId, null);
+    }
+  }
+
+  /** 한 판 묻는다. 표시를 못 세운 것이 장애 때문이면 전원 중단이다(검수 D3). */
+  private async askRebuyRound(
+    tournamentId: string,
+    tableId: string,
+    asked: string[],
+    tournamentInfo: Dashboard,
+    generation: number,
+  ): Promise<RebuyOutcome[]> {
+    try {
+      await this.playsync.markRebuyPending(tableId, asked);
+    } catch (error) {
+      if (this.redis.outage.isUp()) throw error;
+      return asked.map(() => 'interrupted' as const);
+    }
+    return Promise.all(
+      asked.map(playerId =>
+        this.playsync.processRebuy(
+          tournamentId, tableId, playerId,
+          tournamentInfo.entryFee, tournamentInfo.startStack, tournamentInfo.tournamentName,
+          generation,
+        ),
+      ),
+    );
+  }
+
+  /**
+   * 복구를 기다려 테이블을 「딜러의 재개 대기」로 둔다. 복구 직후 또 끊겨 쓰기가
+   * 던지면 다시 기다린다 — up인데 던진 것만 올린다(검수 D3).
+   */
+  private async holdForDealer(tableId: string, stoppedAt: number) {
+    for (;;) {
+      await this.redis.outage.whenUp();
+      try {
+        await this.playsync.markRebuyInterrupted(tableId, Date.now() - stoppedAt);
+        return;
+      } catch (error) {
+        if (this.redis.outage.isUp()) throw error;
+      }
+    }
+  }
+
+  /** 다시 물을 사람 — 아직 앉아 있고 스택이 없다(검수 D4). */
+  private async stillBroke(tableId: string, ids: string[]): Promise<string[]> {
+    const state = await this.redis.getSnapShot(tableId);
+    if (!state) throw new Error(SNAPSHOT_MISSING);
+    return ids.filter(id => {
+      const player = state.players.find(p => p?.id === id);
+      return player != null && player.stack <= 0;
+    });
+  }
+
+  /**
    * 실패한 체크포인트를 딜러가 다시 시도한다.
    *
    * 멈추는 것 자체는 올바른 동작이므로 되돌리는 기능이 아니다. 막다른 골목을
@@ -556,6 +654,11 @@ export class DealerService {
     if (!state) throw new Error('테이블을 찾을 수 없습니다.');
     if (state.phase !== GamePhase.HAND_END) {
       throw new Error('재시도할 체크포인트가 없습니다.');
+    }
+    // 리바인 고리가 도는 동안은 받지 않는다(T100). `finishHand`가 판을 넘기면
+    // 재개 뒤의 리바인 칩과 탈락 확정이 다음 핸드 위에서 돈다.
+    if (this.rebuyInFlight.has(tableId)) {
+      throw new Error('리바인을 기다리는 중입니다.');
     }
 
     const synced = await this.playsync.checkpointTableToDb(tableId);
@@ -596,6 +699,12 @@ export class DealerService {
     });
     // 위에서 없으면 던졌으므로 여기 null이 올 수 없다. 타입만 좁힌다.
     if (!next) throw new Error(SNAPSHOT_MISSING);
+    // 장애로 끊긴 리바인이 이 재개를 기다리고 있으면 푼다(T100).
+    const waiter = this.resumeWaiters.get(tableId);
+    if (waiter) {
+      this.resumeWaiters.delete(tableId);
+      waiter();
+    }
     return next;
   }
 
