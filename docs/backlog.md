@@ -875,6 +875,12 @@ private tableSessions = new Map<string, Set<WebSocket>>();
 **지금 필요하지 않다** — 한 행사장 한 대회가 단위라 단일 프로세스로 충분하다.
 트래픽이 실제로 문제가 될 때 한다.
 
+**착수하면 Redis 장애 가드(T97)도 다시 짠다.** 장애 상태와 가드가 프로세스
+메모리(`RedisService.outage`)에 있어서, 인스턴스가 여럿이면 A가 복구하는 동안 B의
+액션·타임아웃이 폴드시킬 수 있다. 옮길 모양은
+[T97 스펙](./superpowers/specs/2026-09-13-t97-redis-outage-design.md)의
+「인스턴스가 여럿이 되면」에 정해 뒀다.
+
 ## B10 — 감사 로그
 
 **전신**: T26을 접으며 드러난 것

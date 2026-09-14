@@ -1051,7 +1051,9 @@ volumes:
 
 - [ ] **Step 5: 실행** — Docker가 떠 있어야 한다. `npm run test:outage` PASS. **실패하면 제품 결함인지 검사 결함인지 가른다** — 로그(`test/outage/backend.log`에 자식 stdout을 남긴다)를 읽는다
 
-- [ ] **Step 6: 실패를 먼저 본다** — Task 1의 `RecoveryService` 생성자 `'up'` 구독 줄을 주석 처리하고 빌드 → `npm run test:outage` → 9에서 폴드로 빨개지는지 → 복원·재빌드
+- [ ] **Step 6: 실패를 먼저 본다** — `RecoveryService.recoverFromOutage`에서 `freezeTournament` 호출을 건너뛰고 빌드 → `npm run test:outage` → 9에서 폴드로 빨개지는지 → 복원·재빌드
+
+  (실행 뒤 고침) 원래 적었던 되돌리기 — `'up'` 구독 줄을 주석 처리 — 는 **폴드로 빨개질 수 없다.** 복구가 끝나지 않아 액션이 계속 거절되므로 폴드할 길이 없고, 9(`down:false` 없음)·10·11에서 다른 이유로 빨개진다. 폴드 자체는 복귀 약 16초 뒤에 나서 40초 창 안의 여유가 약 2.4배다 — BullMQ 지연이 늘면 이 빨간불이 조용히 초록이 될 수 있다(초록 쪽은 영향 없음)
 
 - [ ] **Step 7: Commit**
 
