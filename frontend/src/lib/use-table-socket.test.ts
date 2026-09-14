@@ -192,6 +192,9 @@ describe('useTableSocket 서버 장애(T97)', () => {
       ),
     );
     vi.useFakeTimers({ shouldAdvanceTime: true });
+    // 재시도 지연을 0 ms에서 20 s로 고정한다. 지연이 0이면 부하 아래서 8번
+    // 시도가 assertion 전에 모두 완료돼서 테스트가 깨진다.
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
     const { result } = renderHook(() =>
       useTableSocket({ tableId: 'tbl', role: 'seat', onMessage: vi.fn(), defaultError: 'x' }),
     );
