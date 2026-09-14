@@ -1341,6 +1341,49 @@ describe('WsGateway 인바운드 경계', () => {
       expect(lastSyncingPayload(tableDealer)).toEqual({ syncing: false, present: 2, required: 2 });
       expect(lastSyncingPayload(otherDealer)).toEqual({ syncing: false, present: 2, required: 2 });
     });
+
+    /**
+     * 최종 리뷰 I1. `recovering`인 동안 마지막 딜러가 붙어 n/n을 채워도
+     * `completeSync`가 불리면 안 된다 — 복구 스윕이 아직 이 대회를 얼리기
+     * 전이라, 여기서 대회가 `ONGOING`이 되면 그 스윕이 이 대회를 지나쳐
+     * 낡은 마감이 남는다(T97 결함의 재발). `phase`를 `recovering`으로
+     * 두는 것은 위 「Redis 장애 (T97)」describe와 같은 방식이다 — 전이
+     * 자체는 `redis/outage.spec.ts`가 이미 검증하므로 여기서는 게이트웨이가
+     * 그 상태를 읽는지만 본다.
+     */
+    it('recovering 동안 n/n이 채워져도 completeSync를 부르지 않고 SYNCING에 머문다(최종 리뷰 I1)', async () => {
+      await seedSyncingTournament();
+      await seedSeats();
+      const tableDealer = await connect(await dealerTicket(TABLE), TABLE);
+      expect(lastSyncingPayload(tableDealer)).toEqual({ syncing: true, present: 1, required: 2 });
+
+      const outage = (gateway as any).redis.outage;
+      try {
+        outage.phase = 'recovering';
+        const otherDealer = await connect(await dealerTicket(OTHER_TABLE), OTHER_TABLE);
+
+        expect(recovery.completeSync).not.toHaveBeenCalled();
+        const stillSyncing = await prisma.tournament.findUniqueOrThrow({ where: { id: TOURNAMENT } });
+        expect(`상태 ${stillSyncing.status}`).toBe(`상태 ${TournamentStatus.SYNCING}`);
+        // recount 자체가 phase 가드에서 곧바로 돌아가므로 이 소켓은 아무
+        // tournamentSyncing도 못 받는다 — outage 배너가 대신 화면을 막는다.
+        expect(lastSyncingPayload(otherDealer)).toBeUndefined();
+
+        // `markRecovered`가 하는 것과 같은 순서: phase를 `up`으로 되돌린
+        // 뒤 `recovered`를 쏜다. `afterOutage`가 SYNCING 대회를 다시 훑어
+        // `reportSync`를 불러 이번엔 completeSync가 돈다(반대 입력 —
+        // up이면 완료한다).
+        outage.phase = 'up';
+        outage.emit('recovered');
+        await waitUntil(() => recovery.completeSync.mock.calls.length > 0);
+
+        expect(recovery.completeSync).toHaveBeenCalledWith(TOURNAMENT);
+        expect(lastSyncingPayload(tableDealer)).toEqual({ syncing: false, present: 2, required: 2 });
+        expect(lastSyncingPayload(otherDealer)).toEqual({ syncing: false, present: 2, required: 2 });
+      } finally {
+        outage.phase = 'up';
+      }
+    });
   });
 
   /**

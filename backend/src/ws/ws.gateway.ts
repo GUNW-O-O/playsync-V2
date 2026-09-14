@@ -555,6 +555,19 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
    *   서버가 새 이벤트를 보낼 자리가 없어, 붙는 순간 스스로 확인하게 한다.
    */
   private async recount(tournamentId: string, joiner?: WebSocket) {
+    // T97 최종 리뷰 I1. `recovering` 동안은 ioredis가 이미 다시 붙어 이
+    // 함수의 Redis·DB 읽기는 멀쩡히 도는데, 복구 스윕(`RecoveryService.
+    // recoverFromOutage`)이 아직 `freezeTournament`로 테이블을 얼리기
+    // 전이다. 그 창에서 n/n을 세어 `completeSync`를 부르면 스윕의
+    // `findMany({ status: SYNCING })`가 이 대회를 못 보고 지나가 테이블이
+    // 영영 얼지 않고, 복구 뒤 낡은 마감이 차례인 사람을 접는다 — 이 티켓이
+    // 닫는 결함 그대로다. 그래서 `up`이 아니면 여기서 아무것도 세지 않고
+    // 돌아간다. `afterOutage`가 `markRecovered`로 `up`이 된 뒤 SYNCING
+    // 대회를 다시 훑어 `reportSync`를 부르므로 n/n은 그때 다시 채워진다.
+    // joiner(방금 접속한 딜러)는 `handleConnection`에서 이미
+    // `serverOutage {down:true}`를 받아 화면이 막혀 있으므로, 여기서
+    // SYNCING 띠를 못 받아도 화면상 문제가 없다.
+    if (!this.redis.outage.isUp()) return;
     const t = await this.prisma.tournament.findUnique({ where: { id: tournamentId }, select: { status: true } });
     if (t?.status !== TournamentStatus.SYNCING) {
       if (joiner && joiner.readyState === WebSocket.OPEN) {
