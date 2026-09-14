@@ -43,8 +43,14 @@ function makeApp(up: boolean) {
     controllers: [BoomController],
     providers: [
       { provide: RedisService, useValue: { outage: { isUp: () => up } } },
-      // app.module.ts와 같은 순서 — PrismaExceptionFilter가 먼저다. Nest의
-      // 전역 필터 선택 순서를 추측하지 않고 이 스펙으로 확인한다.
+      // app.module.ts와 같은 순서로 등록한다 — `PrismaExceptionFilter`가
+      // 먼저 등록된다. **이 등록 순서가 Nest의 선택을 결정하지 않는다** — Nest는
+      // 전역 필터 배열을 뒤집어 뒤에 등록한 catch-all(`RedisOutageFilter`)을
+      // 항상 먼저 뽑으므로, 실제로 먼저 시도되는 것은 나중에 등록한 이 필터다.
+      // 아래 "down 중에도 Prisma 오류는..." 검사가 409를 확인하는 것은 그
+      // 필터가 Prisma 오류를 `PrismaExceptionFilter`에 위임한 결과이지 등록
+      // 순서가 고른 결과가 아니다. Nest의 전역 필터 선택 순서를 추측하지
+      // 않고 이 스펙으로 확인한다.
       { provide: APP_FILTER, useClass: PrismaExceptionFilter },
       { provide: APP_FILTER, useClass: RedisOutageFilter },
     ],

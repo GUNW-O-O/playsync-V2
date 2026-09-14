@@ -48,6 +48,12 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
   private tournamentSessions = new Map<string, Set<WebSocket>>();
   // 개별 테이블 (게임 플레이용)
   private tableSessions = new Map<string, Set<WebSocket>>();
+
+  // T97. `off`로 떼려면 리스너 참조를 들고 있어야 한다 — 인라인 화살표 함수는
+  // 매번 새 함수라 `off`에 같은 값을 못 준다(`onModuleDestroy` 참고).
+  private readonly onOutageDown = () => this.broadcastOutage(true);
+  private readonly onOutageRecovered = () => { void this.afterOutage(); };
+
   constructor(
     private readonly dealer: DealerService,
     private readonly playsync: PlaysyncService,
@@ -59,8 +65,8 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
   ) {
     // T97. 끊긴 순간과 복구가 끝난 순간을 화면에 알린다. 복구 뒤 n/n은
     // 부팅 뒤와 같은 재집계로 센다 — 소켓이 안 끊겼으므로 보통 곧바로 찬다.
-    this.redis.outage.on('down', () => this.broadcastOutage(true));
-    this.redis.outage.on('recovered', () => { void this.afterOutage(); });
+    this.redis.outage.on('down', this.onOutageDown);
+    this.redis.outage.on('recovered', this.onOutageRecovered);
   }
 
   private pingTimer: ReturnType<typeof setInterval> | null = null;
@@ -85,6 +91,10 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
   onModuleDestroy() {
     if (this.pingTimer) clearInterval(this.pingTimer);
     this.pingTimer = null;
+    // T97. 안 떼면 이 인스턴스가 공유 `RedisOutage`에 영원히 남는다 — 테스트가
+    // 게이트웨이를 `new`로 여러 번 세우는 자리(M4)에서 리스너가 쌓인다.
+    this.redis.outage.off('down', this.onOutageDown);
+    this.redis.outage.off('recovered', this.onOutageRecovered);
   }
 
   /** 한 틱. 두 방(대회 · 테이블)의 소켓 전부. */

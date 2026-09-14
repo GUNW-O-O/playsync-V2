@@ -134,6 +134,20 @@ describe('WsGateway 인바운드 경계', () => {
     return client;
   }
 
+  /**
+   * `pred`가 참이 될 때까지 짧게 반복해 기다린다. 실제 I/O(Redis·Postgres)나
+   * 비동기 이벤트 핸들러(`outage.emit`)가 끝나는 시점을 폴링으로만 알 수
+   * 있는 자리에서 쓴다 — 고정된 `setTimeout`은 느린 CI에서는 짧고 빠른
+   * 로컬에서는 그냥 시간을 버린다(M4).
+   */
+  async function waitUntil(pred: () => boolean, timeoutMs = 2000) {
+    const start = Date.now();
+    while (!pred()) {
+      if (Date.now() - start > timeoutMs) throw new Error('waitUntil timeout');
+      await new Promise((r) => setTimeout(r, 5));
+    }
+  }
+
   beforeAll(() => {
     redis = createTestRedis();
     prisma = createTestPrisma();
@@ -1025,16 +1039,6 @@ describe('WsGateway 인바운드 경계', () => {
       return events.at(-1)?.data;
     }
 
-    /** `pred`가 참이 될 때까지 짧게 반복해 기다린다. 실제 I/O(Redis·Prisma)가
-     * 끝나는 시점을 폴링으로만 알 수 있는 아래 I1 테스트에서 쓴다. */
-    async function waitUntil(pred: () => boolean, timeoutMs = 2000) {
-      const start = Date.now();
-      while (!pred()) {
-        if (Date.now() - start > timeoutMs) throw new Error('waitUntil timeout');
-        await new Promise((r) => setTimeout(r, 5));
-      }
-    }
-
     beforeEach(async () => {
       // 이 describe만 Prisma 대회 데이터를 쓴다. 마지막 describe라 다른
       // 테스트의 상태를 지울 걱정이 없다(`prisma`는 이 파일의 다른 describe와
@@ -1102,6 +1106,7 @@ describe('WsGateway 인바운드 경계', () => {
     it('진짜 RecoveryService로 마지막 딜러가 접속하면 DB가 ONGOING·pausedAt null이 된다(M4)', async () => {
       await seedSyncingTournament();
       await seedSeats();
+      const realRecovery = new RecoveryService(prisma as unknown as PrismaService, new RedisService(redis));
       const realGateway = new WsGateway(
         dealer as unknown as DealerService,
         playsync,
@@ -1109,21 +1114,32 @@ describe('WsGateway 인바운드 경계', () => {
         tickets,
         new EventEmitter2(),
         prisma as unknown as PrismaService,
-        new RecoveryService(prisma as unknown as PrismaService, new RedisService(redis)),
+        realRecovery,
       );
 
-      await realGateway.handleConnection(
-        makeClient(),
-        makeRequest(`tableId=${TABLE}&ticket=${await dealerTicket(TABLE)}`, ORIGIN),
-      );
-      await realGateway.handleConnection(
-        makeClient(),
-        makeRequest(`tableId=${OTHER_TABLE}&ticket=${await dealerTicket(OTHER_TABLE)}`, ORIGIN),
-      );
+      // 리뷰 I1. `WsGateway`·`RecoveryService` 둘 다 생성자에서 이 파일 전체가
+      // 공유하는 `RedisOutage`(같은 `redis` 클라이언트, `outageOf`의 WeakMap)를
+      // 구독한다 — 안 떼면 이 두 임시 인스턴스가 뒤에 오는 `Redis 장애 (T97)`·
+      // `recovered 뒤...` 테스트의 `emit('down')`·`emit('recovered')`에도
+      // 깨어나 대회 상태를 조용히 건드리고, 그 테스트들이 실은 이 리스너가
+      // 대신 채워 준 값으로 통과하게 만든다.
+      try {
+        await realGateway.handleConnection(
+          makeClient(),
+          makeRequest(`tableId=${TABLE}&ticket=${await dealerTicket(TABLE)}`, ORIGIN),
+        );
+        await realGateway.handleConnection(
+          makeClient(),
+          makeRequest(`tableId=${OTHER_TABLE}&ticket=${await dealerTicket(OTHER_TABLE)}`, ORIGIN),
+        );
 
-      const t = await prisma.tournament.findUniqueOrThrow({ where: { id: TOURNAMENT } });
-      expect(`상태 ${t.status}`).toBe('상태 ONGOING');
-      expect(t.pausedAt).toBeNull();
+        const t = await prisma.tournament.findUniqueOrThrow({ where: { id: TOURNAMENT } });
+        expect(`상태 ${t.status}`).toBe('상태 ONGOING');
+        expect(t.pausedAt).toBeNull();
+      } finally {
+        realGateway.onModuleDestroy();
+        realRecovery.onModuleDestroy();
+      }
     });
 
     it('SYNCING인 동안 딜러 명령을 거절한다', async () => {
@@ -1380,7 +1396,7 @@ describe('WsGateway 인바운드 경계', () => {
       const seat = await connect(await seatTicket('alice'));
       seat.send.mockClear();
       outage().emit('recovered');
-      await new Promise((r) => setTimeout(r, 50));
+      await waitUntil(() => events(seat, 'renderGame').length > 0);
       expect(events(seat, SERVER_OUTAGE_EVENT).at(-1)?.data).toEqual({ down: false });
       expect(events(seat, 'renderGame').length).toBeGreaterThan(0);
     });

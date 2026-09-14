@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { PlayerStatus, TournamentStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
@@ -17,8 +17,16 @@ import {
 } from 'src/game-engine/types';
 
 @Injectable()
-export class RecoveryService implements OnApplicationBootstrap {
+export class RecoveryService implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly logger = new Logger(RecoveryService.name);
+
+  // T97. `off`로 떼려면 리스너 참조를 들고 있어야 한다. `this.onRedisDown` ·
+  // `this.recoverFromOutage`를 직접 넘기지 않고 감싸는 이유는 그대로다 —
+  // 스펙이 인스턴스 메서드에 스파이를 걸 수 있게, 호출 시점에 찾는다.
+  private readonly onOutageDown = (downSince: number, previous: OutagePhase) => {
+    void this.onRedisDown(downSince, previous);
+  };
+  private readonly onOutageUp = () => { void this.recoverFromOutage(); };
 
   /**
    * 부팅 복구(`recoverAll`)가 도는 중인가(T97). `onApplicationBootstrap`이 켜고
@@ -41,11 +49,20 @@ export class RecoveryService implements OnApplicationBootstrap {
     private readonly redis: RedisService,
   ) {
     // T97. 백엔드가 살아 있는 채 Redis만 끊겼다 돌아오는 경로다.
-    // 핸들러는 인스턴스 메서드를 호출 시점에 찾는다 — 스펙이 스파이를 걸 수 있게.
-    this.redis.outage.on('down', (downSince: number, previous: OutagePhase) => {
-      void this.onRedisDown(downSince, previous);
-    });
-    this.redis.outage.on('up', () => { void this.recoverFromOutage(); });
+    this.redis.outage.on('down', this.onOutageDown);
+    this.redis.outage.on('up', this.onOutageUp);
+  }
+
+  /**
+   * T97. 안 떼면 이 인스턴스가 공유 `RedisOutage`에 영원히 남는다 — 통합
+   * 스펙이 `new RecoveryService(...)`로 임시 인스턴스를 세우는 자리(게이트웨이
+   * 통합 스펙의 M4)에서 리스너가 쌓여, 그 뒤에 오는 `emit('down')`·
+   * `emit('recovered')`가 이미 끝난 테스트의 인스턴스를 깨워 대회 상태를 조용히
+   * 건드린다.
+   */
+  onModuleDestroy() {
+    this.redis.outage.off('down', this.onOutageDown);
+    this.redis.outage.off('up', this.onOutageUp);
   }
 
   async onApplicationBootstrap() {
