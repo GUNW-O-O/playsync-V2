@@ -824,20 +824,22 @@ describe('DealerService 동시성', () => {
           jest.spyOn(playsync, 'processRebuy').mockResolvedValueOnce('interrupted');
 
           // `until`로 resumePending을 폴링하면, 그 사이 이 테스트의 GET+DEL이
-          // askRebuys의 holdForDealer 직후 스냅샷 확인보다 먼저 끼어들 수
-          // 있다 — 그러면 고리가 핸들러 없이도 스스로 끝나 이 테스트가
-          // 핸들러를 비워도 통과해 버린다(경합을 왕복 타이밍에 맡기지 않는다).
-          // 그래서 그 확인이 스냅샷을 읽는 순간 자체를 스파이로 붙잡는다.
-          // `resumePending`이 실린 스냅샷을 읽는 첫 순간이 곧 그 확인이다 —
-          // `mutateSnapshot` 내부 읽기는 전부 쓰기 **전**이고, `stillBroke`는
-          // 재개 **후**에만 돈다.
+          // askRebuys의 재개 대기 진입보다 먼저 끼어들 수 있다 — 그러면 고리가
+          // 핸들러 없이도 스스로 끝나 이 테스트가 핸들러를 비워도 통과해
+          // 버린다(경합을 왕복 타이밍에 맡기지 않는다).
+          //
+          // M1(최종 리뷰): `holdForDealer` 직후의 별도 `getSnapShot` 확인을
+          // 없앴으므로(그 사실은 `markRebuyInterrupted`의 반환값으로 받는다),
+          // 더는 「resumePending이 실린 스냅샷을 읽는 순간」이 존재하지 않는다.
+          // 대신 `markRebuyInterrupted`가 스냅샷을 실제로 썼다고(true) 돌아오는
+          // 순간을 붙잡는다 — 그 반환이 곧 `resumePending`이 쓰였다는 확인이다.
           let markChecked!: () => void;
           const checked = new Promise<void>((resolve) => { markChecked = resolve; });
-          const readSnapshot = redisService.getSnapShot.bind(redisService);
-          jest.spyOn(redisService, 'getSnapShot').mockImplementation(async (id: string) => {
-            const state = await readSnapshot(id);
-            if (state?.resumePending) markChecked();
-            return state;
+          const originalMarkInterrupted = playsync.markRebuyInterrupted.bind(playsync);
+          jest.spyOn(playsync, 'markRebuyInterrupted').mockImplementation(async (tid: string, downMs: number) => {
+            const wrote = await originalMarkInterrupted(tid, downMs);
+            if (wrote) markChecked();
+            return wrote;
           });
 
           const settling = dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
@@ -871,8 +873,10 @@ describe('DealerService 동시성', () => {
 
           dealer.handleTournamentClosed({ tournamentId: TOURNAMENT, tableIds: ['다른-테이블'], status: 'CANCELLED' });
 
-          // 「안 풀렸다」는 시간으로만 관찰할 수 있다 — 짧게 기다렸다가 아직임을 본다.
-          await new Promise((r) => setTimeout(r, 300));
+          // M3(최종 리뷰): `handleTournamentClosed` · `releaseResumeWaiter`는
+          // 동기다 — 다른 테이블 id로는 이 테이블의 waiter를 안 지웠다는 것을
+          // 시간을 재지 않고 바로 본다. `settled`도 함께 확인해 이중으로 잠근다.
+          expect(dealer['resumeWaiters'].has(TABLE)).toBe(true);
           expect(settled).toBe(false);
 
           await dealer.resumeTable(TABLE);
