@@ -745,6 +745,9 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
 
   @SubscribeMessage('REBUY_RESPONSE')
   handleRebuyResponse(@ConnectedSocket() client: any, @MessageBody() data: any) {
+    // T100. 장애 중의 응답은 받아도 반영할 수 없다 — 칩을 넣는 첫 쓰기가 Redis다.
+    // 누른 사람에게 이유를 돌려주고, 판은 딜러가 다시 열 때 새로 묻는다.
+    if (!this.redis.outage.isUp()) return { event: 'error', data: SERVER_RECOVERING_MESSAGE };
     const parsed = RebuyResponseSchema.safeParse(data);
     // accept가 없으면 undefined가 그대로 흘러가 거절로 취급된다.
     // 거절과 잘못된 요청은 구분되어야 한다.
