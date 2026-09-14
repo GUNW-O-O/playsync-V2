@@ -577,8 +577,11 @@ export class DealerService {
         // 왔으면 `handleTournamentClosed`가 `resumed`를 풀어 준다. 그런데
         // 이벤트가 그 **전에**(예: `holdForDealer`가 도는 동안) 이미 지나갔으면
         // 풀어 줄 대상이 없어 `resumeTable`도 영영 안 올 `resumed`를 기다리게
-        // 된다 — 스냅샷 유무로 그 경우를 가른다. 다시 물을 사람도, 탈락시킬
-        // 판도 없으니 조용히 끝낸다.
+        // 된다 — 스냅샷 유무로 그 경우를 가른다.
+        //
+        // 여기서 `break`해도 이 함수만 조용히 끝난다 — `resolveWinners`는
+        // 그대로 3단계(`mutateSnapshot`)로 가서 `SNAPSHOT_MISSING`으로
+        // 거절된다. 닫힌 대회에서 그 요청이 에러로 끝나는 것은 괜찮다.
         if (!(await this.redis.getSnapShot(tableId))) break;
 
         await resumed;
@@ -713,12 +716,21 @@ export class DealerService {
     // 위에서 없으면 던졌으므로 여기 null이 올 수 없다. 타입만 좁힌다.
     if (!next) throw new Error(SNAPSHOT_MISSING);
     // 장애로 끊긴 리바인이 이 재개를 기다리고 있으면 푼다(T100).
+    this.releaseResumeWaiter(tableId);
+    return next;
+  }
+
+  /**
+   * 재개 대기가 있으면 지우고 푼다. `resumeTable`(딜러가 다시 열었다)과
+   * `handleTournamentClosed`(대회가 닫혀 더 열릴 일이 없다)가 같은 자리를
+   * 공유한다 — 두 벌이면 한쪽만 고쳤을 때 다른 쪽이 낡은 채로 남는다.
+   */
+  private releaseResumeWaiter(tableId: string) {
     const waiter = this.resumeWaiters.get(tableId);
     if (waiter) {
       this.resumeWaiters.delete(tableId);
       waiter();
     }
-    return next;
   }
 
   /**
@@ -732,16 +744,14 @@ export class DealerService {
    * 상점이 「이어서 진행」 대신 대회를 중단·종료하면 `resumeTable`이 다시
    * 오지 않는다. 여기서 풀지 않으면 `askRebuys`의 고리가 `resumeWaiters`를
    * 영영 들고 있고, `rebuyInFlight` 표시와 걸린 `resolveWinners` 호출이
-   * 프로세스 재시작까지 남는다.
+   * 프로세스 재시작까지 남는다. 풀린 뒤 고리가 나가는 길은 `stillBroke`다 —
+   * 스냅샷이 없으니 `SNAPSHOT_MISSING`을 던지고, 그 예외가 `finally`를 거쳐
+   * 표시를 지운다(`stillBroke` 자체는 손대지 않았다).
    */
   @OnEvent('TOURNAMENT_CLOSED')
   handleTournamentClosed(payload: { tournamentId: string; tableIds: string[]; status: string }) {
     for (const tableId of payload.tableIds) {
-      const waiter = this.resumeWaiters.get(tableId);
-      if (waiter) {
-        this.resumeWaiters.delete(tableId);
-        waiter();
-      }
+      this.releaseResumeWaiter(tableId);
     }
   }
 

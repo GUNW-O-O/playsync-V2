@@ -823,20 +823,41 @@ describe('DealerService 동시성', () => {
           await redis.set(stateKey, JSON.stringify(showdownState()));
           jest.spyOn(playsync, 'processRebuy').mockResolvedValueOnce('interrupted');
 
+          // `until`로 resumePending을 폴링하면, 그 사이 이 테스트의 GET+DEL이
+          // askRebuys의 holdForDealer 직후 스냅샷 확인보다 먼저 끼어들 수
+          // 있다 — 그러면 고리가 핸들러 없이도 스스로 끝나 이 테스트가
+          // 핸들러를 비워도 통과해 버린다(경합을 왕복 타이밍에 맡기지 않는다).
+          // 그래서 그 확인이 스냅샷을 읽는 순간 자체를 스파이로 붙잡는다.
+          // `resumePending`이 실린 스냅샷을 읽는 첫 순간이 곧 그 확인이다 —
+          // `mutateSnapshot` 내부 읽기는 전부 쓰기 **전**이고, `stillBroke`는
+          // 재개 **후**에만 돈다.
+          let markChecked!: () => void;
+          const checked = new Promise<void>((resolve) => { markChecked = resolve; });
+          const readSnapshot = redisService.getSnapShot.bind(redisService);
+          jest.spyOn(redisService, 'getSnapShot').mockImplementation(async (id: string) => {
+            const state = await readSnapshot(id);
+            if (state?.resumePending) markChecked();
+            return state;
+          });
+
           const settling = dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
-          await until(async () => (await saved()).resumePending !== undefined);
+          await checked;
 
           // SessionService.announceClosed와 같은 순서(스냅샷 삭제 → 이벤트)를
           // 흉내낸다 — 부르는 쪽 트랜잭션이 스냅샷을 이미 지운 뒤에 이벤트가 온다.
           await redis.del(stateKey);
           dealer.handleTournamentClosed({ tournamentId: TOURNAMENT, tableIds: [TABLE], status: 'CANCELLED' });
 
-          // resolve든 reject든 상관없다 — 매달리지만 않으면 된다.
+          // 고리는 끝나고 resolveWinners는 stillBroke → 3단계의
+          // SNAPSHOT_MISSING으로 거절된다 — 닫힌 대회라 괜찮다. resolve든
+          // reject든 매달리지만 않으면 된다.
           await settling.catch(() => { /* 스냅샷이 없어 던져도 여기서는 괜찮다 */ });
 
-          // 스냅샷이 없으니 다른 이유로 던질 수 있다 — '리바인을 기다리는
-          // 중입니다.'가 아니라는 것만으로 rebuyInFlight가 지워졌다고 본다.
-          await expect(dealer.retryCheckpoint(TABLE)).rejects.not.toThrow('리바인을 기다리는 중입니다.');
+          // 스냅샷이 없어진 뒤에는 이 표시들이 유일하게 관측 가능한 값이다 —
+          // retryCheckpoint는 getSnapShot이 먼저 던져 rebuyInFlight 검사에
+          // 닿지도 못하므로 그 메시지로는 표시가 지워졌는지 증명할 수 없다.
+          expect(dealer['rebuyInFlight'].has(TABLE)).toBe(false);
+          expect(dealer['resumeWaiters'].has(TABLE)).toBe(false);
         });
 
         it('반대 입력 — 다른 테이블의 닫힘으로는 풀리지 않는다', async () => {
@@ -877,8 +898,11 @@ describe('DealerService 동시성', () => {
           await dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]).catch(() => { /* 스냅샷이 없어 던져도 괜찮다 */ });
 
           // 재개 없이 끝났다 — resumeTable을 부르지 않았는데도 여기 도달했다는
-          // 것 자체가 증거다. 표시도 남지 않는다.
-          await expect(dealer.retryCheckpoint(TABLE)).rejects.not.toThrow('리바인을 기다리는 중입니다.');
+          // 것 자체가 증거다. 표시도 남지 않는다. retryCheckpoint의 메시지로는
+          // 증명할 수 없다(getSnapShot이 먼저 던져 rebuyInFlight 검사 전에
+          // 끝난다) — 스냅샷이 없어진 뒤 유일한 관측값인 내부 표시를 직접 본다.
+          expect(dealer['rebuyInFlight'].has(TABLE)).toBe(false);
+          expect(dealer['resumeWaiters'].has(TABLE)).toBe(false);
         });
       });
     });
