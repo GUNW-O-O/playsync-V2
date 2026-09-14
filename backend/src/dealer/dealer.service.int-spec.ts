@@ -816,6 +816,71 @@ describe('DealerService 동시성', () => {
 
         expect(`호출 ${rebuy.mock.calls.length}`).toBe('호출 2');
       });
+
+      describe('대회가 닫히면 (잔여 — 재개 대기가 영영 안 풀린다)', () => {
+        it('재개 대기 중에 대회가 닫히면 정산이 매달리지 않고 끝난다', async () => {
+          await seedMeta(true);
+          await redis.set(stateKey, JSON.stringify(showdownState()));
+          jest.spyOn(playsync, 'processRebuy').mockResolvedValueOnce('interrupted');
+
+          const settling = dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
+          await until(async () => (await saved()).resumePending !== undefined);
+
+          // SessionService.announceClosed와 같은 순서(스냅샷 삭제 → 이벤트)를
+          // 흉내낸다 — 부르는 쪽 트랜잭션이 스냅샷을 이미 지운 뒤에 이벤트가 온다.
+          await redis.del(stateKey);
+          dealer.handleTournamentClosed({ tournamentId: TOURNAMENT, tableIds: [TABLE], status: 'CANCELLED' });
+
+          // resolve든 reject든 상관없다 — 매달리지만 않으면 된다.
+          await settling.catch(() => { /* 스냅샷이 없어 던져도 여기서는 괜찮다 */ });
+
+          // 스냅샷이 없으니 다른 이유로 던질 수 있다 — '리바인을 기다리는
+          // 중입니다.'가 아니라는 것만으로 rebuyInFlight가 지워졌다고 본다.
+          await expect(dealer.retryCheckpoint(TABLE)).rejects.not.toThrow('리바인을 기다리는 중입니다.');
+        });
+
+        it('반대 입력 — 다른 테이블의 닫힘으로는 풀리지 않는다', async () => {
+          await seedMeta(true);
+          await redis.set(stateKey, JSON.stringify(showdownState()));
+          jest.spyOn(playsync, 'processRebuy').mockResolvedValueOnce('interrupted').mockResolvedValue('declined');
+
+          let settled = false;
+          const settling = dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]).finally(() => { settled = true; });
+          await until(async () => (await saved()).resumePending !== undefined);
+
+          dealer.handleTournamentClosed({ tournamentId: TOURNAMENT, tableIds: ['다른-테이블'], status: 'CANCELLED' });
+
+          // 「안 풀렸다」는 시간으로만 관찰할 수 있다 — 짧게 기다렸다가 아직임을 본다.
+          await new Promise((r) => setTimeout(r, 300));
+          expect(settled).toBe(false);
+
+          await dealer.resumeTable(TABLE);
+          await settling;
+          expect(settled).toBe(true);
+        });
+
+        it('재개 대기를 걸기 전에(재개 표시 쓰기 직후) 스냅샷이 없어지면 기다리지 않고 끝낸다', async () => {
+          await seedMeta(true);
+          await redis.set(stateKey, JSON.stringify(showdownState()));
+          jest.spyOn(playsync, 'processRebuy').mockResolvedValue('interrupted');
+
+          // markRebuyInterrupted(재개 대기 표시를 쓰는 자리)가 원래 동작하기
+          // **전에** 스냅샷을 지운다 — 대회가 닫혀 표시를 세울 자리 자체가
+          // 없어진 경우를 흉내낸다. 원래 동작은 스냅샷이 없으면 조용히
+          // 아무것도 안 쓴다(PlaysyncService.markRebuyInterrupted).
+          const originalMarkInterrupted = playsync.markRebuyInterrupted.bind(playsync);
+          jest.spyOn(playsync, 'markRebuyInterrupted').mockImplementation(async (tid: string, downMs: number) => {
+            await redis.del(stateKey);
+            return originalMarkInterrupted(tid, downMs);
+          });
+
+          await dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]).catch(() => { /* 스냅샷이 없어 던져도 괜찮다 */ });
+
+          // 재개 없이 끝났다 — resumeTable을 부르지 않았는데도 여기 도달했다는
+          // 것 자체가 증거다. 표시도 남지 않는다.
+          await expect(dealer.retryCheckpoint(TABLE)).rejects.not.toThrow('리바인을 기다리는 중입니다.');
+        });
+      });
     });
   });
 });

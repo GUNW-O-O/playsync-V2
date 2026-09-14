@@ -1,5 +1,6 @@
 import { InjectQueue } from '@nestjs/bullmq';
 import { ConflictException, ForbiddenException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { OnEvent } from '@nestjs/event-emitter';
 import { JwtService } from '@nestjs/jwt';
 import { Role, TournamentStatus } from '@prisma/client';
 import { Queue } from 'bullmq';
@@ -568,6 +569,18 @@ export class DealerService {
         // 전의 재개는 `resumePending`이 없어 `resumeTable`이 거절한다.
         const resumed = new Promise<void>((resolve) => this.resumeWaiters.set(tableId, resolve));
         await this.holdForDealer(tableId, stoppedAt);
+
+        // **대회가 닫혔으면 기다리지 않고 고리를 끝낸다**(T100 잔여). 상점이
+        // 「이어서 진행」 대신 대회를 중단·종료하면 `SessionService`가 이
+        // 자리보다 먼저 스냅샷을 지운다(`announceClosed`는 `deleteTournament`
+        // **뒤에** 이벤트를 낸다). 그 이벤트가 위 `resumeWaiters.set` 뒤에
+        // 왔으면 `handleTournamentClosed`가 `resumed`를 풀어 준다. 그런데
+        // 이벤트가 그 **전에**(예: `holdForDealer`가 도는 동안) 이미 지나갔으면
+        // 풀어 줄 대상이 없어 `resumeTable`도 영영 안 올 `resumed`를 기다리게
+        // 된다 — 스냅샷 유무로 그 경우를 가른다. 다시 물을 사람도, 탈락시킬
+        // 판도 없으니 조용히 끝낸다.
+        if (!(await this.redis.getSnapShot(tableId))) break;
+
         await resumed;
         asked = await this.stillBroke(tableId, interrupted);
       }
@@ -706,6 +719,30 @@ export class DealerService {
       waiter();
     }
     return next;
+  }
+
+  /**
+   * 대회가 닫히면 리바인 재개 대기를 푼다(T100 잔여).
+   *
+   * `SessionService.announceClosed`가 내는 이벤트다. 부르는 쪽 트랜잭션이
+   * `Table` 행과 Redis 스냅샷을 이미 지운 뒤라 `tableIds`가 페이로드로 실려
+   * 온다(조회할 곳이 없다) — `WsGateway.handleTournamentClosed`와 같은 이유,
+   * 같은 페이로드 모양이다.
+   *
+   * 상점이 「이어서 진행」 대신 대회를 중단·종료하면 `resumeTable`이 다시
+   * 오지 않는다. 여기서 풀지 않으면 `askRebuys`의 고리가 `resumeWaiters`를
+   * 영영 들고 있고, `rebuyInFlight` 표시와 걸린 `resolveWinners` 호출이
+   * 프로세스 재시작까지 남는다.
+   */
+  @OnEvent('TOURNAMENT_CLOSED')
+  handleTournamentClosed(payload: { tournamentId: string; tableIds: string[]; status: string }) {
+    for (const tableId of payload.tableIds) {
+      const waiter = this.resumeWaiters.get(tableId);
+      if (waiter) {
+        this.resumeWaiters.delete(tableId);
+        waiter();
+      }
+    }
   }
 
   /**
