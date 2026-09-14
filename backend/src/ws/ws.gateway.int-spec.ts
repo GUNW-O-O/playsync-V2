@@ -1540,6 +1540,21 @@ describe('WsGateway 인바운드 경계', () => {
       });
     });
 
+    it('같은 유저의 소켓이 둘 붙어 있으면 (좀비 포함) 모두에게 보낸다 (I1)', async () => {
+      // 소켓이 끊기지 않은 채(sendToTableUser가 첫 소켓에서 멈추면 이 사실을
+      // 놓친다) 재접속한 상황을 재현한다 — Wi-Fi 순단으로 옛 소켓이 keepalive
+      // 스윕 전까지 OPEN으로 남아 있는 것과 같은 모양이다.
+      const zombie = await connect(await seatTicket('alice'));
+      const fresh = await connect(await seatTicket('alice'));
+      zombie.send.mockClear();
+      fresh.send.mockClear();
+
+      requestPrompt();
+
+      expect(events(zombie, 'REBUY_PROMPT')).toHaveLength(1);
+      expect(events(fresh, 'REBUY_PROMPT')).toHaveLength(1);
+    });
+
     it('반대 입력: rebuyPending이 없으면 안 받는다', async () => {
       await setState(undefined);
       requestPrompt();
@@ -1586,6 +1601,23 @@ describe('WsGateway 인바운드 경계', () => {
       const seat = await connect(await seatTicket('alice'));
 
       expect(events(seat, 'REBUY_PROMPT')).toHaveLength(0);
+    });
+
+    it('복구와 정리 사이의 낡은 프롬프트는 세대가 바뀌면 안 받는다 (최종 리뷰 M2)', async () => {
+      // markRecovered ~ markRebuyInterrupted의 쓰기 사이를 흉내낸다: 스냅샷은
+      // 아직 이 사람을 기다리는 rebuyPending·미래 마감을 이지만, 장애가 한 번
+      // 났다 간 뒤라 이 기록의 세대는 낡았다.
+      await setState({ seatIndexes: [0], deadline: futureDeadline() });
+      requestPrompt();
+      const before = outage().generation;
+      outage().generation += 1;
+      try {
+        const seat = await connect(await seatTicket('alice'));
+
+        expect(events(seat, 'REBUY_PROMPT')).toHaveLength(0);
+      } finally {
+        outage().generation = before;
+      }
     });
 
     it('반대 입력: 지난 라운드의 낡은 프롬프트는 새 마커보다 이르면 안 받는다 (M1)', async () => {
