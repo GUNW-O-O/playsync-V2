@@ -54,6 +54,17 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
   private readonly onOutageDown = () => this.broadcastOutage(true);
   private readonly onOutageRecovered = () => { void this.afterOutage(); };
 
+  // 재접속 대비 리바인 팝업 기록. `REBUY_PROMPT`는 이벤트라 창이 열린 동안
+  // 좌석 소켓이 끊겼다 다시 붙으면 원래 발송을 놓친다 — 이 기록이 있어야
+  // `handleConnection`이 재접속한 좌석에 같은 팝업을 다시 보낼 수 있다.
+  // 메모리로 충분한 이유: 게이트웨이는 단일 인스턴스라 재시작이 곧 이
+  // 대기의 끝이고, 그때는 `PlaysyncService.waitForRebuyResponse`도 함께
+  // 끊겨 서버가 더 기다리지 않으므로 잃을 것이 없다. 추가 타이머는 두지
+  // 않는다 — 만료된 항목은 읽는 자리(재전송 시도)에서 지운다.
+  private readonly pendingRebuyPrompts = new Map<string, {
+    deadline: number; userPoints: any; entryFee: number; tournamentName: string;
+  }>();
+
   constructor(
     private readonly dealer: DealerService,
     private readonly playsync: PlaysyncService,
@@ -257,6 +268,12 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
         // 쪽이 매번 확인한다 — T96 `recount`의 joiner와 같은 이유다.
         if (!this.redis.outage.isUp()) {
           client.send(JSON.stringify({ event: SERVER_OUTAGE_EVENT, data: ServerOutageSchema.parse({ down: true }) }));
+        } else if (payload.role !== Role.DEALER && state) {
+          // 재접속한 좌석 — 서버가 아직 리바인 응답을 기다리고 있으면
+          // (`rebuyPending`에 내 자리가 있으면) 놓쳤을 팝업을 다시 보낸다.
+          // 반드시 `renderGame` 뒤다 — 좌석 화면은 `rebuyPending`이 내 자리를
+          // 싣지 않으면 팝업 버튼을 막는다(T100).
+          this.resendPendingRebuyPrompt(tableId, payload.sub, state, client);
         }
 
         // 딜러가 돌아왔다 — 그 대회가 SYNCING이면 다시 세어 본다(T96).
@@ -439,6 +456,41 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
         }
       }
     }
+  }
+
+  /** `pendingRebuyPrompts`의 키. 테이블·사람 단위라 응답도, 재전송도 이 키로 찾는다. */
+  private rebuyPromptKey(tableId: string, userId: string) {
+    return `${tableId}:${userId}`;
+  }
+
+  /**
+   * 재접속한 좌석에 아직 열려 있는 리바인 창을 다시 알린다.
+   *
+   * `REBUY_PROMPT`는 이벤트라 못 받은 채 지나가면 서버
+   * (`PlaysyncService.waitForRebuyResponse`)는 응답 없이 계속 기다리다 15초
+   * 마감에 거절로 세고, 그 사람은 `resolveWinners` 3단계에서 탈락한다 —
+   * 자리는 아직 살아 있는데 화면만 못 본 것뿐인데도.
+   */
+  private resendPendingRebuyPrompt(tableId: string, userId: string, state: TableState, client: WebSocket) {
+    // 방금 읽은 스냅샷에 내 자리가 없거나 서버가 이 사람을 기다리지 않으면
+    // (`rebuyPending`에 내 자리가 없으면) 보낼 이유가 없다. T100에서
+    // `rebuyPending`은 매 프롬프트 전에 서고, 판이 끝나거나 장애로 끊기면
+    // 지워진다.
+    const seat = state.players.find((p) => p?.id === userId);
+    if (!seat) return;
+    if (!state.rebuyPending?.seatIndexes.includes(seat.seatIndex)) return;
+
+    const key = this.rebuyPromptKey(tableId, userId);
+    const prompt = this.pendingRebuyPrompts.get(key);
+    if (!prompt) return;
+
+    // 마감이 지난 기록은 추가 타이머 없이 이 읽는 자리에서 지운다.
+    if (prompt.deadline <= Date.now()) {
+      this.pendingRebuyPrompts.delete(key);
+      return;
+    }
+
+    client.send(JSON.stringify({ event: 'REBUY_PROMPT', data: prompt }));
   }
 
   @SubscribeMessage('PLAYER_ACTION')
@@ -735,12 +787,15 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
 
   @OnEvent('rebuy.request.sent')
   handleRebuyRequest(payload: { userId: string, tableId: string, deadline: number, userPoints: any, entryFee: number, tournamentName: string }) {
-    this.sendToTableUser(payload.tableId, payload.userId, 'REBUY_PROMPT', {
+    const prompt = {
       deadline: payload.deadline,
       userPoints: payload.userPoints,
       entryFee: payload.entryFee,
       tournamentName: payload.tournamentName,
-    });
+    };
+    // 재접속 대비 적어 둔다. 새 프롬프트는 같은 키(테이블·사람)를 덮는다.
+    this.pendingRebuyPrompts.set(this.rebuyPromptKey(payload.tableId, payload.userId), prompt);
+    this.sendToTableUser(payload.tableId, payload.userId, 'REBUY_PROMPT', prompt);
   }
 
   @SubscribeMessage('REBUY_RESPONSE')
@@ -756,6 +811,9 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     }
 
     const userId = (client as any).userId;
+    const tableId = (client as any).tableId;
+    // 응답이 흘러갔다 — 이 사람의 기록은 더 이상 재전송할 이유가 없다.
+    this.pendingRebuyPrompts.delete(this.rebuyPromptKey(tableId, userId));
     this.eventEmitter.emit(`rebuy_res_${userId}`, parsed.data.accept);
   }
 

@@ -1478,4 +1478,114 @@ describe('WsGateway 인바운드 경계', () => {
       expect(events(seat, SERVER_OUTAGE_EVENT)).toHaveLength(0);
     });
   });
+
+  /**
+   * 재접속한 좌석의 리바인 팝업 재전송.
+   *
+   * `REBUY_PROMPT`는 이벤트라, 창이 열린 동안 좌석 소켓이 끊겼다 다시 붙으면
+   * 원래 발송을 놓친다. 서버(`PlaysyncService.waitForRebuyResponse`)는 응답
+   * 없이 계속 기다리다 15초 마감에 거절로 세고, 그 사람은 `resolveWinners`
+   * 3단계에서 탈락한다 — 화면만 못 봤을 뿐 자리는 아직 살아 있는데도.
+   */
+  describe('재접속한 좌석의 리바인 팝업', () => {
+    function outage() {
+      return (gateway as any).redis.outage as import('src/redis/outage').RedisOutage;
+    }
+    function allEvents(client: { send: jest.Mock }) {
+      return client.send.mock.calls.map(([raw]: [string]) => JSON.parse(raw));
+    }
+    function events(client: { send: jest.Mock }, name: string) {
+      return allEvents(client).filter((m: any) => m.event === name);
+    }
+    function futureDeadline() {
+      return Date.now() + 10_000;
+    }
+
+    /** 좌석 화면이 보는 스냅샷의 `rebuyPending`을 세운다. */
+    async function setState(rebuyPending?: { seatIndexes: number[]; deadline: number }) {
+      await redis.set(`table:state:${TABLE}`, JSON.stringify({ ...makeState(), rebuyPending }));
+    }
+
+    /** `handleRebuyRequest`를 직접 불러 메모리에 프롬프트를 적어 둔다(진짜 발송 경로). */
+    function requestPrompt(deadline = futureDeadline()) {
+      gateway.handleRebuyRequest({
+        userId: 'alice',
+        tableId: TABLE,
+        deadline,
+        userPoints: 500,
+        entryFee: 1000,
+        tournamentName: '대회-1',
+      });
+    }
+
+    afterEach(() => { outage().phase = 'up'; });
+
+    it('대기 중(rebuyPending에 내 자리·마감 미래) 붙으면 renderGame 다음에 REBUY_PROMPT를 받는다', async () => {
+      const deadline = futureDeadline();
+      await setState({ seatIndexes: [0], deadline });
+      requestPrompt(deadline);
+
+      const seat = await connect(await seatTicket('alice'));
+
+      const names = allEvents(seat).map((m: any) => m.event);
+      const renderIdx = names.indexOf('renderGame');
+      const promptIdx = names.indexOf('REBUY_PROMPT');
+      expect(renderIdx).toBeGreaterThanOrEqual(0);
+      expect(promptIdx).toBeGreaterThan(renderIdx);
+      expect(events(seat, 'REBUY_PROMPT').at(-1)?.data).toEqual({
+        deadline,
+        userPoints: 500,
+        entryFee: 1000,
+        tournamentName: '대회-1',
+      });
+    });
+
+    it('반대 입력: rebuyPending이 없으면 안 받는다', async () => {
+      await setState(undefined);
+      requestPrompt();
+
+      const seat = await connect(await seatTicket('alice'));
+
+      expect(events(seat, 'REBUY_PROMPT')).toHaveLength(0);
+    });
+
+    it('반대 입력: rebuyPending이 다른 자리만 실으면 안 받는다', async () => {
+      await setState({ seatIndexes: [1], deadline: futureDeadline() });
+      requestPrompt();
+
+      const seat = await connect(await seatTicket('alice'));
+
+      expect(events(seat, 'REBUY_PROMPT')).toHaveLength(0);
+    });
+
+    it('반대 입력: 마감이 지났으면 안 받는다', async () => {
+      await setState({ seatIndexes: [0], deadline: futureDeadline() });
+      requestPrompt(Date.now() - 1000);
+
+      const seat = await connect(await seatTicket('alice'));
+
+      expect(events(seat, 'REBUY_PROMPT')).toHaveLength(0);
+    });
+
+    it('응답을 보낸 뒤 다시 붙으면 안 받는다', async () => {
+      await setState({ seatIndexes: [0], deadline: futureDeadline() });
+      requestPrompt();
+      const first = await connect(await seatTicket('alice'));
+      gateway.handleRebuyResponse(first, { accept: true });
+
+      const second = await connect(await seatTicket('alice'));
+
+      expect(events(second, 'REBUY_PROMPT')).toHaveLength(0);
+    });
+
+    it('장애 중에 붙으면 안 받는다', async () => {
+      await setState({ seatIndexes: [0], deadline: futureDeadline() });
+      requestPrompt();
+      outage().phase = 'down';
+
+      const seat = await connect(await seatTicket('alice'));
+
+      expect(events(seat, 'REBUY_PROMPT')).toHaveLength(0);
+    });
+  });
 });
