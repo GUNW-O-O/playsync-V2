@@ -724,18 +724,34 @@ describe('PlaysyncService.processRebuy', () => {
   });
 
   describe('markRebuyInterrupted (T100)', () => {
-    it('리바인 표시를 지우고 재개 대기를 세우고 전파한다', async () => {
+    it('리바인 표시를 지우고 재개 대기를 세우고 전파하고, 스냅샷이 있었다고 true를 돌려준다 (M1)', async () => {
       const s = brokeState();
       s.rebuyPending = { seatIndexes: [0], deadline: Date.now() + 15000 };
       await redis.set(stateKey, JSON.stringify(s));
       let last: TableState | null = null;
       emitter.on('game.state.updated', (p: { state: TableState }) => { last = p.state; });
 
-      await service.markRebuyInterrupted(TABLE, 4200);
+      const wrote = await service.markRebuyInterrupted(TABLE, 4200);
 
       const saved: TableState = JSON.parse((await redis.get(stateKey))!);
       expect(`${saved.rebuyPending === undefined} ${saved.resumePending?.downMs}`).toBe('true 4200');
       expect(last!.resumePending?.downMs).toBe(4200);
+      expect(wrote).toBe(true);
+    });
+
+    // M1(최종 리뷰): `DealerService.holdForDealer`가 이 반환값 하나로 재개
+    // 대기 고리를 끝낸다 — 스냅샷이 없어졌으면(대회가 닫혔거나 테이블이
+    // 지워졌으면) false다. 반대 입력이 없으면 "항상 true"인 구현도 통과한다.
+    it('반대 입력: 스냅샷이 없으면 아무것도 쓰지 않고 false를 돌려준다 (M1)', async () => {
+      await redis.del(stateKey);
+      let emitted = false;
+      emitter.on('game.state.updated', () => { emitted = true; });
+
+      const wrote = await service.markRebuyInterrupted(TABLE, 4200);
+
+      expect(wrote).toBe(false);
+      expect(emitted).toBe(false);
+      expect(await redis.get(stateKey)).toBeNull();
     });
   });
 

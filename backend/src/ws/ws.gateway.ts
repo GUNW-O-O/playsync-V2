@@ -54,6 +54,24 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
   private readonly onOutageDown = () => this.broadcastOutage(true);
   private readonly onOutageRecovered = () => { void this.afterOutage(); };
 
+  // 재접속 대비 리바인 팝업 기록. `REBUY_PROMPT`는 이벤트라 창이 열린 동안
+  // 좌석 소켓이 끊겼다 다시 붙으면 원래 발송을 놓친다 — 이 기록이 있어야
+  // `handleConnection`이 재접속한 좌석에 같은 팝업을 다시 보낼 수 있다.
+  // 메모리로 충분한 이유: 게이트웨이는 단일 인스턴스라 재시작이 곧 이
+  // 대기의 끝이고, 그때는 `PlaysyncService.waitForRebuyResponse`도 함께
+  // 끊겨 서버가 더 기다리지 않으므로 잃을 것이 없다. 추가 타이머는 두지
+  // 않는다 — 만료된 항목은 읽는 자리(재전송 시도)에서 지운다.
+  //
+  // `generation`은 와이어로 나가지 않는다(M2, 최종 리뷰) — 기록 당시의
+  // `RedisOutage.generation`이다. `markRecovered`와 `markRebuyInterrupted`의
+  // 쓰기 사이에는 스냅샷의 `rebuyPending`이 아직 그 사람을 이고 마감도 살아
+  // 있을 수 있지만, 서버는 이미 그 대기를 인터럽트로 접었다 — 이 세대가
+  // 그때의 것과 다르면(장애가 한 번 났다 갔으면 항상 다르다, `onLost`가 감지
+  // 즉시 올리므로) 아무도 듣지 않는 낡은 프롬프트다.
+  private readonly pendingRebuyPrompts = new Map<string, {
+    deadline: number; userPoints: any; entryFee: number; tournamentName: string; generation: number;
+  }>();
+
   constructor(
     private readonly dealer: DealerService,
     private readonly playsync: PlaysyncService,
@@ -257,6 +275,12 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
         // 쪽이 매번 확인한다 — T96 `recount`의 joiner와 같은 이유다.
         if (!this.redis.outage.isUp()) {
           client.send(JSON.stringify({ event: SERVER_OUTAGE_EVENT, data: ServerOutageSchema.parse({ down: true }) }));
+        } else if (payload.role !== Role.DEALER && state) {
+          // 재접속한 좌석 — 서버가 아직 리바인 응답을 기다리고 있으면
+          // (`rebuyPending`에 내 자리가 있으면) 놓쳤을 팝업을 다시 보낸다.
+          // 반드시 `renderGame` 뒤다 — 좌석 화면은 `rebuyPending`이 내 자리를
+          // 싣지 않으면 팝업 버튼을 막는다(T100).
+          this.resendPendingRebuyPrompt(tableId, payload.sub, state, client);
         }
 
         // 딜러가 돌아왔다 — 그 대회가 SYNCING이면 다시 세어 본다(T96).
@@ -426,19 +450,85 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     }
   }
   // 유저 브로드캐스트 유틸리티
+  //
+  // I1(최종 리뷰): 여기서 첫 소켓을 찾고 멈추면(과거의 `break`), 좀비 소켓이
+  // keepalive 스윕(10~20초) 전까지 테이블 집합에 OPEN 상태로 먼저 들어 있는 채
+  // 남아 있는 동안 재접속한 새 소켓은 이벤트를 못 받는다 — 재접속 시점의
+  // `resendPendingRebuyPrompt`는 이미 끝난 뒤라 다시 보낼 길이 없다. 같은
+  // userId의 OPEN 소켓 전부에 보낸다.
   private sendToTableUser(tableId: string, userId: string, event: string, data: any) {
     const sessions = this.tableSessions.get(tableId);
     if (sessions) {
-      // 해당 테이블에 접속한 소켓들 중 userId가 일치하는 소켓 검색
+      // 해당 테이블에 접속한 소켓들 중 userId가 일치하는 소켓 전부에 보낸다
       for (const socket of sessions) {
-        if ((socket as any).userId === userId) {
-          if (socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ event, data }));
-          }
-          break; // 찾았으면 루프 종료
+        if ((socket as any).userId === userId && socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ event, data }));
         }
       }
     }
+  }
+
+  /** `pendingRebuyPrompts`의 키. 테이블·사람 단위라 응답도, 재전송도 이 키로 찾는다. */
+  private rebuyPromptKey(tableId: string, userId: string) {
+    return `${tableId}:${userId}`;
+  }
+
+  /**
+   * 재접속한 좌석에 아직 열려 있는 리바인 창을 다시 알린다.
+   *
+   * `REBUY_PROMPT`는 이벤트라 못 받은 채 지나가면 서버
+   * (`PlaysyncService.waitForRebuyResponse`)는 응답 없이 계속 기다리다 15초
+   * 마감에 거절로 세고, 그 사람은 `resolveWinners` 3단계에서 탈락한다 —
+   * 자리는 아직 살아 있는데 화면만 못 본 것뿐인데도.
+   */
+  private resendPendingRebuyPrompt(tableId: string, userId: string, state: TableState, client: WebSocket) {
+    // **자리는 배열 위치다, `seatIndex` 필드가 아니다.**
+    // `PlaysyncService.markRebuyPending`이 `seatIndexes`를 지을 때 쓰는 것은
+    // `snapshot.players`의 배열 인덱스이지 좌석 객체의 `seatIndex` 필드가
+    // 아니다 — 둘이 같다는 보장이 없다. 필드로 대조하면 어긋난 스냅샷에서
+    // 조용히 못 찾는다.
+    const seatPosition = state.players.findIndex((p) => p?.id === userId);
+    if (seatPosition < 0) return;
+
+    // 서버가 이 사람을 기다리지 않으면(`rebuyPending`에 내 자리가 없으면)
+    // 보낼 이유가 없다. T100에서 `rebuyPending`은 매 프롬프트 전에 서고,
+    // 판이 끝나거나 장애로 끊기면 지워진다.
+    const rebuyPending = state.rebuyPending;
+    if (!rebuyPending || !rebuyPending.seatIndexes.includes(seatPosition)) return;
+
+    const key = this.rebuyPromptKey(tableId, userId);
+    const prompt = this.pendingRebuyPrompts.get(key);
+    if (!prompt) return;
+
+    // 마감이 지난 기록은 추가 타이머 없이 이 읽는 자리에서 지운다.
+    if (prompt.deadline <= Date.now()) {
+      this.pendingRebuyPrompts.delete(key);
+      return;
+    }
+
+    // **지난 라운드의 낡은 프롬프트를 걸러낸다.** 장애가 리바인 창을 끊으면
+    // `PlaysyncService.markRebuyInterrupted`가 `rebuyPending`을 지우고, 딜러가
+    // 재개하면 `DealerService.askRebuyRound`가 `markRebuyPending`으로 새
+    // 마감을 스냅샷에 세운 **뒤에야** 사람마다 `processRebuy`가 DB를 읽고
+    // `waitForRebuyResponse`로 새 프롬프트의 마감(`Date.now() + timeoutMs`)을
+    // 잰다 — 항상 마커보다 늦거나 같다. 적어 둔 프롬프트의 마감이 지금
+    // 마커보다 이르면, 그 프롬프트는 이번 라운드가 아니라 장애로 끊긴
+    // 이전 라운드의 것이다. 그새 접속한 소켓에 그걸 다시 보내면 서버는
+    // 이미 새 프롬프트를 기다리는데 단말은 답할 수 없는 낡은 팝업을 본다.
+    if (prompt.deadline < rebuyPending.deadline) return;
+
+    // **세대가 다르면 서버가 더는 기다리지 않는 프롬프트다(M2).** 복구
+    // 직후부터 `markRebuyInterrupted`의 쓰기가 끝나기까지, 스냅샷은 아직
+    // 이번 사람의 `rebuyPending`을 이고 마감도 미래일 수 있지만
+    // `processRebuy`는 이미 `interrupted`로 끝나 리스너를 뗐다 — 응답을
+    // 보내도 아무도 안 듣고 조용히 버려진다.
+    if (prompt.generation !== this.redis.outage.generation) {
+      this.pendingRebuyPrompts.delete(key);
+      return;
+    }
+
+    const { deadline, userPoints, entryFee, tournamentName } = prompt;
+    client.send(JSON.stringify({ event: 'REBUY_PROMPT', data: { deadline, userPoints, entryFee, tournamentName } }));
   }
 
   @SubscribeMessage('PLAYER_ACTION')
@@ -735,12 +825,19 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
 
   @OnEvent('rebuy.request.sent')
   handleRebuyRequest(payload: { userId: string, tableId: string, deadline: number, userPoints: any, entryFee: number, tournamentName: string }) {
-    this.sendToTableUser(payload.tableId, payload.userId, 'REBUY_PROMPT', {
+    const prompt = {
       deadline: payload.deadline,
       userPoints: payload.userPoints,
       entryFee: payload.entryFee,
       tournamentName: payload.tournamentName,
-    });
+    };
+    // 재접속 대비 적어 둔다. 새 프롬프트는 같은 키(테이블·사람)를 덮는다.
+    // 세대는 기록에만 싣는다 — 와이어로 나가는 `prompt`에는 넣지 않는다(M2).
+    this.pendingRebuyPrompts.set(
+      this.rebuyPromptKey(payload.tableId, payload.userId),
+      { ...prompt, generation: this.redis.outage.generation },
+    );
+    this.sendToTableUser(payload.tableId, payload.userId, 'REBUY_PROMPT', prompt);
   }
 
   @SubscribeMessage('REBUY_RESPONSE')
@@ -756,6 +853,9 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     }
 
     const userId = (client as any).userId;
+    const tableId = (client as any).tableId;
+    // 응답이 흘러갔다 — 이 사람의 기록은 더 이상 재전송할 이유가 없다.
+    this.pendingRebuyPrompts.delete(this.rebuyPromptKey(tableId, userId));
     this.eventEmitter.emit(`rebuy_res_${userId}`, parsed.data.accept);
   }
 

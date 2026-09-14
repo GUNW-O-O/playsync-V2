@@ -466,8 +466,13 @@ export class PlaysyncService {
    * 마감의 카운트다운이 0에 멈춘 채 남는다.
    *
    * 이미 서 있는 `resumePending`은 덮지 않는다. 먼저 멈춘 시간이 진짜다.
+   *
+   * **반환값은 스냅샷이 있었는가다**(M1). `DealerService.holdForDealer`가 이
+   * 값을 그대로 돌려주고 `askRebuys`가 그걸로 고리를 끝낸다 — 락 밖에서 따로
+   * `getSnapShot`을 다시 읽으면 그 한 번의 왕복 사이에 장애가 다시 나는 창이
+   * `holdForDealer`의 재시도 밖에 생긴다.
    */
-  public async markRebuyInterrupted(tableId: string, downMs: number) {
+  public async markRebuyInterrupted(tableId: string, downMs: number): Promise<boolean> {
     const state = await this.redis.mutateSnapshot(tableId, async (snapshot) => {
       if (!snapshot) return null;
       delete snapshot.rebuyPending;
@@ -477,6 +482,7 @@ export class PlaysyncService {
     if (state) {
       this.eventEmitter.emit('game.state.updated', { tableId, state });
     }
+    return state != null;
   }
 
 

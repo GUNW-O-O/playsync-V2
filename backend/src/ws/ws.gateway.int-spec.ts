@@ -1478,4 +1478,173 @@ describe('WsGateway 인바운드 경계', () => {
       expect(events(seat, SERVER_OUTAGE_EVENT)).toHaveLength(0);
     });
   });
+
+  /**
+   * 재접속한 좌석의 리바인 팝업 재전송.
+   *
+   * `REBUY_PROMPT`는 이벤트라, 창이 열린 동안 좌석 소켓이 끊겼다 다시 붙으면
+   * 원래 발송을 놓친다. 서버(`PlaysyncService.waitForRebuyResponse`)는 응답
+   * 없이 계속 기다리다 15초 마감에 거절로 세고, 그 사람은 `resolveWinners`
+   * 3단계에서 탈락한다 — 화면만 못 봤을 뿐 자리는 아직 살아 있는데도.
+   */
+  describe('재접속한 좌석의 리바인 팝업', () => {
+    function outage() {
+      return (gateway as any).redis.outage as import('src/redis/outage').RedisOutage;
+    }
+    function allEvents(client: { send: jest.Mock }) {
+      return client.send.mock.calls.map(([raw]: [string]) => JSON.parse(raw));
+    }
+    function events(client: { send: jest.Mock }, name: string) {
+      return allEvents(client).filter((m: any) => m.event === name);
+    }
+    function futureDeadline() {
+      return Date.now() + 10_000;
+    }
+
+    /** 좌석 화면이 보는 스냅샷의 `rebuyPending`을 세운다. */
+    async function setState(rebuyPending?: { seatIndexes: number[]; deadline: number }) {
+      await redis.set(`table:state:${TABLE}`, JSON.stringify({ ...makeState(), rebuyPending }));
+    }
+
+    /** `handleRebuyRequest`를 직접 불러 메모리에 프롬프트를 적어 둔다(진짜 발송 경로). */
+    function requestPrompt(deadline = futureDeadline()) {
+      gateway.handleRebuyRequest({
+        userId: 'alice',
+        tableId: TABLE,
+        deadline,
+        userPoints: 500,
+        entryFee: 1000,
+        tournamentName: '대회-1',
+      });
+    }
+
+    afterEach(() => { outage().phase = 'up'; });
+
+    it('대기 중(rebuyPending에 내 자리·마감 미래) 붙으면 renderGame 다음에 REBUY_PROMPT를 받는다', async () => {
+      const deadline = futureDeadline();
+      await setState({ seatIndexes: [0], deadline });
+      requestPrompt(deadline);
+
+      const seat = await connect(await seatTicket('alice'));
+
+      const names = allEvents(seat).map((m: any) => m.event);
+      const renderIdx = names.indexOf('renderGame');
+      const promptIdx = names.indexOf('REBUY_PROMPT');
+      expect(renderIdx).toBeGreaterThanOrEqual(0);
+      expect(promptIdx).toBeGreaterThan(renderIdx);
+      expect(events(seat, 'REBUY_PROMPT').at(-1)?.data).toEqual({
+        deadline,
+        userPoints: 500,
+        entryFee: 1000,
+        tournamentName: '대회-1',
+      });
+    });
+
+    it('같은 유저의 소켓이 둘 붙어 있으면 (좀비 포함) 모두에게 보낸다 (I1)', async () => {
+      // 소켓이 끊기지 않은 채(sendToTableUser가 첫 소켓에서 멈추면 이 사실을
+      // 놓친다) 재접속한 상황을 재현한다 — Wi-Fi 순단으로 옛 소켓이 keepalive
+      // 스윕 전까지 OPEN으로 남아 있는 것과 같은 모양이다.
+      const zombie = await connect(await seatTicket('alice'));
+      const fresh = await connect(await seatTicket('alice'));
+      zombie.send.mockClear();
+      fresh.send.mockClear();
+
+      requestPrompt();
+
+      expect(events(zombie, 'REBUY_PROMPT')).toHaveLength(1);
+      expect(events(fresh, 'REBUY_PROMPT')).toHaveLength(1);
+    });
+
+    it('반대 입력: rebuyPending이 없으면 안 받는다', async () => {
+      await setState(undefined);
+      requestPrompt();
+
+      const seat = await connect(await seatTicket('alice'));
+
+      expect(events(seat, 'REBUY_PROMPT')).toHaveLength(0);
+    });
+
+    it('반대 입력: rebuyPending이 다른 자리만 실으면 안 받는다', async () => {
+      await setState({ seatIndexes: [1], deadline: futureDeadline() });
+      requestPrompt();
+
+      const seat = await connect(await seatTicket('alice'));
+
+      expect(events(seat, 'REBUY_PROMPT')).toHaveLength(0);
+    });
+
+    it('반대 입력: 마감이 지났으면 안 받는다', async () => {
+      await setState({ seatIndexes: [0], deadline: futureDeadline() });
+      requestPrompt(Date.now() - 1000);
+
+      const seat = await connect(await seatTicket('alice'));
+
+      expect(events(seat, 'REBUY_PROMPT')).toHaveLength(0);
+    });
+
+    it('응답을 보낸 뒤 다시 붙으면 안 받는다', async () => {
+      await setState({ seatIndexes: [0], deadline: futureDeadline() });
+      requestPrompt();
+      const first = await connect(await seatTicket('alice'));
+      gateway.handleRebuyResponse(first, { accept: true });
+
+      const second = await connect(await seatTicket('alice'));
+
+      expect(events(second, 'REBUY_PROMPT')).toHaveLength(0);
+    });
+
+    it('장애 중에 붙으면 안 받는다', async () => {
+      await setState({ seatIndexes: [0], deadline: futureDeadline() });
+      requestPrompt();
+      outage().phase = 'down';
+
+      const seat = await connect(await seatTicket('alice'));
+
+      expect(events(seat, 'REBUY_PROMPT')).toHaveLength(0);
+    });
+
+    it('복구와 정리 사이의 낡은 프롬프트는 세대가 바뀌면 안 받는다 (최종 리뷰 M2)', async () => {
+      // markRecovered ~ markRebuyInterrupted의 쓰기 사이를 흉내낸다: 스냅샷은
+      // 아직 이 사람을 기다리는 rebuyPending·미래 마감을 이지만, 장애가 한 번
+      // 났다 간 뒤라 이 기록의 세대는 낡았다.
+      await setState({ seatIndexes: [0], deadline: futureDeadline() });
+      requestPrompt();
+      const before = outage().generation;
+      outage().generation += 1;
+      try {
+        const seat = await connect(await seatTicket('alice'));
+
+        expect(events(seat, 'REBUY_PROMPT')).toHaveLength(0);
+      } finally {
+        outage().generation = before;
+      }
+    });
+
+    it('반대 입력: 지난 라운드의 낡은 프롬프트는 새 마커보다 이르면 안 받는다 (M1)', async () => {
+      // `markRebuyPending`이 이번 라운드의 마감을 이미 세운 뒤인데, 적어 둔
+      // 프롬프트는 그보다 5초 이른 — 장애로 끊긴 이전 라운드의 것이다.
+      const staleDeadline = futureDeadline();
+      await setState({ seatIndexes: [0], deadline: staleDeadline + 5000 });
+      requestPrompt(staleDeadline);
+
+      const seat = await connect(await seatTicket('alice'));
+
+      expect(events(seat, 'REBUY_PROMPT')).toHaveLength(0);
+    });
+
+    it('자리는 배열 위치로 맞춘다 — seatIndex 필드가 배열 위치와 달라도 받는다 (M2)', async () => {
+      // alice는 `players` 배열의 1번 자리(= markRebuyPending이 seatIndexes를
+      // 지을 때 쓰는 좌표)에 있지만, TablePlayer.seatIndex 필드는 3이다.
+      // 둘이 같다는 보장이 없다는 것을 보이는 입력이다.
+      const players = [makePlayer('bob', 5), { ...makePlayer('alice', 0), seatIndex: 3 }];
+      await redis.set(`table:state:${TABLE}`, JSON.stringify({
+        ...makeState(), players, rebuyPending: { seatIndexes: [1], deadline: futureDeadline() },
+      }));
+      requestPrompt();
+
+      const seat = await connect(await seatTicket('alice'));
+
+      expect(events(seat, 'REBUY_PROMPT')).toHaveLength(1);
+    });
+  });
 });

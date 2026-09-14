@@ -1,5 +1,6 @@
 import { InjectQueue } from '@nestjs/bullmq';
 import { ConflictException, ForbiddenException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { OnEvent } from '@nestjs/event-emitter';
 import { JwtService } from '@nestjs/jwt';
 import { Role, TournamentStatus } from '@prisma/client';
 import { Queue } from 'bullmq';
@@ -567,7 +568,27 @@ export class DealerService {
         // 누른 재개가 풀 대상을 못 찾고, 이 고리는 영영 기다린다. 먼저 걸면 그
         // 전의 재개는 `resumePending`이 없어 `resumeTable`이 거절한다.
         const resumed = new Promise<void>((resolve) => this.resumeWaiters.set(tableId, resolve));
-        await this.holdForDealer(tableId, stoppedAt);
+        const hadSnapshot = await this.holdForDealer(tableId, stoppedAt);
+
+        // **대회가 닫혔으면 기다리지 않고 고리를 끝낸다**(T100 잔여). 상점이
+        // 「이어서 진행」 대신 대회를 중단·종료하면 `SessionService`가 이
+        // 자리보다 먼저 스냅샷을 지운다(`announceClosed`는 `deleteTournament`
+        // **뒤에** 이벤트를 낸다). 그 이벤트가 위 `resumeWaiters.set` 뒤에
+        // 왔으면 `handleTournamentClosed`가 `resumed`를 풀어 준다. 그런데
+        // 이벤트가 그 **전에**(예: `holdForDealer`가 도는 동안) 이미 지나갔으면
+        // 풀어 줄 대상이 없어 `resumeTable`도 영영 안 올 `resumed`를 기다리게
+        // 된다 — 스냅샷 유무로 그 경우를 가른다.
+        //
+        // 여기서 `break`해도 이 함수만 조용히 끝난다 — `resolveWinners`는
+        // 그대로 3단계(`mutateSnapshot`)로 가서 `SNAPSHOT_MISSING`으로
+        // 거절된다. 닫힌 대회에서 그 요청이 에러로 끝나는 것은 괜찮다.
+        //
+        // **`holdForDealer`가 방금 쓴 그 사실을 돌려준다**(M1). 별도로
+        // `getSnapShot`을 다시 읽으면 그 왕복 자체가 `holdForDealer`의
+        // 재시도 밖에 있는 새 던짐 자리가 된다 — 락 안에서 이미 확인한 것을
+        // 그대로 받는다.
+        if (!hadSnapshot) break;
+
         await resumed;
         asked = await this.stillBroke(tableId, interrupted);
       }
@@ -609,13 +630,16 @@ export class DealerService {
   /**
    * 복구를 기다려 테이블을 「딜러의 재개 대기」로 둔다. 복구 직후 또 끊겨 쓰기가
    * 던지면 다시 기다린다 — up인데 던진 것만 올린다(검수 D3).
+   *
+   * **스냅샷이 있었는지를 돌려준다**(M1). `askRebuys`가 이 값으로 고리를
+   * 끝낸다 — 이 재시도 루프 밖에서 따로 `getSnapShot`을 다시 읽으면 그 왕복
+   * 사이의 재장애가 이 함수의 방어를 안 타는 새 던짐 자리가 된다.
    */
-  private async holdForDealer(tableId: string, stoppedAt: number) {
+  private async holdForDealer(tableId: string, stoppedAt: number): Promise<boolean> {
     for (;;) {
       await this.redis.outage.whenUp();
       try {
-        await this.playsync.markRebuyInterrupted(tableId, Date.now() - stoppedAt);
-        return;
+        return await this.playsync.markRebuyInterrupted(tableId, Date.now() - stoppedAt);
       } catch (error) {
         if (this.redis.outage.isUp()) throw error;
       }
@@ -700,12 +724,43 @@ export class DealerService {
     // 위에서 없으면 던졌으므로 여기 null이 올 수 없다. 타입만 좁힌다.
     if (!next) throw new Error(SNAPSHOT_MISSING);
     // 장애로 끊긴 리바인이 이 재개를 기다리고 있으면 푼다(T100).
+    this.releaseResumeWaiter(tableId);
+    return next;
+  }
+
+  /**
+   * 재개 대기가 있으면 지우고 푼다. `resumeTable`(딜러가 다시 열었다)과
+   * `handleTournamentClosed`(대회가 닫혀 더 열릴 일이 없다)가 같은 자리를
+   * 공유한다 — 두 벌이면 한쪽만 고쳤을 때 다른 쪽이 낡은 채로 남는다.
+   */
+  private releaseResumeWaiter(tableId: string) {
     const waiter = this.resumeWaiters.get(tableId);
     if (waiter) {
       this.resumeWaiters.delete(tableId);
       waiter();
     }
-    return next;
+  }
+
+  /**
+   * 대회가 닫히면 리바인 재개 대기를 푼다(T100 잔여).
+   *
+   * `SessionService.announceClosed`가 내는 이벤트다. 부르는 쪽 트랜잭션이
+   * `Table` 행과 Redis 스냅샷을 이미 지운 뒤라 `tableIds`가 페이로드로 실려
+   * 온다(조회할 곳이 없다) — `WsGateway.handleTournamentClosed`와 같은 이유,
+   * 같은 페이로드 모양이다.
+   *
+   * 상점이 「이어서 진행」 대신 대회를 중단·종료하면 `resumeTable`이 다시
+   * 오지 않는다. 여기서 풀지 않으면 `askRebuys`의 고리가 `resumeWaiters`를
+   * 영영 들고 있고, `rebuyInFlight` 표시와 걸린 `resolveWinners` 호출이
+   * 프로세스 재시작까지 남는다. 풀린 뒤 고리가 나가는 길은 `stillBroke`다 —
+   * 스냅샷이 없으니 `SNAPSHOT_MISSING`을 던지고, 그 예외가 `finally`를 거쳐
+   * 표시를 지운다(`stillBroke` 자체는 손대지 않았다).
+   */
+  @OnEvent('TOURNAMENT_CLOSED')
+  handleTournamentClosed(payload: { tournamentId: string; tableIds: string[]; status: string }) {
+    for (const tableId of payload.tableIds) {
+      this.releaseResumeWaiter(tableId);
+    }
   }
 
   /**
