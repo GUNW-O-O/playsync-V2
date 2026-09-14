@@ -554,7 +554,15 @@ export class DealerService {
         const interrupted = asked.filter((_, i) => outcomes[i] === 'interrupted');
         if (interrupted.length === 0) break;
 
-        const stoppedAt = Date.now();
+        // **지금이 아니라 장애가 시작된 시각이다**(T100 리뷰 M-f). 이 줄
+        // 바로 위 `Promise.all`(`askRebuyRound` 안)이 I1의 `whenUp` 경로를
+        // 탄 처리를 하나라도 안고 있으면, 그 처리는 **복구가 끝난 뒤에야**
+        // 돌아온다 — 그러면 `Date.now()`는 이미 복구된 시각이라 배너가
+        // 「서버가 0초 멈췄다」로 읽힌다. `downSince`가 아직 서 있으면(흔한
+        // 경로 — 장애가 감지되자마자 중단으로 접어 아직 안 끝났다) 그 값이
+        // 진짜 시작 시각이다. 이미 지워졌으면(방금 그 드문 경로) 잴 수 있는
+        // 것이 없으니 지금을 쓴다 — 0에 가깝게 보이는 것은 그대로 남는다.
+        const stoppedAt = outage.downSince ?? Date.now();
         // **대기를 먼저 건다**(검수 D2). `resumePending`을 쓴 뒤에 걸면 그 사이에
         // 누른 재개가 풀 대상을 못 찾고, 이 고리는 영영 기다린다. 먼저 걸면 그
         // 전의 재개는 `resumePending`이 없어 `resumeTable`이 거절한다.

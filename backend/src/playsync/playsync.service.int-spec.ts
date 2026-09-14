@@ -561,6 +561,33 @@ describe('PlaysyncService.processRebuy', () => {
 
       expect(`${result} DB ${tx.mock.calls.length}`).toBe('skipped DB 0');
     });
+
+    /**
+     * **낡은 캡처가 상대의 성공을 지운다(검수 M-b).** 두 리바인이 겹치면
+     * 늦게 커밋하는 쪽이 쏘는 것은 1단계에서 잡은 `applied` 객체다 — 그
+     * 객체는 상대가 그 사이에 넣은 칩을 모른다. DB 커밋 뒤에는 그 객체가
+     * 아니라 **다시 읽은 스냅샷**을 쏴야 상대가 0으로 보이는 창이 없다.
+     */
+    it('커밋 뒤 전파는 다시 읽은 최신 스냅샷이다 — 겹친 리바인의 상대 칩을 지우지 않는다', async () => {
+      jest.spyOn(service, 'executeRebuyTransaction').mockImplementation(async () => {
+        // 이 사이에 다른 리바인(winner석)이 먼저 커밋해 스냅샷이 바뀐
+        // 상황을 흉내낸다 — DB 트랜잭션은 락 밖이라 실제로 일어날 수 있다.
+        const mid: TableState = JSON.parse((await redis.get(stateKey))!);
+        mid.players[1]!.stack = 99999;
+        await redis.set(stateKey, JSON.stringify(mid));
+        return 10000;
+      });
+      let broadcast: TableState | null = null;
+      emitter.on('game.state.updated', (p: { state: TableState }) => { broadcast = p.state; });
+      answerWhenPrompted(true);
+
+      const result = await callProcessRebuy();
+
+      expect(result).toBe('applied');
+      expect(broadcast).not.toBeNull();
+      expect(`본인 스택 ${broadcast!.players[0]!.stack} 상대 스택 ${broadcast!.players[1]!.stack}`)
+        .toBe('본인 스택 10000 상대 스택 99999');
+    });
   });
 
   describe('장애 (T100)', () => {
@@ -569,8 +596,21 @@ describe('PlaysyncService.processRebuy', () => {
     function simulateDown() {
       (outage() as unknown as { onLost(): void }).onLost();
     }
+    async function until(pred: () => boolean | Promise<boolean>, ms = 5000) {
+      const start = Date.now();
+      while (!(await pred())) {
+        if (Date.now() - start > ms) throw new Error('until timeout');
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    }
     afterEach(() => {
-      outage().phase = 'up';
+      // `markRecovered`를 거쳐야 `whenUp` 대기자가 실제로 풀린다. 그냥
+      // `phase = 'up'`만 대입하면 테스트가 복구 전에 실패해도 그 대기자가
+      // 다음 테스트까지 매달려 있다.
+      if (outage().phase !== 'up') {
+        outage().phase = 'recovering';
+        outage().markRecovered();
+      }
       outage().downSince = null;
     });
 
@@ -656,15 +696,26 @@ describe('PlaysyncService.processRebuy', () => {
           // 락 획득 실패로 죽는다.
           await redis.del(lockKey);
           simulateDown();
-          // whenUp이 걸린 뒤에야 풀리도록 다음 틱으로 미룬다.
-          setImmediate(() => {
-            outage().phase = 'recovering';
-            outage().markRecovered();
-          });
           throw new Error('락 해제 끊김');
         });
+      // **`whenUp`을 실제로 기다리는지가 이 테스트의 핵심이다**(검수 I2).
+      // 이 스펙은 진짜 Redis를 쓰므로 `whenUp` 대기 없이 바로
+      // `revertRebuy`를 불러도 (연결은 멀쩡하니) 그냥 성공한다 — 최종 결과만
+      // 보면 그 줄을 지워도 초록이었다. 그래서 복구 **전**의 중간 상태를
+      // 먼저 확인한다: `whenUp`이 걸린 시점에는 넣은 칩이 아직 그대로여야
+      // 한다.
+      const whenUpSpy = jest.spyOn(outage(), 'whenUp');
 
-      const result = await callProcessRebuy();
+      const resultPromise = callProcessRebuy();
+
+      await until(() => whenUpSpy.mock.calls.length >= 1);
+      const mid: TableState = JSON.parse((await redis.get(stateKey))!);
+      expect(`대기중 스택 ${mid.players[0]!.stack} DB ${tx.mock.calls.length}`)
+        .toBe('대기중 스택 10000 DB 0');
+
+      outage().phase = 'recovering';
+      outage().markRecovered();
+      const result = await resultPromise;
 
       expect(`${result} DB ${tx.mock.calls.length}`).toBe('interrupted DB 0');
       const state: TableState = JSON.parse((await redis.get(stateKey))!);

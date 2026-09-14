@@ -731,6 +731,15 @@ export class PlaysyncService {
       // 손대지 않는다)가 SET이 실제로 났는지와 정확히 일치한다. 리바인은
       // 스택 0인 사람만 겨냥하므로 스택 >= amount면 났고, 0이면 안 났다.
       if (verdict === 'applied') {
+        // 이 시점에 이미 up이고 세대도 그대로면 장애로 설명되지 않는 오류다
+        // — 락 해제(Lua EVAL)나 SET 자체의 진짜 결함일 수 있다. 장애가 아닌데
+        // 조용히 `interrupted`로 접으면 「0초 멈췄다」 배너만 남고 원인은
+        // 로그에도 없다(T100 리뷰 M-i).
+        if (outage.isUp() && outage.generation === generation) {
+          this.logger.warn(
+            `리바인 확정 중 장애로 설명되지 않는 오류 — 칩을 되돌린다 (table=${tableId}, user=${userId}): ${error.message}`,
+          );
+        }
         await outage.whenUp();
         await this.revertRebuy(tableId, userId, startStack);
         return 'interrupted';
@@ -753,8 +762,25 @@ export class PlaysyncService {
 
     // 3은 `executeRebuyTransaction` 안(커밋 뒤). 4. 전파는 돈이 빠진 뒤다 —
     // 커밋 전의 칩을 화면에 먼저 보이지 않는다.
+    //
+    // **`applied`(1단계에서 잡은 객체)가 아니라 다시 읽은 스냅샷을 쏜다**(T100
+    // 리뷰 M-b). 응답 대기·DB 커밋은 사람마다 따로 도는 I/O라, 두 리바인이
+    // 겹치면 늦게 커밋한 쪽이 들고 있는 `applied`는 그 사이 상대가 넣은 칩을
+    // 모른다 — 그 낡은 객체를 쏘면 상대가 성공했는데도 화면은 그 사람을 0으로
+    // 되돌린다. 다시 읽으면 그 시점까지의 진짜 상태가 나간다.
+    //
+    // 읽기 자체가 실패해도(장애·닫힌 대회) 돈은 이미 맞다 — DB 커밋이 끝난
+    // 뒤이므로 이 실패는 화면 갱신 하나를 건너뛸 뿐이다.
     if (applied) {
-      this.eventEmitter.emit('game.state.updated', { tableId, state: applied });
+      const fresh = await this.redis.getSnapShot(tableId).catch((error) => {
+        this.logger.warn(
+          `리바인 커밋 뒤 최신 스냅샷을 읽지 못해 전파를 건너뛴다 (table=${tableId}, user=${userId}): ${error.message}`,
+        );
+        return null;
+      });
+      if (fresh) {
+        this.eventEmitter.emit('game.state.updated', { tableId, state: fresh });
+      }
     }
     return 'applied';
   }
