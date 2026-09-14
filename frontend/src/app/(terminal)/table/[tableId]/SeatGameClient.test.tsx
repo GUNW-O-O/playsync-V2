@@ -121,6 +121,19 @@ async function renderWithSocket({ seatIndex = 3 }: { seatIndex?: number } = {}) 
   return { socket };
 }
 
+/**
+ * 프로덕션 순서를 흉내낸다(T100 검수 M-c). `markRebuyPending`의 브로드캐스트가
+ * `rebuy.request.sent`(REBUY_PROMPT)보다 항상 먼저 나간다 — 그래서 실제로는
+ * REBUY_PROMPT가 도착할 때 이미 `rebuyPending`에 내 자리가 실려 있다. 이
+ * 헬퍼로 그 renderGame을 흘려보내야 답할 수 있는 상태가 된다.
+ */
+function emitRebuyWaiterFrame(socket: FakeSocket, seatIndex: number) {
+  socket.emitServerEvent('renderGame', {
+    ...BASE_STATE,
+    rebuyPending: { seatIndexes: [seatIndex], deadline: Date.now() + 15_000 },
+  });
+}
+
 describe('SeatGameClient', () => {
   beforeEach(() => {
     push.mockClear();
@@ -195,6 +208,7 @@ describe('SeatGameClient', () => {
     it('리바인을 거절하면 덮개가 뜬다', async () => {
       const { socket } = await renderWithSocket();
       socket.emitServerEvent('REBUY_PROMPT', { deadline: Date.now() + 30_000 });
+      emitRebuyWaiterFrame(socket, 3);
       await userEvent.click(await screen.findByRole('button', { name: /거절/ }));
       expect(await screen.findByRole('button', { name: /지금 돌아가기/ })).toBeInTheDocument();
     });
@@ -232,6 +246,7 @@ describe('SeatGameClient', () => {
     it('리바인 프롬프트를 본 뒤 좌석이 사라지면 탈락으로 적는다', async () => {
       const { socket } = await renderWithSocket({ seatIndex: 3 });
       socket.emitServerEvent('REBUY_PROMPT', { deadline: Date.now() + 30_000 });
+      emitRebuyWaiterFrame(socket, 3);
       await userEvent.click(await screen.findByRole('button', { name: /거절/ }));
       expect(await screen.findByText(/칩이 0이 되어/)).toBeInTheDocument();
       expect(screen.queryByText(/자리를 이동해 주세요/)).not.toBeInTheDocument();
@@ -319,7 +334,8 @@ describe('SeatGameClient', () => {
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       const { socket } = await renderWithSocket();
       socket.emitServerEvent('REBUY_PROMPT', { deadline: Date.now() + 30_000, entryFee: 50_000 });
-      await screen.findByRole('button', { name: '리바인' });
+      emitRebuyWaiterFrame(socket, 3);
+      await waitFor(() => expect(screen.getByRole('button', { name: '리바인' })).toBeEnabled());
       socket.readyState = FakeSocket.CLOSED;
       return { socket, errorSpy };
     }
@@ -379,7 +395,10 @@ describe('SeatGameClient', () => {
 
       await waitFor(() => expect(screen.getByRole('button', { name: '리바인' })).toBeDisabled());
       expect(screen.getByRole('button', { name: '거절' })).toBeDisabled();
-      expect(screen.getAllByText(SERVER_RECOVERING_MESSAGE).length).toBeGreaterThan(0);
+      // **팝업 안의 문구를 본다.** 위쪽 배너(`server-outage-banner`)도 같은
+      // 문구를 그리므로, 화면 전체에서 그 문구를 찾으면 오버레이가 사유를
+      // 빠뜨려도(가정이 틀려도) 배너 하나만으로 통과한다(검수 M-e).
+      expect(screen.getByTestId('rebuy-blocked')).toHaveTextContent(SERVER_RECOVERING_MESSAGE);
     });
 
     it('재개 대기 중에는 두 버튼이 막히고 딜러를 기다린다고 적는다', async () => {
@@ -396,6 +415,7 @@ describe('SeatGameClient', () => {
     it('둘 다 없으면 누를 수 있다 (반대 입력)', async () => {
       const { socket } = await renderWithSocket();
       socket.emitServerEvent('REBUY_PROMPT', { deadline: Date.now() + 30_000, entryFee: 50_000 });
+      emitRebuyWaiterFrame(socket, 3);
 
       expect(await screen.findByRole('button', { name: '리바인' })).toBeEnabled();
       expect(screen.getByRole('button', { name: '거절' })).toBeEnabled();
@@ -404,6 +424,7 @@ describe('SeatGameClient', () => {
     it('거절로 탈락 화면이 떴어도 새 프롬프트가 오면 걷고 다시 묻는다', async () => {
       const { socket } = await renderWithSocket();
       socket.emitServerEvent('REBUY_PROMPT', { deadline: Date.now() + 30_000 });
+      emitRebuyWaiterFrame(socket, 3);
       await userEvent.click(await screen.findByRole('button', { name: /거절/ }));
       await screen.findByRole('button', { name: /지금 돌아가기/ });
 
@@ -411,6 +432,65 @@ describe('SeatGameClient', () => {
 
       expect(await screen.findByRole('button', { name: '리바인' })).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: /지금 돌아가기/ })).not.toBeInTheDocument();
+    });
+
+    /**
+     * **반대 입력이다.** 위 테스트는 `eliminated` 화면이 걷히는 경우를
+     * 본다. `setExitReason((prev) => prev === 'eliminated' ? null : prev)`를
+     * `setExitReason(null)`로 바꿔도 위 테스트는 여전히 초록이므로, "탈락이
+     * 아닌 사유는 지우지 않는다"는 이 테스트가 증명해야 한다(검수 M-e).
+     * 좌석 해제는 리바인 프롬프트 없이도 일어나므로, 뒤이어 온 프롬프트가
+     * 그 화면을 걷으면 안 된다.
+     */
+    it('좌석 해제로 뜬 화면은 새 프롬프트가 와도 걷히지 않는다 (반대 입력)', async () => {
+      const { socket } = await renderWithSocket({ seatIndex: 3 });
+      socket.emitServerEvent('renderGame', { ...BASE_STATE, players: Array(9).fill(null) });
+      await screen.findByText(/자리를 이동해 주세요/);
+
+      socket.emitServerEvent('REBUY_PROMPT', { deadline: Date.now() + 30_000 });
+
+      expect(screen.getByText(/자리를 이동해 주세요/)).toBeInTheDocument();
+    });
+  });
+
+  /**
+   * **장애·재개 대기 둘 다 아니어도 막을 창이 있다**(T100 검수 M-c). 서버는
+   * 프롬프트를 보내기 전에 반드시 `rebuyPending`에 그 좌석을 적는다
+   * (`PlaysyncService.markRebuyPending`) — 최신 스냅샷에 내 자리가 없으면
+   * 지금 눌러도 서버에 받을 대기자가 없다.
+   */
+  describe('리바인 팝업 — 대기자 표시 없음 (검수 M-c)', () => {
+    it('내 자리가 rebuyPending에 실려 있으면 답할 수 있다', async () => {
+      const { socket } = await renderWithSocket({ seatIndex: 3 });
+      socket.emitServerEvent('REBUY_PROMPT', { deadline: Date.now() + 30_000, entryFee: 50_000 });
+      emitRebuyWaiterFrame(socket, 3);
+
+      expect(await screen.findByRole('button', { name: '리바인' })).toBeEnabled();
+      expect(screen.getByRole('button', { name: '거절' })).toBeEnabled();
+      expect(screen.queryByTestId('rebuy-blocked')).not.toBeInTheDocument();
+    });
+
+    it('renderGame에 rebuyPending 자체가 없으면 막는다', async () => {
+      const { socket } = await renderWithSocket({ seatIndex: 3 });
+      socket.emitServerEvent('REBUY_PROMPT', { deadline: Date.now() + 30_000, entryFee: 50_000 });
+      socket.emitServerEvent('renderGame', BASE_STATE);
+
+      await waitFor(() => expect(screen.getByRole('button', { name: '리바인' })).toBeDisabled());
+      expect(screen.getByRole('button', { name: '거절' })).toBeDisabled();
+      expect(screen.getByTestId('rebuy-blocked')).toHaveTextContent(
+        '리바인 응답을 받을 수 없는 상태입니다',
+      );
+    });
+
+    it('rebuyPending이 다른 자리만 가리키면 막는다', async () => {
+      const { socket } = await renderWithSocket({ seatIndex: 3 });
+      socket.emitServerEvent('REBUY_PROMPT', { deadline: Date.now() + 30_000, entryFee: 50_000 });
+      emitRebuyWaiterFrame(socket, 5);
+
+      await waitFor(() => expect(screen.getByRole('button', { name: '리바인' })).toBeDisabled());
+      expect(screen.getByTestId('rebuy-blocked')).toHaveTextContent(
+        '리바인 응답을 받을 수 없는 상태입니다',
+      );
     });
   });
 

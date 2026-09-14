@@ -32,6 +32,13 @@ const NOT_SENT_ERROR = '연결이 끊어져 전달되지 못했습니다. 잠시
 /** 복구 뒤 딜러의 재개를 기다리는 동안 리바인 팝업에 적는다(T100). */
 const REBUY_WAIT_DEALER = '딜러가 판을 다시 열면 다시 묻습니다.';
 
+/**
+ * 서버에 이 응답을 받을 대기자가 없을 때 리바인 팝업에 적는다(T100 검수
+ * M-c). 장애·재개 대기와 달리 **원인을 모른다** — 그냥 지금 눌러도 반영될
+ * 자리가 없다는 것만 안다.
+ */
+const REBUY_NO_WAITER = '리바인 응답을 받을 수 없는 상태입니다. 잠시 기다려 주세요.';
+
 /** 좌석 화면 상단 바 · 사이드 패널에 쓰는 페이즈 한글 이름. */
 const PHASE_LABEL: Record<number, string> = {
   0: '대기',
@@ -233,8 +240,31 @@ export default function SeatGameClient({
   const minRaise = gameState ? gameState.currentBet + gameState.smallBlind * 2 : 0;
 
   const resumePending = gameState?.resumePending;
-  // 리바인 팝업을 막는 이유(T100). 장애가 먼저다 — 둘 다면 원인이 장애다.
-  const rebuyBlockedReason = outage ? SERVER_RECOVERING_MESSAGE : resumePending ? REBUY_WAIT_DEALER : null;
+  /**
+   * **서버가 이 응답을 받을 대기자가 없다**(T100 검수 M-c). 서버는 프롬프트를
+   * 보내기 **전에** 반드시 `rebuyPending`에 내 자리를 적는다
+   * (`PlaysyncService.markRebuyPending`) — 그러니 그 표시가 최신 스냅샷에
+   * 없으면 지금 눌러도 받을 곳이 없다. 그런 창이 셋이다: 장애 복구
+   * (`serverOutage`) 직후 아직 그 표시가 안 실린 프레임, 재개 뒤 다시 묻기
+   * 전, 그리고 재검사(`stillBroke`)가 나를 뺀 채 남은 낡은 프롬프트.
+   *
+   * **아직 한 프레임도 못 받았으면 막지 않는다.** `gameState`가 `null`인 건
+   * 이 화면이 뭘 모르는 것이지 서버에 대기자가 없다는 뜻이 아니다 — 막으면
+   * 첫 프레임이 오기 전에 뜬 프롬프트가 답할 수 없는 채로 굳는다.
+   */
+  const noServerWaiter =
+    gameState != null &&
+    mySeatIndex !== null &&
+    !gameState.rebuyPending?.seatIndexes.includes(mySeatIndex);
+  // 리바인 팝업을 막는 이유(T100). 장애 > 재개 대기 > 대기자 없음 순이다 —
+  // 앞의 둘은 원인이 뚜렷하고, 이건 그중 무엇도 아닐 때만 남는 설명이다.
+  const rebuyBlockedReason = outage
+    ? SERVER_RECOVERING_MESSAGE
+    : resumePending
+      ? REBUY_WAIT_DEALER
+      : noServerWaiter
+        ? REBUY_NO_WAITER
+        : null;
 
   return (
     <div className="relative flex h-screen w-screen flex-col overflow-hidden bg-tb-bg text-tb-ink">
