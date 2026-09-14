@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { cookies } from 'next/headers';
-import { ClosedTournamentStatusSchema, type TournamentStatus } from '@playsync/contract';
+import { ClosedTournamentStatusSchema, SERVER_RECOVERING_MESSAGE, type TournamentStatus } from '@playsync/contract';
+import { isServerRecovering } from '@/lib/server-outage';
 import OtpReveal from './OtpReveal';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
@@ -37,7 +38,12 @@ type Participation = {
  * 자리를 옮기거나 태블릿이 꺼져도 같은 번호로 돌아온다 — 그래서 한 번
  * 보여주고 지우지 않는다.
  */
-async function fetchParticipations(): Promise<Participation[] | null> {
+/**
+ * 서버 장애(T97). 조회가 503이면 「내 참가를 불러오지 못했습니다」로
+ * 뭉치지 않는다 — 그 문구는 토큰 만료나 정체불명의 실패를 가리키는데,
+ * 장애는 원인이 분명하고 곧 낫는다는 점이 다르다.
+ */
+async function fetchParticipations(): Promise<Participation[] | { kind: 'recovering' } | null> {
   const token = (await cookies()).get('accessToken')?.value;
   if (!token) return null;
 
@@ -45,6 +51,7 @@ async function fetchParticipations(): Promise<Participation[] | null> {
     cache: 'no-store',
     headers: { Authorization: `Bearer ${token}` },
   });
+  if (isServerRecovering(res)) return { kind: 'recovering' };
   if (!res.ok) return null;
   return (await res.json()) as Participation[];
 }
@@ -64,7 +71,18 @@ const STATUS_LABEL: Record<TournamentStatus, string> = {
 };
 
 export default async function MyPage() {
-  const rows = await fetchParticipations();
+  const result = await fetchParticipations();
+
+  if (result !== null && 'kind' in result) {
+    return (
+      <div className="p-6">
+        <p className="text-[14px] leading-[1.29] tracking-[0.16px] text-[var(--ink-muted)]">
+          {SERVER_RECOVERING_MESSAGE}
+        </p>
+      </div>
+    );
+  }
+  const rows = result;
 
   if (rows === null) {
     // 미들웨어가 로그인 자체는 이미 막았으므로 여기까지 온 실패는 토큰

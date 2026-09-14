@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/mocks/server';
+import { SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
 
 process.env.BACKEND_URL = 'http://backend.test';
 
@@ -198,5 +199,37 @@ describe('대회 상세', () => {
     expect(screen.getByText(/복구 중/)).toBeInTheDocument();
     expect(screen.getByText(/등록 열림/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /참가/ })).not.toBeDisabled();
+  });
+
+  /**
+   * 서버 장애(T97). Redis가 죽으면 이 조회도 503을 받는다 — 「대회를 찾을
+   * 수 없습니다」로 말하면 참가자가 다른 대회를 찾으러 나간다. 실제로는
+   * 곧 돌아올 대회다.
+   */
+  it('조회가 503이면 대회를 찾을 수 없다는 문구 대신 복구 안내가 뜬다', async () => {
+    server.use(
+      http.get('http://backend.test/tournaments/t6', () =>
+        HttpResponse.json({ message: SERVER_RECOVERING_MESSAGE }, { status: 503 }),
+      ),
+    );
+
+    render(await renderPage('t6'));
+
+    expect(screen.getByText(SERVER_RECOVERING_MESSAGE)).toBeInTheDocument();
+    expect(screen.queryByText('대회를 찾을 수 없습니다.')).not.toBeInTheDocument();
+  });
+
+  /** 반대 입력. 404는 기존 문구 그대로다. */
+  it('조회가 404면 기존처럼 대회를 찾을 수 없다고 적는다', async () => {
+    server.use(
+      http.get('http://backend.test/tournaments/t7', () =>
+        HttpResponse.json({ statusCode: 404, message: 'Not Found' }, { status: 404 }),
+      ),
+    );
+
+    render(await renderPage('t7'));
+
+    expect(screen.getByText('대회를 찾을 수 없습니다.')).toBeInTheDocument();
+    expect(screen.queryByText(SERVER_RECOVERING_MESSAGE)).not.toBeInTheDocument();
   });
 });

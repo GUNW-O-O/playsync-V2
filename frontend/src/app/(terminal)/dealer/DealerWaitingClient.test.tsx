@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { http, HttpResponse } from 'msw';
+import { server } from '@/mocks/server';
+import { SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
 import DealerWaitingClient from './DealerWaitingClient';
 
 // 지운 `dealer/[id]/page.test.tsx`가 보던 세 단언(라우팅·인자 전달·에러
@@ -133,5 +136,27 @@ describe('DealerWaitingClient — 대회 전환', () => {
     expect(
       await screen.findByText('요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.'),
     ).toBeInTheDocument();
+  });
+
+  /** 서버 장애(T97). 503은 네트워크 실패와 다른 문구를 띄운다. */
+  it('전환 중 503을 받으면 복구 문구가 뜬다', async () => {
+    server.use(
+      http.get('*/api/dealer/t2', () =>
+        HttpResponse.json({ message: SERVER_RECOVERING_MESSAGE }, { status: 503 }),
+      ),
+    );
+
+    render(
+      <DealerWaitingClient
+        storeId="s1"
+        tournaments={TOURNAMENTS_MULTI}
+        tables={TABLES}
+        authenticateDealer={vi.fn()}
+      />,
+    );
+
+    await userEvent.click(screen.getByTestId('pick-tournament-t2'));
+
+    expect(await screen.findByText(SERVER_RECOVERING_MESSAGE)).toBeInTheDocument();
   });
 });

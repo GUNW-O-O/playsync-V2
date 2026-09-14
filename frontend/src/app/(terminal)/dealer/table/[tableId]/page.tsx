@@ -1,8 +1,11 @@
 import { cookies } from 'next/headers';
 import DealerGameClient from './DealerGameClient';
-import { TableState } from '@playsync/contract';
+import { SERVER_RECOVERING_MESSAGE, TableState } from '@playsync/contract';
+import { isServerRecovering } from '@/lib/server-outage';
 
 type InitialGameData = { tableState: TableState; seatIndex: number };
+/** 서버 장애(T97). 좌석 화면의 `GameDataResult`와 같은 이유다. */
+type GameDataResult = InitialGameData | { kind: 'recovering' } | null;
 
 /**
  * `GET /playsync/:tableId`(`playsync.controller.ts`의 `joinTable`)는
@@ -17,7 +20,7 @@ type InitialGameData = { tableState: TableState; seatIndex: number };
  * `undefined`인 채 빈 펠트가 그려졌다. 딜러 화면에서는 그 상태로 "핸드
  * 시작"이 눌리지 않아 **테이블 하나가 통째로 멈춘다.**
  */
-async function getInitialGameData(tableId: string): Promise<InitialGameData | null> {
+async function getInitialGameData(tableId: string): Promise<GameDataResult> {
   const cookieStore = await cookies();
   const token = cookieStore.get('dealerToken')?.value;
 
@@ -28,6 +31,8 @@ async function getInitialGameData(tableId: string): Promise<InitialGameData | nu
     headers: { Authorization: `Bearer ${token}` },
     cache: 'no-store',
   });
+
+  if (isServerRecovering(res)) return { kind: 'recovering' };
 
   if (!res.ok) {
     console.error(`테이블 상태를 불러오지 못했습니다. (${res.status})`);
@@ -77,7 +82,9 @@ async function getTableContext(
 
 export default async function DealerGamePage({ params }: { params: Promise<{ tableId: string }> }) {
   const { tableId } = await params;
-  const initialData = await getInitialGameData(tableId);
+  const gameData = await getInitialGameData(tableId);
+  const recovering = gameData !== null && 'kind' in gameData;
+  const initialData = gameData !== null && 'kind' in gameData ? null : gameData;
   const { storeId, tableOrder } = await getTableContext(
     initialData?.tableState?.tournamentId,
     tableId,
@@ -85,7 +92,9 @@ export default async function DealerGamePage({ params }: { params: Promise<{ tab
 
   return (
     <main className="h-screen overflow-hidden bg-tb-bg">
-      {initialData ? (
+      {recovering ? (
+        <p className="p-8 text-tb-ink">{SERVER_RECOVERING_MESSAGE}</p>
+      ) : initialData ? (
         <DealerGameClient
           tableId={tableId}
           initialData={initialData.tableState}

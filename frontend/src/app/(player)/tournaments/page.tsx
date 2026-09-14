@@ -1,5 +1,6 @@
 import Link from 'next/link';
-import { ClosedTournamentStatusSchema } from '@playsync/contract';
+import { ClosedTournamentStatusSchema, SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
+import { isServerRecovering } from '@/lib/server-outage';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
 
@@ -49,8 +50,16 @@ async function fetchStores(query: string): Promise<Store[]> {
   return (await res.json()) as Store[];
 }
 
-async function fetchStoreTournaments(storeId: string): Promise<StoreTournament[] | null> {
+/**
+ * 서버 장애(T97). 조회가 503이면 대회가 없는 것이 아니라 서버가 복구 중인
+ * 것이다 — 「대회를 불러오지 못했습니다」로 뭉치면 참가자가 다시 시도할
+ * 시점을 모른다. `null`(그 밖의 실패)과 별도의 값으로 넓힌다.
+ */
+async function fetchStoreTournaments(
+  storeId: string,
+): Promise<StoreTournament[] | { kind: 'recovering' } | null> {
   const res = await fetch(`${BACKEND_URL}/tournaments/stores/${storeId}`, { cache: 'no-store' });
+  if (isServerRecovering(res)) return { kind: 'recovering' };
   if (!res.ok) return null;
   return (await res.json()) as StoreTournament[];
 }
@@ -153,7 +162,11 @@ async function StoreTournaments({ storeId, query }: { storeId: string; query: st
         <h1 className="text-[28px] font-light leading-[1.2]">{store?.name ?? '상점'}</h1>
       </div>
 
-      {tournaments === null ? (
+      {tournaments !== null && 'kind' in tournaments ? (
+        <p className="text-[14px] leading-[1.29] tracking-[0.16px] text-[var(--ink-muted)]">
+          {SERVER_RECOVERING_MESSAGE}
+        </p>
+      ) : tournaments === null ? (
         <p className="text-[14px] leading-[1.29] tracking-[0.16px] text-[var(--ink-muted)]">
           대회를 불러오지 못했습니다.
         </p>

@@ -17,10 +17,17 @@ export default function SeatActionPanel({
   state,
   mySeatIndex,
   onAction,
+  outage = false,
 }: {
   state: TableState | null;
   mySeatIndex: number | null;
   onAction: (action: PlayerAction) => void;
+  /**
+   * 서버 장애(T97). 참이면 눌러도 서버가 못 받으므로 버튼을 전부 막고
+   * 턴 게이지도 그리지 않는다 — 남은 시간이 흐르는 그림은 "곧 자동
+   * 폴드된다"는 거짓 압박이다.
+   */
+  outage?: boolean;
 }) {
   const myPlayer = state && mySeatIndex !== null ? (state.players[mySeatIndex] ?? null) : null;
   const bigBlind = (state?.smallBlind ?? 0) * 2;
@@ -133,8 +140,9 @@ export default function SeatActionPanel({
           <>
             <button
               type="button"
+              disabled={outage}
               onClick={() => onAction({ action: PlayerActionType.FOLD })}
-              className="h-14 flex-1 border border-tb-line text-sm text-tb-muted"
+              className="h-14 flex-1 border border-tb-line text-sm text-tb-muted disabled:opacity-30"
             >
               폴드
             </button>
@@ -142,8 +150,9 @@ export default function SeatActionPanel({
             {goingToAllIn ? (
               <button
                 type="button"
+                disabled={outage}
                 onClick={() => onAction({ action: PlayerActionType.CALL })}
-                className="h-14 flex-[3] border border-tb-act bg-tb-act text-sm font-semibold text-[#06201a]"
+                className="h-14 flex-[3] border border-tb-act bg-tb-act text-sm font-semibold text-[#06201a] disabled:opacity-30"
               >
                 올인 콜
               </button>
@@ -152,16 +161,18 @@ export default function SeatActionPanel({
                 {canCheck ? (
                   <button
                     type="button"
+                    disabled={outage}
                     onClick={() => onAction({ action: PlayerActionType.CHECK })}
-                    className="h-14 flex-1 border border-tb-line text-sm text-tb-ink"
+                    className="h-14 flex-1 border border-tb-line text-sm text-tb-ink disabled:opacity-30"
                   >
                     체크
                   </button>
                 ) : (
                   <button
                     type="button"
+                    disabled={outage}
                     onClick={() => onAction({ action: PlayerActionType.CALL })}
-                    className="h-14 flex-1 border border-tb-line text-sm text-tb-ink"
+                    className="h-14 flex-1 border border-tb-line text-sm text-tb-ink disabled:opacity-30"
                   >
                     콜 {Math.min(needsToCall, myPlayer.stack).toLocaleString()}
                   </button>
@@ -171,7 +182,7 @@ export default function SeatActionPanel({
                 {canRaiseAtAll && (
                   <button
                     type="button"
-                    disabled={!canRaise}
+                    disabled={!canRaise || outage}
                     onClick={() => onAction({ action: PlayerActionType.RAISE, amount: raiseVal })}
                     className="h-14 flex-1 border border-tb-act bg-tb-act text-sm font-semibold text-[#06201a] disabled:opacity-30"
                   >
@@ -180,13 +191,14 @@ export default function SeatActionPanel({
                 )}
                 <button
                   type="button"
+                  disabled={outage}
                   onClick={() =>
                     onAction({
                       action: PlayerActionType.RAISE,
                       amount: maxTotal,
                     })
                   }
-                  className="h-14 flex-1 border border-tb-line text-sm text-tb-ink"
+                  className="h-14 flex-1 border border-tb-line text-sm text-tb-ink disabled:opacity-30"
                 >
                   올인
                 </button>
@@ -196,9 +208,11 @@ export default function SeatActionPanel({
         )}
       </div>
 
-      {/* 타이머 자리. 차례가 아니면 비어 있지만 높이는 그대로다. */}
+      {/* 타이머 자리. 차례가 아니면 비어 있지만 높이는 그대로다. 서버
+          장애(T97) 중에는 그리지 않는다 — 남은 시간이 흐르는 그림은 "곧
+          자동 폴드된다"는 거짓 압박이다. */}
       <div data-testid="action-timer-slot" className="h-9">
-        {myTurn && state?.actionDeadline && (
+        {myTurn && state?.actionDeadline && !outage && (
           <ActionTimer
             key={state.actionDeadline}
             deadline={state.actionDeadline}

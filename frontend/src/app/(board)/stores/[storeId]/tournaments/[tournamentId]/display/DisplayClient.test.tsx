@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, act } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/mocks/server';
+import { SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
 import DisplayClient from './DisplayClient';
 
 // DisplayClient.tsx의 POLL_MS와 같은 값. export되어 있지 않아 직접 든다 —
@@ -266,5 +267,54 @@ describe('DisplayClient', () => {
 
     process.off('unhandledRejection', onUnhandled);
     expect(leaked).toEqual([]);
+  });
+
+  /**
+   * 서버 장애(T97). 「서버 복구 중」 화면(`pausedAt`)과 다른 사건이다 —
+   * `pausedAt`은 정상 응답 안의 값이고, 이건 조회 자체가 503이다. 시계 없이
+   * 문구 한 줄만 그린다. 다음 200이 오면 원래 화면으로 돌아온다.
+   */
+  it('폴링이 503이면 복구 문구 화면이 뜨고, 다음 200이 오면 원래 화면으로 돌아온다', async () => {
+    let call = 0;
+    server.use(
+      http.get('*/playsync/dashboard/:id', () => {
+        call += 1;
+        return call === 1
+          ? HttpResponse.json({ message: SERVER_RECOVERING_MESSAGE }, { status: 503 })
+          : HttpResponse.json(VALID);
+      }),
+    );
+
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    render(<DisplayClient tournamentId="t1" />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText(SERVER_RECOVERING_MESSAGE)).toBeInTheDocument();
+    expect(screen.queryByText('350,000')).not.toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_MS);
+    });
+    expect(screen.getByText('350,000')).toBeInTheDocument();
+    expect(screen.queryByText(SERVER_RECOVERING_MESSAGE)).not.toBeInTheDocument();
+  });
+
+  /** 반대 입력. 500은 기존처럼 직전 화면(대기 중)에 머문다. */
+  it('폴링이 500이면 직전 화면에 머문다', async () => {
+    server.use(http.get('*/playsync/dashboard/:id', () => new HttpResponse(null, { status: 500 })));
+
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    render(<DisplayClient tournamentId="t1" />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText('대기 중')).toBeInTheDocument();
+    expect(screen.queryByText(SERVER_RECOVERING_MESSAGE)).not.toBeInTheDocument();
   });
 });

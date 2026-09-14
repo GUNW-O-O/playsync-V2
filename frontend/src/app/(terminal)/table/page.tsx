@@ -1,11 +1,22 @@
+import { SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
+import { isServerRecovering } from '@/lib/server-outage';
 import WaitingClient from './WaitingClient';
 import { enterSeat } from './action';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
 
-async function json(path: string) {
+/**
+ * 서버 장애(T97). 실패를 `null`로 접으면 그 사이에 있는 두 가지 사건 —
+ * "없다"(404 등)와 "서버가 지금 복구 중이다"(503) — 가 화면에서 같은
+ * 문구가 된다. `{ kind: 'recovering' }`로 넓혀 페이지가 갈라 그린다.
+ */
+type JsonResult<T> = { kind: 'ok'; data: T } | { kind: 'recovering' } | { kind: 'miss' };
+
+async function json<T>(path: string): Promise<JsonResult<T>> {
   const res = await fetch(`${BACKEND_URL}${path}`, { cache: 'no-store' });
-  return res.ok ? res.json() : null;
+  if (isServerRecovering(res)) return { kind: 'recovering' };
+  if (!res.ok) return { kind: 'miss' };
+  return { kind: 'ok', data: (await res.json()) as T };
 }
 
 /** `WaitingClient`의 `Tournament`·`Table` 타입과 같은 모양이다. */
@@ -51,16 +62,32 @@ export default async function SeatWaitingPage({
       </main>
     );
 
-  const tournamentRows = (await json(`/tournaments/stores/${store}`)) ?? [];
-  const tournaments = (tournamentRows as { id: string; name: string; status: string }[]).map(
-    toTournamentSummary,
+  const tournamentsResult = await json<{ id: string; name: string; status: string }[]>(
+    `/tournaments/stores/${store}`,
   );
+  if (tournamentsResult.kind === 'recovering') {
+    return <main className="p-8 text-tb-ink">{SERVER_RECOVERING_MESSAGE}</main>;
+  }
+  const tournamentRows = tournamentsResult.kind === 'ok' ? tournamentsResult.data : [];
+  const tournaments = tournamentRows.map(toTournamentSummary);
   const current = tournaments[0] ?? null;
-  const session = current ? await json(`/dealer/${current.id}`) : null;
-  const tables = ((session?.tables ?? []) as { id: string; tableOrder: number }[]).map(
-    toTableSummary,
-  );
-  const seatMap = current ? ((await json(`/tournaments/${current.id}/seats`)) ?? []) : [];
+
+  const sessionResult = current
+    ? await json<{ tables?: { id: string; tableOrder: number }[] }>(`/dealer/${current.id}`)
+    : null;
+  if (sessionResult?.kind === 'recovering') {
+    return <main className="p-8 text-tb-ink">{SERVER_RECOVERING_MESSAGE}</main>;
+  }
+  const session = sessionResult?.kind === 'ok' ? sessionResult.data : null;
+  const tables = (session?.tables ?? []).map(toTableSummary);
+
+  const seatMapResult = current
+    ? await json<{ tableId: string; seatStatus: boolean[] }[]>(`/tournaments/${current.id}/seats`)
+    : null;
+  if (seatMapResult?.kind === 'recovering') {
+    return <main className="p-8 text-tb-ink">{SERVER_RECOVERING_MESSAGE}</main>;
+  }
+  const seatMap = seatMapResult?.kind === 'ok' ? seatMapResult.data : [];
 
   return (
     <main className="h-screen overflow-hidden bg-tb-bg">

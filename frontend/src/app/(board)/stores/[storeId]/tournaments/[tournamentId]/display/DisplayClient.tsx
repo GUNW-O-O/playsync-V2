@@ -1,8 +1,9 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { FullTournamentInfoSchema, type FullTournamentInfo } from '@playsync/contract';
+import { FullTournamentInfoSchema, SERVER_RECOVERING_MESSAGE, type FullTournamentInfo } from '@playsync/contract';
 import { apiFetch } from '@/lib/api';
+import { isServerRecovering } from '@/lib/server-outage';
 
 // 조회가 곧 블라인드 시계를 미는 일이다 — getFullTournamentInfo가 안에서
 // checkAndSyncBlindLevel을 부른다(redis.service.ts:282,285). 서버에 별도
@@ -30,6 +31,12 @@ function formatClock(ms: number): string {
 
 export default function DisplayClient({ tournamentId }: { tournamentId: string }) {
   const [info, setInfo] = useState<FullTournamentInfo | null>(null);
+  /**
+   * 서버 장애(T97). `pausedAt`(정상 응답 안의 값)과 다른 사건이다 — 이건
+   * 조회 자체가 503이라는 뜻이다. 500 등 다른 실패는 건드리지 않는다 —
+   * 그 값들은 기존처럼 직전 화면에 머문다.
+   */
+  const [outage, setOutage] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   // serverTime과 브라우저 시계의 차이. 브라우저 시계를 그대로 믿으면
   // 태블릿마다 다른 숫자가 뜬다 — 매 폴링마다 이 값을 다시 잰다.
@@ -62,7 +69,17 @@ export default function DisplayClient({ tournamentId }: { tournamentId: string }
       } catch {
         return;
       }
-      if (cancelled || requestIdRef.current !== requestId || !res.ok) return;
+      if (cancelled || requestIdRef.current !== requestId) return;
+
+      // 서버 장애(T97). 기존 `!res.ok` 분기(조용히 직전 화면에 머문다)보다
+      // 앞에 둔다 — 이 상태만은 예외로 알린다. 500 등 다른 실패는 그대로
+      // 직전 화면에 머문다.
+      if (isServerRecovering(res)) {
+        setOutage(true);
+        return;
+      }
+      if (!res.ok) return;
+      setOutage(false);
 
       // Nest가 컨트롤러에서 null을 반환하면 response.send()가 본문을 비운
       // 200을 내보낸다 — res.json()은 그 자리에서 파싱 에러로 던진다. 그래서
@@ -110,6 +127,20 @@ export default function DisplayClient({ tournamentId }: { tournamentId: string }
     const clock = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(clock);
   }, []);
+
+  // 서버 장애(T97). `info`가 없어도(대기 중) 있어도(평상시 화면 중 장애) 올
+  // 수 있으니 `info` 판정보다 앞에 둔다. 기존 `pausedAt` 화면과 같은
+  // 레이아웃이지만 시계 없이 문구 한 줄이다 — 이 상태에는 대회 데이터
+  // 자체를 못 받아 다음 레벨 시각도 없다.
+  if (outage) {
+    return (
+      <div className="flex h-screen flex-col items-center justify-center bg-sb-bg px-8 text-center">
+        <div className="font-cond text-[clamp(20px,3vw,30px)] uppercase tracking-[0.3em] text-sb-dim">
+          {SERVER_RECOVERING_MESSAGE}
+        </div>
+      </div>
+    );
+  }
 
   if (!info) {
     return (

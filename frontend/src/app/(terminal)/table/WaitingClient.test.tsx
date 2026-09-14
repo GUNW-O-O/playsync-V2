@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { http, HttpResponse } from 'msw';
+import { server } from '@/mocks/server';
+import { SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
 import WaitingClient from './WaitingClient';
 
 const TOURNAMENTS = [{ id: 't1', name: '데모 토너먼트', status: 'ONGOING' }];
@@ -283,5 +286,109 @@ describe('WaitingClient — 좌석 폴링', () => {
 
     process.off('unhandledRejection', onUnhandled);
     expect(leaked).toEqual([]);
+  });
+});
+
+/**
+ * 서버 장애(T97). 이 폴링은 평소 화면에 아무것도 띄우지 않는다("다음 주기가
+ * 낫는다") — 그런데 서버 전체가 장애면 그 전제가 깨진다. 그래서 503만
+ * 예외로 문구를 띄우고, 그 외의 실패(500·네트워크)는 기존처럼 조용하다.
+ */
+describe('WaitingClient — 좌석 폴링 서버 장애(T97)', () => {
+  const SEAT_POLL_INTERVAL_MS = 5000;
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('폴링이 503이면 복구 문구가 뜨고, 다음 폴링이 정상이면 사라진다', async () => {
+    let call = 0;
+    server.use(
+      http.get('*/api/tournaments/:id/seats', () => {
+        call += 1;
+        return call === 1
+          ? HttpResponse.json({ message: SERVER_RECOVERING_MESSAGE }, { status: 503 })
+          : HttpResponse.json([{ tableId: 'tb1', seatStatus: Array(9).fill(false) }]);
+      }),
+    );
+    vi.useFakeTimers();
+
+    render(
+      <WaitingClient
+        storeId="s1"
+        tournaments={TOURNAMENTS}
+        tables={TABLES}
+        seatMap={[{ tableId: 'tb1', seatStatus: Array(9).fill(false) }]}
+        enterSeat={vi.fn()}
+      />,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SEAT_POLL_INTERVAL_MS);
+    });
+    expect(screen.getByText(SERVER_RECOVERING_MESSAGE)).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SEAT_POLL_INTERVAL_MS);
+    });
+    expect(screen.queryByText(SERVER_RECOVERING_MESSAGE)).not.toBeInTheDocument();
+  });
+
+  /** 반대 입력. 500은 "다음 주기가 낫는다"는 기존 처리 그대로 — 조용하다. */
+  it('폴링이 500이면 조용하다', async () => {
+    server.use(
+      http.get('*/api/tournaments/:id/seats', () => new HttpResponse(null, { status: 500 })),
+    );
+    vi.useFakeTimers();
+
+    render(
+      <WaitingClient
+        storeId="s1"
+        tournaments={TOURNAMENTS}
+        tables={TABLES}
+        seatMap={[{ tableId: 'tb1', seatStatus: Array(9).fill(false) }]}
+        enterSeat={vi.fn()}
+      />,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SEAT_POLL_INTERVAL_MS);
+    });
+
+    expect(screen.queryByText(SERVER_RECOVERING_MESSAGE)).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * 대회 전환도 백엔드 조회다 — 503이면 같은 문구를 띄운다. 기존 네트워크
+ * 실패 처리(`NETWORK_ERROR`)와 같은 자리(`error`)를 쓴다.
+ */
+describe('WaitingClient — 대회 전환 서버 장애(T97)', () => {
+  const TOURNAMENTS_MULTI = [
+    { id: 't1', name: '데모 토너먼트', status: 'ONGOING' },
+    { id: 't2', name: '두 번째 대회', status: 'ONGOING' },
+  ];
+
+  it('전환 중 503을 받으면 복구 문구가 뜬다', async () => {
+    server.use(
+      http.get('*/api/dealer/t2', () =>
+        HttpResponse.json({ message: SERVER_RECOVERING_MESSAGE }, { status: 503 }),
+      ),
+      http.get('*/api/tournaments/t2/seats', () => HttpResponse.json([])),
+    );
+
+    render(
+      <WaitingClient
+        storeId="s1"
+        tournaments={TOURNAMENTS_MULTI}
+        tables={TABLES}
+        seatMap={[{ tableId: 'tb1', seatStatus: Array(9).fill(false) }]}
+        enterSeat={vi.fn()}
+      />,
+    );
+
+    await userEvent.click(screen.getByTestId('pick-tournament-t2'));
+
+    expect(await screen.findByText(SERVER_RECOVERING_MESSAGE)).toBeInTheDocument();
   });
 });

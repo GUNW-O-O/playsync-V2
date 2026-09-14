@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useState } from 'react';
-import { PlayerAction } from '@playsync/contract';
+import { PlayerAction, SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
 import Felt from '@/component/felt/Felt';
 import { formatDuration } from '@/lib/format-duration';
 import { useTableSocket } from '@/lib/use-table-socket';
@@ -132,7 +132,7 @@ export default function SeatGameClient({
    * 좌석은 딜러보다 **먼저** 붙는다(`reconnect-policy.ts`) — 딜러가 판을
    * 재개할지 정할 때 이미 가라앉은 그림을 보게 하려는 것이다.
    */
-  const { socketRef, connectionError, reconnecting } = useTableSocket({
+  const { socketRef, connectionError, reconnecting, outage } = useTableSocket({
     tableId,
     role: 'seat',
     defaultError: DEFAULT_CONNECTION_ERROR,
@@ -236,6 +236,23 @@ export default function SeatGameClient({
             새로고침해야 하는 줄 안다 — 실제로는 기다리면 낫는다.
           */}
           {reconnecting ? `${connectionError} 다시 연결하는 중입니다…` : connectionError}
+        </div>
+      )}
+
+      {/*
+        **서버 장애(T97).** Redis가 죽으면 게이트웨이가 테이블 소켓 전원에게
+        `serverOutage`를 뿌린다 — 연결 자체는 살아 있어 `connectionError`
+        배너와 겹칠 일이 드물지만, 겹쳐도 서로 다른 자리라 가리지 않는다.
+        정지 배너(`resumePending`)와도 별도로 그린다 — 둘 다 사람에게
+        필요한 설명이다.
+      */}
+      {outage && (
+        <div
+          data-testid="server-outage-banner"
+          role="status"
+          className="absolute inset-x-0 top-0 z-50 bg-err px-4 py-2 text-center text-sm font-medium text-white"
+        >
+          {SERVER_RECOVERING_MESSAGE}
         </div>
       )}
 
@@ -347,7 +364,12 @@ export default function SeatGameClient({
       </div>
 
       <div className="shrink-0 border-t border-tb-line p-3">
-        <SeatActionPanel state={gameState} mySeatIndex={mySeatIndex} onAction={sendPlayerAction} />
+        <SeatActionPanel
+          state={gameState}
+          mySeatIndex={mySeatIndex}
+          onAction={sendPlayerAction}
+          outage={outage}
+        />
       </div>
 
       {/*

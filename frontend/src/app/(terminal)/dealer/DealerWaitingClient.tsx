@@ -2,8 +2,10 @@
 
 import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
 import Keypad from '@/component/Keypad';
 import { apiFetch } from '@/lib/api';
+import { isServerRecovering } from '@/lib/server-outage';
 
 /** 백엔드 `DealerDto`(`backend/shared/dto/dealer.dto.ts`)의
  * `@Matches(/^[0-9]{6}$/)`와 같은 값. 참가 OTP(8자리, `table/WaitingClient.tsx`의
@@ -74,11 +76,9 @@ export default function DealerWaitingClient({
     // 거부돼 이 함수가 던진다. 잡지 않으면 처리되지 않은 프라미스 거부만
     // 남고, 화면은 **앞 대회의 테이블 목록을 그대로 든다** — 딜러가 없는
     // 테이블에 인증을 시도하게 된다(`WaitingClient.selectTournament`와 같다).
-    let session: { tables?: Table[] } | null;
+    let res: Response;
     try {
-      session = await apiFetch(`/api/dealer/${id}`, { cache: 'no-store' }).then((r) =>
-        r.ok ? r.json() : null,
-      );
+      res = await apiFetch(`/api/dealer/${id}`, { cache: 'no-store' });
     } catch {
       if (tournamentRequestRef.current === requestId) setError(NETWORK_ERROR);
       return;
@@ -87,6 +87,13 @@ export default function DealerWaitingClient({
     // 그 사이 다른 대회를 또 골랐다면 이 응답은 낡았다 — 버린다.
     if (tournamentRequestRef.current !== requestId) return;
 
+    // 서버 장애(T97). 기존 `!res.ok` 분기(조용히 빈 목록)보다 앞에 둔다.
+    if (isServerRecovering(res)) {
+      setError(SERVER_RECOVERING_MESSAGE);
+      return;
+    }
+
+    const session = res.ok ? ((await res.json()) as { tables?: Table[] }) : null;
     const nextTables = session?.tables ?? [];
     setTables(nextTables);
     setTableId(nextTables[0]?.id ?? '');

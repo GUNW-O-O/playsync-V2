@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { KEEPALIVE_EVENT } from '@playsync/contract';
+import { KEEPALIVE_EVENT, SERVER_OUTAGE_EVENT, ServerOutageSchema } from '@playsync/contract';
 import { apiFetch } from '@/lib/api';
 import { type SocketRole, retryAfterMs, waitFor } from '@/lib/reconnect-policy';
 
@@ -54,6 +54,11 @@ export function useTableSocket({
   const [connectionError, setConnectionError] = useState<string | null>(null);
   /** 다시 붙는 중인가. 화면이 "연결 중"과 "포기했다"를 가르는 근거다. */
   const [reconnecting, setReconnecting] = useState(false);
+  /**
+   * 서버가 Redis 장애를 복구하는 중인가(T97). 좌석·딜러가 각자 판정하면
+   * 두 벌이 되므로 이 훅이 값 하나로 들고 돌려준다.
+   */
+  const [outage, setOutage] = useState(false);
 
   // 콜백은 매 렌더 새 함수다. 의존성에 넣으면 렌더마다 소켓을 다시 연다.
   const onMessageRef = useRef(onMessage);
@@ -144,6 +149,13 @@ export function useTableSocket({
       socket = new WebSocket(wsUrl);
       socketRef.current = socket;
       armWatchdog(socket);
+      // 이 소켓의 첫 프레임을 아직 못 받았나(T97). 끊긴 동안은 서버가
+      // `outage`를 알릴 길이 없다 — 다시 붙어 첫 프레임이 오면 그것이 곧
+      // "지금은 서버에 닿았다"의 증거라 여기서만 `outage`를 false로 되돌린다.
+      // 복구 중이면 게이트웨이가 이 프레임 바로 뒤에 `down:true`를 다시
+      // 보낸다. 매 `renderGame`마다 되돌리면 장애 배너가 복구 중에도
+      // 중간중간 사라진다.
+      let firstFrame = true;
 
       socket.onmessage = (event) => {
         if (cancelled) return;
@@ -159,6 +171,19 @@ export function useTableSocket({
         attempt = 0;
         setReconnecting(false);
         setConnectionError(null);
+        if (firstFrame) {
+          firstFrame = false;
+          setOutage(false);
+        }
+        // 서버 장애(T97). 화면이 그릴 것은 이 값 하나라 훅이 들고 돌려준다 —
+        // 좌석·딜러가 각자 받으면 두 벌이 된다. keepalive와 같은 취급이라
+        // `onMessage`로 넘기지 않는다.
+        if (parsed.event === SERVER_OUTAGE_EVENT) {
+          const outageEvent = ServerOutageSchema.safeParse(parsed.data);
+          if (outageEvent.success) setOutage(outageEvent.data.down);
+          else console.error('serverOutage 계약 위반 — 무시한다.', outageEvent.error);
+          return;
+        }
         // keepalive는 연결 확인일 뿐 화면이 그릴 것이 없다.
         if (parsed.event && parsed.event !== KEEPALIVE_EVENT) {
           onMessageRef.current(parsed.event, parsed.data);
@@ -196,5 +221,5 @@ export function useTableSocket({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tableId, role, defaultError]);
 
-  return { socketRef, connectionError, reconnecting };
+  return { socketRef, connectionError, reconnecting, outage };
 }

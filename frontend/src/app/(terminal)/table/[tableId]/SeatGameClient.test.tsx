@@ -3,7 +3,7 @@ import { act, render, waitFor, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/mocks/server';
-import type { TableState } from '@playsync/contract';
+import { SERVER_RECOVERING_MESSAGE, type TableState } from '@playsync/contract';
 
 // Felt는 렌더링 폭이 넓은 컴포넌트다. 이 파일이 검증하려는 건 WS 배선과
 // 탈락 판정, 그리고 실패가 화면에 닿는가뿐이라 렌더만 되면 그만이다.
@@ -14,8 +14,8 @@ vi.mock('@/component/felt/Felt', () => ({ default: () => null }));
 // `onAction`을 그대로 부르는 버튼으로 세운다 — 조건까지 흉내 내면 이 파일이
 // 그 규칙을 두 벌째 지게 된다.
 vi.mock('./SeatActionPanel', () => ({
-  default: ({ onAction }: { onAction: (action: unknown) => void }) => (
-    <button type="button" onClick={() => onAction({ action: 'CALL' })}>
+  default: ({ onAction, outage }: { onAction: (action: unknown) => void; outage?: boolean }) => (
+    <button type="button" disabled={outage} onClick={() => onAction({ action: 'CALL' })}>
       테스트 액션
     </button>
   ),
@@ -569,6 +569,44 @@ describe('SeatGameClient', () => {
       socket.emitServerEvent('renderGame', BASE_STATE);
 
       expect(screen.queryByTestId('seat-resume-wait')).toBeNull();
+    });
+  });
+
+  /**
+   * 서버 장애(T97). Redis가 죽었다 돌아오는 동안 게이트웨이가 테이블 소켓
+   * 전원에게 `serverOutage`를 뿌린다. 액션 패널의 버튼 조건은
+   * `SeatActionPanel.test.tsx`가 본다 — 여기서는 배선(배너·게이팅 전달·
+   * 다른 배너와의 공존)만 본다.
+   */
+  describe('서버 장애(T97)', () => {
+    it('down:true면 배너가 뜨고 액션 패널이 막힌다', async () => {
+      const { socket } = await renderWithSocket();
+
+      socket.emitServerEvent('serverOutage', { down: true });
+
+      expect(screen.getByText(SERVER_RECOVERING_MESSAGE)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: '테스트 액션' })).toBeDisabled();
+    });
+
+    it('down:false면 배너가 사라지고 버튼이 다시 판단대로 활성이다', async () => {
+      const { socket } = await renderWithSocket();
+
+      socket.emitServerEvent('serverOutage', { down: true });
+      socket.emitServerEvent('serverOutage', { down: false });
+
+      expect(screen.queryByText(SERVER_RECOVERING_MESSAGE)).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: '테스트 액션' })).not.toBeDisabled();
+    });
+
+    /** 서로 가리지 않는다 — 둘 다 사람에게 필요한 설명이다. */
+    it('정지 배너와 동시에 와도 둘 다 보인다', async () => {
+      const { socket } = await renderWithSocket();
+
+      socket.emitServerEvent('renderGame', { ...BASE_STATE, resumePending: { downMs: 60_000 } });
+      socket.emitServerEvent('serverOutage', { down: true });
+
+      expect(screen.getByTestId('seat-resume-wait')).toBeInTheDocument();
+      expect(screen.getByText(SERVER_RECOVERING_MESSAGE)).toBeInTheDocument();
     });
   });
 });

@@ -4,7 +4,12 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/mocks/server';
 import { DEALER_OFFSET_MS } from '@/lib/reconnect-policy';
-import { GamePhase, TOURNAMENT_SYNCING_EVENT, type TableState } from '@playsync/contract';
+import {
+  GamePhase,
+  SERVER_RECOVERING_MESSAGE,
+  TOURNAMENT_SYNCING_EVENT,
+  type TableState,
+} from '@playsync/contract';
 
 // 종료 덮개가 대기 화면으로 돌아간다(`TournamentClosedOverlay`). 좌석 쪽
 // `SeatGameClient.test.tsx`와 같은 배선이다.
@@ -584,6 +589,69 @@ describe('DealerGameClient', () => {
       expect(screen.getByRole('button', { name: '저장 재시도' })).not.toBeDisabled();
 
       socket.emitServerEvent(TOURNAMENT_SYNCING_EVENT, { syncing: true, present: 1, required: 2 });
+
+      expect(screen.getByTestId('confirm-fold')).toBeDisabled();
+      expect(screen.getByTestId('confirm-kick')).toBeDisabled();
+      expect(screen.getByRole('button', { name: '저장 재시도' })).toBeDisabled();
+    });
+  });
+
+  /**
+   * 서버 장애(T97). Redis가 죽었다 돌아오는 동안 게이트웨이가 테이블 소켓
+   * 전원에게 `serverOutage`를 뿌린다. 딜러 명령 여섯이 전부 눌리지 않아야
+   * 한다 — 서버 게이트(`WsGateway.runDealerAction`)가 어차피 거절하는데,
+   * 화면이 그것을 미리 막지 않으면 딜러는 이유 없이 거절만 받는다.
+   */
+  describe('서버 장애(T97)', () => {
+    it('down:true면 배너가 뜨고 핸드 시작이 막히며, down:false면 복원된다', async () => {
+      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.WAITING }));
+      expect(screen.getByRole('button', { name: '핸드 시작' })).not.toBeDisabled();
+
+      socket.emitServerEvent('serverOutage', { down: true });
+
+      expect(screen.getByText(SERVER_RECOVERING_MESSAGE)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: '핸드 시작' })).toBeDisabled();
+
+      socket.emitServerEvent('serverOutage', { down: false });
+
+      expect(screen.queryByText(SERVER_RECOVERING_MESSAGE)).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: '핸드 시작' })).not.toBeDisabled();
+    });
+
+    it('down:true면 승자 결정과 오버레이의 보드 하이·배분이 막힌다', async () => {
+      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.SHOWDOWN }));
+      await userEvent.click(screen.getByRole('button', { name: '승자 결정' }));
+      await userEvent.click(screen.getByTestId('winner-pick-u-3'));
+      expect(screen.getByRole('button', { name: '배분' })).not.toBeDisabled();
+
+      socket.emitServerEvent('serverOutage', { down: true });
+
+      expect(screen.getByRole('button', { name: '승자 결정' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: '보드 하이' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: '배분' })).toBeDisabled();
+    });
+
+    it('down:true면 이어서 진행이 막힌다', async () => {
+      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.FLOP }));
+      socket.emitServerEvent(
+        'renderGame',
+        baseState({ phase: GamePhase.FLOP, resumePending: { downMs: 60_000 } }),
+      );
+      expect(screen.getByRole('button', { name: '이어서 진행' })).not.toBeDisabled();
+
+      socket.emitServerEvent('serverOutage', { down: true });
+
+      expect(screen.getByRole('button', { name: '이어서 진행' })).toBeDisabled();
+    });
+
+    it('down:true면 킥·폴드·저장 재시도가 막힌다', async () => {
+      const { socket } = await renderWithSocket(
+        baseState({ phase: GamePhase.FLOP, currentTurnSeatIndex: 3, dbSyncStatus: 'FAILED' }),
+      );
+      await userEvent.click(screen.getByTestId('seat-3'));
+      expect(screen.getByTestId('confirm-fold')).not.toBeDisabled();
+
+      socket.emitServerEvent('serverOutage', { down: true });
 
       expect(screen.getByTestId('confirm-fold')).toBeDisabled();
       expect(screen.getByTestId('confirm-kick')).toBeDisabled();

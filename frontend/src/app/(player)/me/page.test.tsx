@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/mocks/server';
+import { SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
 
 const cookieStore = { get: vi.fn() };
 vi.mock('next/headers', () => ({
@@ -328,5 +329,37 @@ describe('/me — 내 참가', () => {
     render(await MyPage());
 
     expect(screen.getByText(/불러오지 못했습니다/)).toBeInTheDocument();
+  });
+
+  /**
+   * 서버 장애(T97). 「내 참가를 불러오지 못했습니다」는 원인을 알 수 없는
+   * 실패 전반의 안내였는데, 서버 장애만은 복구 문구로 갈라 참가자가 다시
+   * 시도할 시점을 알게 한다.
+   */
+  it('조회가 503이면 복구 문구가 뜬다', async () => {
+    server.use(
+      http.get('http://backend.test/user/me/participations', () =>
+        HttpResponse.json({ message: SERVER_RECOVERING_MESSAGE }, { status: 503 }),
+      ),
+    );
+
+    render(await MyPage());
+
+    expect(screen.getByText(SERVER_RECOVERING_MESSAGE)).toBeInTheDocument();
+    expect(screen.queryByText(/내 참가를 불러오지 못했습니다/)).not.toBeInTheDocument();
+  });
+
+  /** 반대 입력. 500은 기존 문구 그대로다(401은 위에서 이미 본다). */
+  it('조회가 500이면 기존 문구가 뜬다', async () => {
+    server.use(
+      http.get('http://backend.test/user/me/participations', () =>
+        new HttpResponse(null, { status: 500 }),
+      ),
+    );
+
+    render(await MyPage());
+
+    expect(screen.getByText('내 참가를 불러오지 못했습니다.')).toBeInTheDocument();
+    expect(screen.queryByText(SERVER_RECOVERING_MESSAGE)).not.toBeInTheDocument();
   });
 });
