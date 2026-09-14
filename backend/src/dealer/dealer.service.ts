@@ -568,7 +568,7 @@ export class DealerService {
         // 누른 재개가 풀 대상을 못 찾고, 이 고리는 영영 기다린다. 먼저 걸면 그
         // 전의 재개는 `resumePending`이 없어 `resumeTable`이 거절한다.
         const resumed = new Promise<void>((resolve) => this.resumeWaiters.set(tableId, resolve));
-        await this.holdForDealer(tableId, stoppedAt);
+        const hadSnapshot = await this.holdForDealer(tableId, stoppedAt);
 
         // **대회가 닫혔으면 기다리지 않고 고리를 끝낸다**(T100 잔여). 상점이
         // 「이어서 진행」 대신 대회를 중단·종료하면 `SessionService`가 이
@@ -582,7 +582,12 @@ export class DealerService {
         // 여기서 `break`해도 이 함수만 조용히 끝난다 — `resolveWinners`는
         // 그대로 3단계(`mutateSnapshot`)로 가서 `SNAPSHOT_MISSING`으로
         // 거절된다. 닫힌 대회에서 그 요청이 에러로 끝나는 것은 괜찮다.
-        if (!(await this.redis.getSnapShot(tableId))) break;
+        //
+        // **`holdForDealer`가 방금 쓴 그 사실을 돌려준다**(M1). 별도로
+        // `getSnapShot`을 다시 읽으면 그 왕복 자체가 `holdForDealer`의
+        // 재시도 밖에 있는 새 던짐 자리가 된다 — 락 안에서 이미 확인한 것을
+        // 그대로 받는다.
+        if (!hadSnapshot) break;
 
         await resumed;
         asked = await this.stillBroke(tableId, interrupted);
@@ -625,13 +630,16 @@ export class DealerService {
   /**
    * 복구를 기다려 테이블을 「딜러의 재개 대기」로 둔다. 복구 직후 또 끊겨 쓰기가
    * 던지면 다시 기다린다 — up인데 던진 것만 올린다(검수 D3).
+   *
+   * **스냅샷이 있었는지를 돌려준다**(M1). `askRebuys`가 이 값으로 고리를
+   * 끝낸다 — 이 재시도 루프 밖에서 따로 `getSnapShot`을 다시 읽으면 그 왕복
+   * 사이의 재장애가 이 함수의 방어를 안 타는 새 던짐 자리가 된다.
    */
-  private async holdForDealer(tableId: string, stoppedAt: number) {
+  private async holdForDealer(tableId: string, stoppedAt: number): Promise<boolean> {
     for (;;) {
       await this.redis.outage.whenUp();
       try {
-        await this.playsync.markRebuyInterrupted(tableId, Date.now() - stoppedAt);
-        return;
+        return await this.playsync.markRebuyInterrupted(tableId, Date.now() - stoppedAt);
       } catch (error) {
         if (this.redis.outage.isUp()) throw error;
       }
