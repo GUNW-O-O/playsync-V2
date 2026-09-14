@@ -369,7 +369,7 @@ describe('DealerService 동시성', () => {
       let lockDuringRebuy = -1;
       jest.spyOn(playsync, 'processRebuy').mockImplementation(async () => {
         lockDuringRebuy = await redis.exists(`lock:table:state:${TABLE}`);
-        return 0;
+        return 'declined' as const;
       });
 
       await dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
@@ -389,7 +389,7 @@ describe('DealerService 동시성', () => {
         await dealer.startPreFlop(TOURNAMENT, TABLE).catch(() => { startRejected = true; });
         const mid: TableState = JSON.parse((await redis.get(stateKey))!);
         phaseDuringRebuy = mid.phase;
-        return 0;
+        return 'declined' as const;
       });
 
       await dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
@@ -414,7 +414,7 @@ describe('DealerService 동시성', () => {
       jest.spyOn(playsync, 'processRebuy').mockImplementation(async () => {
         const mid: TableState = JSON.parse((await redis.get(stateKey))!);
         pendingDuringRebuy = mid.rebuyPending;
-        return 0;
+        return 'declined' as const;
       });
 
       await dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
@@ -432,7 +432,7 @@ describe('DealerService 동시성', () => {
     it('리바인이 끝나면 표시가 사라진다', async () => {
       await seedMeta(true);
       await redis.set(stateKey, JSON.stringify(showdownState()));
-      jest.spyOn(playsync, 'processRebuy').mockResolvedValue(0);
+      jest.spyOn(playsync, 'processRebuy').mockResolvedValue('declined');
 
       await dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
 
@@ -612,7 +612,7 @@ describe('DealerService 동시성', () => {
           new TableEngine(mid).applyRebuy('carol', 10000);
           await redisService.saveSnapshotUnlocked(TABLE, mid, 'table-created');
         });
-        return 10000;
+        return 'applied' as const;
       });
 
       let eliminatedIds: string[] = [];

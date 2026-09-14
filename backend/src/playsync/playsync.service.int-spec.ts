@@ -429,7 +429,7 @@ describe('PlaysyncService.processRebuy', () => {
       // 직접 지우지 않으면 리바인마다 하나씩 영구 누적된다.
       const result = await callProcessRebuy();
 
-      expect(result).toBe(0);
+      expect(result).toBe('timeout');
       expect(emitter.listenerCount(`rebuy_res_${USER}`)).toBe(0);
     });
 
@@ -438,7 +438,7 @@ describe('PlaysyncService.processRebuy', () => {
 
       const result = await callProcessRebuy();
 
-      expect(result).toBe(0);
+      expect(result).toBe('declined');
       expect(emitter.listenerCount(`rebuy_res_${USER}`)).toBe(0);
     });
 
@@ -498,7 +498,7 @@ describe('PlaysyncService.processRebuy', () => {
 
       const result = await callProcessRebuy();
 
-      expect(result).toBe(10000);
+      expect(result).toBe('applied');
       expect(broadcast).not.toBeNull();
       expect(broadcast!.players[0]!.stack).toBe(10000);
     });
@@ -515,18 +515,130 @@ describe('PlaysyncService.processRebuy', () => {
       expect(state.players[0]!.hasFolded).toBe(false);
     });
 
-    it('트랜잭션이 실패하면 0을 돌려주고 상태를 건드리지 않는다', async () => {
+    it('트랜잭션이 거절되면 칩을 되돌리고 되돌린 상태를 전파한다', async () => {
       jest
         .spyOn(service, 'executeRebuyTransaction')
         .mockRejectedValue(new Error('포인트 부족 혹은 유저 없음'));
+      let last: TableState | null = null;
+      emitter.on('game.state.updated', (p: { state: TableState }) => { last = p.state; });
       answerWhenPrompted(true);
 
       const result = await callProcessRebuy();
 
-      expect(result).toBe(0);
+      expect(result).toBe('skipped');
       const state: TableState = JSON.parse((await redis.get(stateKey))!);
       expect(state.players[0]!.stack).toBe(0);
       expect(emitter.listenerCount(`rebuy_res_${USER}`)).toBe(0);
+      expect(last!.players[0]!.stack).toBe(0);
+    });
+  });
+
+  describe('쓰는 순서 (T100)', () => {
+    it('DB를 쓰는 순간 스냅샷에 칩이 이미 있다 — 스냅샷이 먼저다', async () => {
+      let stackAtDb = -1;
+      jest.spyOn(service, 'executeRebuyTransaction').mockImplementation(async () => {
+        const mid: TableState = JSON.parse((await redis.get(stateKey))!);
+        stackAtDb = mid.players[0]!.stack;
+        return 10000;
+      });
+      answerWhenPrompted(true);
+
+      await callProcessRebuy();
+
+      expect(`DB 시점 스택 ${stackAtDb}`).toBe('DB 시점 스택 10000');
+    });
+
+    it('스냅샷이 없으면(닫힌 대회) DB를 부르지 않는다', async () => {
+      const tx = jest.spyOn(service, 'executeRebuyTransaction');
+      emitter.once('rebuy.request.sent', () => {
+        setImmediate(async () => {
+          await redis.del(stateKey);
+          emitter.emit(`rebuy_res_${USER}`, true);
+        });
+      });
+
+      const result = await callProcessRebuy();
+
+      expect(`${result} DB ${tx.mock.calls.length}`).toBe('skipped DB 0');
+    });
+  });
+
+  describe('장애 (T100)', () => {
+    const outage = () => redisService.outage;
+    /** 실제 끊김 없이 전이만 일으킨다 — 이 파일에는 복구 스윕이 없어 진짜로 끊으면 up으로 못 돌아온다. */
+    function simulateDown() {
+      (outage() as unknown as { onLost(): void }).onLost();
+    }
+    afterEach(() => {
+      outage().phase = 'up';
+      outage().downSince = null;
+    });
+
+    it('들어올 때 이미 up이 아니면 묻지도 않고 중단이다', async () => {
+      outage().phase = 'down';
+      const prompted = jest.fn();
+      emitter.on('rebuy.request.sent', prompted);
+
+      const result = await callProcessRebuy();
+
+      expect(`${result} 팝업 ${prompted.mock.calls.length}`).toBe('interrupted 팝업 0');
+    });
+
+    it('기다리는 중에 끊기면 마감을 기다리지 않고 곧바로 중단이다', async () => {
+      process.env.REBUY_TIMEOUT_MS = '60000';
+      try {
+        emitter.once('rebuy.request.sent', () => setImmediate(simulateDown));
+        const started = Date.now();
+
+        const result = await callProcessRebuy();
+
+        expect(`${result} 빨리 ${Date.now() - started < 5000}`).toBe('interrupted 빨리 true');
+        expect(emitter.listenerCount(`rebuy_res_${USER}`)).toBe(0);
+      } finally {
+        process.env.REBUY_TIMEOUT_MS = '300';
+      }
+    });
+
+    it('수락이 락 안에 들어간 뒤 세대가 바뀌었으면 칩도 DB도 안 쓴다', async () => {
+      const tx = jest.spyOn(service, 'executeRebuyTransaction');
+      const generation = outage().generation;
+      // 수락은 받았는데, 칩을 넣으러 락에 들어가기 전에 한 번 끊겼다 돌아왔다.
+      emitter.once('rebuy.request.sent', () => {
+        setImmediate(() => {
+          emitter.emit(`rebuy_res_${USER}`, true);
+          simulateDown();
+          outage().phase = 'up';
+        });
+      });
+
+      const result = await service.processRebuy(TOURNAMENT, TABLE, USER, 1000, 10000, 'T', generation);
+
+      const state: TableState = JSON.parse((await redis.get(stateKey))!);
+      expect(`${result} 스택 ${state.players[0]!.stack} DB ${tx.mock.calls.length}`)
+        .toBe('interrupted 스택 0 DB 0');
+    });
+
+    it('장애가 없으면 끝까지 간다 (반대 입력)', async () => {
+      jest.spyOn(service, 'executeRebuyTransaction').mockResolvedValue(10000);
+      answerWhenPrompted(true);
+
+      expect(await callProcessRebuy()).toBe('applied');
+    });
+  });
+
+  describe('markRebuyInterrupted (T100)', () => {
+    it('리바인 표시를 지우고 재개 대기를 세우고 전파한다', async () => {
+      const s = brokeState();
+      s.rebuyPending = { seatIndexes: [0], deadline: Date.now() + 15000 };
+      await redis.set(stateKey, JSON.stringify(s));
+      let last: TableState | null = null;
+      emitter.on('game.state.updated', (p: { state: TableState }) => { last = p.state; });
+
+      await service.markRebuyInterrupted(TABLE, 4200);
+
+      const saved: TableState = JSON.parse((await redis.get(stateKey))!);
+      expect(`${saved.rebuyPending === undefined} ${saved.resumePending?.downMs}`).toBe('true 4200');
+      expect(last!.resumePending?.downMs).toBe(4200);
     });
   });
 
@@ -540,7 +652,7 @@ describe('PlaysyncService.processRebuy', () => {
 
     const result = await poorService.processRebuy(TOURNAMENT, TABLE, USER, 1000, 10000, 'T');
 
-    expect(result).toBe(0);
+    expect(result).toBe('skipped');
     expect(prompted).toBe(false);
   });
 });

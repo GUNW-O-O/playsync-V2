@@ -101,3 +101,45 @@ describe('RedisOutage', () => {
     expect([a.outage === b.outage, b.outage.phase, client.listenerCount('ready')]).toEqual([true, 'down', 1]);
   });
 });
+
+describe('RedisOutage — 기다리는 쪽', () => {
+  it('up이면 whenUp이 곧바로 풀린다 (반대 입력)', async () => {
+    const o = new RedisOutage(fakeClient('ready') as never, () => 0);
+    await expect(o.whenUp()).resolves.toBeUndefined();
+  });
+
+  it('down이면 whenUp은 markRecovered에서야 풀린다', async () => {
+    const client = fakeClient('ready');
+    const o = new RedisOutage(client as never, () => 0);
+    client.emit('reconnecting');
+    let done = false;
+    const waiting = o.whenUp().then(() => { done = true; });
+    client.emit('ready');
+    await Promise.resolve();
+    expect(`recovering에서 ${done}`).toBe('recovering에서 false');
+    o.markRecovered();
+    await waiting;
+    expect(done).toBe(true);
+  });
+
+  it('onceDown은 다음 끊김에 한 번만 부르고, 해제하면 안 부른다', () => {
+    const client = fakeClient('ready');
+    const o = new RedisOutage(client as never, () => 0);
+    const kept = jest.fn();
+    const dropped = jest.fn();
+    o.onceDown(kept);
+    const off = o.onceDown(dropped);
+    off();
+    client.emit('reconnecting');
+    client.emit('ready');
+    o.markRecovered();
+    client.emit('reconnecting');
+    expect(`${kept.mock.calls.length} ${dropped.mock.calls.length}`).toBe('1 0');
+  });
+
+  it('대기자가 많아도 EventEmitter 리스너를 늘리지 않는다', () => {
+    const o = new RedisOutage(fakeClient('ready') as never, () => 0);
+    for (let i = 0; i < 50; i++) o.onceDown(() => {});
+    expect(o.listenerCount('down')).toBe(0);
+  });
+});
