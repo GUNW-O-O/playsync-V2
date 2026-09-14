@@ -364,6 +364,57 @@ describe('SeatGameClient', () => {
   });
 
   /**
+   * T100. 장애 중의 리바인 응답은 서버가 받아도 반영할 수 없다. 팝업이 열려
+   * 있으면 사람은 누르고, 누른 것은 조용히 사라진다 — 그래서 막고 이유를 적는다.
+   * 재개 대기(`resumePending`) 동안도 같다: 복구는 됐지만 서버의 그 판은 이미
+   * 끝나 있어 받을 곳이 없고, 딜러가 다시 열면 새 프롬프트가 온다.
+   */
+  describe('리바인 팝업 — 장애와 재개 대기 (T100)', () => {
+    it('장애 중에는 두 버튼이 막히고 장애 문구가 팝업 안에 뜬다', async () => {
+      const { socket } = await renderWithSocket();
+      socket.emitServerEvent('REBUY_PROMPT', { deadline: Date.now() + 30_000, entryFee: 50_000 });
+      await screen.findByRole('button', { name: '리바인' });
+
+      socket.emitServerEvent('serverOutage', { down: true });
+
+      await waitFor(() => expect(screen.getByRole('button', { name: '리바인' })).toBeDisabled());
+      expect(screen.getByRole('button', { name: '거절' })).toBeDisabled();
+      expect(screen.getAllByText(SERVER_RECOVERING_MESSAGE).length).toBeGreaterThan(0);
+    });
+
+    it('재개 대기 중에는 두 버튼이 막히고 딜러를 기다린다고 적는다', async () => {
+      const { socket } = await renderWithSocket();
+      socket.emitServerEvent('REBUY_PROMPT', { deadline: Date.now() + 30_000, entryFee: 50_000 });
+      await screen.findByRole('button', { name: '리바인' });
+
+      socket.emitServerEvent('renderGame', { ...BASE_STATE, resumePending: { downMs: 30_000 } });
+
+      await waitFor(() => expect(screen.getByRole('button', { name: '리바인' })).toBeDisabled());
+      expect(screen.getByText(/딜러가 판을 다시 열면 다시 묻습니다/)).toBeInTheDocument();
+    });
+
+    it('둘 다 없으면 누를 수 있다 (반대 입력)', async () => {
+      const { socket } = await renderWithSocket();
+      socket.emitServerEvent('REBUY_PROMPT', { deadline: Date.now() + 30_000, entryFee: 50_000 });
+
+      expect(await screen.findByRole('button', { name: '리바인' })).toBeEnabled();
+      expect(screen.getByRole('button', { name: '거절' })).toBeEnabled();
+    });
+
+    it('거절로 탈락 화면이 떴어도 새 프롬프트가 오면 걷고 다시 묻는다', async () => {
+      const { socket } = await renderWithSocket();
+      socket.emitServerEvent('REBUY_PROMPT', { deadline: Date.now() + 30_000 });
+      await userEvent.click(await screen.findByRole('button', { name: /거절/ }));
+      await screen.findByRole('button', { name: /지금 돌아가기/ });
+
+      socket.emitServerEvent('REBUY_PROMPT', { deadline: Date.now() + 45_000 });
+
+      expect(await screen.findByRole('button', { name: '리바인' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /지금 돌아가기/ })).not.toBeInTheDocument();
+    });
+  });
+
+  /**
    * **기다리는 쪽에도 설명이 있어야 한다.**
    *
    * 리바인을 묻는 팝업은 파산한 **본인에게만** 간다(`sendToTableUser`). 같은

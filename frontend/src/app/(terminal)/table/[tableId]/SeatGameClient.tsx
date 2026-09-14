@@ -29,6 +29,9 @@ const DEFAULT_ACTION_ERROR = '요청이 거절되었습니다.';
  */
 const NOT_SENT_ERROR = '연결이 끊어져 전달되지 못했습니다. 잠시 후 다시 눌러 주세요.';
 
+/** 복구 뒤 딜러의 재개를 기다리는 동안 리바인 팝업에 적는다(T100). */
+const REBUY_WAIT_DEALER = '딜러가 판을 다시 열면 다시 묻습니다.';
+
 /** 좌석 화면 상단 바 · 사이드 패널에 쓰는 페이즈 한글 이름. */
 const PHASE_LABEL: Record<number, string> = {
   0: '대기',
@@ -159,6 +162,10 @@ export default function SeatGameClient({
         }
       } else if (serverEvent === 'REBUY_PROMPT') {
         setRebuyError(null);
+        // **거절로 그린 탈락 화면을 걷는다**(T100). 장애 알림이 오기 직전에
+        // 거절을 눌렀는데 서버가 이미 끊겨 받지 않았으면, 딜러가 판을 다시 열 때
+        // 새 프롬프트가 온다. 좌석 소멸로 난 진짜 탈락 뒤에는 프롬프트가 오지 않는다.
+        setExitReason((prev) => (prev === 'eliminated' ? null : prev));
         updateRebuyData(data as RebuyPrompt);
       } else if (serverEvent === 'error') {
         // 거절은 브로드캐스트가 아니라 **누른 사람에게만** 오는 ack다
@@ -226,6 +233,8 @@ export default function SeatGameClient({
   const minRaise = gameState ? gameState.currentBet + gameState.smallBlind * 2 : 0;
 
   const resumePending = gameState?.resumePending;
+  // 리바인 팝업을 막는 이유(T100). 장애가 먼저다 — 둘 다면 원인이 장애다.
+  const rebuyBlockedReason = outage ? SERVER_RECOVERING_MESSAGE : resumePending ? REBUY_WAIT_DEALER : null;
 
   return (
     <div className="relative flex h-screen w-screen flex-col overflow-hidden bg-tb-bg text-tb-ink">
@@ -407,7 +416,12 @@ export default function SeatGameClient({
       )}
 
       {rebuyData && (
-        <RebuyOverlay rebuyData={rebuyData} error={rebuyError} onRespond={handleRebuyResponse} />
+        <RebuyOverlay
+          rebuyData={rebuyData}
+          error={rebuyError}
+          blockedReason={rebuyBlockedReason}
+          onRespond={handleRebuyResponse}
+        />
       )}
       {exitReason && <EliminatedOverlay storeId={storeId} reason={exitReason} />}
 

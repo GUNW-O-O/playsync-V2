@@ -22,6 +22,7 @@ export type RebuyPrompt = {
 export default function RebuyOverlay({
   rebuyData,
   error,
+  blockedReason = null,
   onRespond,
 }: {
   rebuyData: RebuyPrompt;
@@ -31,6 +32,12 @@ export default function RebuyOverlay({
    * 가리고, 이 실패의 유일한 해결이 "다시 누른다"이다.
    */
   error?: string | null;
+  /**
+   * 지금은 답할 수 없는 이유(T100). 있으면 두 버튼을 막고 카운트다운 대신 이
+   * 문구를 그린다 — 서버 장애 중이거나, 복구 뒤 딜러가 판을 다시 열기를 기다리는
+   * 중이다. 그 동안 누른 응답은 받을 곳이 없어 조용히 사라진다.
+   */
+  blockedReason?: string | null;
   onRespond: (accept: boolean) => void;
 }) {
   return (
@@ -57,22 +64,30 @@ export default function RebuyOverlay({
           </p>
         )}
 
-        <div className="mt-3">
-          <ActionTimer key={rebuyData.deadline} deadline={rebuyData.deadline} />
-        </div>
+        {blockedReason ? (
+          <p role="status" data-testid="rebuy-blocked" className="mt-3 border border-tb-line px-3 py-2 text-sm text-tb-sub">
+            {blockedReason}
+          </p>
+        ) : (
+          <div className="mt-3">
+            <ActionTimer key={rebuyData.deadline} deadline={rebuyData.deadline} />
+          </div>
+        )}
 
         <div className="mt-5 flex gap-2.5">
           <button
             type="button"
+            disabled={blockedReason !== null}
             onClick={() => onRespond(false)}
-            className="h-14 flex-1 border border-tb-line text-sm text-tb-muted"
+            className="h-14 flex-1 border border-tb-line text-sm text-tb-muted disabled:opacity-40"
           >
             거절
           </button>
           <button
             type="button"
+            disabled={blockedReason !== null}
             onClick={() => onRespond(true)}
-            className="h-14 flex-1 border border-tb-act bg-tb-act text-sm font-semibold text-[#06201a]"
+            className="h-14 flex-1 border border-tb-act bg-tb-act text-sm font-semibold text-[#06201a] disabled:opacity-40"
           >
             리바인
           </button>
