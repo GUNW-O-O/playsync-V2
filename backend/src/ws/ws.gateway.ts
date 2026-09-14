@@ -472,13 +472,19 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
    * 자리는 아직 살아 있는데 화면만 못 본 것뿐인데도.
    */
   private resendPendingRebuyPrompt(tableId: string, userId: string, state: TableState, client: WebSocket) {
-    // 방금 읽은 스냅샷에 내 자리가 없거나 서버가 이 사람을 기다리지 않으면
-    // (`rebuyPending`에 내 자리가 없으면) 보낼 이유가 없다. T100에서
-    // `rebuyPending`은 매 프롬프트 전에 서고, 판이 끝나거나 장애로 끊기면
-    // 지워진다.
-    const seat = state.players.find((p) => p?.id === userId);
-    if (!seat) return;
-    if (!state.rebuyPending?.seatIndexes.includes(seat.seatIndex)) return;
+    // **자리는 배열 위치다, `seatIndex` 필드가 아니다.**
+    // `PlaysyncService.markRebuyPending`이 `seatIndexes`를 지을 때 쓰는 것은
+    // `snapshot.players`의 배열 인덱스이지 좌석 객체의 `seatIndex` 필드가
+    // 아니다 — 둘이 같다는 보장이 없다. 필드로 대조하면 어긋난 스냅샷에서
+    // 조용히 못 찾는다.
+    const seatPosition = state.players.findIndex((p) => p?.id === userId);
+    if (seatPosition < 0) return;
+
+    // 서버가 이 사람을 기다리지 않으면(`rebuyPending`에 내 자리가 없으면)
+    // 보낼 이유가 없다. T100에서 `rebuyPending`은 매 프롬프트 전에 서고,
+    // 판이 끝나거나 장애로 끊기면 지워진다.
+    const rebuyPending = state.rebuyPending;
+    if (!rebuyPending || !rebuyPending.seatIndexes.includes(seatPosition)) return;
 
     const key = this.rebuyPromptKey(tableId, userId);
     const prompt = this.pendingRebuyPrompts.get(key);
@@ -489,6 +495,17 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
       this.pendingRebuyPrompts.delete(key);
       return;
     }
+
+    // **지난 라운드의 낡은 프롬프트를 걸러낸다.** 장애가 리바인 창을 끊으면
+    // `PlaysyncService.markRebuyInterrupted`가 `rebuyPending`을 지우고, 딜러가
+    // 재개하면 `DealerService.askRebuyRound`가 `markRebuyPending`으로 새
+    // 마감을 스냅샷에 세운 **뒤에야** 사람마다 `processRebuy`가 DB를 읽고
+    // `waitForRebuyResponse`로 새 프롬프트의 마감(`Date.now() + timeoutMs`)을
+    // 잰다 — 항상 마커보다 늦거나 같다. 적어 둔 프롬프트의 마감이 지금
+    // 마커보다 이르면, 그 프롬프트는 이번 라운드가 아니라 장애로 끊긴
+    // 이전 라운드의 것이다. 그새 접속한 소켓에 그걸 다시 보내면 서버는
+    // 이미 새 프롬프트를 기다리는데 단말은 답할 수 없는 낡은 팝업을 본다.
+    if (prompt.deadline < rebuyPending.deadline) return;
 
     client.send(JSON.stringify({ event: 'REBUY_PROMPT', data: prompt }));
   }

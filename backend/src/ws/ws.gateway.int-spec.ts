@@ -1587,5 +1587,32 @@ describe('WsGateway 인바운드 경계', () => {
 
       expect(events(seat, 'REBUY_PROMPT')).toHaveLength(0);
     });
+
+    it('반대 입력: 지난 라운드의 낡은 프롬프트는 새 마커보다 이르면 안 받는다 (M1)', async () => {
+      // `markRebuyPending`이 이번 라운드의 마감을 이미 세운 뒤인데, 적어 둔
+      // 프롬프트는 그보다 5초 이른 — 장애로 끊긴 이전 라운드의 것이다.
+      const staleDeadline = futureDeadline();
+      await setState({ seatIndexes: [0], deadline: staleDeadline + 5000 });
+      requestPrompt(staleDeadline);
+
+      const seat = await connect(await seatTicket('alice'));
+
+      expect(events(seat, 'REBUY_PROMPT')).toHaveLength(0);
+    });
+
+    it('자리는 배열 위치로 맞춘다 — seatIndex 필드가 배열 위치와 달라도 받는다 (M2)', async () => {
+      // alice는 `players` 배열의 1번 자리(= markRebuyPending이 seatIndexes를
+      // 지을 때 쓰는 좌표)에 있지만, TablePlayer.seatIndex 필드는 3이다.
+      // 둘이 같다는 보장이 없다는 것을 보이는 입력이다.
+      const players = [makePlayer('bob', 5), { ...makePlayer('alice', 0), seatIndex: 3 }];
+      await redis.set(`table:state:${TABLE}`, JSON.stringify({
+        ...makeState(), players, rebuyPending: { seatIndexes: [1], deadline: futureDeadline() },
+      }));
+      requestPrompt();
+
+      const seat = await connect(await seatTicket('alice'));
+
+      expect(events(seat, 'REBUY_PROMPT')).toHaveLength(1);
+    });
   });
 });
