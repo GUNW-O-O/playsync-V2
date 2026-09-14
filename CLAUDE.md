@@ -115,7 +115,7 @@ npm run assets:settlement  # 정산 촬영을 자른다 (셋이 다 있어야 �
 타입 에러 0건, 테스트 전부 통과가 정상이다. CI(`.github/workflows/ci.yml`)가
 타입 체크 · 테스트 · 빌드를 돌린다.
 
-현재 기준선 (T101·T102 시점):
+현재 기준선 (#122 시점):
 
 ```
 contract       85  (8 suites)
