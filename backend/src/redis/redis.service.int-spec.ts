@@ -923,4 +923,49 @@ describe('RedisService.deleteTournament', () => {
     await expect(service.deleteTournament(TOURNAMENT, [TABLE])).resolves.toBeUndefined();
   });
 
+  async function until(pred: () => Promise<boolean>, ms = 5000) {
+    const start = Date.now();
+    while (!(await pred())) {
+      if (Date.now() - start > ms) throw new Error('until timeout');
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  }
+
+  /**
+   * **지운 스냅샷이 되살아나지 않는다.**
+   *
+   * `mutateSnapshot`은 락 안에서 GET → 수정 → SET을 한다. 닫힘이 그 **읽기와
+   * 쓰기 사이**에 DEL을 끼우면, 뒤이은 SET이 방금 지운 키를 TTL째로 다시
+   * 써 넣는다. 그 뒤 리바인 고리는 닫힌 대회의 파산자를 읽어 다시 묻고,
+   * 스냅샷은 24시간 떠 있다(돈 쓰기만 닫힌 대회 가드가 막는다).
+   *
+   * **임계 구역을 직접 쥐고 잰다.** `mutateSnapshot`의 콜백에서 붙잡는 모양은
+   * **틀린 이유로 통과했다** — 거기서 빗장을 풀면 SET이 닫힘의 DEL보다 먼저
+   * 나가서, 락이 없어도 초록이었다. 여기서는 락을 쥔 채 **마지막에** 쓰고,
+   * 닫힘이 스냅샷 단계에 도달한 것을 확인한 **뒤에** 푼다 — 락이 없으면 그
+   * DEL은 이미 나갔고 이 쓰기가 그것을 덮는다.
+   *
+   * 「스냅샷 단계에 왔다」의 신호는 **대회 키가 사라진 것**이다. 그 셋은
+   * 스냅샷보다 먼저 지워지고 이 검사 말고는 아무도 안 만진다.
+   */
+  it('스냅샷을 지울 때 테이블 락을 잡는다 — 임계 구역의 쓰기가 되살아나지 않는다', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+
+    const holding = service.withTableLock(TABLE, async () => {
+      await held;
+      await redis.set(`table:state:${TABLE}`, '{"되살아남":true}');
+    });
+    await until(async () => await redis.exists(`lock:table:state:${TABLE}`) === 1);
+
+    const deleting = service.deleteTournament(TOURNAMENT, [TABLE]);
+    await until(async () => await redis.exists(`tournament:${TOURNAMENT}:info`) === 0);
+
+    release();
+    await holding;
+    await deleting;
+
+    expect(await redis.exists(`table:state:${TABLE}`)).toBe(0);
+  });
+
 });

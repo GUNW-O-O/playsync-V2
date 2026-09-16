@@ -15,16 +15,30 @@ import { RedisService } from './redis.service';
  * 직접 먹이는 쪽이 결정적이다. 끊긴 클라이언트는 사후 정리가 얽혀 검사가 멈춘다.
  */
 describe('RedisService.deleteTournament — 실패 보고', () => {
-  /** `pipeline()`만 흉내 내는 클라이언트. `exec`가 돌려줄 배열을 받아 둔다. */
+  /**
+   * `pipeline()`과 테이블 락 왕복만 흉내 내는 클라이언트. `exec`가 돌려줄
+   * 배열을 받아 둔다.
+   *
+   * `set`·`eval`·`del`은 스냅샷을 **락 안에서** 지우는 경로가 쓴다
+   * (`withTableLock`). 대회 키 셋만 pipeline이다.
+   */
   function clientWith(results: [Error | null, unknown][]) {
     const pipe = {
       del: () => pipe,
       exec: async () => results,
     };
-    return { pipeline: () => pipe, on: () => undefined, status: 'ready' } as unknown as Redis;
+    return {
+      pipeline: () => pipe,
+      set: async () => 'OK',      // 락 획득
+      eval: async () => 1,        // 락 해제
+      del: async () => 1,         // table:state 삭제
+      on: () => undefined,
+      status: 'ready',
+    } as unknown as Redis;
   }
 
-  const ok: [Error | null, unknown][] = [[null, 1], [null, 1], [null, 0], [null, 1]];
+  /** 대회 키 셋의 결과. 하나는 0인데 그것도 성공이다(아래 반대 입력). */
+  const ok: [Error | null, unknown][] = [[null, 1], [null, 1], [null, 0]];
 
   it('다 지워졌으면 조용히 끝난다', async () => {
     const service = new RedisService(clientWith(ok));
@@ -34,7 +48,7 @@ describe('RedisService.deleteTournament — 실패 보고', () => {
 
   it('하나라도 에러가 실려 오면 그 에러를 던진다', async () => {
     const boom = new Error('Stream isn\'t writeable');
-    const service = new RedisService(clientWith([[null, 1], [boom, null], [null, 1], [null, 1]]));
+    const service = new RedisService(clientWith([[null, 1], [boom, null], [null, 1]]));
 
     await expect(service.deleteTournament('t1', ['table-1'])).rejects.toBe(boom);
   });
@@ -45,7 +59,7 @@ describe('RedisService.deleteTournament — 실패 보고', () => {
    * (재시도는 멱등해야 한다).
    */
   it('지운 개수가 0이어도 실패가 아니다', async () => {
-    const service = new RedisService(clientWith([[null, 0], [null, 0], [null, 0], [null, 0]]));
+    const service = new RedisService(clientWith([[null, 0], [null, 0], [null, 0]]));
 
     await expect(service.deleteTournament('t1', ['table-1'])).resolves.toBeUndefined();
   });
