@@ -3173,6 +3173,58 @@ describe('SessionService.completeSession — 상점 몫', () => {
   });
 
   /**
+   * **`isUp()`은 부르기 직전 한 번 본 값이다**(최종 리뷰 I1). 그 뒤에 끊기면
+   * up 분기로 들어와 `deleteTournament`가 던지는데, 그것을 그냥 삼키면 T103이
+   * 없애려던 고아 키가 이 창에서만 그대로 남는다 — down 분기와 같은 길로
+   * 합류해야 한다.
+   */
+  it('up으로 보고 정리했는데 그 사이 끊겼으면 복구 뒤에 다시 지운다 (최종 리뷰 I1)', async () => {
+    await seedSettled({ rakePercent: 10, players: 5 });
+    await redis.set(`tournament:${tournamentId}:info`, '{}');
+    await redis.set(`table:state:${tableId}`, '{}');
+    const outage = redisService.outage;
+
+    const original = redisService.deleteTournament.bind(redisService);
+    let cleanupDone!: () => void;
+    const cleaned = new Promise<void>((resolve) => { cleanupDone = resolve; });
+    const spy = jest.spyOn(redisService, 'deleteTournament').mockImplementation(async (id, tables) => {
+      if (spy.mock.calls.length === 1) {
+        // `isUp()`을 지난 **뒤에** 끊겼다. 진짜 ioredis라면 재시도를 다 쓰고
+        // 여기서 던진다.
+        outage.phase = 'down';
+        outage.downSince = Date.now();
+        throw new Error('장애 — pipeline 실패 (최종 리뷰 I1)');
+      }
+      await original(id, tables);
+      cleanupDone();
+    });
+    const heard: unknown[] = [];
+    const listener = (payload: unknown) => heard.push(payload);
+    emitter.on('TOURNAMENT_CLOSED', listener);
+
+    try {
+      // 정리가 실패해도 요청은 성공하고 알림은 나간다.
+      await sessionService.completeSession(tournamentId, ownerId);
+      expect(`알림 ${heard.length} 정리시도 ${spy.mock.calls.length}`).toBe('알림 1 정리시도 1');
+
+      outage.phase = 'recovering';
+      outage.markRecovered();
+      await cleaned;
+
+      expect(spy).toHaveBeenCalledTimes(2);
+      expect(await redis.exists(
+        `tournament:${tournamentId}:info`,
+        `table:state:${tableId}`,
+      )).toBe(0);
+    } finally {
+      spy.mockRestore();
+      emitter.off('TOURNAMENT_CLOSED', listener);
+      if (outage.phase !== 'up') { outage.phase = 'recovering'; outage.markRecovered(); }
+      outage.downSince = null;
+    }
+  });
+
+  /**
    * **반대 입력** — Redis가 멀쩡하면 지금 순서(정리 먼저, 알림 나중)를 그대로
    * 지킨다. 뒤집으면 `DealerService.handleTournamentClosed`가 푼 리바인 고리가
    * `stillBroke`에서 **아직 살아 있는 스냅샷**을 읽어 닫힌 대회에 다시 묻는다.

@@ -122,6 +122,28 @@ describe('RedisOutage — 기다리는 쪽', () => {
     expect(done).toBe(true);
   });
 
+  /**
+   * **부팅에서 건 `whenUp`도 첫 `ready`에 풀린다**(T103 최종 리뷰 I4).
+   *
+   * `isUp()`은 `'up'`만 참이라 `booting` 동안에도 `whenUp()`을 거는 경로가
+   * 있다(`SessionService.finishClose` — Redis가 죽은 채로 프로세스가 떠도 앱은
+   * 요청을 받는다). 예전 `onReady`는 `booting`에서 `phase`만 `'up'`으로 바꾸고
+   * 대기자를 안 비워서, 그 대기가 **다음 진짜 장애의 복구까지** 안 풀렸다 —
+   * 닫은 대회의 Redis 키 정리가 통째로 사라지는 경로다.
+   */
+  it('부팅 중에 건 whenUp은 첫 ready에 풀린다', async () => {
+    const client = fakeClient();   // status가 'ready'가 아니라 booting에서 시작한다
+    const o = new RedisOutage(client as never, () => 0);
+    expect(`${o.phase} isUp ${o.isUp()}`).toBe('booting isUp false');
+
+    let done = false;
+    const waiting = o.whenUp().then(() => { done = true; });
+    client.emit('ready');
+    await waiting;
+
+    expect(`${o.phase} 풀림 ${done}`).toBe('up 풀림 true');
+  });
+
   it('onceDown은 다음 끊김에 한 번만 부르고, 해제하면 안 부른다', () => {
     const client = fakeClient('ready');
     const o = new RedisOutage(client as never, () => 0);

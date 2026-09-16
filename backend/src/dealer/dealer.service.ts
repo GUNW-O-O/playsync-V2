@@ -589,8 +589,10 @@ export class DealerService {
 
         // **대회가 닫혔으면 기다리지 않고 고리를 끝낸다**(T100 잔여). 상점이
         // 「이어서 진행」 대신 대회를 중단·종료하면 `SessionService`가 이
-        // 자리보다 먼저 스냅샷을 지운다(`announceClosed`는 `deleteTournament`
-        // **뒤에** 이벤트를 낸다). 그 이벤트가 위 `resumeWaiters.set` 뒤에
+        // 자리보다 먼저 스냅샷을 지운다 — **Redis가 멀쩡할 때만이다.**
+        // 장애 중에는 정리가 복구 뒤로 미뤄지고 알림이 먼저 나가므로 아래
+        // T103 문단의 `closedTables`가 그 몫을 든다(`finishClose`).
+        // 그 이벤트가 위 `resumeWaiters.set` 뒤에
         // 왔으면 `handleTournamentClosed`가 `resumed`를 풀어 준다. 그런데
         // 이벤트가 그 **전에**(예: `holdForDealer`가 도는 동안) 이미 지나갔으면
         // 풀어 줄 대상이 없어 `resumeTable`도 영영 안 올 `resumed`를 기다리게
@@ -612,6 +614,15 @@ export class DealerService {
         if (!hadSnapshot || this.closedTables.has(tableId)) break;
 
         await resumed;
+
+        // **깨운 것이 재개가 아니라 닫힘일 수 있다**(최종 리뷰 I2).
+        // `handleTournamentClosed`도 이 대기를 푼다 — 재개를 기다리는 동안
+        // 다시 끊기고 그때 상점이 닫으면 이 길로 온다. 위 검사는 이 대기에
+        // **들어가기 전** 한 번뿐이라 여기서 다시 본다. 안 보면 아래
+        // `stillBroke`가 닫힌 대회의(아직 안 지워진) 스냅샷을 읽어 유령
+        // 리바인 창을 연다.
+        if (this.closedTables.has(tableId)) break;
+
         asked = await this.stillBroke(tableId, interrupted);
       }
     } finally {

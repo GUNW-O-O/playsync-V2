@@ -898,6 +898,34 @@ describe('DealerService 동시성', () => {
           expect(dealer['closedTables'].has(TABLE)).toBe(false);
         });
 
+        /**
+         * **깨운 것이 재개가 아니라 닫힘일 수 있다**(최종 리뷰 I2).
+         * `handleTournamentClosed`는 `resumed`도 함께 푼다 — 재개를 기다리는
+         * 동안 닫히면 고리는 `holdForDealer` 직후의 검사를 **이미 지나온
+         * 뒤**라 그 검사가 잡지 못한다.
+         *
+         * 스냅샷을 일부러 남긴다. 장애 중에 닫히면 정리가 복구 뒤로 미뤄져
+         * 실제로 그 상태가 된다 — 그러면 `stillBroke`가 파산자를 그대로 읽어
+         * 끝난 대회에 유령 리바인 창을 연다.
+         */
+        it('재개를 기다리는 중에 닫히면 스냅샷이 남아 있어도 다시 묻지 않는다 (최종 리뷰 I2)', async () => {
+          await seedMeta(true);
+          await redis.set(stateKey, JSON.stringify(showdownState()));
+          const rebuy = jest.spyOn(playsync, 'processRebuy').mockResolvedValue('interrupted');
+
+          const settling = dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
+          // 재개 대기에 **들어간 뒤**여야 이 검사가 두 번째 자리를 잰다.
+          // `resumePending`이 보이는 시점이면 `holdForDealer`는 이미 돌아왔다.
+          await until(async () => (await saved()).resumePending !== undefined);
+
+          dealer.handleTournamentClosed({ tournamentId: TOURNAMENT, tableIds: [TABLE], status: 'CANCELLED' });
+          await settling.catch(() => { /* 닫힌 대회라 뒤가 던져도 괜찮다 */ });
+
+          expect(`묻기 ${rebuy.mock.calls.length} 스냅샷 ${await redis.exists(stateKey)}`)
+            .toBe('묻기 1 스냅샷 1');
+          expect(dealer['closedTables'].has(TABLE)).toBe(false);
+        });
+
         it('반대 입력 — 다른 테이블의 닫힘으로는 풀리지 않는다', async () => {
           await seedMeta(true);
           await redis.set(stateKey, JSON.stringify(showdownState()));

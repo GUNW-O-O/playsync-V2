@@ -844,8 +844,12 @@ export class SessionService {
    *
    * **문지기를 지난 뒤에만 부른다.** 거절된 종료(정산 미완, 이미 닫힘)는
    * 대회가 그대로 도는 것인데 단말이 「끝났습니다」를 그리면 딜러가 판을
-   * 세운다. 그래서 세 자리 모두 `deleteTournament` 뒤다 — 거기까지 왔다면
-   * 조건부 `updateMany`를 이긴 호출 하나뿐이다.
+   * 세운다. 그래서 부르는 자리는 `finishClose` 하나뿐이고, 그것은 조건부
+   * `updateMany`를 지난 뒤에만 불린다.
+   *
+   * **`deleteTournament`와의 순서는 `finishClose`가 정한다**(T103). 예전에는
+   * 세 자리 모두 정리 뒤였지만, Redis 장애 중에는 정리를 복구 뒤로 미루고
+   * 알림을 먼저 보낸다 — 근거는 `finishClose`에.
    */
   private announceClosed(
     tournamentId: string,
@@ -862,9 +866,13 @@ export class SessionService {
    * 닫힘을 마무리한다 — Redis 정리와 단말 알림(T103). **닫는 세 문이 전부
    * 여기를 지난다.**
    *
-   * **문지기를 이긴 호출 하나만 온다.** 조건부 `updateMany`
-   * (`NOT_CLOSED_TOURNAMENT_FILTER`)를 이긴 뒤에만 부르므로, `announceClosed`의
-   * 「문지기를 지난 뒤에만 부른다」가 그대로 지켜진다.
+   * **조건부 `updateMany`(`NOT_CLOSED_TOURNAMENT_FILTER`)를 지난 뒤에만
+   * 부른다** — `announceClosed`의 「문지기를 지난 뒤에만 부른다」가 그대로
+   * 지켜진다. 다만 `completeSession`·`abortSession`만 문지기의 결과를 받아
+   * 진 쪽을 409로 돌려세우고, `cancelSession`은 트랜잭션 안에서 조용히
+   * 빠져나와 여기까지 온다 — **동시 취소의 진 쪽도 한 번 더 알린다.** 이
+   * 브랜치 이전과 같은 동작이고(중복 알림은 멱등하다), 정리도 이미 지워진
+   * 키를 다시 지울 뿐이다.
    *
    * **up이면 정리가 먼저, 알림이 나중이다(예전 순서 그대로).** 알림이
    * `DealerService.handleTournamentClosed`로 리바인 재개 대기를 풀면 그 고리는
@@ -896,12 +904,19 @@ export class SessionService {
     tableIds: string[],
     status: ClosedTournamentStatus,
   ) {
-    const cleanup = () => this.redis
+    const cleanup = (): Promise<void> => this.redis
       .deleteTournament(tournamentId, tableIds)
-      .catch((error) => this.logger.error(
-        `닫힌 대회의 Redis 키를 못 지웠다 — 고아로 남는다: ${tournamentId}`,
-        error instanceof Error ? error.stack : String(error),
-      ));
+      .catch((error) => {
+        this.logger.error(
+          `닫힌 대회의 Redis 키를 못 지웠다: ${tournamentId}`,
+          error instanceof Error ? error.stack : String(error),
+        );
+        // **장애로 실패했으면 복구 뒤에 다시 한다**(최종 리뷰 I1). `isUp()`은
+        // 부르기 직전 한 번 본 값이다 — 그 뒤에 끊기면 up 분기로 들어와 여기서
+        // 던지는데, 그냥 삼키면 T103이 없애려던 고아 키가 **이 창에서만**
+        // 그대로 남는다. 아래 down 분기와 같은 길로 합류시킨다.
+        if (!this.redis.outage.isUp()) void this.redis.outage.whenUp().then(cleanup);
+      });
 
     if (this.redis.outage.isUp()) {
       await cleanup();
