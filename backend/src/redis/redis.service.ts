@@ -695,7 +695,18 @@ export class RedisService {
     await this.redis.hdel(key, ...userIds);
   }
 
-  // 대회 종료시 redis 정리
+  /**
+   * 대회 종료시 redis 정리.
+   *
+   * **하나라도 못 지웠으면 던진다**(T103). `pipeline.exec()`는 명령별 실패로
+   * reject하지 않고 `[err, result]` 배열로 돌려준다 — 그래서 **죽은 연결에
+   * 대고 불러도 성공으로 돌아왔다.** 부르는 쪽(`SessionService.finishClose`)은
+   * 실패를 보고 복구 뒤 재시도를 걸도록 돼 있는데, 실패가 안 보이니 그 길이
+   * 한 번도 안 탔고 키가 그대로 고아로 남았다.
+   *
+   * 지운 개수는 안 본다 — 이미 없는 키에 `DEL`은 0을 돌려주고, 그것은 실패가
+   * 아니라 **이미 정리됐다**는 뜻이다(재시도가 멱등해야 하는 이유이기도 하다).
+   */
   async deleteTournament(tournamentId: string, tables: string[]) {
     const pipe = this.redis.pipeline();
     pipe.del(`tournament:${tournamentId}:info`)
@@ -704,7 +715,9 @@ export class RedisService {
     tables.forEach(t => {
       pipe.del(`table:state:${t}`);
     })
-    await pipe.exec();
+    const results = await pipe.exec();
+    const failed = results?.find(([err]) => err != null)?.[0];
+    if (failed) throw failed;
   }
 
 }

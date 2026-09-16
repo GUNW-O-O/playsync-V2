@@ -890,10 +890,11 @@ export class SessionService {
    * 돌려주면 상점이 다시 눌러 409를 받는데, 「닫혔다」가 사실인 채로 화면만
    * 실패를 말하게 된다.
    *
-   * **미뤄 둔 정리는 고리보다 늦게 깨어난다.** `whenUp` 대기자는 등록 순서대로
-   * 풀리고, 장애가 먼저 났으므로 `DealerService.holdForDealer`의 대기가 앞에
-   * 있다 — 그래서 닫힘을 기억하는 일은 `deleteTournament`가 아니라
-   * `DealerService`의 메모리 표시가 맡는다(`handleTournamentClosed`).
+   * **미뤄 둔 정리는 리바인 고리와 같은 `whenUp`에 나란히 매달린다.** 대기자는
+   * 등록 순서대로 풀리지만(장애가 먼저 났으므로 `DealerService.holdForDealer`가
+   * 앞이다) 그 뒤의 왕복 수가 달라 누가 먼저 끝나는지는 보장되지 않는다. 그래서
+   * 닫힘을 기억하는 일은 이 정리가 아니라 `DealerService`의 메모리 표시가 맡는다
+   * (`handleTournamentClosed` · `closedTables`) — 경합에 기대지 않는다.
    *
    * 남는 것: 미뤄 둔 정리 전에 프로세스가 재시작되면 키가 고아로 남는다(부팅
    * 복구는 닫힌 대회를 안 본다). `Table` 행이 이미 없어 게이트웨이 접속은

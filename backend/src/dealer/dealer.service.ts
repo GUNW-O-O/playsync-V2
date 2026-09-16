@@ -64,14 +64,17 @@ export class DealerService {
    * **스냅샷 유무로는 못 가른다.** 평소에는 `SessionService`가 알림보다 먼저
    * 스냅샷을 지워서 `holdForDealer`가 「스냅샷 없음」을 돌려주는 것이 곧
    * 닫혔다는 신호였다. 그런데 **Redis 장애 중에 닫으면** 그 정리가 복구 뒤로
-   * 미뤄지고(`SessionService.finishClose`), 미뤄 둔 정리는 이 고리보다 **늦게**
-   * 깨어난다 — `whenUp` 대기자는 등록 순서대로 풀리는데 장애가 먼저 났으므로
-   * `holdForDealer`의 대기가 앞에 있다. 그때 스냅샷은 아직 살아 있어
-   * `stillBroke`가 파산자를 그대로 읽고 **끝난 대회에 리바인을 다시 묻는다.**
+   * 미뤄진다(`SessionService.finishClose`). 그러면 미뤄 둔 정리와 이 고리가
+   * **같은 `whenUp`에 나란히 매달려** 있고, 누가 먼저 끝나는지는 보장되지
+   * 않는다 — 대기자는 등록 순서대로 풀리지만(장애가 먼저 났으므로 이 고리가
+   * 앞이다) 그 뒤의 왕복 수가 다르다. 실측으로는 pipeline 하나뿐인 정리가
+   * 락부터 잡아야 하는 이 고리보다 먼저 끝난다. 그 순서가 뒤집히는 판에서는
+   * 스냅샷이 아직 살아 있어 `stillBroke`가 파산자를 그대로 읽고 **끝난 대회에
+   * 리바인을 다시 묻는다.**
    *
-   * 그래서 닫혔다는 사실을 메모리에 적는다 — Redis가 필요 없어 장애 중에도
-   * 선다. `rebuyInFlight`인 테이블만 담고 `askRebuys`의 `finally`가 지우므로
-   * 쌓이지 않는다.
+   * **그래서 그 경합에 기대지 않는다.** 닫혔다는 사실을 메모리에 적는다 —
+   * Redis가 필요 없어 장애 중에도 선다. `rebuyInFlight`인 테이블만 담고
+   * `askRebuys`의 `finally`가 지우므로 쌓이지 않는다.
    */
   private readonly closedTables = new Set<string>();
 
@@ -607,10 +610,11 @@ export class DealerService {
         // 재시도 밖에 있는 새 던짐 자리가 된다 — 락 안에서 이미 확인한 것을
         // 그대로 받는다.
         //
-        // **장애 중에 닫히면 스냅샷이 아직 살아 있다**(T103). 그 정리는 복구
-        // 뒤로 미뤄져 이 고리보다 늦게 도는데, 그때 스냅샷이 있으면 아래
-        // `stillBroke`가 파산자를 그대로 읽어 끝난 대회에 다시 묻는다 —
-        // `handleTournamentClosed`가 적어 둔 메모리 표시로 가른다.
+        // **장애 중에 닫히면 스냅샷이 아직 살아 있을 수 있다**(T103). 그 정리는
+        // 복구 뒤로 미뤄져 이 고리와 같은 `whenUp`에 매달리고, 끝나는 순서는
+        // 보장되지 않는다. 정리가 늦는 판에서는 아래 `stillBroke`가 파산자를
+        // 그대로 읽어 끝난 대회에 다시 묻는다 — `handleTournamentClosed`가
+        // 적어 둔 메모리 표시로 가른다.
         if (!hadSnapshot || this.closedTables.has(tableId)) break;
 
         await resumed;
