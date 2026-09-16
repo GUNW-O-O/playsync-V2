@@ -64,3 +64,38 @@ describe('RedisService.deleteTournament — 실패 보고', () => {
     await expect(service.deleteTournament('t1', ['table-1'])).resolves.toBeUndefined();
   });
 });
+
+/**
+ * **`joinPlayer`도 같은 pipeline이다**(T105).
+ *
+ * 이쪽은 고아 키가 아니라 **조용한 유실**이었다 — 죽은 연결에 대고 불러도
+ * 성공으로 돌아와서, 전광판의 엔트리·걷은 돈이 에러 한 줄 없이 빠졌다.
+ * `mirrorAfterCommit`이 실패를 보고 복구 뒤 재시도를 거는데, 실패가 안 보이니
+ * 그 길이 안 탄다.
+ *
+ * **시나리오(`mirror-outage.int-spec.ts`)는 이것을 증명하지 못한다.** 거기서는
+ * 미러가 `down`일 때 아예 안 부르므로 이 결함이 드러날 자리가 없다 — 이 검사가
+ * 무는 것은 「장애가 그 판정 뒤에 시작하는」 좁은 창이다.
+ */
+describe('RedisService.joinPlayer — 실패 보고', () => {
+  function clientWith(results: [Error | null, unknown][]) {
+    const pipe = {
+      hincrby: () => pipe,
+      exec: async () => results,
+    };
+    return { pipeline: () => pipe, on: () => undefined, status: 'ready' } as unknown as Redis;
+  }
+
+  it('둘 다 올라갔으면 조용히 끝난다', async () => {
+    const service = new RedisService(clientWith([[null, 1], [null, 1000]]));
+
+    await expect(service.joinPlayer('t1', 1000)).resolves.toBeUndefined();
+  });
+
+  it('하나라도 에러가 실려 오면 그 에러를 던진다', async () => {
+    const boom = new Error('Stream isn\'t writeable');
+    const service = new RedisService(clientWith([[null, 1], [boom, null]]));
+
+    await expect(service.joinPlayer('t1', 1000)).rejects.toBe(boom);
+  });
+});
