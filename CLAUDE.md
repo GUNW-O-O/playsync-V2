@@ -126,7 +126,7 @@ e2e            13  (4 files, regression 프로젝트)
 데모 촬영       1  (`npm run demo`)
 정산 촬영       1  (`npm run demo:settlement`, 마무리마다 한 번씩 셋)
 부하 하네스    39  (3 files, `cd load && npm test`)
-실제 kill      12  (1 suite, `npm run test:outage`, jest 73초 — T97 시점 값)
+실제 kill      12  (1 suite, `npm run test:outage`, jest 73초)
 타입 에러       0
 ```
 
@@ -163,8 +163,15 @@ reject하지 않아서, 죽은 연결에 대고 정리해도 **성공으로 돌�
 지워야 빨개진다 — 한 자리만 없어도 다른 자리가 잡는다), `onReady`의 대기자 풀기를
 지우면 단위 하나, `deleteTournament`의 던지기를 지우면 단위 하나가 빨개진다.
 
-**e2e · 촬영 · 실제 kill은 다시 안 돌렸다** — 화면도 턴 경로도 `test:outage`의
-무대도 안 건드린다. 부하 하네스는 `load/`를 안 건드렸지만 이번에 다시 쟀다(39).
+**e2e · 촬영은 다시 안 돌렸다** — 화면을 안 건드린다. 부하 하네스는 `load/`를
+안 건드렸지만 이번에 다시 쟀다(39).
+
+**실제 kill은 돌렸다**(12/12, 73초). T103은 닫는 경로만 건드리지만 `RedisOutage`가
+장애의 **공용 자리**라, 대회를 닫지 **않고** Redis만 죽었다 돌아와 딜러가 이어서
+진행하는 경로를 진짜 `docker kill`로 한 번 더 밟았다 — 폴드 0, `pausedMs` 31.9초
+(죽은 시간 30.5초), 재개 후 쇼다운까지 돌려 칩 총량 불변. 그 경로는 시나리오 셋
+(`redis-outage` · `rebuy-outage` · `pause-resume`)도 들지만, **공용 자리를 건드렸을
+때 그 셋이 초록인 것은 무대가 흉내라서일 수 있다.**
 
 **끊긴 클라이언트로 사후 정리를 하는 검사는 만들지 않는다.** `deleteTournament`가
 던지는 것을 진짜 끊김으로 재려다 검사가 **멈췄다**(빨간불이 아니라 정지라 원인이
