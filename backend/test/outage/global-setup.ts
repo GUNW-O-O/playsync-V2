@@ -1,17 +1,16 @@
-import { execSync, spawn } from 'child_process';
-import { existsSync, openSync, readFileSync, renameSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { execSync } from 'child_process';
+import { existsSync, renameSync, writeFileSync } from 'fs';
 import globalTeardown, {
+  answersOnPort,
   BACKEND_DIR,
   BACKEND_PORT,
   COMPOSE_FILE,
   LOG_FILE,
   MANIFEST_BACKUP,
-  OUTAGE_DIR,
   OUTAGE_ENV,
-  PID_FILE,
   REPO_ROOT,
   ROOT_MANIFEST,
+  startBackend,
   stopBackend,
 } from './global-teardown';
 
@@ -65,61 +64,8 @@ async function bringUp() {
   execSync('npx prisma migrate deploy', { cwd: BACKEND_DIR, stdio: 'inherit', env });
   execSync('npx prisma db seed', { cwd: BACKEND_DIR, stdio: 'inherit', env });
 
-  const log = openSync(LOG_FILE, 'w');
-  // 셸 없이 node를 직접 띄운다 — Windows에서 `npx`·`npm`을 거치면 pid가 셸의
-  // 것이라 kill이 백엔드에 닿지 않는다. **작업 디렉터리를 이 폴더로 둔다** —
-  // `main.ts`의 `dotenv/config`가 `backend/.env`(개발 값)를 읽지 않게 하려는 것이다.
-  const child = spawn(process.execPath, [join(BACKEND_DIR, 'dist', 'src', 'main.js')], {
-    cwd: OUTAGE_DIR,
-    env: {
-      ...env,
-      PORT: String(BACKEND_PORT),
-      JWT_SECRET: 'outage-test-secret',
-      WS_ALLOWED_ORIGINS: 'http://localhost:3000',
-    },
-    stdio: ['ignore', log, log],
-  });
-  // 전역 셋업과 스펙은 다른 컨텍스트라 `globalThis`로 못 넘긴다.
-  writeFileSync(PID_FILE, String(child.pid));
-  let exited: number | null = null;
-  child.on('exit', (code) => { exited = code ?? -1; });
-  child.unref();
-
-  const deadline = Date.now() + 60_000;
-  for (;;) {
-    if (exited !== null) {
-      throw new Error(`백엔드가 뜨다 죽었다 (exit ${exited}):\n${tail(LOG_FILE)}`);
-    }
-    try {
-      // 상태는 상관없다 — 응답이 오면 HTTP가 받는다는 뜻이다.
-      await fetch(`http://127.0.0.1:${BACKEND_PORT}/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: '{}',
-      });
-      return;
-    } catch {
-      if (Date.now() > deadline) throw new Error(`백엔드가 60초 안에 안 떴다:\n${tail(LOG_FILE)}`);
-      await new Promise((r) => setTimeout(r, 1000));
-    }
-  }
-}
-
-/** 지금 3201에 뭔가 떠서 HTTP로 응답하는가. 상태는 상관없다 — 응답이 오면 무언가 있다는 뜻이다. */
-async function answersOnPort(): Promise<boolean> {
-  try {
-    await fetch(`http://127.0.0.1:${BACKEND_PORT}/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: '{}',
-      signal: AbortSignal.timeout(1000),
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function tail(file: string) {
-  return readFileSync(file, 'utf8').split(/\r?\n/).slice(-40).join('\n');
+  // 로그를 새로 시작한다 — 재시작이 이어 쓰므로(`startBackend`는 append)
+  // 여기서만 비운다.
+  writeFileSync(LOG_FILE, '');
+  await startBackend();
 }

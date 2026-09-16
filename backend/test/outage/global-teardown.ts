@@ -1,5 +1,5 @@
-import { execSync } from 'child_process';
-import { existsSync, readFileSync, renameSync, unlinkSync } from 'fs';
+import { execSync, spawn } from 'child_process';
+import { existsSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
 /*
@@ -25,6 +25,74 @@ export const OUTAGE_ENV = {
   REDIS_PORT: '6381',
   REDIS_PASSWORD: 'outage',
 };
+
+/**
+ * 빌드한 백엔드를 자식 프로세스로 띄우고, HTTP가 응답할 때까지 기다린다.
+ *
+ * **셋업과 스펙이 같은 함수를 쓴다**(T107). 스펙이 백엔드를 죽였다 다시 올리는데
+ * 그 방법이 셋업 안에만 있으면 두 벌이 되고, 한쪽만 고쳐지는 날 「무대가 다르게
+ * 선 채로 초록」이 된다.
+ *
+ * 셸 없이 node를 직접 띄운다 — Windows에서 `npx`·`npm`을 거치면 pid가 셸의
+ * 것이라 kill이 백엔드에 닿지 않는다. 작업 디렉터리를 이 폴더로 두는 것은
+ * `main.ts`의 `dotenv/config`가 `backend/.env`(개발 값)를 읽지 않게 하려는 것이다.
+ *
+ * @returns 포트가 처음 응답한 시각. 부팅 복구가 끝난 **뒤에야** 포트가 열린다는
+ *   것이 제품의 약속이므로(`app.listen()`이 `onApplicationBootstrap`을 기다린다),
+ *   이 시각 이후에 본 상태는 「복구가 끝난 상태」다.
+ */
+export async function startBackend(): Promise<number> {
+  const log = openSync(LOG_FILE, 'a');
+  const child = spawn(process.execPath, [join(BACKEND_DIR, 'dist', 'src', 'main.js')], {
+    cwd: OUTAGE_DIR,
+    env: {
+      ...process.env,
+      ...OUTAGE_ENV,
+      PORT: String(BACKEND_PORT),
+      JWT_SECRET: 'outage-test-secret',
+      WS_ALLOWED_ORIGINS: 'http://localhost:3000',
+    },
+    stdio: ['ignore', log, log],
+  });
+  // 전역 셋업과 스펙은 다른 컨텍스트라 `globalThis`로 못 넘긴다.
+  writeFileSync(PID_FILE, String(child.pid));
+  let exited: number | null = null;
+  child.on('exit', (code) => { exited = code ?? -1; });
+  child.unref();
+
+  const deadline = Date.now() + 60_000;
+  for (;;) {
+    if (exited !== null) {
+      throw new Error(`백엔드가 뜨다 죽었다 (exit ${exited}):\n${tailLog()}`);
+    }
+    if (await answersOnPort()) return Date.now();
+    if (Date.now() > deadline) throw new Error(`백엔드가 60초 안에 안 떴다:\n${tailLog()}`);
+    await new Promise((r) => setTimeout(r, 200));
+  }
+}
+
+/** 지금 3201에 뭔가 떠서 HTTP로 응답하는가. 상태는 상관없다 — 응답이 오면 무언가 있다는 뜻이다. */
+export async function answersOnPort(): Promise<boolean> {
+  try {
+    await fetch(`http://127.0.0.1:${BACKEND_PORT}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+      signal: AbortSignal.timeout(1000),
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function tailLog(lines = 40) {
+  try {
+    return readFileSync(LOG_FILE, 'utf8').split(/\r?\n/).slice(-lines).join('\n');
+  } catch {
+    return '(로그 없음)';
+  }
+}
 
 /** 자식 백엔드를 내린다. pid 파일이 없으면 할 일이 없다. */
 export async function stopBackend() {
