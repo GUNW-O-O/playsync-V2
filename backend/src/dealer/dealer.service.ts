@@ -819,13 +819,53 @@ export class DealerService {
       // null은 "쓰지 않는다"다. 현재 스냅샷이 그대로 돌아간다.
       if (state.phase !== GamePhase.HAND_END) return null;
 
+      // **지우기 전에 확정한다**(T108). 바로 아래 `initTable`이 스택 0인 사람을
+      // 좌석에서 지우므로, 여기가 탈락을 확정할 수 있는 마지막 자리다.
+      await this.eliminateBusted(tableId, state);
+
       delete state.dbSyncStatus;
+      // 재시작이 남긴 리바인 창을 다음 핸드로 넘기지 않는다(T108). 평소에는
+      // `askRebuys`의 `finally`가 지우지만, 그 고리는 메모리라 프로세스가
+      // 죽으면 표시만 남는다 — 그러면 좌석 화면이 지난 마감의 카운트다운을
+      // 다음 핸드 내내 띄운다. `dbSyncStatus`와 같은 성격이라 같은 자리다.
+      delete state.rebuyPending;
       await new TableEngine(state).initTable();
       return state;
     });
     // 위에서 없으면 던졌으므로 여기 null이 올 수 없다. 타입만 좁힌다.
     if (!next) throw new Error(SNAPSHOT_MISSING);
     return next;
+  }
+
+  /**
+   * 스택이 없는 채로 좌석에 남아 있는 사람의 탈락을 확정한다(T108).
+   *
+   * **정상 경로에서는 이미 돈 일을 한 번 더 부르는 것이다.** `resolveWinners`의
+   * 3단계가 같은 사람을 이미 확정했고, `eliminatePlayer`는 멱등이라
+   * (`status NOT IN ('ELIMINATED','AWARDED')` + `FOR UPDATE`) 두 번째 호출은
+   * 카운터만 다시 맞추고 끝난다. 파산자가 없는 핸드는 첫 줄에서 돌아가므로
+   * 값을 치르는 것은 파산이 난 핸드뿐이다.
+   *
+   * **그 한 번을 치르는 이유는 `resolveWinners`의 3단계가 메모리에 산다는 것이다.**
+   * 리바인 대기(2단계)는 락 밖에서 「장애 + 딜러 재개」만큼 길 수 있고, 그동안
+   * 판이 안 넘어가는 근거는 호출 스택과 `rebuyInFlight` 표시 — 전부 프로세스와
+   * 함께 사라진다. 재시작하면 남는 것은 `HAND_END` 스냅샷과 **탈락하지 않은
+   * 참가 행**뿐이고, 딜러가 나올 길(`retryCheckpoint`)은 그대로 여기로 온다.
+   * 표시로 막지 않고 **하는 일을 여기 두는** 이유는 T62와 같다 — Redis가 힘들
+   * 때 못 남기는 표시를 조건으로 삼으면 그 순간이 곧 막다른 골목이 된다.
+   *
+   * 락 안이다. 3단계와 같은 자리, 같은 폭이다.
+   */
+  private async eliminateBusted(tableId: string, state: TableState) {
+    const busted = state.players
+      .filter((p): p is TablePlayer => p != null && p.stack <= 0);
+    if (busted.length === 0) return;
+
+    // 파산자가 있을 때만 읽는다. 없는 핸드까지 락 안에서 왕복을 하나 더 도는
+    // 것은 이 결함과 무관한 비용이다.
+    const tournamentInfo = await this.redis.getTournamentDashboard(state.tournamentId);
+    if (!tournamentInfo) throw new Error('토너먼트 정보를 찾을 수 없습니다. 대회 상태를 확인해야 합니다.');
+    await this.playsync.eliminatePlayer(state.tournamentId, tableId, busted, tournamentInfo);
   }
 
 }

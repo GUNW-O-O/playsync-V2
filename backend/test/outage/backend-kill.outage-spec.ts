@@ -65,7 +65,30 @@ async function http<T = any>(method: string, path: string, body?: unknown, token
   try { return JSON.parse(text); } catch { return text as T; }
 }
 
-describe('T107 실제 kill — 백엔드가 죽었다 살아도 차례였던 사람은 폴드되지 않는다', () => {
+/**
+ * T108 — **리바인 창이 열린 채 죽었다 살아난다**(10~14번).
+ *
+ * `resolveWinners`는 세 구간인데 가운데(리바인 대기)가 락 밖이고, 그동안 판이
+ * 안 넘어가는 근거는 **메모리**다 — 호출 스택과 `rebuyInFlight` 표시. 프로세스가
+ * 죽으면 둘 다 사라지고 **3단계(탈락 확정)는 한 번도 안 돈다.** 남는 것은
+ * `HAND_END` 스냅샷과 탈락하지 않은 참가 행뿐이다.
+ *
+ * 티켓은 「테이블이 `HAND_END`에 갇힌다」였는데 **그게 아니었다.** 갇히지
+ * 않는다 — `retryCheckpoint`는 페이즈만 보므로 딜러는 그대로 빠져나온다. 그
+ * 길이 `finishHand` → `initTable`로 가고, `initTable`은 **스택 0인 사람을 좌석에서
+ * 조용히 지운다.** 등수도 상금도 `activePlayers` 감소도 없이 사라지는 것이
+ * 진짜 증상이었다.
+ *
+ * 단위의 증명은 `src/scenario/rebuy-restart.int-spec.ts`가 든다(거기는 재시작을
+ * `DealerService`를 새로 지어 흉내 낸다). 여기가 더 재는 것은 **딜러가 나올 길이
+ * 진짜로 열리는가**다 — 진짜 재시작 뒤에는 `SYNCING`과 부팅 스윕이 세운
+ * `resumePending`이 앞을 막고 서 있고, 그 둘을 지나야 `RETRY_CHECKPOINT`에 닿는다.
+ * 그 문들은 흉내 무대에 없다.
+ *
+ * **무대는 새로 짓지 않는다.** 위가 세운 같은 대회·같은 테이블을 이어서 쓴다 —
+ * 시드가 대회를 둘밖에 안 깔고, 파일을 나누면 도는 순서가 보장되지 않는다.
+ */
+describe('실제 kill — 백엔드를 죽였다 살린다', () => {
   const sockets: Sock[] = [];
   const db = new Client({ connectionString: OUTAGE_ENV.DATABASE_URL });
   const redis = new Redis({
@@ -358,5 +381,221 @@ describe('T107 실제 kill — 백엔드가 죽었다 살아도 차례였던 사
       .toBe(`9. 더해진 정지 ${added}ms 기대 ${expected}ms 차이 ${off}ms 안쪽 true`);
     const real = upAt - killAt;
     console.log(`[9] 실제 죽은 시간 ${real}ms, 하트비트 오차 ${(upAt - beatBeforeKill) - real}ms (주기 ${HEARTBEAT_MS}ms)`);
+  });
+
+  /* ---------------------------------------------------------------- *
+   * T108 — 리바인 창이 열린 채 죽었다 살아난다. 위 무대를 이어서 쓴다.
+   * ---------------------------------------------------------------- */
+
+  /** 파산시킬 사람에게 남길 스택. 남들이 이 금액을 콜하면 그 사람만 0이 된다. */
+  const BUST_STACK = 1_000;
+  /** 지금 살아 있는 좌석 소켓. 같은 닉네임으로 다시 붙으면 덮는다. */
+  const live = new Map<string, Sock>();
+  let dealerSock: Sock;
+  let bustNickname: string;
+  let bustId: string;
+  let bustSeat: number;
+  let chipsAtBust: number;
+  let activeBefore: number;
+
+  async function until(pred: () => boolean | Promise<boolean>, ms: number, label: string) {
+    const deadline = Date.now() + ms;
+    for (;;) {
+      if (await pred()) return;
+      if (Date.now() > deadline) {
+        // **못 기다린 이유가 화면에 남아야 한다.** 페이즈와 차례를 함께 찍지
+        // 않으면 「안 됐다」만 보이고, 무대가 어디서 멈췄는지 다시 돌려야 안다.
+        const s = await snapshot(tables[0].id).catch(() => null);
+        throw new Error(
+          `${label}: ${ms}ms 안에 안 됐다 (페이즈 ${s?.phase} 차례 ${s?.currentTurnSeatIndex}, error [${errors().join(' | ')}])`,
+        );
+      }
+      await sleep(100);
+    }
+  }
+  async function connectSeat(nickname: string) {
+    const seat = seatTokens.find((s) => s.nickname === nickname)!;
+    const sock = await connect(nickname, seat.token, seat.tableId);
+    live.set(nickname, sock);
+    return sock;
+  }
+  async function connectDealer(name: string) {
+    const body = await http('POST', '/dealer/auth', { tournamentId, tableId: tables[0].id, otp: dealerOtp });
+    dealerSock = await connect(name, body.accessToken ?? body.token, tables[0].id);
+    return dealerSock;
+  }
+  async function participation(userId: string) {
+    const { rows } = await db.query(
+      'SELECT status, "finalPlace", "prizeAmount" FROM "TournamentParticipation" WHERE "tournamentId" = $1 AND "userId" = $2',
+      [tournamentId, userId],
+    );
+    return rows[0] as { status: string; finalPlace: number | null; prizeAmount: number };
+  }
+  async function activePlayers(): Promise<number> {
+    const { rows } = await db.query('SELECT "activePlayers" FROM "Tournament" WHERE id = $1', [tournamentId]);
+    return Number(rows[0].activePlayers);
+  }
+  /** 좌석 비트맵에서 켜진 자리 수. 탈락이 확정되면 그 사람의 비트가 꺼진다. */
+  async function seatBits(): Promise<number> {
+    const map = await redis.hget(`tournament:${tournamentId}:seat`, `table:${tables[0].id}`);
+    return (map ?? '').split('').filter((c) => c === '1').length;
+  }
+
+  /**
+   * 차례인 사람이 `cap`까지 밀어 넣는다. 스택이 그보다 적으면 올인이고, 그 사람만
+   * 파산한다 — 남들은 같은 금액을 내고도 스택이 남는다.
+   */
+  async function driveToShowdown(cap: number) {
+    for (let guard = 0; guard < 30; guard++) {
+      const s = await snapshot(tables[0].id);
+      if (s.phase >= 5) return s;             // SHOWDOWN
+      if (s.currentTurnSeatIndex === -1) return s;
+      const me = s.players[s.currentTurnSeatIndex];
+      const sock = live.get(me.nickname);
+      if (!sock) throw new Error(`차례인 ${me.nickname}의 소켓이 없다`);
+      const target = Math.min(me.stack + me.bet, cap);
+      const action = target > s.currentBet ? 'RAISE' : 'CALL';
+      send(sock, 'PLAYER_ACTION', { action, ...(action === 'RAISE' ? { amount: target } : {}) });
+      await until(
+        async () => {
+          const n = await snapshot(tables[0].id);
+          return n.phase !== s.phase || n.currentTurnSeatIndex !== s.currentTurnSeatIndex;
+        },
+        5_000, `10. ${me.nickname} ${action}`,
+      );
+    }
+    throw new Error('10. 쇼다운까지 못 갔다');
+  }
+
+  /**
+   * 파산자를 만들 무대를 세운다. 돌던 핸드를 딜러가 접어서 끝내고, **핸드
+   * 경계에서** 한 사람의 스택만 줄인다 — 진행 중인 판을 건드리면 그 핸드의
+   * 부기가 어긋나서, 뒤에서 빨개진 것이 제품 결함인지 무대 탓인지 안 갈린다.
+   */
+  it('10. 돌던 핸드를 끝내고, 다음 핸드에 파산할 사람을 만든다', async () => {
+    dealerSock = sockets.find((s) => s.name === '딜러1-재접속')!;
+    const before = await snapshot(tables[0].id);
+    const seated = before.players.filter((p: any) => p != null);
+
+    // **남길 사람은 victim이다.** 8번에서 이미 콜했으므로 `bet == currentBet`이고,
+    // 그래야 나머지가 접힌 순간 엔진이 쇼다운으로 넘어간다 — 아직 안 낸 사람을
+    // 남기면 그 사람의 액션을 영영 기다린다(그 좌석의 소켓은 재시작이 끊었다).
+    for (const p of seated) {
+      if (p.id === victimId) continue;
+      send(dealerSock, 'DEALER_ACTION', { action: 'DEALER_FOLD', targetUserId: p.id });
+      await sleep(300);
+    }
+
+    // 파산시킬 사람은 victim이 아닌 누구든 된다 — 11번이 좌석 전원의 소켓을
+    // 다시 붙인다.
+    const target = seated.find((p: any) => p.id !== victimId)!;
+    bustNickname = target.nickname;
+    bustId = target.id;
+    bustSeat = before.players.findIndex((p: any) => p?.id === target.id);
+    await until(async () => (await snapshot(tables[0].id)).phase === 5, 10_000, '10. 쇼다운');
+
+    send(dealerSock, 'DEALER_ACTION', { action: 'RESOLVE_WINNERS', winnerGroups: [[victimId]] });
+    await until(async () => (await snapshot(tables[0].id)).phase === 0, 15_000, '10. 다음 핸드 대기');
+
+    // **핸드 경계다.** 여기서만 스냅샷을 직접 쓴다 — 아무도 차례가 아니고
+    // 진행 중인 팟도 없다. 체크포인트가 다음 핸드 끝에 DB를 맞춘다.
+    const waiting = await snapshot(tables[0].id);
+    waiting.players[bustSeat].stack = BUST_STACK;
+    await redis.set(`table:state:${tables[0].id}`, JSON.stringify(waiting));
+    chipsAtBust = chipsOf(waiting);
+    activeBefore = await activePlayers();
+
+    expect(`10. 페이즈 ${waiting.phase} 파산자스택 ${waiting.players[bustSeat].stack} 인원 ${activeBefore} 비트 ${await seatBits()}`)
+      .toBe(`10. 페이즈 0 파산자스택 ${BUST_STACK} 인원 4 비트 4`);
+  });
+
+  it('11. 판을 열어 한 사람을 파산시키고, 리바인 창이 열린 순간에 죽인다', async () => {
+    for (const s of seatTokens) await connectSeat(s.nickname);
+
+    send(dealerSock, 'DEALER_ACTION', { action: 'START_PRE_FLOP' });
+    await until(async () => (await snapshot(tables[0].id)).phase === 1, 10_000, '11. 프리플랍');
+    await driveToShowdown(BUST_STACK);
+
+    const showdown = await snapshot(tables[0].id);
+    const winner = showdown.players.find((p: any) => p != null && p.id !== bustId)!;
+    const seat = live.get(bustNickname)!;
+    const from = seat.inbox.length;
+
+    // 이 호출은 **돌아오지 않는다.** 리바인 대기에서 붙잡혀 있는 동안 죽일 것이고,
+    // 그 프로세스와 함께 사라지는 것이 이 검사의 대상이다.
+    send(dealerSock, 'DEALER_ACTION', { action: 'RESOLVE_WINNERS', winnerGroups: [[winner.id]] });
+    await waitFor(seat, from, (m) => m.event === 'REBUY_PROMPT', 20_000, '11. 리바인 팝업');
+
+    const held = await snapshot(tables[0].id);
+    const part = await participation(bustId);
+    expect(`11. 페이즈 ${held.phase} 리바인표시 ${held.rebuyPending !== undefined} 파산자상태 ${part.status} 칩 ${chipsOf(held)}`)
+      .toBe(`11. 페이즈 6 리바인표시 true 파산자상태 PLAYING 칩 ${chipsAtBust}`);
+
+    killAt = Date.now();
+    await stopBackend();
+    live.clear();
+    expect(`11. 포트 응답 ${await answersOnPort()}`).toBe('11. 포트 응답 false');
+  });
+
+  /**
+   * **이 단계가 티켓의 질문이다** — 「딜러가 나올 길이 실제로 열리는가」.
+   *
+   * **무대가 전제를 하나 고쳤다.** 재시작한 테이블은 정지 표시가 서는 줄 알았는데
+   * `HAND_END`에는 **차례가 없어서** 부팅 스윕이 그냥 지나간다(`planPause`는
+   * 차례 주인이 없으면 `null`이다 — T94가 일부러 넣은 반대 입력이다). 그래서
+   * 「이어서 진행」은 거절당하고, 문은 `RETRY_CHECKPOINT` 하나뿐이다. 그 거절을
+   * 함께 재는 이유는 그것이 곧 「이 테이블은 정지가 아니라 **미완의 핸드**다」의
+   * 증거라서다.
+   *
+   * 앞을 막는 것은 `SYNCING` 하나다 — 딜러가 다 돌아올 때까지 명령을 전부 거절한다.
+   */
+  it('12. 다시 띄우면 딜러가 체크포인트 재시도 하나로 빠져나온다', async () => {
+    await startBackend();
+    await connectDealer('딜러1-재시작');
+    await until(async () => (await tournamentRow()).status === 'ONGOING', 20_000, '12. n/n 복귀');
+
+    const held = await snapshot(tables[0].id);
+    expect(`12. 페이즈 ${held.phase} 정지표시 ${held.resumePending !== undefined} 리바인표시 ${held.rebuyPending !== undefined}`)
+      .toBe('12. 페이즈 6 정지표시 false 리바인표시 true');
+
+    let from = dealerSock.inbox.length;
+    send(dealerSock, 'DEALER_ACTION', { action: 'RESUME_TABLE' });
+    const refused = await waitFor(dealerSock, from, (m) => m.event === 'error', 10_000, '12. 재개 거절');
+    expect(`12. 재개 ${refused.data}`).toBe('12. 재개 멈춰 있는 테이블이 아닙니다.');
+
+    from = dealerSock.inbox.length;
+    send(dealerSock, 'DEALER_ACTION', { action: 'RETRY_CHECKPOINT' });
+    const done = await waitFor(dealerSock, from, (m) => m.event === 'renderGame' && m.data.phase === 0, 15_000, '12. 체크포인트 재시도');
+    expect(`12. 페이즈 ${done.data.phase} 리바인표시 ${done.data.rebuyPending !== undefined}`)
+      .toBe('12. 페이즈 0 리바인표시 false');
+  });
+
+  /**
+   * **좌석에서 사라진 것과 탈락이 확정된 것은 다르다.** `initTable`은 스택 0인
+   * 사람을 그냥 지우므로, 스냅샷만 보면 둘이 똑같이 보인다. 가르는 것은 DB의
+   * 등수·상금과 `activePlayers`, 그리고 좌석 비트맵이다.
+   */
+  it('13. 사라진 사람은 탈락으로 확정돼 있다 — 등수 · 인원 · 좌석 비트맵', async () => {
+    const state = await snapshot(tables[0].id);
+    const part = await participation(bustId);
+    // 시드는 35엔트리라 기본 분배표의 상금권이 다섯이고, 넷째 자리는 그 안이다
+    // — 그래서 `ELIMINATED`가 아니라 **상금을 받은** `AWARDED`가 정답이다.
+    expect(`13. 좌석 ${state.players.some((p: any) => p?.id === bustId)} 상태 ${part.status} 등수 ${part.finalPlace} 상금 ${part.prizeAmount > 0} 인원 ${await activePlayers()} 비트 ${await seatBits()} 칩 ${chipsOf(state)}`)
+      .toBe(`13. 좌석 false 상태 AWARDED 등수 ${activeBefore} 상금 true 인원 ${activeBefore - 1} 비트 ${activeBefore - 1} 칩 ${chipsAtBust}`);
+  });
+
+  /**
+   * 나올 길이 진짜 열렸는가 — 다음 핸드가 실제로 돈다.
+   *
+   * **이 검사는 결함을 잡지 않는다. 일부러 그렇다.** 되돌려 보면 초록이다 —
+   * 리바인 표시가 남아도, 탈락이 유실돼도 다음 핸드는 그대로 돈다. 잡는 것은
+   * 12·13이고, 여기가 재는 것은 「12·13이 테이블을 못 쓰게 만들지 않았다」다.
+   */
+  it('14. 다음 핸드가 돈다', async () => {
+    send(dealerSock, 'DEALER_ACTION', { action: 'START_PRE_FLOP' });
+    await until(async () => (await snapshot(tables[0].id)).phase === 1, 10_000, '14. 프리플랍');
+    const state = await snapshot(tables[0].id);
+    expect(`14. 페이즈 ${state.phase} 착석 ${state.players.filter((p: any) => p != null).length} 칩 ${chipsOf(state)}`)
+      .toBe(`14. 페이즈 1 착석 ${activeBefore - 1} 칩 ${chipsAtBust}`);
   });
 });
