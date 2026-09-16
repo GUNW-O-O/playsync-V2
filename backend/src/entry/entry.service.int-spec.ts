@@ -142,6 +142,92 @@ describe('EntryService.enterSeat', () => {
     expect(participation.status).toBe(PlayerStatus.PLAYING);
   });
 
+  /**
+   * **커밋 뒤의 미러가 요청을 죽이지 않는다**(T105).
+   *
+   * 좌석 행도 스냅샷도 이미 커밋됐다. 예전에는 그 뒤 `syncActivePlayer` ·
+   * `setUserContext` · `updateSeatBitmap`이 장애로 던져 **503**이 나갔고 —
+   * 앉았는데 화면은 실패다 — 그 사이 비트맵이 0이라 **남이 그 자리를 고른다.**
+   */
+  describe('Redis 장애 중 착석 (T105)', () => {
+    const outage = () => redisService.outage;
+    const bitmap = () => redis.hget(`tournament:${TOURNAMENT}:seat`, `table:${TABLE}`);
+
+    // 바깥 beforeEach가 Redis를 비우므로 여기서 세운다. 없으면
+    // `updateSeatBitmap`이 아무것도 안 해서(없는 필드는 안 만든다) 이 검사가
+    // 미러가 돌았는지를 못 가른다.
+    beforeEach(() => redisService.setSeatBitmap(TOURNAMENT, TABLE));
+
+    afterEach(() => {
+      const o = outage();
+      if (o.phase !== 'up') { o.phase = 'recovering'; o.markRecovered(); }
+      o.downSince = null;
+    });
+
+    /**
+     * **미룬 미러를 테스트 안에서 끝까지 배웅한다.** 안 그러면 복구가
+     * `afterEach` 뒤에 풀려 다음 테스트의 Redis·DB 위에서 돌고, 그 테스트가
+     * 엉뚱한 이유로 빨개진다(실제로 「좌석 비트맵에 반영된다」가 그렇게
+     * 깨졌다). 미룬 일은 프로세스에 남는 것이라 테스트 경계가 안 막아 준다.
+     */
+    async function drainMirror(seatIndex: number) {
+      const original = redisService.updateSeatBitmap.bind(redisService);
+      let done!: () => void;
+      const mirrored = new Promise<void>((resolve) => { done = resolve; });
+      const spy = jest.spyOn(redisService, 'updateSeatBitmap')
+        .mockImplementation(async (...args) => {
+          const out = await original(...args);
+          if (args[2] === seatIndex) done();
+          return out;
+        });
+      return { spy, mirrored };
+    }
+
+    it('장애 중에도 착석은 성공하고, 미러는 시도조차 하지 않는다', async () => {
+      await participate('u1', '00000001');
+      const { spy, mirrored } = await drainMirror(3);
+      outage().phase = 'down';
+      outage().downSince = Date.now();
+
+      const { accessToken } = await service.enterSeat(TOURNAMENT, {
+        otp: '00000001', tableId: TABLE, seatIndex: 3,
+      });
+
+      const row = await prisma.tablePlayer.findFirstOrThrow({ where: { userId: 'u1' } });
+      // 장애 중에 부르면 재시도 예산만큼(실측 7~10초) 요청이 붙잡힌다.
+      expect(`토큰 ${typeof accessToken} 좌석 ${row.seatPosition} 미러시도 ${spy.mock.calls.length}`)
+        .toBe('토큰 string 좌석 3 미러시도 0');
+
+      outage().phase = 'recovering';
+      outage().markRecovered();
+      await mirrored;
+    });
+
+    it('복구되면 미러가 한 번 돌아 비트맵이 선다', async () => {
+      await participate('u1', '00000001');
+      const { mirrored } = await drainMirror(3);
+
+      outage().phase = 'down';
+      outage().downSince = Date.now();
+      await service.enterSeat(TOURNAMENT, { otp: '00000001', tableId: TABLE, seatIndex: 3 });
+      // 장애 중에는 비어 있다 — 그래서 남이 그 자리를 고를 수 있었다.
+      expect(`장애 중 비트맵 ${await bitmap()}`).toBe('장애 중 비트맵 000000000');
+      // 비트맵만 보면 「지금 썼는데 아직 안 보인다」와 구분이 안 된다.
+      // 미루지 않는 구현을 가르려면 호출 자체를 세야 한다.
+      expect(redisService.updateSeatBitmap).not.toHaveBeenCalled();
+
+      outage().phase = 'recovering';
+      outage().markRecovered();
+      await mirrored;
+
+      const context = await redisService.getUserContext(TOURNAMENT, 'u1');
+      expect(`비트맵 ${await bitmap()} 컨텍스트 ${context?.seatIndex}`)
+        .toBe('비트맵 000100000 컨텍스트 3');
+    });
+
+    afterEach(() => { jest.restoreAllMocks(); });
+  });
+
   it('좌석 토큰의 sub가 스냅샷의 플레이어 id와 같다 — 게이트웨이 좌석 대조의 근거', async () => {
     await participate('u1', '00000001');
 

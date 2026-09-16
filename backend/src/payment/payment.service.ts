@@ -1,4 +1,5 @@
 import { ConflictException, HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { mirrorAfterCommit } from 'src/redis/mirror';
 import { PlayerStatus } from '@prisma/client';
 import { PayMentDto } from 'shared/dto/payment.dto';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -373,7 +374,15 @@ export class PaymentService {
 
     // 대회 카운터의 Redis 미러다. 방금 DB에 올린 세 필드와 같은 값이라
     // 좌석과 무관하고, 그래서 여기 남는다.
-    await this.redisService.joinPlayer(dto.tournamentId, session.entryFee);
+    //
+    // **여기서 던지면 안 된다**(T105). 참가비는 위 트랜잭션이 이미 가져갔다 —
+    // 503을 돌려주면 돈이 빠진 채로 화면은 실패를 말하고, 다시 눌러도 409
+    // (`이미 참가한 대회입니다`)라 이 미러는 영영 안 써진다.
+    await mirrorAfterCommit(
+      this.redisService.outage, this.logger,
+      `참가 카운터 (tournament=${dto.tournamentId})`,
+      () => this.redisService.joinPlayer(dto.tournamentId, session.entryFee),
+    );
 
     return participation;
   }
