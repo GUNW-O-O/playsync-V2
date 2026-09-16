@@ -61,12 +61,22 @@ export class RedisOutage extends EventEmitter {
     if (this.phase !== 'recovering') return;
     this.phase = 'up';
     this.downSince = null;
+    this.releaseUpWaiters();
+    this.emit('recovered');
+  }
+
+  /**
+   * `whenUp` 대기자를 푼다. **up이 되는 자리마다 불러야 한다** — 하나라도
+   * 빠지면 그 경로로 올라온 대기는 다음 진짜 장애의 복구까지 안 풀린다
+   * (T103 최종 리뷰 I4가 `booting`에서 그것을 잡았다).
+   *
+   * 대기자 하나가 던져도 나머지는 마저 돈다 — 이 자리엔 로거가 없어 조용히
+   * 삼킨다.
+   */
+  private releaseUpWaiters(): void {
     const up = [...this.upWaiters];
     this.upWaiters.clear();
-    // 대기자 하나가 던져도 나머지와 emit('recovered')는 마저 돈다 — 이 자리엔
-    // 로거가 없어 조용히 삼킨다.
     for (const fn of up) { try { fn(); } catch { /* 무시 */ } }
-    this.emit('recovered');
   }
 
   /**
@@ -91,6 +101,12 @@ export class RedisOutage extends EventEmitter {
   private onReady() {
     if (this.phase === 'booting') {
       this.phase = 'up';
+      // **부팅에서 처음 붙은 것도 up이다**(T103 최종 리뷰 I4). `isUp()`은
+      // `'up'`만 참이라 `booting` 동안에도 `whenUp()`을 거는 경로가 있다
+      // (`SessionService.finishClose` — Redis가 죽은 채로 프로세스가 떠도
+      // 앱은 요청을 받는다). 여기서 안 풀면 그 대기는 다음 진짜 장애의
+      // 복구까지, 혹은 영영 안 풀린다.
+      this.releaseUpWaiters();
       return;
     }
     if (this.phase !== 'down') return;

@@ -879,3 +879,48 @@ describe('RedisService.rebuyPlayer — 평균 스택의 분모', () => {
     expect(Number(await redis.hget(infoKey, 'avgStack'))).toBe(15000);
   });
 });
+
+/**
+ * `pipeline.exec()`는 **명령별 실패로 reject하지 않는다** — `[err, result]`
+ * 배열로 돌려준다. 그래서 죽은 연결에 대고 불러도 성공으로 돌아왔고,
+ * `SessionService.finishClose`가 실패를 보고 걸도록 돼 있는 복구 뒤 재시도가
+ * 한 번도 안 탔다(T103 시나리오에서 드러났다).
+ */
+describe('RedisService.deleteTournament', () => {
+  let redis: Redis;
+  let service: RedisService;
+
+  const TOURNAMENT = 'tournament-del';
+  const TABLE = 'table-del';
+
+  beforeAll(() => {
+    redis = createTestRedis();
+    service = new RedisService(redis);
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+  });
+
+  beforeEach(async () => {
+    await flushTestRedis(redis);
+    redis.options.enableOfflineQueue = true;
+    await redis.set(`tournament:${TOURNAMENT}:info`, '{}');
+    await redis.set(`table:state:${TABLE}`, '{}');
+  });
+
+  it('키를 다 지운다', async () => {
+    await service.deleteTournament(TOURNAMENT, [TABLE]);
+
+    expect(await redis.exists(
+      `tournament:${TOURNAMENT}:info`, `table:state:${TABLE}`,
+    )).toBe(0);
+  });
+
+  it('없는 키를 지우는 것은 실패가 아니다 (반대 입력 — 재시도가 멱등해야 한다)', async () => {
+    await service.deleteTournament(TOURNAMENT, [TABLE]);
+
+    await expect(service.deleteTournament(TOURNAMENT, [TABLE])).resolves.toBeUndefined();
+  });
+
+});

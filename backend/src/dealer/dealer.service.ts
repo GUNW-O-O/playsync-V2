@@ -58,6 +58,26 @@ export class DealerService {
   /** 테이블별 「딜러가 다시 열었다」 대기(T100). `resumeTable`이 푼다. */
   private readonly resumeWaiters = new Map<string, () => void>();
 
+  /**
+   * 리바인 고리가 도는 중에 대회가 닫힌 테이블(T103).
+   *
+   * **스냅샷 유무로는 못 가른다.** 평소에는 `SessionService`가 알림보다 먼저
+   * 스냅샷을 지워서 `holdForDealer`가 「스냅샷 없음」을 돌려주는 것이 곧
+   * 닫혔다는 신호였다. 그런데 **Redis 장애 중에 닫으면** 그 정리가 복구 뒤로
+   * 미뤄진다(`SessionService.finishClose`). 그러면 미뤄 둔 정리와 이 고리가
+   * **같은 `whenUp`에 나란히 매달려** 있고, 누가 먼저 끝나는지는 보장되지
+   * 않는다 — 대기자는 등록 순서대로 풀리지만(장애가 먼저 났으므로 이 고리가
+   * 앞이다) 그 뒤의 왕복 수가 다르다. 실측으로는 pipeline 하나뿐인 정리가
+   * 락부터 잡아야 하는 이 고리보다 먼저 끝난다. 그 순서가 뒤집히는 판에서는
+   * 스냅샷이 아직 살아 있어 `stillBroke`가 파산자를 그대로 읽고 **끝난 대회에
+   * 리바인을 다시 묻는다.**
+   *
+   * **그래서 그 경합에 기대지 않는다.** 닫혔다는 사실을 메모리에 적는다 —
+   * Redis가 필요 없어 장애 중에도 선다. `rebuyInFlight`인 테이블만 담고
+   * `askRebuys`의 `finally`가 지우므로 쌓이지 않는다.
+   */
+  private readonly closedTables = new Set<string>();
+
   constructor(
     @InjectQueue('player-timeout') private timeoutQueue: Queue,
     private prisma: PrismaService,
@@ -572,8 +592,10 @@ export class DealerService {
 
         // **대회가 닫혔으면 기다리지 않고 고리를 끝낸다**(T100 잔여). 상점이
         // 「이어서 진행」 대신 대회를 중단·종료하면 `SessionService`가 이
-        // 자리보다 먼저 스냅샷을 지운다(`announceClosed`는 `deleteTournament`
-        // **뒤에** 이벤트를 낸다). 그 이벤트가 위 `resumeWaiters.set` 뒤에
+        // 자리보다 먼저 스냅샷을 지운다 — **Redis가 멀쩡할 때만이다.**
+        // 장애 중에는 정리가 복구 뒤로 미뤄지고 알림이 먼저 나가므로 아래
+        // T103 문단의 `closedTables`가 그 몫을 든다(`finishClose`).
+        // 그 이벤트가 위 `resumeWaiters.set` 뒤에
         // 왔으면 `handleTournamentClosed`가 `resumed`를 풀어 준다. 그런데
         // 이벤트가 그 **전에**(예: `holdForDealer`가 도는 동안) 이미 지나갔으면
         // 풀어 줄 대상이 없어 `resumeTable`도 영영 안 올 `resumed`를 기다리게
@@ -587,14 +609,30 @@ export class DealerService {
         // `getSnapShot`을 다시 읽으면 그 왕복 자체가 `holdForDealer`의
         // 재시도 밖에 있는 새 던짐 자리가 된다 — 락 안에서 이미 확인한 것을
         // 그대로 받는다.
-        if (!hadSnapshot) break;
+        //
+        // **장애 중에 닫히면 스냅샷이 아직 살아 있을 수 있다**(T103). 그 정리는
+        // 복구 뒤로 미뤄져 이 고리와 같은 `whenUp`에 매달리고, 끝나는 순서는
+        // 보장되지 않는다. 정리가 늦는 판에서는 아래 `stillBroke`가 파산자를
+        // 그대로 읽어 끝난 대회에 다시 묻는다 — `handleTournamentClosed`가
+        // 적어 둔 메모리 표시로 가른다.
+        if (!hadSnapshot || this.closedTables.has(tableId)) break;
 
         await resumed;
+
+        // **깨운 것이 재개가 아니라 닫힘일 수 있다**(최종 리뷰 I2).
+        // `handleTournamentClosed`도 이 대기를 푼다 — 재개를 기다리는 동안
+        // 다시 끊기고 그때 상점이 닫으면 이 길로 온다. 위 검사는 이 대기에
+        // **들어가기 전** 한 번뿐이라 여기서 다시 본다. 안 보면 아래
+        // `stillBroke`가 닫힌 대회의(아직 안 지워진) 스냅샷을 읽어 유령
+        // 리바인 창을 연다.
+        if (this.closedTables.has(tableId)) break;
+
         asked = await this.stillBroke(tableId, interrupted);
       }
     } finally {
       this.rebuyInFlight.delete(tableId);
       this.resumeWaiters.delete(tableId);
+      this.closedTables.delete(tableId);
       // **어떻게 끝나든 지운다.** 수락·거절·시간초과가 각각 다른 자리에서
       // 끝나고(`processRebuy`), 그중 하나가 던져도 표시가 남으면 다음 핸드가
       // 도는 내내 화면이 「리바인을 기다립니다」를 띄운다.
@@ -759,6 +797,9 @@ export class DealerService {
   @OnEvent('TOURNAMENT_CLOSED')
   handleTournamentClosed(payload: { tournamentId: string; tableIds: string[]; status: string }) {
     for (const tableId of payload.tableIds) {
+      // **고리가 도는 테이블만 적는다**(T103). 리바인이 없으면 지울 사람이
+      // 없어 그대로 쌓인다 — 닫힌 대회 수만큼 메모리에 남는다.
+      if (this.rebuyInFlight.has(tableId)) this.closedTables.add(tableId);
       this.releaseResumeWaiter(tableId);
     }
   }
