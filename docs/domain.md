@@ -982,6 +982,14 @@ DB가 먼저면 Redis가 죽은 순간의 수락이 **돈만 빼고** 칩을 못
 스냅샷을 지워 `SNAPSHOT_MISSING`으로 죽을 뿐이다 — **스냅샷 삭제 전에 락을
 잡은 호출은 그대로 지나간다.** 여기를 건드릴 때 "이미 막혀 있다"고 읽지 마라.
 
+**그 부수효과가 서려면 삭제가 락을 타야 한다**(T104). `deleteTournament`는
+`table:state:*`를 `withTableLock` 안에서 지운다 — 예전에는 락 밖이라, 삭제가
+`mutateSnapshot`의 **읽기와 쓰기 사이**에 끼면 뒤이은 SET이 방금 지운 키를
+TTL째로 되살렸다. 그러면 「스냅샷이 없어서 죽는다」가 성립하지 않는다. 대회 키
+셋(`info` · `user` · `seat`)은 스냅샷 경로가 안 만지므로 pipeline 그대로다.
+`deleteTableState`는 Prisma 트랜잭션 안이라 락을 안 태운다 — 부르는 쪽
+`deleteTable`의 `FOR UPDATE` + `occupied === 0`이 그 창을 닫는다.
+
 **그리고 그 부수효과는 Redis가 죽으면 늦게 온다**(T103). 닫는 세 문은
 `SessionService.finishClose`를 지나는데, 장애 중에는 `deleteTournament`가 7~10초
 붙잡혔다 던지므로 **정리를 복구 뒤로 미루고 알림(`TOURNAMENT_CLOSED`)을 먼저

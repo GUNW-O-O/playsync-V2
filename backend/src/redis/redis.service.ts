@@ -708,16 +708,35 @@ export class RedisService {
    * 아니라 **이미 정리됐다**는 뜻이다(재시도가 멱등해야 하는 이유이기도 하다).
    */
   async deleteTournament(tournamentId: string, tables: string[]) {
+    // 대회 키 셋은 락과 무관하다 — 스냅샷을 고치는 경로가 이 셋을 안 만진다.
     const pipe = this.redis.pipeline();
     pipe.del(`tournament:${tournamentId}:info`)
     pipe.del(`tournament:${tournamentId}:user`)
     pipe.del(`tournament:${tournamentId}:seat`);
-    tables.forEach(t => {
-      pipe.del(`table:state:${t}`);
-    })
     const results = await pipe.exec();
     const failed = results?.find(([err]) => err != null)?.[0];
     if (failed) throw failed;
+
+    // **스냅샷은 락 안에서 지운다.** `mutateSnapshot`은 락 안에서 GET → 수정 →
+    // SET을 하므로, 그 읽기와 쓰기 **사이**에 DEL이 끼면 뒤이은 SET이 방금 지운
+    // 키를 TTL째로 다시 써 넣는다. 그 뒤 리바인 고리는 닫힌 대회의 파산자를
+    // 읽어 다시 묻고, 스냅샷은 24시간 떠 있다.
+    //
+    // **테이블마다 병렬이다.** 락이 테이블 단위라 서로 기다릴 이유가 없고,
+    // 순차로 돌리면 최악이 `테이블 수 × 5초`(락 대기 상한)가 되어 닫기 요청이
+    // 그만큼 붙잡힌다. 병렬이면 상한이 5초 하나다.
+    //
+    // 하나라도 락을 못 잡으면 던진다 — 부르는 쪽(`SessionService.finishClose`)이
+    // 복구 뒤 재시도를 걸고, 이 함수는 멱등이라 이미 지운 것을 다시 지울 뿐이다.
+    //
+    // **`deleteTableState`(테이블 하나 닫기)에는 같은 락을 두지 않는다.** 그쪽은
+    // Prisma 트랜잭션 **안**이라, 최대 5초 기다리는 락을 넣으면 DB 트랜잭션을
+    // Redis 락 위에서 붙잡는 것이 된다(`domain.md`의 「기다림이 무한정인 일
+    // 금지」). 대신 부르는 쪽 `deleteTable`이 `FOR UPDATE`와 `occupied === 0`으로
+    // 그 창을 이미 닫는다 — 빈 테이블에는 스냅샷을 고칠 경로가 없다.
+    await Promise.all(tables.map(tableId =>
+      this.withTableLock(tableId, () => this.redis.del(`table:state:${tableId}`)),
+    ));
   }
 
 }

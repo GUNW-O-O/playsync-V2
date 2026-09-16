@@ -179,15 +179,15 @@ describe('시나리오 — Redis가 죽은 동안 대회를 닫는다', () => {
 
     // 8. 빗장을 푼다 — 그제서야 정리가 돈다.
     //
-    //    `tournament:{id}:info`로 재는 이유: `table:state:*`는 리바인 고리도
-    //    쓰는 키라, 지우기와 `mutateSnapshot`의 읽기·쓰기가 겹치면 되살아날 수
-    //    있다(잔여 목록 「닫힘과 겹친 스냅샷 쓰기」 — T103이 만든 것이 아니다).
-    //    대회 키는 닫는 쪽만 만지므로 정리가 돌았는지를 흔들림 없이 가른다.
+    //    **스냅샷 키까지 함께 본다**(T104). 예전에는 `table:state:*`를 리바인
+    //    고리도 써서 지우기와 `mutateSnapshot`의 읽기·쓰기가 겹치면 되살아날
+    //    수 있었고, 그래서 대회 키로만 갈랐다. 이제 `deleteTournament`가 그
+    //    키를 **락 안에서** 지우므로 흔들리지 않는다.
     releaseCleanup();
     await until(async () => await h.redis.exists(`tournament:${h.tournamentId}:info`) === 0);
     await until(() => h.dealer['rebuyInFlight'].has(h.tableId) === false);
-    expect(`대회키 ${await h.redis.exists(`tournament:${h.tournamentId}:info`)} a묻기 ${prompts.filter(p => p.userId === 'a').length} 재개대기 ${h.dealer['resumeWaiters'].has(h.tableId)} 닫힘표시 ${h.dealer['closedTables'].has(h.tableId)}`)
-      .toBe('대회키 0 a묻기 1 재개대기 false 닫힘표시 false');
+    expect(`대회키 ${await h.redis.exists(`tournament:${h.tournamentId}:info`)} 스냅샷 ${await h.redis.exists(`table:state:${h.tableId}`)} a묻기 ${prompts.filter(p => p.userId === 'a').length} 재개대기 ${h.dealer['resumeWaiters'].has(h.tableId)} 닫힘표시 ${h.dealer['closedTables'].has(h.tableId)}`)
+      .toBe('대회키 0 스냅샷 0 a묻기 1 재개대기 false 닫힘표시 false');
     // 정리는 **딱 한 번**, up이 된 뒤에 돌았다.
     expect(cleanupPhases).toEqual(['up']);
   });
