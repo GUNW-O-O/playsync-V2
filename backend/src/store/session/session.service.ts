@@ -23,6 +23,7 @@ import {
 import { awardPrize, prizePoolOf, rakeOf } from 'src/playsync/prize';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
+import { mirrorAfterCommit } from 'src/redis/mirror';
 import { buildTournamentMeta } from './tournament-meta';
 import { isFinalTable } from './final-table';
 import { LIVE_PLAYER_STATUSES, isLiveParticipant } from './player-status';
@@ -905,27 +906,26 @@ export class SessionService {
     tableIds: string[],
     status: ClosedTournamentStatus,
   ) {
-    const cleanup = (): Promise<void> => this.redis
-      .deleteTournament(tournamentId, tableIds)
-      .catch((error) => {
-        this.logger.error(
-          `닫힌 대회의 Redis 키를 못 지웠다: ${tournamentId}`,
-          error instanceof Error ? error.stack : String(error),
-        );
-        // **장애로 실패했으면 복구 뒤에 다시 한다**(최종 리뷰 I1). `isUp()`은
-        // 부르기 직전 한 번 본 값이다 — 그 뒤에 끊기면 up 분기로 들어와 여기서
-        // 던지는데, 그냥 삼키면 T103이 없애려던 고아 키가 **이 창에서만**
-        // 그대로 남는다. 아래 down 분기와 같은 길로 합류시킨다.
-        if (!this.redis.outage.isUp()) void this.redis.outage.whenUp().then(cleanup);
-      });
+    // **커밋 뒤의 미러 규칙은 셋이 공유한다**(T105, `redis/mirror.ts`) — 던지지
+    // 않고, 장애 중에는 시도조차 하지 않고 복구 뒤에 한 번 돈다. 이 자리가 그
+    // 규칙을 처음 세웠고, 결제(`joinSession`)와 착석(`enterSeat`)이 같은 결함을
+    // 들고 있었다.
+    const cleanup = () => mirrorAfterCommit(
+      this.redis.outage, this.logger,
+      `닫힌 대회의 Redis 키 (tournament=${tournamentId})`,
+      () => this.redis.deleteTournament(tournamentId, tableIds),
+    );
 
+    // **순서만 이 자리의 몫이다.** up이면 정리가 먼저다 — 알림이 푸는 리바인
+    // 고리가 `stillBroke`에서 스냅샷을 다시 읽으므로, 먼저 지워야 「스냅샷
+    // 없음」으로 끝난다. down이면 정리가 어차피 미뤄지므로 알림이 먼저다.
     if (this.redis.outage.isUp()) {
       await cleanup();
       this.announceClosed(tournamentId, tableIds, status);
       return;
     }
     this.announceClosed(tournamentId, tableIds, status);
-    void this.redis.outage.whenUp().then(cleanup);
+    void cleanup();
   }
 
   /**

@@ -12,6 +12,24 @@ import {
 } from "src/store/session/registration";
 import { outageOf, RedisOutage } from "./outage";
 
+/**
+ * pipeline을 돌리고 **하나라도 실패했으면 던진다**(T104 · T105).
+ *
+ * `pipeline.exec()`는 명령별 실패로 reject하지 않고 `[err, result]` 배열로
+ * 돌려준다. 그대로 두면 **죽은 연결에 대고 불러도 성공으로 돌아온다** — 부르는
+ * 쪽은 아무 일도 안 일어난 것을 모른 채 넘어가고, 실패를 보고 복구 뒤 재시도를
+ * 걸도록 돼 있는 길(`mirrorAfterCommit`)이 한 번도 안 탄다.
+ *
+ * `deleteTournament`가 이 결함으로 닫힌 대회의 키를 고아로 남겼고,
+ * `joinPlayer`는 같은 이유로 **전광판의 엔트리·걷은 돈을 조용히 잃었다** —
+ * 에러조차 안 났다.
+ */
+async function execOrThrow(pipe: { exec(): Promise<[Error | null, unknown][] | null> }) {
+  const results = await pipe.exec();
+  const failed = results?.find(([err]) => err != null)?.[0];
+  if (failed) throw failed;
+}
+
 @Injectable()
 export class RedisService {
   /** Redis 장애 상태(T97). 생성자 시그니처를 늘리지 않으려고 필드로 든다. */
@@ -448,10 +466,11 @@ export class RedisService {
    */
   async joinPlayer(tournamentId: string, entryFee: number) {
     const key = this.getInfoKey(tournamentId);
-    await this.redis.pipeline()
-      .hincrby(key, 'totalPlayer', 1)
-      .hincrby(key, 'totalBuyinAmount', entryFee)
-      .exec();
+    await execOrThrow(
+      this.redis.pipeline()
+        .hincrby(key, 'totalPlayer', 1)
+        .hincrby(key, 'totalBuyinAmount', entryFee),
+    );
   }
 
   async getTournamentBlind(id: string): Promise<BlindField | null> {
@@ -713,9 +732,7 @@ export class RedisService {
     pipe.del(`tournament:${tournamentId}:info`)
     pipe.del(`tournament:${tournamentId}:user`)
     pipe.del(`tournament:${tournamentId}:seat`);
-    const results = await pipe.exec();
-    const failed = results?.find(([err]) => err != null)?.[0];
-    if (failed) throw failed;
+    await execOrThrow(pipe);
 
     // **스냅샷은 락 안에서 지운다.** `mutateSnapshot`은 락 안에서 GET → 수정 →
     // SET을 하므로, 그 읽기와 쓰기 **사이**에 DEL이 끼면 뒤이은 SET이 방금 지운

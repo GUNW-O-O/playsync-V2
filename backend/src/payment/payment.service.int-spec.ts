@@ -1,6 +1,6 @@
 import { ConflictException, HttpException, HttpStatus, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Prisma, PrismaClient } from '@prisma/client';
+import { PlayerStatus, Prisma, PrismaClient } from '@prisma/client';
 import { Queue } from 'bullmq';
 import Redis from 'ioredis';
 import { PayMentDto } from 'shared/dto/payment.dto';
@@ -119,6 +119,63 @@ describe('PaymentService — 참가 OTP 발급', () => {
    */
   it('없는 유저로 참가하면 404로 거절한다', async () => {
     await expect(service.joinSession(dto, 'no-such-user')).rejects.toThrow(NotFoundException);
+  });
+
+  /**
+   * **커밋 뒤의 미러가 요청을 죽이지 않는다**(T105).
+   *
+   * 참가비는 트랜잭션이 이미 가져갔다. 예전에는 그 뒤 `joinPlayer`가 장애로
+   * 던져 **503**이 나갔고 — 돈은 빠졌는데 화면은 실패다 — 다시 누르면
+   * `이미 참가한 대회입니다`(409)라 미러가 **영영 안 써졌다.**
+   */
+  describe('Redis 장애 중 참가 (T105)', () => {
+    const outage = () => redisService.outage;
+
+    afterEach(() => {
+      const o = outage();
+      if (o.phase !== 'up') { o.phase = 'recovering'; o.markRecovered(); }
+      o.downSince = null;
+    });
+
+    it('장애 중에도 참가는 성공하고, 미러는 시도조차 하지 않는다', async () => {
+      const mirror = jest.spyOn(redisService, 'joinPlayer');
+      outage().phase = 'down';
+      outage().downSince = Date.now();
+
+      await service.joinSession(dto, 'u1');
+
+      const row = await prisma.tournamentParticipation.findUniqueOrThrow({
+        where: { tournamentId_userId: { tournamentId: TOURNAMENT, userId: 'u1' } },
+      });
+      const user = await prisma.user.findUniqueOrThrow({ where: { id: 'u1' } });
+      // 장애 중에 부르면 재시도 예산만큼(실측 7~10초) 요청이 붙잡힌다.
+      expect(`참가 ${row.status} 미러시도 ${mirror.mock.calls.length} 차감 ${user.points < 100000}`)
+        .toBe(`참가 ${PlayerStatus.WAITING} 미러시도 0 차감 true`);
+    });
+
+    it('복구되면 미러가 한 번 돈다', async () => {
+      const original = redisService.joinPlayer.bind(redisService);
+      let done!: () => void;
+      const mirrored = new Promise<void>((resolve) => { done = resolve; });
+      const mirror = jest.spyOn(redisService, 'joinPlayer')
+        .mockImplementation(async (id, fee) => { await original(id, fee); done(); });
+
+      outage().phase = 'down';
+      outage().downSince = Date.now();
+      await service.joinSession(dto, 'u1');
+
+      // **복구 전에는 안 돌았다.** 이 줄이 없으면 미루지 않고 곧바로 쓰는
+      // 구현도 아래 단언을 통과한다.
+      expect(mirror).not.toHaveBeenCalled();
+
+      outage().phase = 'recovering';
+      outage().markRecovered();
+      await mirrored;
+
+      const info = await redis.hgetall(`tournament:${TOURNAMENT}:info`);
+      expect(`미러시도 ${mirror.mock.calls.length} 인원 ${info.totalPlayer} 걷은돈 ${info.totalBuyinAmount}`)
+        .toBe(`미러시도 1 인원 1 걷은돈 1000`);
+    });
   });
 
   it('참가자마다 다른 값이다', async () => {

@@ -14,6 +14,7 @@ import { tokenTtl } from 'src/auth/token-ttl';
 import { GamePhase, TableState, createEmptyTableState } from 'src/game-engine/types';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
+import { mirrorAfterCommit } from 'src/redis/mirror';
 import { isClosedTournament } from 'src/store/session/tournament-status';
 
 /** 좌석을 확정할 때 필요한 것만 추린 값. 조회 결과를 그대로 끌고 다니지 않는다. */
@@ -371,20 +372,33 @@ export class EntryService {
     // 다음 인원 변화 한 번이 값을 통째로 다시 쓰고, 재기동 복구도 같은 일을
     // 한다(`RecoveryService.recoverTournament`). 예전에는 상대 증감이라
     // 여기서 한 번 끊기면 같은 OTP로 다시 와도 낫지 않았다.
-    const { activePlayers } = await this.prisma.tournament.findUniqueOrThrow({
-      where: { id: tournamentId },
-      select: { activePlayers: true },
-    });
-    await this.redis.syncActivePlayer(
-      tournamentId, activePlayers, table.tournament.startStack, table.tournament.entryFee,
-    );
+    // **여기부터는 미러다 — 던지면 안 된다**(T105). 좌석 행도 스냅샷도 이미
+    // 커밋됐다. 여기서 503을 돌려주면 "앉았는데 실패했다"가 되고, 그 사이
+    // 비트맵이 0이라 **남이 그 자리를 고른다.** 장애면 복구 뒤에 한 번 돈다.
+    //
+    // **인원 조회를 이 안에 둔다.** 미룬 재시도가 그때의 값을 다시 읽어야
+    // 한다 — 밖에서 읽은 값을 들고 있다가 나중에 쓰면, 그 사이에 바뀐 더 새
+    // 값을 옛 값으로 덮는다(`syncActivePlayer`는 대입이다).
+    await mirrorAfterCommit(
+      this.redis.outage, this.logger,
+      `착석 미러 (tournament=${tournamentId}, table=${dto.tableId}, seat=${dto.seatIndex})`,
+      async () => {
+        const { activePlayers } = await this.prisma.tournament.findUniqueOrThrow({
+          where: { id: tournamentId },
+          select: { activePlayers: true },
+        });
+        await this.redis.syncActivePlayer(
+          tournamentId, activePlayers, table.tournament.startStack, table.tournament.entryFee,
+        );
 
-    await this.redis.setUserContext(
-      tournamentId, who.userId, dto.tableId, dto.seatIndex, 'ACTIVE',
+        await this.redis.setUserContext(
+          tournamentId, who.userId, dto.tableId, dto.seatIndex, 'ACTIVE',
+        );
+        await this.redis.updateSeatBitmap(tournamentId, dto.tableId, dto.seatIndex, true);
+        const tableStatus = await this.redis.getTournamentTables(tournamentId);
+        this.eventEmitter.emit('SEAT_LIST_UPDATED', { tournamentId, state: tableStatus });
+      },
     );
-    await this.redis.updateSeatBitmap(tournamentId, dto.tableId, dto.seatIndex, true);
-    const tableStatus = await this.redis.getTournamentTables(tournamentId);
-    this.eventEmitter.emit('SEAT_LIST_UPDATED', { tournamentId, state: tableStatus });
 
     /*
       **이미 앉아 있는 사람의 화면도 바뀌어야 한다.**
