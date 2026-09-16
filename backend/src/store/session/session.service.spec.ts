@@ -315,7 +315,16 @@ describe('SessionService.completeSession — 정산 게이트', () => {
       // 여기서는 게이트 산수만 잰다.
       $transaction: jest.fn().mockResolvedValue(true),
     };
-    const redis = { deleteTournament: jest.fn() };
+    // `outage`까지 준다 — `finishClose`가 up/down으로 갈리는데(T103), 이
+    // 스펙이 재는 것은 게이트 산수라 언제나 up인 경로만 지난다.
+    const redis = {
+      // 진짜처럼 promise를 돌려준다 — `finishClose`가 `.catch`로 정리 실패를
+      // 삼키므로(T103), `undefined`를 돌려주는 목은 그 자리에서 터진다.
+      deleteTournament: jest.fn().mockResolvedValue(undefined),
+      // `outage`까지 준다 — `finishClose`가 up/down으로 갈리는데, 이 스펙이
+      // 재는 것은 게이트 산수라 언제나 up인 경로만 지난다.
+      outage: { isUp: () => true },
+    };
     return {
       service: new SessionService(
         prisma as any, redis as any, {} as any, { emit: jest.fn() } as any,

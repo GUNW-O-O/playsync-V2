@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Injectable,
   InternalServerErrorException,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -65,6 +66,8 @@ function isTableLockTimeout(e: unknown): boolean {
 
 @Injectable()
 export class SessionService {
+  private readonly logger = new Logger(SessionService.name);
+
   constructor(
     private prismaService: PrismaService,
     private redis: RedisService,
@@ -823,8 +826,7 @@ export class SessionService {
     if (!closed) {
       throw new ConflictException('이미 닫힌 세션입니다.');
     }
-    await this.redis.deleteTournament(id, tableIds);
-    this.announceClosed(id, tableIds, TournamentStatus.FINISHED);
+    await this.finishClose(id, tableIds, TournamentStatus.FINISHED);
   }
 
   /**
@@ -854,6 +856,60 @@ export class SessionService {
     status: ClosedTournamentStatus,
   ) {
     this.eventEmitter.emit('TOURNAMENT_CLOSED', { tournamentId, tableIds, status });
+  }
+
+  /**
+   * 닫힘을 마무리한다 — Redis 정리와 단말 알림(T103). **닫는 세 문이 전부
+   * 여기를 지난다.**
+   *
+   * **문지기를 이긴 호출 하나만 온다.** 조건부 `updateMany`
+   * (`NOT_CLOSED_TOURNAMENT_FILTER`)를 이긴 뒤에만 부르므로, `announceClosed`의
+   * 「문지기를 지난 뒤에만 부른다」가 그대로 지켜진다.
+   *
+   * **up이면 정리가 먼저, 알림이 나중이다(예전 순서 그대로).** 알림이
+   * `DealerService.handleTournamentClosed`로 리바인 재개 대기를 풀면 그 고리는
+   * `stillBroke`에서 스냅샷을 다시 읽는다 — 먼저 지워야 「스냅샷 없음」으로
+   * 끝난다.
+   *
+   * **down이면 알림을 먼저 보내고 정리를 복구 뒤로 미룬다.** 장애 중
+   * `deleteTournament`는 ioredis 재시도를 다 쓴 뒤 던져서(실측 7~10초) 알림이
+   * 아예 안 나갔다 — 단말은 끝난 대회를 계속 그리고, 상점이 다시 눌러도 이번엔
+   * 409(이미 닫힘)라 정리가 영영 안 돌았다. 알림을 받는 쪽
+   * (`WsGateway.closeTable` · `DealerService.handleTournamentClosed`)은 메모리만
+   * 만지므로 장애 중에도 보낼 수 있다.
+   *
+   * **정리 실패로 요청을 실패시키지 않는다.** 닫힘은 이미 커밋됐다. 503을
+   * 돌려주면 상점이 다시 눌러 409를 받는데, 「닫혔다」가 사실인 채로 화면만
+   * 실패를 말하게 된다.
+   *
+   * **미뤄 둔 정리는 고리보다 늦게 깨어난다.** `whenUp` 대기자는 등록 순서대로
+   * 풀리고, 장애가 먼저 났으므로 `DealerService.holdForDealer`의 대기가 앞에
+   * 있다 — 그래서 닫힘을 기억하는 일은 `deleteTournament`가 아니라
+   * `DealerService`의 메모리 표시가 맡는다(`handleTournamentClosed`).
+   *
+   * 남는 것: 미뤄 둔 정리 전에 프로세스가 재시작되면 키가 고아로 남는다(부팅
+   * 복구는 닫힌 대회를 안 본다). `Table` 행이 이미 없어 게이트웨이 접속은
+   * 거절되므로 기능 영향은 없고 메모리만 남는다.
+   */
+  private async finishClose(
+    tournamentId: string,
+    tableIds: string[],
+    status: ClosedTournamentStatus,
+  ) {
+    const cleanup = () => this.redis
+      .deleteTournament(tournamentId, tableIds)
+      .catch((error) => this.logger.error(
+        `닫힌 대회의 Redis 키를 못 지웠다 — 고아로 남는다: ${tournamentId}`,
+        error instanceof Error ? error.stack : String(error),
+      ));
+
+    if (this.redis.outage.isUp()) {
+      await cleanup();
+      this.announceClosed(tournamentId, tableIds, status);
+      return;
+    }
+    this.announceClosed(tournamentId, tableIds, status);
+    void this.redis.outage.whenUp().then(cleanup);
   }
 
   /**
@@ -1262,8 +1318,7 @@ export class SessionService {
       throw new ConflictException('이미 닫힌 세션입니다.');
     }
 
-    await this.redis.deleteTournament(tournamentId, tables.map((t) => t.id));
-    this.announceClosed(tournamentId, tables.map((t) => t.id), TournamentStatus.CANCELLED);
+    await this.finishClose(tournamentId, tables.map((t) => t.id), TournamentStatus.CANCELLED);
     return settled;
   }
 
@@ -1350,8 +1405,7 @@ export class SessionService {
       await tx.dealerSession.delete({ where: { tournamentId } });
     });
 
-    await this.redis.deleteTournament(tournamentId, tables.map((t) => t.id));
-    this.announceClosed(tournamentId, tables.map((t) => t.id), TournamentStatus.CANCELLED);
+    await this.finishClose(tournamentId, tables.map((t) => t.id), TournamentStatus.CANCELLED);
   }
 
   /**

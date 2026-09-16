@@ -24,6 +24,84 @@ import { UserService } from 'src/user/user.service';
 import { SessionService } from './session.service';
 
 /**
+ * **Redis가 죽은 동안 닫으면**(T103) 알림은 곧바로 나가고 Redis 정리는 복구
+ * 뒤에 한 번 돈다.
+ *
+ * 고치기 전에는 `deleteTournament`의 pipeline이 ioredis 재시도를 다 쓴 뒤
+ * 던져서 `announceClosed`가 아예 안 불렸다 — DB는 닫혔는데 단말은 끝난 대회를
+ * 계속 그리고, 상점이 다시 누르면 409(이미 닫힘)라 정리가 영영 안 돌았다.
+ *
+ * **닫는 세 문에 전부 건다.** 셋은 같은 `finishClose`를 지나지만, 한 문이
+ * 공용 함수를 안 거치게 되돌아가도 나머지 둘이 초록이면 그 되돌림이 안 보인다.
+ */
+async function expectClosesDuringOutage(opts: {
+  prisma: PrismaClient;
+  redis: Redis;
+  redisService: RedisService;
+  emitter: EventEmitter2;
+  tournamentId: string;
+  tableId: string;
+  status: TournamentStatus;
+  close: () => Promise<unknown>;
+}) {
+  const { prisma, redis, redisService, emitter, tournamentId, tableId, status } = opts;
+  const outage = redisService.outage;
+
+  // 장애 **전에** 심는다 — 지워졌는지를 재려면 있었어야 한다.
+  await redis.set(`tournament:${tournamentId}:info`, '{}');
+  await redis.set(`table:state:${tableId}`, '{}');
+
+  const original = redisService.deleteTournament.bind(redisService);
+  let cleanupDone!: () => void;
+  const cleaned = new Promise<void>((resolve) => { cleanupDone = resolve; });
+  const spy = jest.spyOn(redisService, 'deleteTournament').mockImplementation(async (id, tables) => {
+    await original(id, tables);
+    cleanupDone();
+  });
+
+  const heard: unknown[] = [];
+  const listener = (payload: unknown) => heard.push(payload);
+  emitter.on('TOURNAMENT_CLOSED', listener);
+
+  try {
+    outage.phase = 'down';
+    outage.downSince = Date.now();
+
+    // 1. 던지지 않는다. 닫힘은 커밋됐으므로 503을 돌려주면 상점이 다시 눌러 409를 받는다.
+    await opts.close();
+
+    // 2. 알림은 **곧바로** 나간다 — 받는 쪽(게이트웨이 · 딜러)은 메모리만 만진다.
+    expect(heard).toEqual([{ tournamentId, tableIds: [tableId], status }]);
+
+    // 3. 정리는 **아직** 시도하지 않았다. 장애 중에 부르면 재시도로 7~10초 붙잡힌다.
+    expect(spy).not.toHaveBeenCalled();
+
+    // 4. DB는 닫혔다.
+    const closed = await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } });
+    expect(`상태 ${closed.status}`).toBe(`상태 ${status}`);
+
+    // 5. 복구되면 정리가 한 번 돈다.
+    outage.phase = 'recovering';
+    outage.markRecovered();
+    await cleaned;
+
+    expect(spy).toHaveBeenCalledWith(tournamentId, [tableId]);
+    expect(await redis.exists(
+      `tournament:${tournamentId}:info`,
+      `table:state:${tableId}`,
+    )).toBe(0);
+  } finally {
+    spy.mockRestore();
+    emitter.off('TOURNAMENT_CLOSED', listener);
+    // **대기 중인 `whenUp`을 남기지 않는다.** 클라이언트 하나에 `RedisOutage`
+    // 하나(`outageOf`의 WeakMap)라 다음 테스트가 그대로 물려받는다.
+    outage.phase = 'recovering';
+    outage.markRecovered();
+    outage.downSince = null;
+  }
+}
+
+/**
  * OTP 해시 전환의 통합 검증.
  *
  * 단위 스펙(`session.service.spec.ts`)은 prisma를 목으로 두고 트랜잭션 안의
@@ -2002,6 +2080,7 @@ describe('SessionService.cancelSession', () => {
   let prisma: PrismaClient;
   let redis: Redis;
   let sessionService: SessionService;
+  let redisService: RedisService;
   let emitter: EventEmitter2;
   let tournamentId: string;
   let ownerId: string;
@@ -2059,9 +2138,10 @@ describe('SessionService.cancelSession', () => {
     await flushTestRedis(redis);
 
     emitter = new EventEmitter2();
+    redisService = new RedisService(redis);
     sessionService = new SessionService(
       prisma as unknown as PrismaService,
-      new RedisService(redis),
+      redisService,
       new OtpAttempts(redis),
       emitter,
     );
@@ -2084,6 +2164,16 @@ describe('SessionService.cancelSession', () => {
     expect(heard).toEqual([
       { tournamentId, tableIds: [tableId], status: TournamentStatus.CANCELLED },
     ]);
+  });
+
+  it('장애 중에 취소하면 알림이 곧바로 나가고 정리는 복구 뒤에 돈다(T103)', async () => {
+    await seedPaidPlayer('player1');
+
+    await expectClosesDuringOutage({
+      prisma, redis, redisService, emitter, tournamentId, tableId,
+      status: TournamentStatus.CANCELLED,
+      close: () => sessionService.cancelSession(tournamentId, ownerId),
+    });
   });
 
   it('취소하면 참가비가 포인트로 돌아오고 REFUND 내역이 남는다', async () => {
@@ -2599,6 +2689,7 @@ describe('SessionService.abortSession', () => {
   let prisma: PrismaClient;
   let redis: Redis;
   let sessionService: SessionService;
+  let redisService: RedisService;
   let emitter: EventEmitter2;
   let tournamentId: string;
   let ownerId: string;
@@ -2669,9 +2760,10 @@ describe('SessionService.abortSession', () => {
     await flushTestRedis(redis);
 
     emitter = new EventEmitter2();
+    redisService = new RedisService(redis);
     sessionService = new SessionService(
       prisma as unknown as PrismaService,
-      new RedisService(redis),
+      redisService,
       new OtpAttempts(redis),
       emitter,
     );
@@ -2695,6 +2787,17 @@ describe('SessionService.abortSession', () => {
     expect(heard).toEqual([
       { tournamentId, tableIds: [tableId], status: TournamentStatus.CANCELLED },
     ]);
+  });
+
+  it('장애 중에 중단하면 알림이 곧바로 나가고 정리는 복구 뒤에 돈다(T103)', async () => {
+    await seedPaidPlayer('alive');
+    await start();
+
+    await expectClosesDuringOutage({
+      prisma, redis, redisService, emitter, tournamentId, tableId,
+      status: TournamentStatus.CANCELLED,
+      close: () => sessionService.abortSession(tournamentId, ownerId),
+    });
   });
 
   /**
@@ -2960,6 +3063,7 @@ describe('SessionService.completeSession — 상점 몫', () => {
   let prisma: PrismaClient;
   let redis: Redis;
   let sessionService: SessionService;
+  let redisService: RedisService;
   let emitter: EventEmitter2;
   let tournamentId: string;
   let ownerId: string;
@@ -3023,9 +3127,10 @@ describe('SessionService.completeSession — 상점 몫', () => {
     await flushTestRedis(redis);
 
     emitter = new EventEmitter2();
+    redisService = new RedisService(redis);
     sessionService = new SessionService(
       prisma as unknown as PrismaService,
-      new RedisService(redis),
+      redisService,
       new OtpAttempts(redis),
       emitter,
     );
@@ -3055,6 +3160,39 @@ describe('SessionService.completeSession — 상점 몫', () => {
     expect(heard).toEqual([
       { tournamentId, tableIds: [tableId], status: TournamentStatus.FINISHED },
     ]);
+  });
+
+  it('장애 중에 닫으면 알림이 곧바로 나가고 정리는 복구 뒤에 돈다(T103)', async () => {
+    await seedSettled({ rakePercent: 10, players: 5 });
+
+    await expectClosesDuringOutage({
+      prisma, redis, redisService, emitter, tournamentId, tableId,
+      status: TournamentStatus.FINISHED,
+      close: () => sessionService.completeSession(tournamentId, ownerId),
+    });
+  });
+
+  /**
+   * **반대 입력** — Redis가 멀쩡하면 지금 순서(정리 먼저, 알림 나중)를 그대로
+   * 지킨다. 뒤집으면 `DealerService.handleTournamentClosed`가 푼 리바인 고리가
+   * `stillBroke`에서 **아직 살아 있는 스냅샷**을 읽어 닫힌 대회에 다시 묻는다.
+   */
+  it('up이면 정리가 알림보다 먼저다', async () => {
+    await seedSettled({ rakePercent: 10, players: 5 });
+    const heard: unknown[] = [];
+    emitter.on('TOURNAMENT_CLOSED', (payload) => heard.push(payload));
+
+    const original = redisService.deleteTournament.bind(redisService);
+    let heardAtCleanup: unknown[] = ['아직 안 불렸다'];
+    jest.spyOn(redisService, 'deleteTournament').mockImplementation(async (id, tables) => {
+      heardAtCleanup = [...heard];
+      await original(id, tables);
+    });
+
+    await sessionService.completeSession(tournamentId, ownerId);
+
+    expect(heardAtCleanup).toEqual([]);
+    expect(heard).toHaveLength(1);
   });
 
   /**

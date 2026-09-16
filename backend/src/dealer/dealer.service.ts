@@ -58,6 +58,23 @@ export class DealerService {
   /** 테이블별 「딜러가 다시 열었다」 대기(T100). `resumeTable`이 푼다. */
   private readonly resumeWaiters = new Map<string, () => void>();
 
+  /**
+   * 리바인 고리가 도는 중에 대회가 닫힌 테이블(T103).
+   *
+   * **스냅샷 유무로는 못 가른다.** 평소에는 `SessionService`가 알림보다 먼저
+   * 스냅샷을 지워서 `holdForDealer`가 「스냅샷 없음」을 돌려주는 것이 곧
+   * 닫혔다는 신호였다. 그런데 **Redis 장애 중에 닫으면** 그 정리가 복구 뒤로
+   * 미뤄지고(`SessionService.finishClose`), 미뤄 둔 정리는 이 고리보다 **늦게**
+   * 깨어난다 — `whenUp` 대기자는 등록 순서대로 풀리는데 장애가 먼저 났으므로
+   * `holdForDealer`의 대기가 앞에 있다. 그때 스냅샷은 아직 살아 있어
+   * `stillBroke`가 파산자를 그대로 읽고 **끝난 대회에 리바인을 다시 묻는다.**
+   *
+   * 그래서 닫혔다는 사실을 메모리에 적는다 — Redis가 필요 없어 장애 중에도
+   * 선다. `rebuyInFlight`인 테이블만 담고 `askRebuys`의 `finally`가 지우므로
+   * 쌓이지 않는다.
+   */
+  private readonly closedTables = new Set<string>();
+
   constructor(
     @InjectQueue('player-timeout') private timeoutQueue: Queue,
     private prisma: PrismaService,
@@ -587,7 +604,12 @@ export class DealerService {
         // `getSnapShot`을 다시 읽으면 그 왕복 자체가 `holdForDealer`의
         // 재시도 밖에 있는 새 던짐 자리가 된다 — 락 안에서 이미 확인한 것을
         // 그대로 받는다.
-        if (!hadSnapshot) break;
+        //
+        // **장애 중에 닫히면 스냅샷이 아직 살아 있다**(T103). 그 정리는 복구
+        // 뒤로 미뤄져 이 고리보다 늦게 도는데, 그때 스냅샷이 있으면 아래
+        // `stillBroke`가 파산자를 그대로 읽어 끝난 대회에 다시 묻는다 —
+        // `handleTournamentClosed`가 적어 둔 메모리 표시로 가른다.
+        if (!hadSnapshot || this.closedTables.has(tableId)) break;
 
         await resumed;
         asked = await this.stillBroke(tableId, interrupted);
@@ -595,6 +617,7 @@ export class DealerService {
     } finally {
       this.rebuyInFlight.delete(tableId);
       this.resumeWaiters.delete(tableId);
+      this.closedTables.delete(tableId);
       // **어떻게 끝나든 지운다.** 수락·거절·시간초과가 각각 다른 자리에서
       // 끝나고(`processRebuy`), 그중 하나가 던져도 표시가 남으면 다음 핸드가
       // 도는 내내 화면이 「리바인을 기다립니다」를 띄운다.
@@ -759,6 +782,9 @@ export class DealerService {
   @OnEvent('TOURNAMENT_CLOSED')
   handleTournamentClosed(payload: { tournamentId: string; tableIds: string[]; status: string }) {
     for (const tableId of payload.tableIds) {
+      // **고리가 도는 테이블만 적는다**(T103). 리바인이 없으면 지울 사람이
+      // 없어 그대로 쌓인다 — 닫힌 대회 수만큼 메모리에 남는다.
+      if (this.rebuyInFlight.has(tableId)) this.closedTables.add(tableId);
       this.releaseResumeWaiter(tableId);
     }
   }
