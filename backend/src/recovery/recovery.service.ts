@@ -16,6 +16,17 @@ import {
   createEmptyTableState,
 } from 'src/game-engine/types';
 
+/**
+ * 멈춰 세우기의 조건.
+ *
+ * - `overwrite` — 부팅 복구인가. 부팅은 이미 `resumePending`인 테이블도 다시
+ *   찍는다(그 표시가 지난 정지의 것일 수 있다). 런타임 스윕은 건너뛴다.
+ * - `generation` — **장애 스윕만 준다.** 쓰는 순간의 세대가 이 값과 다르면
+ *   그 스윕은 낡은 것이라 아무것도 안 쓴다(`pauseTable`). 부팅에는 장애 세대
+ *   개념이 없어 안 준다 — 안 주면 검사도 안 한다.
+ */
+type FreezeOpts = { overwrite: boolean; generation?: number };
+
 @Injectable()
 export class RecoveryService implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly logger = new Logger(RecoveryService.name);
@@ -139,7 +150,7 @@ export class RecoveryService implements OnApplicationBootstrap, OnModuleDestroy 
         try {
           // 이미 `resumePending`인 테이블은 건너뛴다 — 복구 중 다시 끊겨 스윕이
           // 한 번 더 돌 때 세대를 두 번 올리지 않는다.
-          await this.freezeTournament(t.id, Date.now() - downSince, { overwrite: false });
+          await this.freezeTournament(t.id, Date.now() - downSince, { overwrite: false, generation });
         } catch (e) {
           this.logger.error(`Redis 장애 복구 실패 (tournament=${t.id})`, e as Error);
         }
@@ -337,7 +348,7 @@ export class RecoveryService implements OnApplicationBootstrap, OnModuleDestroy 
   private async freezeTournament(
     tournamentId: string,
     downMs: number,
-    opts: { overwrite: boolean },
+    opts: FreezeOpts,
   ) {
     const t = await this.prisma.tournament.findUniqueOrThrow({
       where: { id: tournamentId },
@@ -494,7 +505,7 @@ export class RecoveryService implements OnApplicationBootstrap, OnModuleDestroy 
   private async pauseTable(
     tableId: string,
     downMs: number,
-    opts: { overwrite: boolean },
+    opts: FreezeOpts,
   ): Promise<void> {
     try {
       // `mutateSnapshot`은 안 썼을 때도 읽은 상태를 돌려주므로 "이번에 멈췄다"는
@@ -511,6 +522,19 @@ export class RecoveryService implements OnApplicationBootstrap, OnModuleDestroy 
           return null;
         }
         if (state.resumePending && !opts.overwrite) return null;
+
+        // **낡은 스윕은 멈추지 않는다**(T97 잔여). 스윕 중에 다시 끊기면
+        // 스윕이 둘이 된다. 늦은 쪽(옛 세대)이 테이블 목록을 마저 도는 동안
+        // 새 스윕이 끝나고 딜러가 재개해 `resumePending`을 지웠을 수 있는데,
+        // 위 검사는 그 표시로만 가르므로 **방금 재개한 테이블을 다시 멈춘다.**
+        // 재정지는 방송되지 않아 딜러 화면은 새로고침 전까지 재개 버튼을 안
+        // 보이고, 그 테이블은 선 채로 남는다.
+        //
+        // 락 **안에서** 본다 — 쓰는 순간의 세대라야 「내가 쓰려는 지금도
+        // 여전히 내 차례인가」를 답한다.
+        if (opts.generation !== undefined && this.redis.outage.generation !== opts.generation) {
+          return null;
+        }
         const plan = planPause(state);
         if (!plan) return null;
         state.timerEpoch = plan.epoch;

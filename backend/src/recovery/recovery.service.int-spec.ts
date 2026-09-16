@@ -569,6 +569,69 @@ describe('RecoveryService', () => {
      * 재개 버튼을 눌러야 한다.** 이 검사가 없으면 "전부 멈춘다"는 구현도 위
      * 셋을 전부 통과한다.
      */
+    /**
+     * **낡은 스윕은 아무것도 멈추지 않는다**(T97 잔여).
+     *
+     * 스윕 중에 다시 끊기면 스윕이 둘이 된다. 늦은 쪽(옛 세대)이 테이블
+     * 목록을 마저 도는 동안 새 스윕이 끝나고 딜러가 재개해 `resumePending`을
+     * 지웠을 수 있는데, 「이미 정지 표시가 있으면 건너뛴다」는 그 표시로만
+     * 가르므로 **방금 재개한 테이블을 다시 멈춘다.** 재정지는 방송되지 않아
+     * 딜러 화면은 새로고침 전까지 재개 버튼을 안 보인다.
+     *
+     * **타이밍으로 재지 않는다.** 테이블 목록을 읽는 자리가 곧 「곧 멈추러
+     * 간다」라, 거기서 세대를 올려 「그 사이에 또 끊겼다」를 만든다.
+     */
+    it('스윕 도중 다시 끊기면 그 스윕은 아무것도 멈추지 않는다', async () => {
+      const { tournamentId, tableId } = await seedLiveTurn({ epoch: 3 });
+      await prisma.tournament.update({
+        where: { id: tournamentId },
+        data: { status: TournamentStatus.SYNCING, pausedAt: new Date() },
+      });
+
+      const outage = redisService.outage;
+      const original = prisma.table.findMany.bind(prisma.table);
+      jest.spyOn(prisma.table, 'findMany').mockImplementation((async (args: never) => {
+        outage.generation += 1;       // 멈추러 가기 직전에 또 끊겼다
+        return original(args);
+      }) as never);
+
+      try {
+        await recovery.recoverFromOutage();
+
+        const after = await redisService.getSnapShot(tableId);
+        expect(`세대 ${after!.timerEpoch} 정지 ${after!.resumePending === undefined} 마감 ${after!.actionDeadline !== undefined}`)
+          .toBe('세대 3 정지 true 마감 true');
+      } finally {
+        jest.restoreAllMocks();
+        outage.phase = 'up';
+        outage.downSince = null;
+      }
+    });
+
+    /**
+     * **반대 입력** — 세대가 그대로면 그 스윕은 제대로 멈춘다. 없으면
+     * 「아무것도 안 멈춘다」는 구현도 위 검사를 통과한다.
+     */
+    it('세대가 그대로면 멈춘다', async () => {
+      const { tournamentId, tableId } = await seedLiveTurn({ epoch: 3 });
+      await prisma.tournament.update({
+        where: { id: tournamentId },
+        data: { status: TournamentStatus.SYNCING, pausedAt: new Date() },
+      });
+
+      const outage = redisService.outage;
+      try {
+        await recovery.recoverFromOutage();
+
+        const after = await redisService.getSnapShot(tableId);
+        expect(`세대 ${after!.timerEpoch} 정지 ${after!.resumePending !== undefined} 마감 ${after!.actionDeadline}`)
+          .toBe('세대 4 정지 true 마감 undefined');
+      } finally {
+        outage.phase = 'up';
+        outage.downSince = null;
+      }
+    });
+
     it('차례가 없으면 손대지 않는다', async () => {
       const { tableId } = await seedLiveTurn({ turnSeat: -1, epoch: 3 });
       await setHeartbeatAgo(300_000);

@@ -1384,6 +1384,46 @@ describe('WsGateway 인바운드 경계', () => {
         outage.phase = 'up';
       }
     });
+
+    /**
+     * **끊긴 딜러를 `broadcast`가 먼저 치워도 재집계가 돈다**(T96 잔여).
+     *
+     * 예전에는 「두 번 불림」 가드를 `Set.delete`의 반환값으로 했다. 그런데
+     * 방에서 빼는 자리가 `handleDisconnect`만이 아니다 — `broadcast`가 OPEN이
+     * 아닌 소켓을 그 자리에서 지운다. 그러면 뒤이은 진짜 `handleDisconnect`가
+     * `delete === false`를 보고 **재집계를 통째로 건너뛰어**, 「k/n 복귀」
+     * 표시가 다음 이벤트까지 높게 남았다.
+     *
+     * 여기서는 그 순서를 그대로 만든다 — 딜러 소켓을 죽은 상태로 만들고
+     * `broadcast`를 한 번 태워 방에서 빠지게 한 뒤에 `handleDisconnect`를
+     * 부른다. 남은 딜러 하나가 새 집계(1/2)를 받아야 한다.
+     */
+    it('broadcast가 먼저 방에서 뺀 딜러도 끊기면 집계가 다시 돈다', async () => {
+      await seedSyncingTournament();
+      await seedSeats();
+      const leaving = await connect(await dealerTicket(TABLE), TABLE);
+      const staying = await connect(await dealerTicket(OTHER_TABLE), OTHER_TABLE);
+      const countSyncing = (c: { send: jest.Mock }) => c.send.mock.calls
+        .map(([raw]: [string]) => JSON.parse(raw))
+        .filter((m: { event: string }) => m.event === TOURNAMENT_SYNCING_EVENT).length;
+      const before = countSyncing(staying);
+
+      // 소켓이 죽는다. `broadcast`가 먼저 훑어 방에서 빼 간다.
+      (leaving as any).readyState = 3;   // WebSocket.CLOSED
+      (gateway as any).broadcast(
+        (gateway as any).tableSessions.get(TABLE), 'renderGame', {},
+      );
+      expect((gateway as any).tableSessions.get(TABLE)?.has(leaving) ?? false).toBe(false);
+
+      await gateway.handleDisconnect(leaving as never);
+
+      // **알림이 한 번 더 나갔다는 것이 요점이다.** 값만 보면 「안 돌았다」와
+      // 「돌았는데 값이 같다」를 못 가른다 — 고치기 전에는 0건이었다.
+      // (`completeSync`는 이 스펙에서 목이라 DB는 SYNCING에 남아 있고,
+      //  그래서 딜러가 하나 빠진 지금 다시 세면 1/2이다.)
+      expect(`늘어난 알림 ${countSyncing(staying) - before}`).toBe('늘어난 알림 1');
+      expect(lastSyncingPayload(staying)).toEqual({ syncing: true, present: 1, required: 2 });
+    });
   });
 
   /**
@@ -1519,6 +1559,46 @@ describe('WsGateway 인바운드 경계', () => {
     }
 
     afterEach(() => { outage().phase = 'up'; });
+
+    /**
+     * **대회가 닫히면 그 테이블의 기록도 버린다**(T101 잔여).
+     *
+     * 기록은 응답 · 마감 지난 읽기 · 새 프롬프트로만 지워진다. 끝내 다시 안
+     * 붙은 사람의 것은 그 셋 중 어느 것도 안 와서 프로세스 재시작까지 남았고,
+     * 그 사이 같은 테이블에 다시 붙으면 **끝난 대회의 죽은 프롬프트**를 받는다.
+     */
+    it('대회가 닫히면 그 테이블의 기록을 버린다 — 다시 붙어도 죽은 프롬프트가 안 온다', async () => {
+      const deadline = futureDeadline();
+      await setState({ seatIndexes: [0], deadline });
+      requestPrompt(deadline);
+
+      gateway.handleTournamentClosed({
+        tournamentId: TOURNAMENT,
+        tableIds: [TABLE],
+        status: TournamentStatus.CANCELLED,
+      });
+
+      const seat = await connect(await seatTicket('alice'));
+
+      expect(events(seat, 'REBUY_PROMPT')).toHaveLength(0);
+    });
+
+    /** **반대 입력** — 다른 테이블이 닫혀도 내 기록은 남는다. */
+    it('다른 테이블의 닫힘으로는 기록이 안 지워진다', async () => {
+      const deadline = futureDeadline();
+      await setState({ seatIndexes: [0], deadline });
+      requestPrompt(deadline);
+
+      gateway.handleTournamentClosed({
+        tournamentId: TOURNAMENT,
+        tableIds: [OTHER_TABLE],
+        status: TournamentStatus.CANCELLED,
+      });
+
+      const seat = await connect(await seatTicket('alice'));
+
+      expect(events(seat, 'REBUY_PROMPT')).toHaveLength(1);
+    });
 
     it('대기 중(rebuyPending에 내 자리·마감 미래) 붙으면 renderGame 다음에 REBUY_PROMPT를 받는다', async () => {
       const deadline = futureDeadline();
