@@ -313,15 +313,22 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     const tournamentId = (client as any).tournamentId;
     const role = (client as any).role;
 
-    // 테이블 세션 제거. `Set.delete`의 반환값을 남긴다 — `sweepSockets`가
-    // `terminate()` 뒤 이 메서드를 직접 부르고, 곧이어 `ws`의 `close`
-    // 이벤트가 같은 소켓에 다시 이 메서드를 부른다(T96). 두 번째 호출은
-    // 이미 빠진 소켓을 또 빼려는 것이라 `delete`가 `false`를 돌려주고,
-    // 그 신호로 아래 딜러 재집계를 두 번 쏘지 않는다.
-    let removedFromTable = false;
+    // **한 소켓의 정리는 한 번만 돈다.** `sweepSockets`가 `terminate()` 뒤 이
+    // 메서드를 직접 부르고, 곧이어 `ws`의 `close` 이벤트가 같은 소켓에 다시
+    // 부른다(T96). 두 번째 호출이 딜러 재집계를 또 쏘면 안 된다.
+    //
+    // **그 판정을 `Set.delete`의 반환값으로 하면 안 된다**(T96 잔여). 방에서
+    // 빼는 자리가 여기만이 아니다 — `broadcast`가 OPEN이 아닌 소켓을 그 자리에서
+    // 지운다. 그러면 뒤이은 진짜 `handleDisconnect`가 `delete === false`를 보고
+    // **재집계를 통째로 건너뛰어**, 「k/n 복귀」 표시가 다음 이벤트까지 높게
+    // 남았다. 소켓 자신에 표시를 남기면 누가 먼저 방에서 뺐든 상관이 없다.
+    const marker = client as unknown as { disconnectHandled?: boolean };
+    if (marker.disconnectHandled) return;
+    marker.disconnectHandled = true;
+
     if (tableId && this.tableSessions.has(tableId)) {
       const sessions = this.tableSessions.get(tableId);
-      removedFromTable = sessions?.delete(client) ?? false;
+      sessions?.delete(client);
       if (sessions?.size === 0) {
         this.tableSessions.delete(tableId);
       }
@@ -338,7 +345,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     // `sweepSockets`는 이 메서드를 기다리지 않고 부른다(기존 동작 유지) —
     // 실패해도 여기서 삼키므로 처리되지 않은 거부로 새지 않는다. 로그는
     // `reportSync`의 체인이 이미 남긴다(M7) — 여기서 또 찍지 않는다.
-    if (removedFromTable && role === Role.DEALER && tournamentId) {
+    if (role === Role.DEALER && tournamentId) {
       await this.reportSync(tournamentId).catch(() => { /* reportSync가 이미 로그로 남긴다 */ });
     }
   }
@@ -809,6 +816,18 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
    * 단말이 열린 채로 남으면, 그 태블릿만 끝난 대회를 그리고 있게 된다.
    */
   private closeTable(tableId: string) {
+    // **이 테이블의 리바인 기록도 함께 버린다**(T101 잔여). 기록은 응답 ·
+    // 마감 지난 읽기 · 새 프롬프트로만 지워지는데, 끝내 다시 안 붙은 사람의
+    // 것은 그 셋 중 어느 것도 안 온다 — 대회가 닫혀도 프로세스 재시작까지
+    // 남았다. 닫힌 테이블에는 재전송할 소켓 자체가 없으므로 여기가 끝이다.
+    //
+    // 키가 `${tableId}:${userId}`라 접두사로 고른다. `tableId`는 uuid여서
+    // 콜론이 없고, 그래서 첫 콜론까지가 정확히 테이블이다.
+    const prefix = `${tableId}:`;
+    for (const key of this.pendingRebuyPrompts.keys()) {
+      if (key.startsWith(prefix)) this.pendingRebuyPrompts.delete(key);
+    }
+
     const sessions = this.tableSessions.get(tableId);
     if (!sessions) return;
     for (const socket of sessions) {
