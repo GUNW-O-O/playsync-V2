@@ -171,7 +171,7 @@ async function fetchSeatOccupants(
  *
  * 예외를 두지 않는다 — 소유권 확인이 실패하면(토큰이 없거나, 역할을 못
  * 읽거나, `PLATFORM_ADMIN`이거나) 전부 차단이다. `PLATFORM_ADMIN`도
- * 예외가 아니다: `docs/backlog.md`의 "`GET /store`가 소유자 기준이다"
+ * 예외가 아니다: `docs/backlog.md`의 「감사 로그와 어드민」
  * 판단이 어드민이 전체 상점을 보는 경로 자체를 만들지 않기로 정했고,
  * `@Roles`에 `PLATFORM_ADMIN`이 남아 있는 것은 그 판단을 뒤집은 게
  * 아니라 "지금 빼면 나중에 되돌려야 하니 남겨 뒀다"는 잔재일 뿐이다(같은

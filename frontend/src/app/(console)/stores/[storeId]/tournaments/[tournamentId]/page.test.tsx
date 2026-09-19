@@ -107,8 +107,8 @@ describe('상점 콘솔 대회 상세 — storeId 소유권(T66)', () => {
   });
 
   /**
-   * `PLATFORM_ADMIN`도 예외가 아니다. `docs/backlog.md`의 "`GET /store`가
-   * 소유자 기준이다" 판단이 어드민의 전체 상점 열람 경로 자체를 만들지
+   * `PLATFORM_ADMIN`도 예외가 아니다. `docs/backlog.md`의 「감사 로그와
+   * 어드민」 판단이 어드민의 전체 상점 열람 경로 자체를 만들지
    * 않기로 정했다 — `getSeatOccupants`가 `@Roles(Role.STORE_ADMIN)` 전용이라
    * PLATFORM_ADMIN은 소유권과 무관하게 항상 403인데, 그 역할에만 페이지
    * 전체를 열어 주면 그 판단을 이 화면이 뒤집는 것이 된다.
