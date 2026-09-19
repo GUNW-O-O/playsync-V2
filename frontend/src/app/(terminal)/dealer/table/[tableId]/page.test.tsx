@@ -11,6 +11,14 @@ vi.mock('./DealerGameClient', () => ({
   default: () => <div data-testid="dealer-game-client" />,
 }));
 
+// 닫힌 대회 덮개도 자리표시자로 둔다. 실제 덮개는 `useRouter`를 끌고 오고,
+// 여기서 보려는 것은 **무엇을 넘겨 그렸는가**다.
+vi.mock('@/component/TournamentClosedOverlay', () => ({
+  default: ({ status, storeId }: { status: string; storeId?: string }) => (
+    <div data-testid="tournament-closed">{`${status} ${storeId}`}</div>
+  ),
+}));
+
 const cookieStore = { get: vi.fn() };
 vi.mock('next/headers', () => ({
   cookies: async () => cookieStore,
@@ -95,5 +103,52 @@ describe('DealerGamePage', () => {
     expect(screen.queryByTestId('dealer-game-client')).not.toBeInTheDocument();
     expect(screen.getByText(SERVER_RECOVERING_MESSAGE)).toBeInTheDocument();
     expect(screen.queryByText(/테이블 정보를 불러오지 못했습니다/)).not.toBeInTheDocument();
+  });
+
+  /**
+   * 대회가 닫힌 직후 단말이 다시 뜬다. 닫는 트랜잭션이 스냅샷도 `Table` 행도
+   * 지웠으므로 테이블로는 대회를 찾을 수 없다 — 토큰에 실린 대회 id로 찾는다.
+   */
+  describe('닫힌 대회의 테이블', () => {
+    const TOKEN = `h.${Buffer.from(JSON.stringify({ tournamentId: 't-1' })).toString('base64url')}.s`;
+
+    beforeEach(() => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      cookieStore.get.mockImplementation((name: string) =>
+        name === 'dealerToken' ? { value: TOKEN } : undefined,
+      );
+      server.use(
+        http.get('http://backend.test/playsync/tbl-1', () =>
+          HttpResponse.json({ statusCode: 500, message: 'not found' }, { status: 500 }),
+        ),
+      );
+    });
+
+    it('대회가 끝났으면 종료 덮개를 그린다', async () => {
+      server.use(
+        http.get('http://backend.test/tournaments/t-1', () =>
+          HttpResponse.json({ tournament: { status: 'FINISHED', storeId: 'store-1' } }),
+        ),
+      );
+
+      render(await DealerGamePage({ params: Promise.resolve({ tableId: 'tbl-1' }) }));
+
+      expect(screen.getByTestId('tournament-closed')).toHaveTextContent('FINISHED store-1');
+      expect(screen.queryByText(/불러오지 못했습니다/)).not.toBeInTheDocument();
+    });
+
+    it('대회가 진행 중이면 그대로 실패 안내다', async () => {
+      // 반대 입력. 없으면 「실패하면 언제나 종료 덮개」로 고쳐도 초록이다.
+      server.use(
+        http.get('http://backend.test/tournaments/t-1', () =>
+          HttpResponse.json({ tournament: { status: 'PLAYING', storeId: 'store-1' } }),
+        ),
+      );
+
+      render(await DealerGamePage({ params: Promise.resolve({ tableId: 'tbl-1' }) }));
+
+      expect(screen.queryByTestId('tournament-closed')).not.toBeInTheDocument();
+      expect(screen.getByText(/불러오지 못했습니다/)).toBeInTheDocument();
+    });
   });
 });

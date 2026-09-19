@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest';
 import { NextRequest, type NextResponse } from 'next/server';
-import { middleware, config } from '@/middleware';
+import { proxy, config } from '@/proxy';
 import { SESSION_COOKIE, type Role } from '@/lib/session';
 
 function makeToken(role: Role): string {
@@ -29,7 +29,7 @@ function expectPass(res: NextResponse): void {
 
 describe('미인증', () => {
   it('보호된 경로는 로그인으로 보낸다', () => {
-    const res = middleware(request('/stores/s1'));
+    const res = proxy(request('/stores/s1'));
 
     expect(res.status).toBe(307);
     const location = new URL(res.headers.get('location')!);
@@ -38,56 +38,56 @@ describe('미인증', () => {
   });
 
   it('쿼리스트링까지 next에 담는다', () => {
-    const res = middleware(request('/stores/s1?tab=members'));
+    const res = proxy(request('/stores/s1?tab=members'));
 
     const location = new URL(res.headers.get('location')!);
     expect(location.searchParams.get('next')).toBe('/stores/s1?tab=members');
   });
 
   it('로그인 페이지는 통과시킨다', () => {
-    expectPass(middleware(request('/login')));
+    expectPass(proxy(request('/login')));
   });
 
   it('좌석 태블릿은 통과시킨다', () => {
-    expectPass(middleware(request('/table/t1')));
+    expectPass(proxy(request('/table/t1')));
   });
 
   it('딜러 단말은 통과시킨다', () => {
-    expectPass(middleware(request('/dealer/d1')));
+    expectPass(proxy(request('/dealer/d1')));
   });
 });
 
 describe('역할 가드', () => {
   it('일반 유저는 어드민에 접근하면 404', () => {
-    expect(middleware(request('/admin', 'USER')).status).toBe(404);
+    expect(proxy(request('/admin', 'USER')).status).toBe(404);
   });
 
   it('상점주는 어드민에 접근하면 404', () => {
-    expect(middleware(request('/admin', 'STORE_ADMIN')).status).toBe(404);
+    expect(proxy(request('/admin', 'STORE_ADMIN')).status).toBe(404);
   });
 
   it('플랫폼 운영자는 어드민을 통과한다', () => {
-    expectPass(middleware(request('/admin', 'PLATFORM_ADMIN')));
+    expectPass(proxy(request('/admin', 'PLATFORM_ADMIN')));
   });
 
   it('일반 유저는 상점 콘솔에 접근하면 404', () => {
-    expect(middleware(request('/stores/s1', 'USER')).status).toBe(404);
+    expect(proxy(request('/stores/s1', 'USER')).status).toBe(404);
   });
 
   it('상점주는 상점 콘솔을 통과한다', () => {
-    expectPass(middleware(request('/stores/s1', 'STORE_ADMIN')));
+    expectPass(proxy(request('/stores/s1', 'STORE_ADMIN')));
   });
 
   it('플랫폼 운영자도 상점 콘솔을 통과한다', () => {
-    expectPass(middleware(request('/stores/s1', 'PLATFORM_ADMIN')));
+    expectPass(proxy(request('/stores/s1', 'PLATFORM_ADMIN')));
   });
 
   it('일반 유저는 모바일 화면을 통과한다', () => {
-    expectPass(middleware(request('/tournaments', 'USER')));
+    expectPass(proxy(request('/tournaments', 'USER')));
   });
 
   it('일반 유저는 내 참가 목록을 통과한다', () => {
-    expectPass(middleware(request('/me', 'USER')));
+    expectPass(proxy(request('/me', 'USER')));
   });
 
   // 상점 관리자는 상점 페이지를 관리하는 계정이지 참가자가 아니다. 백엔드는
@@ -96,18 +96,18 @@ describe('역할 가드', () => {
   // 발급한다. 화면만 열려 있어서 상점주가 참가자 화면에 들어간 뒤 버튼을
   // 눌러야 거절당했다.
   it('상점주는 모바일 화면에 접근하면 404', () => {
-    expect(middleware(request('/tournaments', 'STORE_ADMIN')).status).toBe(404);
+    expect(proxy(request('/tournaments', 'STORE_ADMIN')).status).toBe(404);
   });
 
   it('상점주는 내 참가 목록에 접근하면 404', () => {
-    expect(middleware(request('/me', 'STORE_ADMIN')).status).toBe(404);
+    expect(proxy(request('/me', 'STORE_ADMIN')).status).toBe(404);
   });
 
   // 예전에는 빈 본문 404를 그대로 내보내 백지가 떴다. 상태 코드가 404라
   // 정보 노출 요건(그 자원이 존재한다는 사실을 숨긴다)은 이미 충족했으므로
   // 상태 코드는 그대로 두고 본문만 채운다.
   it('역할이 맞지 않으면 404를 유지하되 not-found 화면으로 rewrite한다', () => {
-    const res = middleware(request('/stores/s1/tournaments/t1', 'USER'));
+    const res = proxy(request('/stores/s1/tournaments/t1', 'USER'));
 
     expect(res.status).toBe(404);
     expect(res.headers.get('x-middleware-rewrite')).toContain('/_not-found');

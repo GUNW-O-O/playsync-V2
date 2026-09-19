@@ -2,10 +2,16 @@ import { cookies } from 'next/headers';
 import DealerGameClient from './DealerGameClient';
 import { SERVER_RECOVERING_MESSAGE, TableState } from '@playsync/contract';
 import { isServerRecovering } from '@/lib/server-outage';
+import { findClosedTournament } from '@/lib/closed-tournament';
+import TournamentClosedOverlay from '@/component/TournamentClosedOverlay';
 
 type InitialGameData = { tableState: TableState; seatIndex: number };
 /** 서버 장애(T97). 좌석 화면의 `GameDataResult`와 같은 이유다. */
-type GameDataResult = InitialGameData | { kind: 'recovering' } | null;
+type GameDataResult =
+  | InitialGameData
+  | { kind: 'recovering' }
+  | { kind: 'closed'; closed: NonNullable<Awaited<ReturnType<typeof findClosedTournament>>> }
+  | null;
 
 /**
  * `GET /playsync/:tableId`(`playsync.controller.ts`의 `joinTable`)는
@@ -35,6 +41,9 @@ async function getInitialGameData(tableId: string): Promise<GameDataResult> {
   if (isServerRecovering(res)) return { kind: 'recovering' };
 
   if (!res.ok) {
+    // 닫힌 직후 다시 뜬 단말이면 실패가 아니라 끝난 것이다(`findClosedTournament`).
+    const closed = await findClosedTournament(token);
+    if (closed) return { kind: 'closed', closed };
     console.error(`테이블 상태를 불러오지 못했습니다. (${res.status})`);
     return null;
   }
@@ -83,7 +92,8 @@ async function getTableContext(
 export default async function DealerGamePage({ params }: { params: Promise<{ tableId: string }> }) {
   const { tableId } = await params;
   const gameData = await getInitialGameData(tableId);
-  const recovering = gameData !== null && 'kind' in gameData;
+  const recovering = gameData !== null && 'kind' in gameData && gameData.kind === 'recovering';
+  const closed = gameData !== null && 'kind' in gameData && gameData.kind === 'closed' ? gameData.closed : null;
   const initialData = gameData !== null && 'kind' in gameData ? null : gameData;
   const { storeId, tableOrder } = await getTableContext(
     initialData?.tableState?.tournamentId,
@@ -94,6 +104,8 @@ export default async function DealerGamePage({ params }: { params: Promise<{ tab
     <main className="h-screen overflow-hidden bg-tb-bg">
       {recovering ? (
         <p className="p-8 text-tb-ink">{SERVER_RECOVERING_MESSAGE}</p>
+      ) : closed ? (
+        <TournamentClosedOverlay status={closed.status} storeId={closed.storeId} terminal="dealer" />
       ) : initialData ? (
         <DealerGameClient
           tableId={tableId}

@@ -365,6 +365,18 @@ export default function ConsoleClient({
             </div>
           </div>
           <div className="flex gap-2">
+            {/*
+              폴링이 없다 — 조작이 성공할 때만 다시 읽는다(`run`). 남이 바꾼 값
+              (다른 테이블의 탈락, 딜러의 입력)은 상점이 여기서 직접 다시 읽는다.
+            */}
+            <button
+              type="button"
+              disabled={pending}
+              onClick={() => startTransition(() => router.refresh())}
+              className="border border-[var(--hairline)] px-4 py-3 text-sm text-[var(--ink-subtle)] disabled:opacity-40"
+            >
+              새로고침
+            </button>
             {tournament.status === 'PENDING' && (
               <button
                 type="button"

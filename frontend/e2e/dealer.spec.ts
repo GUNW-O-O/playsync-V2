@@ -1,3 +1,4 @@
+import { pickTournament } from './fixtures/screen';
 import { tableByOrder } from './fixtures/manifest';
 import { expect, test } from './fixtures/surfaces';
 
@@ -15,6 +16,8 @@ test('딜러 대기 화면이 시드된 대회와 테이블 둘을 보여준다'
   const tablet = await stage('tablet', 'dealer-waiting');
 
   await tablet.goto(`/dealer?store=${manifest.store.id}`);
+  // 상점에 대회가 둘이라 기본 선택에 기대지 않는다(`pickTournament`).
+  await pickTournament(tablet, manifest.tournament.id);
 
   await expect(tablet.getByText(manifest.tournament.name).first()).toBeVisible();
   for (const table of manifest.tables) {
@@ -27,6 +30,8 @@ test('딜러 OTP를 넣으면 그 테이블의 딜러 화면이 선다', async (
   const tablet = await stage('tablet', 'dealer-enter');
 
   await tablet.goto(`/dealer?store=${manifest.store.id}`);
+  // 상점에 대회가 둘이라 기본 선택에 기대지 않는다(`pickTournament`).
+  await pickTournament(tablet, manifest.tournament.id);
   await tablet.getByTestId(`pick-table-${table.id}`).click();
   for (const digit of manifest.dealerOtp) {
     await tablet.getByRole('button', { name: digit, exact: true }).click();

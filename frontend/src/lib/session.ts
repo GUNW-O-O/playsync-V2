@@ -22,7 +22,7 @@ function isRole(value: unknown): value is Role {
 // 이 함수는 미들웨어에서도 불린다. 미들웨어는 Edge 런타임에서 도는데 거기엔
 // Buffer가 없으므로 atob으로 푼다. base64url은 문자 두 개가 다르고 패딩이
 // 없으니 표준 base64로 되돌린 뒤 넘긴다.
-function decodeBase64Url(input: string): string {
+export function decodeBase64Url(input: string): string {
   const base64 = input.replace(/-/g, '+').replace(/_/g, '/');
   const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, '=');
   const binary = atob(padded);

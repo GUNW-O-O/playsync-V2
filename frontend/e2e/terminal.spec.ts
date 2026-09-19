@@ -1,3 +1,4 @@
+import { pickTournament } from './fixtures/screen';
 import { playerAt, tableByOrder } from './fixtures/manifest';
 import { expect, test } from './fixtures/surfaces';
 
@@ -17,6 +18,8 @@ test('좌석 대기 화면이 시드된 대회와 테이블을 그대로 보여�
   const tablet = await stage('tablet', 'seat-waiting');
 
   await tablet.goto(`/table?store=${manifest.store.id}`);
+  // 상점에 대회가 둘이라 기본 선택에 기대지 않는다(`pickTournament`).
+  await pickTournament(tablet, manifest.tournament.id);
 
   // 대회 이름은 `GET /tournaments/stores/:storeId`가 준 값이다.
   await expect(tablet.getByText(manifest.tournament.name).first()).toBeVisible();
@@ -41,6 +44,8 @@ test('참가 OTP를 넣으면 좌석이 확정되고 그 자리가 점선으로 
 
   const tablet = await stage('tablet', 'seat-enter');
   await tablet.goto(`/table?store=${manifest.store.id}`);
+  // 상점에 대회가 둘이라 기본 선택에 기대지 않는다(`pickTournament`).
+  await pickTournament(tablet, manifest.tournament.id);
 
   await tablet.getByTestId(`pick-table-${table.id}`).click();
   await tablet.getByTestId(`pick-seat-${SEAT_INDEX}`).click();
@@ -61,6 +66,8 @@ test('참가 OTP를 넣으면 좌석이 확정되고 그 자리가 점선으로 
   // Redis 좌석 비트맵이다(`GET /tournaments/:id/seats`).
   const second = await stage('tablet', 'seat-waiting-after');
   await second.goto(`/table?store=${manifest.store.id}`);
+  // 상점에 대회가 둘이라 기본 선택에 기대지 않는다(`pickTournament`).
+  await pickTournament(second, manifest.tournament.id);
   await second.getByTestId(`pick-table-${table.id}`).click();
   await expect(second.getByTestId(`pick-seat-${SEAT_INDEX}`)).toBeDisabled();
 });
