@@ -270,5 +270,4 @@ route handler는 **어떤 경로로도 액세스 토큰을 응답에 싣지 않�
 |---|---|
 | [`../../threat-model.md`](../../threat-model.md) | 관찰 1·2·10, 질문 Q1 |
 | [`../../backlog.md`](../../backlog.md) | B1의 배경과 남은 범위 |
-| [`../../chat-log2.md`](../../chat-log2.md) | T23 — 딜러 인증 강화 |
 | `2026-07-27-frontend-screens-design.md` | 좌석·딜러 태블릿이 브라우저라는 근거. **아직 `GUNW-O-O/front-end` 브랜치에만 있다** — main에 머지되면 이 표를 링크로 바꾼다 |

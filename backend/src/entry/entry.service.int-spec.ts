@@ -557,7 +557,7 @@ describe('EntryService.enterSeat', () => {
   /**
    * T28 리뷰 3라운드 finding 2: `payment.service.ts`는 이미 이 보증을
    * 스텁으로 검증한 적이 있었다(트랜잭션 커밋이 실패해도 Redis에 유령 착석이
-   * 남지 않는다 — `docs/fixlist.md:376`). Task 3가 그 describe를 지우면서
+   * 남지 않는다 — `docs/archive/fixlist.md:376`). Task 3가 그 describe를 지우면서
    * "entry.service.int-spec.ts가 같은 것을 진짜 제약 위에서 본다"고 했지만,
    * 그 주장을 뒷받침하는 테스트가 실제로는 없었다.
    *
