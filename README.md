@@ -36,7 +36,7 @@
 
 ```
 TypeScript · NestJS 11 · Next.js · PostgreSQL · Redis · zod contract · npm workspaces
-contract 82 · 백엔드 단위 407 · 프론트 273 · 통합 644(시나리오 21 스위트 포함) · e2e 13 · 부하 하네스 39 · 타입 에러 0
+contract 85 · 백엔드 단위 445 · 프론트 331 · 통합 725(시나리오 27 스위트 포함) · e2e 13 · 부하 하네스 39 · 실제 kill 26 · 타입 에러 0
 ```
 
 > **이 리포지토리가 하는 일**
@@ -193,7 +193,7 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    boot([부팅]) --> time["시간 판정<br/>하트비트(30초)로 잰 정지 시간"]
+    boot([부팅]) --> time["시간 판정<br/>하트비트(5초)로 잰 정지 시간"]
     boot --> state["상태 판정<br/>테이블별 스냅샷 유무"]
     time --> push["블라인드 기준점을<br/>그만큼 뒤로 민다"]
     state --> rebuild["없는 테이블만<br/>DB로 다시 세운다"]
@@ -344,7 +344,7 @@ V1은 혼자 짜고 혼자 눌러보며 완성한 MVP다. V2는 같은 코드를
 
 | | V1 | V2 |
 |---|---|---|
-| 검증 | 크롬 창 6개 띄워 손으로 눌러보기 | 단위 407 / 통합 644(시나리오 21 스위트 포함) / e2e 13. 실제 Redis·PostgreSQL 컨테이너 |
+| 검증 | 크롬 창 6개 띄워 손으로 눌러보기 | 단위 445 / 통합 725(시나리오 27 스위트 포함) / e2e 13 / 실제 kill 26. 실제 Redis·PostgreSQL 컨테이너 |
 | 테스트 코드 | `nest g` 스캐폴드 18개. 전부 `toBeDefined`고 경로를 못 잡아 import에서 죽고 있었다 | 버그마다 실패하는 테스트를 먼저 쓴다(TDD) |
 | CI | 없음 | 타입 체크 · 테스트 · 빌드 (`.github/workflows/ci.yml`) |
 | 코드 리뷰 | 없음 (1인 개발) | `backend/src` 전수 리뷰 → [`review.md`](./docs/review.md) → 27개 발견 |
@@ -511,22 +511,24 @@ AI는 코드를 읽지만 **왜 그렇게 짰는지**는 모른다. 스킬도 �
 
 ## 4. 테스트
 
-세 계층이고, 각각 다른 종류의 버그를 잡는다.
+세 계층이 기본이고, 각각 다른 종류의 버그를 잡는다. 진짜 끊김이라야 드러나는 것은
+실제 kill 계층이 따로 본다.
 
 | | 파일 | 인프라 | 잡는 것 |
 |---|---|---|---|
 | 단위 | `*.spec.ts` | 없음 | 엔진 같은 순수 로직. 빨라야 TDD 루프가 돈다 |
 | 통합 | `*.int-spec.ts` | Redis + PostgreSQL | 락·트랜잭션처럼 **진짜 인프라라야 의미 있는 것** |
 | 시나리오 | `scenario/*.int-spec.ts` | 위와 같음 | **이음매**. 부품이 각각 옳은데 조립이 틀린 경우 |
+| 실제 kill | `test/outage/*.outage-spec.ts` | 전용 컨테이너 + 빌드한 백엔드 | `docker kill`로 Redis·백엔드를 진짜로 죽였다 살린다. 이벤트 흉내로는 안 보이는 부팅 배선과 BullMQ의 지연 |
 
 락을 mock으로 테스트하면 검증 대상인 원자성 자체가 사라진다. 그래서 통합 테스트는
 개발용과 분리된 진짜 Redis·PostgreSQL 컨테이너를 띄운다.
 
 ```
-contract       82  (7 suites)      백엔드 단위   407  (38 suites)
-프론트 단위   273  (36 files)      통합         644  (40 suites · 시나리오 21 포함)
+contract       85  (8 suites)      백엔드 단위   445  (43 suites)
+프론트 단위   331  (39 files)      통합         725  (46 suites · 시나리오 27 포함)
 e2e            13  (4 files)       부하 하네스    39  (3 files)
-                                   + 데모 촬영 1 · 정산 촬영 3
+실제 kill      26  (2 suites)      + 데모 촬영 1 · 정산 촬영 3
 ```
 
 1단계를 닫은 시점이 contract 44 / 단위 122 / 통합 199였다. 늘어난 것은 전부
@@ -538,7 +540,7 @@ e2e            13  (4 files)       부하 하네스    39  (3 files)
 그 길을 만들었다. 워크스페이스가 아니라 루트 `npm test`에 없다
 (`cd load && npm test`).
 
-**새 테스트가 처음부터 통과하면 의심한다.** 네 번 데인 뒤로 그렇게 한다 — 그중
+**새 테스트가 처음부터 통과하면 의심한다.** 다섯 번 데인 뒤로 그렇게 한다 — 그중
 하나는 검사 둘이 서로를 가린 경우였고, 둘이 일치하는 입력만 먹였더니 하나를
 통째로 지워도 전부 초록이었다.
 
@@ -603,6 +605,14 @@ e2e            13  (4 files)       부하 하네스    39  (3 files)
 | `table-move` | 좌석 해제 → 걸어가서 참가 OTP로 재착석 |
 | `table-autocreate` | 일곱이 앉아도 테이블은 늘지 않는다 — 여는 것은 상점이다 |
 | `full-flow` | **회원가입부터 대회 마무리까지.** 스텁 없이 WS 경유 |
+| `ante` | 앤티가 쇼다운·정산까지 칩 총량을 지킨다 |
+| `concurrent-burst` | 동시 요청 폭탄 — 막는 것이 락인지 유니크 제약인지 |
+| `no-show` | 돈만 내고 안 온 사람이 있어도 대회가 스스로 닫힌다 |
+| `rake` · `itm-scaling` | 상점 몫이 붙은 대회 · 엔트리가 늘면 상금권도 는다 |
+| `icm-chop` · `abort-settlement` · `closed-tournament` | 합의로 끝낸다 · 중단하면 환불한다 · 닫힌 대회에는 아무것도 안 쓴다 |
+| `syncing` · `pause-resume` | 복구의 수명(`SYNCING`) · 정지한 판을 딜러가 다시 연다 |
+| `redis-outage` · `rebuy-outage` · `mirror-outage` · `close-outage` | **Redis만 죽는다** — 진행 중 · 리바인 창 · 참가 · 대회를 닫는 순간 |
+| `rebuy-restart` · `finish-retry` | **프로세스가 끊긴다** — 리바인 창에서 · 마지막 탈락이 커밋된 직후에 |
 
 
 ---
@@ -701,7 +711,7 @@ erDiagram
   Table ||--o{ TablePlayer : "좌석"
 
   TournamentParticipation {
-    enum   status "WAITING PLAYING ELIMINATED AWARDED"
+    enum   status "WAITING PLAYING RELEASED ELIMINATED AWARDED"
     int    currentStack "칩 — 좌석이 아니라 여기 산다"
     string playerOtp "평문. 마이페이지가 다시 보여준다"
     int    finalPlace
@@ -716,7 +726,7 @@ erDiagram
     int buttonUser "지난 핸드의 버튼 좌석"
   }
   Tournament {
-    enum   status "PENDING ONGOING SYNCING FINISHED"
+    enum   status "PENDING ONGOING SYNCING FINISHED CANCELLED"
     string dealerOtpHash "해시로만"
     int    rebuyUntil
     int    pausedMs "장애로 멈춘 누적 시간"
@@ -746,12 +756,14 @@ erDiagram
 | 방향 | 이벤트 | 내용 |
 |---|---|---|
 | → 서버 | `PLAYER_ACTION` | `CHECK` `CALL` `FOLD` `RAISE`(+amount) |
-| → 서버 | `DEALER_ACTION` | `START_PRE_FLOP` `RESOLVE_WINNERS` `DEALER_FOLD` `DEALER_KICK` `RETRY_CHECKPOINT` |
+| → 서버 | `DEALER_ACTION` | `START_PRE_FLOP` `RESOLVE_WINNERS` `DEALER_FOLD` `DEALER_KICK` `RETRY_CHECKPOINT` `RESUME_TABLE` |
 | → 서버 | `REBUY_RESPONSE` | 리바인 수락/거절 |
 | → 클라 | `renderGame` | 테이블 상태 브로드캐스트 |
 | → 클라 | `renderSeatList` | 좌석 현황 (예매 화면) |
 | → 클라 | `REBUY_PROMPT` | 리바인 확인 요청 (개별 플레이어) |
 | → 클라 | `keepalive` | 아직 붙어 있다는 앱 레벨 신호 (페이로드 없음) |
+| → 클라 | `serverOutage` · `tournamentSyncing` | Redis 장애 · 딜러 복귀 대기(`k/n`) |
+| → 클라 | `tournamentClosed` | 대회가 닫혔다 — 종료와 중단을 갈라 싣는다 |
 
 권한은 스키마가 아니라 게이트웨이가 본다.
 
@@ -806,6 +818,7 @@ npm run dev:frontend   # Next dev     (http://localhost:3000)
 npm run test           # 단위 테스트 셋(contract · 백엔드 · 프론트). 인프라 없이 1분
 npm run test:int       # 통합 테스트. 컨테이너 기동부터 자동
 npm run test:e2e       # 화면 회귀(Playwright). 시드가 먼저다. 개발 서버는 떠 있으면 재사용
+npm run test:outage    # 실제 kill. Redis·백엔드를 진짜로 죽였다 살린다(Docker, 약 3분)
 npm run demo           # 데모 촬영. 시드 → 프론트 빌드 → 장면 다섯을 한 실행으로
 npm run assets         # 촬영본을 자르고 합쳐 img/ 로 (ffmpeg-static)
 npm run demo:settlement  # 정산 촬영. 마무리 셋을 각각 시드부터 다시 돈다
@@ -866,30 +879,23 @@ REDIS_PASSWORD=<password>
 화면이다). 그다음 T87–T96이 **닫힌 대회가 화면마다 다르게 보이던 것**을 맞추고
 (T87–T91), 서버가 멎었다 돌아오는 구간을 세웠다 — 자동 재접속(T93) · 정지 동안
 흐른 턴 시계(T94) · 정지와 재개의 표시(T95) · `SYNCING`(T96). 뒤 넷이 §1의
-복구 절이다. **README에 들어가지 않을 화면은 그리지 않는다**가 화면
+복구 절이다. 이어서 **Redis만 죽는 경로**(T97–T106)와 **프로세스를 진짜로 죽이는
+무대**(T107)를 세웠고, 그 무대가 재시작에 탈락·우승 상금이 사라지던 결함 둘을
+찾았다(T108 · T109). 결함 대장은 [`tickets-recovery.md`](./docs/tickets-recovery.md). **README에 들어가지 않을 화면은 그리지 않는다**가 화면
 명세의 첫 규칙이었고, 그래서 안 그린 화면 목록도
 [`명세`](./docs/superpowers/specs/2026-08-08-readme-demo-design.md)에 남아 있다.
 
 ### 안 하기로 한 것
 
-목록이 아니라 **판단**이다. 항목마다의 근거는
-[`backlog.md`](./docs/backlog.md) 「하지 않는 것」에 있고, 공통점은 하나다 —
-**규칙이 아니라 사람의 결정인 것은 코드가 정할 수 없다.**
-
-> 레이크와 ICM 찹은 **한동안 이 표에 있었다.** 「비율이 들어와도 불변식의 모양은
-> 안 바뀐다」가 근거였는데, 그 말이 맞아서 나중에 둘 다 들어올 수 있었다 —
-> 레이크는 T80, 마무리 셋은 T79–T86이다. 지금은 상단 ⑥·⑦과 §1의 마무리 표가
-> 그 자리다.
+**규칙이 아니라 사람의 결정인 것은 코드가 정할 수 없다.** 근거는
+[`backlog.md`](./docs/backlog.md)의 각 절에 있다.
 
 | 안 하기로 한 것 | 왜 |
 |---|---|
 | **딜러 단말 신원** | 닫아서 얻는 것 둘(단말 단위 내보내기, 감사 로그 구분)이 지금 다 비어 있다 |
 | **테이블 간 자동 밸런싱** | 언제 누구를 어디로 보낼지가 현장 판단이다. 해제 → 걸어가서 재착석(T27–T29)까지 했다 |
 | **WS 수평 확장** | 서버를 여러 대 띄우는 얘기지 대회를 여럿 여는 얘기가 아니다. 한 프로세스에서 동시 대회는 이미 된다 |
-| **감사 로그** | 기준선은 장부가 맞고 대회가 닫히는 것이지 누가 무엇을 눌렀나가 아니다 |
-
-이 절이 취소되는 조건: 실제로 운영에 올리기로 하면 WS 확장과 복구 운영자
-화면이 먼저 돌아온다. **그 전까지는 못 한 것이 아니라 안 하기로 한 것이다.**
+| **어드민 · 감사 로그** | 기준선은 장부가 맞고 대회가 닫히는 것이지 누가 무엇을 눌렀나가 아니다. 상점 계정은 시드가 만든다 |
 
 ### 판단이 먼저 필요했던 것
 
@@ -911,12 +917,11 @@ REDIS_PASSWORD=<password>
 |---|---|
 | **WS 세션만 인메모리 Map** | 게임 상태는 Redis, 진실은 DB라 서버는 상태를 안 들지만 **연결만은 프로세스에 묶인다.** 단일 프로세스 전제 — 다만 이건 **재고 끝에 남긴 것**이다. 1코어 512MB가 12,420명을 들고, 코어를 12분의 1로 떨궈도 서버 지연이 안 변한다(§2). 프로세스를 늘려야 할 이유가 아직 없다 |
 | **복구의 천장은 핸드 경계** | 핸드 중간은 일부러 안 되살린다 — 카드가 실물이라 그 핸드는 사람이 다시 딜한다. 지키는 선은 "다음 핸드가 옳은 사람에게서 시작된다"까지 |
-| **등록 마감의 권위가 Redis에만** | 자동 마감 뒤에도 신규 참가 결제는 안 막힌다. 닫는 코드는 Redis를, 결제 게이트는 DB 컬럼을 본다 |
-| **좌석 비트맵만 잃은 부분 유실** | 복구 판정이 스냅샷 유무뿐이다. 비트맵만 잃으면 살아 있는 스냅샷과 DB 좌석 행 중 무엇이 권위인지 정해야 한다 — fix가 아니라 설계 판단 |
-| **`activePlayers`는 결제 기준** | 노쇼가 있으면 카운터가 탈락 가능한 인원보다 높아 자동 마무리 게이트가 안 걸린다. 상점의 수동 종료라는 우회가 있다 |
-| **복귀 표시 `k/n`이 늦게 줄어든다** | 방에서 먼저 지워진 소켓은 끊김이 재집계를 깨우지 못한다. n/n 판정은 붙어 있는 딜러만 세어 안전하고, **다른 딜러 화면의 숫자만 다음 이벤트까지 높게 남는다** |
 | **동시 시작의 Redis 쓰기 경합** | 두 시작이 동시에 사전 검사를 통과하면 진 쪽은 DB 조건부 update에서 막히지만, 그 전에 쓴 Redis(버튼 추첨 · 블라인드 기준점)가 남는다. 상점 화면이 시작 버튼을 `PENDING`에서만 그린다 |
 | **로그인 블록이 다른 카운터를 얼린다** | `@nestjs/throttler`의 인메모리 저장소가 히트 감소 타이머를 **키가 아니라 throttler 이름 단위**로 지운다. 한 키의 블록이 풀리면 다른 키의 감소 타이머까지 취소된다. 저장소를 갈아야 고쳐지니 범위 밖으로 뒀다 |
+| **Redis 데이터 유실 뒤의 재구성** | 볼륨이 없거나 AOF가 깨진 뒤 **런타임**에 스냅샷을 다시 세우는 길이 없다. 재구성은 부팅 전용이다 |
+| **조용한 끊김** | 망이 RST 없이 끊기면 Redis 장애를 TCP 타임아웃만큼 늦게 안다. 그동안은 장애 가드가 서기 전과 같다 |
+| **닫는 중에 생긴 테이블** | `completeSession`이 정리할 테이블 목록을 트랜잭션 밖에서 읽어, 그 사이 열린 테이블의 Redis 키가 남는다. 돈과 무관하다 |
 | **소켓 스윕의 틱 비용** | 10초마다 모든 소켓에 ping과 `keepalive`를 보낸다. 12,000명 무대면 틱마다 쓰기 약 2.4만 번이라 지연 그래프에 10초 주기 스파이크로 보일 수 있다 — 다음 램프에서 확인한다 |
 
 ---
@@ -934,8 +939,9 @@ REDIS_PASSWORD=<password>
 | [`docs/review.md`](./docs/review.md) | MVP 시점 전수 코드 리뷰 — 모든 발견의 출발점 |
 | [`docs/fixlist.md`](./docs/fixlist.md) | 1단계 발견 대장 (닫힘) |
 | [`docs/tickets.md`](./docs/tickets.md) | 1단계 작업 기록 T1–T21과 판단 근거 (닫힘) |
-| [`docs/backlog.md`](./docs/backlog.md) | 할 일 B1–B11과 **안 하기로 한 것의 근거** |
+| [`docs/backlog.md`](./docs/backlog.md) | B1–B11의 방향과 **안 하기로 한 것의 근거** |
 | [`docs/tickets-audit.md`](./docs/tickets-audit.md) | 전수검사가 찾은 결함 T58–. 상태 열이 진행 현황이다 |
+| [`docs/tickets-recovery.md`](./docs/tickets-recovery.md) | 서버·Redis가 멎었다 돌아오는 경로의 결함 T93– |
 | `docs/superpowers/plans/` · `specs/` | 티켓별 계획과 설계 |
 | [`load/README.md`](./load/README.md) | 부하 무대와 봇 |
 | [`docs/threat-model.md`](./docs/threat-model.md) | 신뢰 경계. 인증 판단의 전제 |

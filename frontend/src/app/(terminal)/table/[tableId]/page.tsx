@@ -2,11 +2,17 @@ import { cookies } from 'next/headers';
 import SeatGameClient from './SeatGameClient';
 import { SERVER_RECOVERING_MESSAGE, TableState } from '@playsync/contract';
 import { isServerRecovering } from '@/lib/server-outage';
+import { findClosedTournament } from '@/lib/closed-tournament';
+import TournamentClosedOverlay from '@/component/TournamentClosedOverlay';
 
 type InitialGameData = { tableState: TableState; seatIndex: number };
 /** 서버 장애(T97). SSR 조회가 503이면 아예 못 받은 것이 아니라 서버가
  * 복구 중이라는 뜻이다 — 「불러오지 못했습니다」와 다른 안내를 그린다. */
-type GameDataResult = InitialGameData | { kind: 'recovering' } | null;
+type GameDataResult =
+  | InitialGameData
+  | { kind: 'recovering' }
+  | { kind: 'closed'; closed: NonNullable<Awaited<ReturnType<typeof findClosedTournament>>> }
+  | null;
 
 /**
  * 첫 화면에 그릴 스냅샷. **실패는 `null`이다.**
@@ -36,6 +42,9 @@ async function getInitialGameData(tableId: string): Promise<GameDataResult> {
   if (isServerRecovering(res)) return { kind: 'recovering' };
 
   if (!res.ok) {
+    // 닫힌 직후 다시 뜬 단말이면 실패가 아니라 끝난 것이다(`findClosedTournament`).
+    const closed = await findClosedTournament(token);
+    if (closed) return { kind: 'closed', closed };
     console.error(`테이블 상태를 불러오지 못했습니다. (${res.status})`);
     return null;
   }
@@ -90,7 +99,8 @@ async function getTableContext(
 export default async function GamePage({ params }: { params: Promise<{ tableId: string }> }) {
   const { tableId } = await params;
   const gameData = await getInitialGameData(tableId);
-  const recovering = gameData !== null && 'kind' in gameData;
+  const recovering = gameData !== null && 'kind' in gameData && gameData.kind === 'recovering';
+  const closed = gameData !== null && 'kind' in gameData && gameData.kind === 'closed' ? gameData.closed : null;
   const initialData = gameData !== null && 'kind' in gameData ? null : gameData;
   const { storeId, tableOrder } = await getTableContext(
     initialData?.tableState?.tournamentId,
@@ -101,6 +111,8 @@ export default async function GamePage({ params }: { params: Promise<{ tableId: 
     <main className="h-screen overflow-hidden bg-tb-bg">
       {recovering ? (
         <p className="p-8 text-tb-ink">{SERVER_RECOVERING_MESSAGE}</p>
+      ) : closed ? (
+        <TournamentClosedOverlay status={closed.status} storeId={closed.storeId} terminal="seat" />
       ) : initialData ? (
         <SeatGameClient
           tableId={tableId}

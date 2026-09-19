@@ -24,7 +24,7 @@ function startsWithSegment(pathname: string, prefix: string): boolean {
   return pathname === prefix || pathname.startsWith(`${prefix}/`);
 }
 
-export function middleware(request: NextRequest): NextResponse {
+export function proxy(request: NextRequest): NextResponse {
   const { pathname } = request.nextUrl;
 
   if (PUBLIC_PREFIXES.some((p) => startsWithSegment(pathname, p))) {

@@ -173,9 +173,9 @@ test('참가자 폰의 대회 상세가 백엔드의 참가비와 블라인드�
 });
 
 /**
- * 역할 불일치 404(`middleware.ts:37`)가 최종 응답에서도 실제로 404인지.
+ * 역할 불일치 404(`proxy.ts:37`)가 최종 응답에서도 실제로 404인지.
  *
- * `middleware.test.ts`는 `NextResponse.rewrite(..., { status: 404 })`가
+ * `proxy.test.ts`는 `NextResponse.rewrite(..., { status: 404 })`가
  * 반환하는 객체의 `.status`만 본다 — Next.js가 그 응답을 실제로 서빙할 때도
  * 404를 내는지는 목이 못 잡는다(이 파일 상단 주석과 같은 이유). USER 계정으로
  * 상점 콘솔 URL을 직접 열어 `page.goto`의 실제 HTTP 상태를 본다.

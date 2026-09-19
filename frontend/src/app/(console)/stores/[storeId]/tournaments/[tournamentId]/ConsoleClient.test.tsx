@@ -3,8 +3,9 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ConsoleClient, { type SeatOccupant, type TournamentMeta } from './ConsoleClient';
 
+const router = vi.hoisted(() => ({ refresh: vi.fn(), push: vi.fn() }));
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }),
+  useRouter: () => router,
 }));
 
 const TOURNAMENT: TournamentMeta = {
@@ -315,5 +316,20 @@ describe('ConsoleClient — 서버 복구 중', () => {
 
     expect(screen.getByText('복구 중')).toBeInTheDocument();
     expect(screen.getByText('대회 마무리 — 되돌릴 수 없습니다')).toBeInTheDocument();
+  });
+});
+
+/**
+ * 콘솔에는 폴링이 없다 — 조작이 성공할 때만 다시 읽는다(`run`). 남이 바꾼 값
+ * (다른 테이블의 탈락, 딜러의 입력)을 보려면 상점이 직접 다시 읽을 길이 있어야 한다.
+ */
+describe('새로고침', () => {
+  it('누르면 서버 컴포넌트를 다시 읽는다', async () => {
+    router.refresh.mockClear();
+    renderConsole();
+
+    await userEvent.click(screen.getByRole('button', { name: '새로고침' }));
+
+    expect(router.refresh).toHaveBeenCalledTimes(1);
   });
 });

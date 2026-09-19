@@ -383,7 +383,7 @@ test.describe('데모 — 정산', () => {
     const consoleUrl = `/stores/${storeId}/tournaments/${tournamentId}`;
     await openWithToken(console_, ownerToken, consoleUrl);
     // 전광판도 **상점 경로**다. `/tournaments/:id/display`는 미들웨어가 USER
-    // 전용으로 막아 로그인으로 튕긴다(`middleware.ts`) — 참가자 화면과 상점
+    // 전용으로 막아 로그인으로 튕긴다(`proxy.ts`) — 참가자 화면과 상점
     // 화면이 같은 이름을 쓰기 때문이고, 전광판은 상점이 트는 물건이다.
     await openWithToken(board, ownerToken, `${consoleUrl}/display`);
 
