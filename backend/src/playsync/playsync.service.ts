@@ -601,17 +601,24 @@ export class PlaysyncService {
       return { eliCount: busted.length, remaining: activePlayers }
     });
 
-    // 카운터는 **조기 반환보다 앞에서** 맞춘다(T60). 중복 도착은 정상 경로이고,
-    // 대입이라 그때가 오히려 어긋난 값을 지우는 기회다.
+    // **중복 도착도 끝까지 간다**(T109). 예전에는 여기서 조기 반환했는데, 중복
+    // 도착에는 「첫 번째가 커밋 뒤에 끊긴 재시도」도 있다 — `retryCheckpoint` →
+    // `finishHand` → `eliminateBusted`가 그 길이다. 조기 반환이면 첫 번째가 못 한
+    // 우승 상금과 비트맵 정리가 영영 안 돈다. 아래는 전부 멱등이라 다시 해도 된다.
+    //
+    // 최후 1인 판정도 DB가 돌려준 값으로 한다(T60). Redis는 전광판 전용이다.
+    // **Redis보다 먼저다**(T109) — 돈이 파생 표시의 장애에 막히지 않게.
+    if (result.remaining <= 1) {
+      await this.tournamentFinished(tournamentId)
+    }
+
+    // 카운터는 대입이라 중복 도착이 오히려 어긋난 값을 지우는 기회다(T60).
     await this.redis.syncActivePlayer(
       tournamentId,
       result.remaining,
       tournamentInfo.startStack,
       tournamentInfo.entryFee,
     );
-
-    // 중복 도착이면 여기서 끝난다. 좌석 비트맵과 userContext는 첫 번째가 이미 지웠다.
-    if (result.eliCount === 0) return;
 
     // 화살표 본문이 블록인데 `return`이 없어 `map`이 `undefined[]`를 만들었다.
     // `Promise.all([undefined, undefined])`는 즉시 resolve되므로, `await`가
@@ -621,17 +628,16 @@ export class PlaysyncService {
     //
     // 여기는 DB 커밋 **이후**라 체크포인트를 위협하지 않는다. DB가 진실이고
     // 이 둘은 파생 표시다. 그래서 차단이 아니라 실패를 올려 보이게만 한다.
+    //
+    // 중복 도착에서 다시 꺼도 남의 비트를 끄지 않는다. 다시 오는 두 길
+    // (`resolveWinners` 3단계, `finishHand`)은 둘 다 `initTable`이 좌석을 비우기
+    // 전이라 그 자리는 아직 이 사람의 것이다.
     await Promise.all(
       players.flatMap(player => [
         this.redis.updateSeatBitmap(tournamentId, tableId, player.seatIndex, false),
         this.redis.deleteUserContext(tournamentId, player.id),
       ])
     );
-
-    // 최후 1인 판정도 DB가 돌려준 값으로 한다(T60). Redis는 전광판 전용이다.
-    if (result.remaining <= 1) {
-      await this.tournamentFinished(tournamentId)
-    }
   }
 
   // 최후 1인
@@ -647,7 +653,15 @@ export class PlaysyncService {
         status: { in: [...LIVE_PLAYER_STATUSES] },
       }
     });
-    if (!user) throw new Error('유저 없음.');
+    if (!user) {
+      // **이미 끝난 대회다**(T109). `eliminatePlayer`의 중복 도착이 여기까지 오므로
+      // 두 번째 호출은 1위가 이미 `AWARDED`라 살아 있는 사람이 없다.
+      const awarded = await this.prisma.tournamentParticipation.count({
+        where: { tournamentId, finalPlace: 1 },
+      });
+      if (awarded > 0) return;
+      throw new Error('유저 없음.');
+    }
     await this.prisma.$transaction(async (tx) => {
       const { totalBuyinAmount, entryFee, rakePercent, payoutTable } = await tx.tournament.findUniqueOrThrow({
         where: { id: tournamentId },

@@ -274,6 +274,22 @@ describe('탈락 처리 멱등성', () => {
         .toBe('redis 2 / db 2');
     });
 
+    it('Redis가 던져도 우승 상금은 먼저 나간다 (T109)', async () => {
+      await playsync.eliminatePlayer(TOURNAMENT, TABLE, [makePlayer('carol', 2, 0)], dashboard());
+      jest.spyOn(redisService, 'syncActivePlayer').mockRejectedValue(new Error('redis down'));
+
+      await expect(
+        playsync.eliminatePlayer(TOURNAMENT, TABLE, [makePlayer('bob', 1, 0)], dashboard()),
+      ).rejects.toThrow('redis down');
+
+      const alice = await prisma.tournamentParticipation.findUniqueOrThrow({
+        where: { tournamentId_userId: { tournamentId: TOURNAMENT, userId: 'alice' } },
+      });
+      // 이 시드는 DB의 걷은 총액이 0이라 상금이 0이고, 그래서 `AWARDED`가 아니라
+      // `ELIMINATED`다. 보는 것은 「최후 1인 판정이 돌았다」 — 등수다.
+      expect(`alice 등수 ${alice.finalPlace}`).toBe('alice 등수 1');
+    });
+
     it('중복 도착도 어긋난 카운터를 고친다', async () => {
       await playsync.eliminatePlayer(TOURNAMENT, TABLE, [makePlayer('carol', 2, 0)], dashboard());
       await redis.hset(infoKey, 'activePlayer', 9); // 그 사이 누가 어긋뜨렸다
