@@ -1,4 +1,4 @@
-import { Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { ForbiddenException, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { ConnectedSocket, MessageBody, OnGatewayConnection, OnGatewayDisconnect, SubscribeMessage, WebSocketGateway } from '@nestjs/websockets';
 import { Role, TournamentStatus } from '@prisma/client';
@@ -13,6 +13,7 @@ import {
   TableState as WireTableState,
   TournamentClosedSchema,
   TournamentSyncingSchema,
+  DEALER_REVOKED_REASON,
   SEAT_REVOKED_REASON,
   SERVER_OUTAGE_EVENT,
   SERVER_RECOVERING_MESSAGE,
@@ -249,6 +250,14 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
           userId: payload.sub,
           tournamentId: payload.tournamentId,
           ver: payload.seatTokenVersion,
+        });
+      }
+      if (payload.role === Role.DEALER) {
+        await this.dealer.assertDealerSessionValid({
+          sub: payload.sub,
+          tournamentId: payload.tournamentId!,
+          tableId: payload.tableId!,
+          tokenVersion: payload.tokenVersion!,
         });
       }
 
@@ -854,10 +863,20 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     );
   }
 
+  @OnEvent('DEALER_SESSION_REVOKED')
+  handleDealerSessionRevoked(payload: { tournamentId: string }) {
+    this.closeWhere(
+      (s) => s.role === Role.DEALER && s.tournamentId === payload.tournamentId,
+      DEALER_REVOKED_REASON,
+    );
+  }
+
   /**
    * 방에 넣은 뒤 좌석 세대를 한 번 더 본다(T110). 앞선 대조와 `addToMap` 사이에
    * 세대가 오르면 `SEAT_TOKENS_REVOKED`는 아직 방에 없는 이 소켓을 놓친다.
-   * 틀리면 닫고 방에서 뺀다. 닫혔으면 `true`.
+   * 틀리면 닫고 방에서 뺀다. 닫혔으면 `true`. 낡은 토큰(`ForbiddenException`)만
+   * 4001이다 — 클라가 재연결을 멈추는 코드라, 일시적인 DB 오류에는 재시도되는
+   * 1008로 닫는다.
    */
   private async closeIfSeatStale(client: any, payload: WsIdentity): Promise<boolean> {
     if (payload.role !== SEAT_ROLE) return false;
@@ -868,9 +887,10 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
         ver: payload.seatTokenVersion,
       });
       return false;
-    } catch {
+    } catch (e) {
       try {
-        client.close(SESSION_REVOKED_CLOSE_CODE, SEAT_REVOKED_REASON);
+        if (e instanceof ForbiddenException) client.close(SESSION_REVOKED_CLOSE_CODE, SEAT_REVOKED_REASON);
+        else client.close(1008, '인증 실패');
       } catch {
         // 이미 닫힌 소켓.
       }

@@ -15,7 +15,7 @@ import { PrismaClient, Role, TournamentStatus } from '@prisma/client';
 import { createTestRedis, flushTestRedis } from '../../test/helpers/redis';
 import { closeTestPrisma, createTestPrisma, truncateAll } from '../../test/helpers/prisma';
 import { RecoveryService } from 'src/recovery/recovery.service';
-import { SEAT_REVOKED_REASON, SERVER_OUTAGE_EVENT, SERVER_RECOVERING_MESSAGE, TOURNAMENT_SYNCING_EVENT } from '@playsync/contract';
+import { DEALER_REVOKED_REASON, SEAT_REVOKED_REASON, SERVER_OUTAGE_EVENT, SERVER_RECOVERING_MESSAGE, TOURNAMENT_SYNCING_EVENT } from '@playsync/contract';
 
 /**
  * 게이트웨이의 인바운드 경계.
@@ -36,6 +36,7 @@ describe('WsGateway 인바운드 경계', () => {
     startPreFlop: jest.Mock;
     resolveWinners: jest.Mock;
     handleDealerAction: jest.Mock;
+    assertDealerSessionValid: jest.Mock;
   };
 
   const TABLE = 'table-1';
@@ -205,6 +206,7 @@ describe('WsGateway 인바운드 경계', () => {
       startPreFlop: jest.fn().mockResolvedValue(makeState()),
       resolveWinners: jest.fn().mockResolvedValue(makeState()),
       handleDealerAction: jest.fn().mockResolvedValue(makeState()),
+      assertDealerSessionValid: jest.fn().mockResolvedValue(undefined),
     };
     // SYNCING 판정 자체는 게이트웨이가 메모리 소켓 수로 하고, `completeSync`는
     // "n/n이면 끝낸다"는 위임일 뿐이라 목이다 — 그 서비스의 원자성은
@@ -1813,6 +1815,61 @@ describe('WsGateway 인바운드 경계', () => {
 
       expect(client.close).toHaveBeenCalledWith(4001, expect.any(String));
       expect([...((gateway as any).tableSessions.get(TABLE) ?? [])]).not.toContain(client);
+    });
+
+    it('두 번째 대조가 낡음이 아닌 오류로 실패하면 1008로 닫고 방에서 뺀다 — 재시도 가능', async () => {
+      await ensureParticipation('alice', TOURNAMENT, 3);
+      const real = playsync.assertTableAccess.bind(playsync);
+      // 첫 대조는 이미 지났다. 접근 판정이 끝나는 순간 DB가 죽는다.
+      jest.spyOn(playsync, 'assertTableAccess').mockImplementationOnce(async (...args) => {
+        await real(...args);
+        jest.spyOn(prisma.tournamentParticipation, 'findUnique').mockRejectedValueOnce(new Error('db down'));
+      });
+      const t = await tickets.issue({
+        sub: 'alice', role: SEAT_ROLE, tournamentId: TOURNAMENT, seatTokenVersion: 3,
+      });
+
+      const client = await connect(t);
+
+      expect(client.close).toHaveBeenCalledWith(1008, expect.any(String));
+      expect(client.close).not.toHaveBeenCalledWith(4001, expect.anything());
+      expect([...((gateway as any).tableSessions.get(TABLE) ?? [])]).not.toContain(client);
+    });
+  });
+
+  describe('딜러 폐기(T110)', () => {
+    it('DEALER_SESSION_REVOKED는 그 대회의 딜러 소켓만 4001로 닫는다', async () => {
+      const dealerSocket = async (tournamentId: string) => {
+        const t = await tickets.issue({
+          sub: 'dealer-' + tournamentId, role: Role.DEALER, tournamentId, tableId: TABLE, tokenVersion: 0,
+        });
+        const client = await connect(t);
+        expect(client.close).not.toHaveBeenCalled();
+        return client;
+      };
+      const dealerA = await dealerSocket('A');
+      const dealerB = await dealerSocket('B');
+      await ensureParticipation('u1', 'A', 0);
+      const seatA = makeClient();
+      await gateway.handleConnection(seatA, makeRequest(
+        `tournamentId=A&ticket=${await tickets.issue({ sub: 'u1', role: SEAT_ROLE, tournamentId: 'A', seatTokenVersion: 0 })}`,
+        ORIGIN,
+      ));
+      expect(seatA.close).not.toHaveBeenCalled();
+
+      gateway.handleDealerSessionRevoked({ tournamentId: 'A' });
+
+      expect(dealerA.close).toHaveBeenCalledWith(4001, DEALER_REVOKED_REASON);
+      for (const other of [dealerB, seatA]) expect(other.close).not.toHaveBeenCalled();
+    });
+
+    it('딜러 티켓도 접속에서 세션을 다시 본다 — 30초 창에 내보내졌으면 거절', async () => {
+      dealer.assertDealerSessionValid.mockRejectedValueOnce(new Error('만료된 딜러 세션입니다.'));
+      const t = await tickets.issue({
+        sub: 'dealer-session-1', role: Role.DEALER, tournamentId: TOURNAMENT, tableId: TABLE, tokenVersion: 0,
+      });
+      const client = await connect(t);
+      expect(client.close).toHaveBeenCalledWith(1008, expect.any(String));
     });
   });
 

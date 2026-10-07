@@ -1573,7 +1573,8 @@ export class SessionService {
   }
 
   /**
-   * 붙어 있는 딜러를 끊는다. 남은 토큰은 만료(최대 1시간)까지 살아 있다.
+   * 붙어 있는 딜러를 끊는다. 세대를 올려 옛 토큰을 갱신·티켓에서 막고,
+   * `DEALER_SESSION_REVOKED`로 열린 딜러 소켓을 닫는다(T110).
    *
    * 소유권 확인이 먼저라, 없는 tournamentId를 넘기면 여기서 404로 걸린다
    * (예전에는 검사가 없어 `dealerSession.update`가 P2025를 던지고 그걸
@@ -1599,6 +1600,7 @@ export class SessionService {
       }
       throw e;
     }
+    this.eventEmitter.emit('DEALER_SESSION_REVOKED', { tournamentId });
   }
 
   /**

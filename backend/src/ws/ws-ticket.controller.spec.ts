@@ -105,6 +105,7 @@ describe('WsTicketController', () => {
       role: Role.DEALER,
       tournamentId: 'trnmt-1',
       tableId: 'tbl-7',
+      tokenVersion: 3,
     });
   });
 

@@ -451,6 +451,20 @@ describe('SessionService — 딜러 OTP 재발급과 내보내기', () => {
     await expect(dealerService.refreshToken(payload)).rejects.toThrow(ForbiddenException);
   });
 
+  it('내보내기는 DEALER_SESSION_REVOKED를 쏜다 — 딜러 세션이 없으면 쏘지 않는다', async () => {
+    const emit = jest.spyOn((sessionService as any).eventEmitter, 'emit');
+    const { tournamentId, ownerId } = await seedTournament({ status: TournamentStatus.ONGOING });
+
+    await sessionService.revokeDealerSession(tournamentId, ownerId);
+    expect(emit).toHaveBeenCalledWith('DEALER_SESSION_REVOKED', { tournamentId });
+
+    emit.mockClear();
+    await prisma.table.deleteMany({ where: { tournamentId } });
+    await prisma.dealerSession.delete({ where: { tournamentId } });
+    await sessionService.revokeDealerSession(tournamentId, ownerId);
+    expect(emit).not.toHaveBeenCalledWith('DEALER_SESSION_REVOKED', expect.anything());
+  });
+
   /**
    * 재발급은 평문 OTP를 응답에 실어 돌려준다. 역할만 확인하고 지나가면 다른
    * 상점 관리자가 남의 대회의 딜러 접근권을 만들어낼 수 있다.

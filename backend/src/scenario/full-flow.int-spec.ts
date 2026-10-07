@@ -104,13 +104,14 @@ describe('시나리오 — 회원가입부터 대회 마무리까지', () => {
    */
   async function connect(token: string) {
     const decoded = jwt.verify(token) as {
-      sub: string; role: Role; tableId?: string; tournamentId?: string;
+      sub: string; role: Role; tableId?: string; tournamentId?: string; tokenVersion?: number;
     };
     const ticket = await tickets.issue({
       sub: decoded.sub,
       role: decoded.role,
       tableId: decoded.tableId,
       tournamentId: decoded.tournamentId,
+      tokenVersion: decoded.tokenVersion,
     });
 
     const client = makeClient();

@@ -30,7 +30,7 @@ export class WsTicketController {
     // 아무와도 맞지 않아 조용히 거부된다.
     if (req.user.role === Role.DEALER) {
       // 발급 시점에 세션을 대조한다. 상점이 내보낸 딜러는 새 연결도 재연결도
-      // 여기서 막힌다 — 이미 붙어 있는 소켓을 끊는 것은 계획 B의 몫이다.
+      // 여기서 막힌다 — 붙어 있는 소켓은 내보내기가 닫는다(`DEALER_SESSION_REVOKED`, T110).
       await this.dealer.assertDealerSessionValid({
         sub: req.user.id,
         tournamentId: req.user.tournamentId,
@@ -44,6 +44,7 @@ export class WsTicketController {
           role: Role.DEALER,
           tournamentId: req.user.tournamentId,
           tableId: req.user.tableId,
+          tokenVersion: req.user.tokenVersion,
         }),
       };
     }
