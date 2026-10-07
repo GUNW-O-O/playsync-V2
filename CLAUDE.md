@@ -117,7 +117,7 @@ contract       85  (8 suites)
 e2e            13  (4 files, regression 프로젝트)
 데모 촬영       1  (`npm run demo`)
 정산 촬영       1  (`npm run demo:settlement`, 마무리마다 한 번씩 셋)
-부하 하네스    39  (3 files, `cd load && npm test`)
+부하 하네스    49  (4 files, `cd load && npm test`)
 실제 kill      26  (2 suites, `npm run test:outage`, jest 117초)
 타입 에러       0
 ```
