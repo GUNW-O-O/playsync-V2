@@ -83,9 +83,12 @@ export function spreadForHerd(herd, limitPerMin) {
 /**
  * 이 응답을 받고 한 번 더 두드릴지, 얼마나 기다릴지.
  *
- * **429만 다시 두드린다.** 401·5xx·연결 실패(k6는 `status` 0)를 재시도에 섞으면
- * "문에 걸렸다"와 "못 잰다"가 한 숫자로 뭉개진다 — `door.js`의 `classify`가
- * 같은 이유로 상태 코드만 본다.
+ * **다시 두드리는 것은 429와 「서버가 답을 못 한 것」(연결 실패 0 · 5xx)이다**(T113).
+ * 앞의 것은 `backoff`, 뒤의 것은 `unreachable`로 사유를 갈라 돌려준다 — 섞으면
+ * "문에 걸렸다"와 "서버가 못 받았다"가 한 숫자로 뭉개진다(`door.js`의 `classify`가
+ * 같은 이유로 상태 코드만 본다). 뒤의 것을 재시도하는 이유는 제품 단말
+ * (`useTableSocket`)이 그렇게 하기 때문이다 — 하네스가 여기서 테이블을 죽이면
+ * 제품보다 엄격한 것을 잰다. 401·403·404는 다시 와도 같은 답이라 멈춘다.
  *
  * 지터는 **전폭(full jitter)**이다. `바닥 + rand()*폭`이라 대기 시각이 폭 전체에
  * 고르게 흩어진다. `바닥 + 폭/2 ± 조금`처럼 가운데로 모으면 무리가 흩어지는 게
@@ -94,20 +97,23 @@ export function spreadForHerd(herd, limitPerMin) {
  * @param {{status: number, headers?: Record<string, string>}} res
  * @param {number} attempt 0부터. 이미 몇 번 두드렸나
  * @param {{spreadMs?: number, maxAttempts?: number, rand?: () => number}} [opts]
- * @returns {{retry: boolean, waitMs: number, reason: 'ok'|'not-limited'|'gave-up'|'backoff'}}
+ * @returns {{retry: boolean, waitMs: number, reason: 'ok'|'not-limited'|'gave-up'|'backoff'|'unreachable'}}
  */
 export function nextAttempt(res, attempt, opts = {}) {
   const { spreadMs = FALLBACK_FLOOR_MS, maxAttempts = DEFAULT_MAX_ATTEMPTS, rand = Math.random } = opts;
   const status = res && res.status;
 
   if (status >= 200 && status < 300) return { retry: false, waitMs: 0, reason: 'ok' };
-  if (status !== 429) return { retry: false, waitMs: 0, reason: 'not-limited' };
+  // 서버가 답을 못 했다(연결 실패 0 · 5xx). 제품 단말이 다시 두드리므로 여기서도
+  // 다시 두드리되, 문에 걸린 것(`backoff`)과 사유를 가른다(T113).
+  const unreachable = !status || status >= 500;
+  if (status !== 429 && !unreachable) return { retry: false, waitMs: 0, reason: 'not-limited' };
   if (attempt + 1 >= maxAttempts) return { retry: false, waitMs: 0, reason: 'gave-up' };
 
-  const floor = retryAfterMs(res);
+  const floor = unreachable ? null : retryAfterMs(res);
   return {
     retry: true,
     waitMs: (floor === null ? FALLBACK_FLOOR_MS : floor) + Math.floor(rand() * spreadMs),
-    reason: 'backoff',
+    reason: unreachable ? 'unreachable' : 'backoff',
   };
 }

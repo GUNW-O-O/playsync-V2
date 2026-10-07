@@ -70,14 +70,33 @@ describe('nextAttempt', () => {
   });
 
   /**
-   * **429만 다시 두드린다.** 401·5xx·연결 실패를 재시도에 섞으면 "문에
-   * 걸렸다"와 "못 잰다"가 한 숫자로 뭉개진다. k6는 응답을 못 받으면 0을 준다.
+   * **자격이 틀린 4xx는 다시 두드리지 않는다.** 403은 세대가 오른 좌석(T110)이라
+   * 단말도 멈추고, 401·404는 다시 와도 같은 답이다.
    */
-  it('429가 아닌 실패는 재시도가 아니다', () => {
-    for (const status of [401, 500, 0]) {
+  it('429가 아닌 4xx는 재시도가 아니다', () => {
+    for (const status of [401, 403, 404]) {
       const r = nextAttempt({ status }, 0);
       assert.equal(`${status} ${r.retry} ${r.reason}`, `${status} false not-limited`);
     }
+  });
+
+  /**
+   * **서버가 응답을 못 한 것은 다시 두드린다 — 단 사유를 따로 남긴다**(T113).
+   * 제품 단말(`useTableSocket`)이 그렇게 하므로 하네스가 여기서 테이블을 죽이면
+   * 제품보다 엄격한 것을 잰다. 사유를 `backoff`와 가르는 이유는 "문에 걸렸다"와
+   * "서버가 못 받았다"가 한 숫자로 뭉개지지 않게 하려는 것이다. k6는 응답을 못
+   * 받으면 0을 준다.
+   */
+  it('연결 실패(0)와 5xx는 unreachable로 다시 두드린다', () => {
+    for (const status of [0, 500, 502, 503]) {
+      const r = nextAttempt({ status }, 0, { spreadMs: 1000, rand: () => 0 });
+      assert.equal(`${status} ${r.retry} ${r.reason} ${r.waitMs}`, `${status} true unreachable ${FALLBACK_FLOOR_MS}`);
+    }
+  });
+
+  it('unreachable도 정해진 횟수를 넘기면 포기한다', () => {
+    const last = nextAttempt({ status: 0 }, 4, { maxAttempts: 5, rand: () => 0 });
+    assert.equal(`${last.retry} ${last.reason}`, 'false gave-up');
   });
 
   it('429면 `Retry-After`를 바닥으로 삼는다', () => {

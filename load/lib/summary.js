@@ -103,7 +103,7 @@ function reconnectLine(summary) {
   return (
     `재접속 ${summary.reconnects}회 복구 중앙 ${r ? r.med : '-'}ms 최대 ${r ? r.max : '-'}ms` +
     ` · 좌석 최대 ${rs ? rs.max : '-'}ms/딜러 최대 ${rd ? rd.max : '-'}ms` +
-    ` · 티켓상한 ${summary.ticketLimited}${gave}`
+    ` · 티켓상한 ${summary.ticketLimited} · 서버무응답 ${summary.ticketUnreachable ?? 0}${gave}`
   );
 }
 
@@ -182,6 +182,7 @@ export function buildSummary(data, name) {
     // `reconnectMs`는 기록되지 않는다 — 소켓 하나가 끝내 안 붙어서다.
     ticketLimited: counter(data, 'ticket_limited'),
     ticketGaveUp: counter(data, 'ticket_gave_up'),
+    ticketUnreachable: counter(data, 'ticket_unreachable'),
     ticketWaitMs: trend(data, 'ticket_wait_ms'),
     myAction: trend(data, 'my_action_ms'),
     // 내 액션의 왕복을 서버 쪽과 단말 쪽으로 쪼갠 값(T76). 합계 하나로는

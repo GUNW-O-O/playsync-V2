@@ -211,6 +211,8 @@ export function dealerLogin(tournamentId, tableId, otp, deviceToken) {
  */
 export const ticketLimited = new Counter('ticket_limited');
 export const ticketGaveUp = new Counter('ticket_gave_up');
+/** 서버가 답을 못 해(연결 실패 0 · 5xx) 다시 두드린 횟수. 상한에 걸린 것(`ticket_limited`)과 가른다(T113). */
+export const ticketUnreachable = new Counter('ticket_unreachable');
 export const ticketWaitMs = new Trend('ticket_wait_ms', true);
 
 /**
@@ -253,7 +255,8 @@ export function wsTicketAttempt(token, attempt = 0) {
   if (verdict.retry) {
     // 상한에 걸린 것은 결함이 아니라 **재려던 것**이다 — 무대를 제품 기본
     // 상한으로 띄우면 재접속 폭발이 실제로 여기 걸린다(T93).
-    ticketLimited.add(1);
+    if (verdict.reason === 'unreachable') ticketUnreachable.add(1);
+    else ticketLimited.add(1);
     ticketWaitMs.add(verdict.waitMs);
     return { waitMs: verdict.waitMs };
   }
