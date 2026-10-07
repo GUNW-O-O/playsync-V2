@@ -1,5 +1,6 @@
-import { Logger } from '@nestjs/common';
+import { ForbiddenException, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { EVENT_LISTENER_METADATA } from '@nestjs/event-emitter/dist/constants';
 import { JwtService } from '@nestjs/jwt';
 import { Queue } from 'bullmq';
 import Redis from 'ioredis';
@@ -15,7 +16,7 @@ import { PrismaClient, Role, TournamentStatus } from '@prisma/client';
 import { createTestRedis, flushTestRedis } from '../../test/helpers/redis';
 import { closeTestPrisma, createTestPrisma, truncateAll } from '../../test/helpers/prisma';
 import { RecoveryService } from 'src/recovery/recovery.service';
-import { SERVER_OUTAGE_EVENT, SERVER_RECOVERING_MESSAGE, TOURNAMENT_SYNCING_EVENT } from '@playsync/contract';
+import { DEALER_REVOKED_REASON, SERVER_OUTAGE_EVENT, SERVER_RECOVERING_MESSAGE, TOURNAMENT_SYNCING_EVENT } from '@playsync/contract';
 
 /**
  * 게이트웨이의 인바운드 경계.
@@ -36,6 +37,7 @@ describe('WsGateway 인바운드 경계', () => {
     startPreFlop: jest.Mock;
     resolveWinners: jest.Mock;
     handleDealerAction: jest.Mock;
+    assertDealerSessionValid: jest.Mock;
   };
 
   const TABLE = 'table-1';
@@ -114,8 +116,47 @@ describe('WsGateway 인바운드 경계', () => {
    * 위 `playerTicket`은 `Role.USER`를 써 왔으므로 **프로덕션이 진짜로 싣는
    * 값을 한 번도 태워 보지 않았다**(T71 잔여 목록).
    */
-  async function seatTicket(userId: string) {
-    return tickets.issue({ sub: userId, role: SEAT_ROLE });
+  async function seatTicket(userId: string, version = 0) {
+    // T110. 좌석 티켓은 대회와 세대를 싣고, 접속이 참가 행과 대조한다 — 행이
+    // 없으면 거절이라 티켓을 내기 전에 행을 세운다.
+    await ensureParticipation(userId, TOURNAMENT, version);
+    return tickets.issue({
+      sub: userId, role: SEAT_ROLE, tournamentId: TOURNAMENT, seatTokenVersion: version,
+    });
+  }
+
+  /** 대회와 참가 행을 (없으면) 만든다. 이미 있으면 세대만 맞춘다. */
+  async function ensureParticipation(userId: string, tournamentId: string, version: number) {
+    await prisma.user.upsert({
+      where: { id: 'gw-owner' }, update: {},
+      create: { id: 'gw-owner', nickname: 'gw-owner', password: 'x', role: Role.STORE_ADMIN },
+    });
+    await prisma.store.upsert({
+      where: { id: 'gw-store' }, update: {}, create: { id: 'gw-store', name: 'gw-store', ownerId: 'gw-owner' },
+    });
+    await prisma.blindStructure.upsert({
+      where: { id: 'gw-blind' }, update: {},
+      create: {
+        id: 'gw-blind', name: 'gw-blind', storeId: 'gw-store',
+        structure: [{ lv: 1, sb: 100, ante: false, duration: 10 }],
+      },
+    });
+    await prisma.tournament.upsert({
+      where: { id: tournamentId }, update: {},
+      create: {
+        id: tournamentId, name: tournamentId, storeId: 'gw-store', blindId: 'gw-blind',
+        dealerOtpHash: 'unused-hash', startStack: 10000, entryFee: 1000,
+        status: TournamentStatus.ONGOING,
+      },
+    });
+    await prisma.user.upsert({
+      where: { id: userId }, update: {}, create: { id: userId, nickname: userId, password: 'x' },
+    });
+    await prisma.tournamentParticipation.upsert({
+      where: { tournamentId_userId: { tournamentId, userId } },
+      update: { seatTokenVersion: version },
+      create: { tournamentId, userId, playerOtp: `otp-${tournamentId}-${userId}`.slice(0, 40), seatTokenVersion: version },
+    });
   }
 
   async function dealerTicket(tableId: string) {
@@ -166,6 +207,7 @@ describe('WsGateway 인바운드 경계', () => {
       startPreFlop: jest.fn().mockResolvedValue(makeState()),
       resolveWinners: jest.fn().mockResolvedValue(makeState()),
       handleDealerAction: jest.fn().mockResolvedValue(makeState()),
+      assertDealerSessionValid: jest.fn().mockResolvedValue(undefined),
     };
     // SYNCING 판정 자체는 게이트웨이가 메모리 소켓 수로 하고, `completeSync`는
     // "n/n이면 끝낸다"는 위임일 뿐이라 목이다 — 그 서비스의 원자성은
@@ -1725,6 +1767,210 @@ describe('WsGateway 인바운드 경계', () => {
       const seat = await connect(await seatTicket('alice'));
 
       expect(events(seat, 'REBUY_PROMPT')).toHaveLength(1);
+    });
+  });
+
+  describe('좌석 세대 재대조(T110)', () => {
+    /** 참가 행의 세대를 `rowVersion`으로 세우고, 티켓에 실은 값으로 붙는다. */
+    async function connectSeat(
+      rowVersion: number,
+      ticket: { seatTokenVersion?: number; tournamentId?: string },
+    ) {
+      await ensureParticipation('alice', TOURNAMENT, rowVersion);
+      const t = await tickets.issue({ sub: 'alice', role: SEAT_ROLE, ...ticket });
+      return connect(t);
+    }
+
+    it('티켓의 세대가 참가 행과 같으면 붙는다', async () => {
+      const client = await connectSeat(3, { tournamentId: TOURNAMENT, seatTokenVersion: 3 });
+      expect(client.close).not.toHaveBeenCalled();
+    });
+
+    it('티켓 발급 뒤 세대가 오르면 접속에서 거절한다', async () => {
+      const client = await connectSeat(3, { tournamentId: TOURNAMENT, seatTokenVersion: 2 });
+      expect(client.close).toHaveBeenCalledWith(4001, '만료된 좌석입니다. OTP를 다시 입력해 주세요.');
+    });
+
+    it('세대가 없는 좌석 티켓은 거절한다', async () => {
+      const client = await connectSeat(0, { tournamentId: TOURNAMENT });
+      expect(client.close).toHaveBeenCalledWith(4001, '만료된 좌석입니다. OTP를 다시 입력해 주세요.');
+    });
+
+    it('방에 들어가는 사이 세대가 오르면 4001로 닫고 방에서 뺀다', async () => {
+      // 대조와 addToMap 사이에 터진 SEAT_TOKENS_REVOKED는 아직 방에 없는 소켓을
+      // 놓친다. 접근 판정이 끝나는 순간에 세대를 올려 그 틈을 만든다.
+      await ensureParticipation('alice', TOURNAMENT, 3);
+      const real = playsync.assertTableAccess.bind(playsync);
+      jest.spyOn(playsync, 'assertTableAccess').mockImplementationOnce(async (...args) => {
+        await real(...args);
+        await prisma.tournamentParticipation.update({
+          where: { tournamentId_userId: { tournamentId: TOURNAMENT, userId: 'alice' } },
+          data: { seatTokenVersion: 4 },
+        });
+      });
+      const t = await tickets.issue({
+        sub: 'alice', role: SEAT_ROLE, tournamentId: TOURNAMENT, seatTokenVersion: 3,
+      });
+
+      const client = await connect(t);
+
+      expect(client.close).toHaveBeenCalledWith(4001, expect.any(String));
+      expect([...((gateway as any).tableSessions.get(TABLE) ?? [])]).not.toContain(client);
+    });
+
+    it('두 번째 대조가 낡음이 아닌 오류로 실패하면 1008로 닫고 방에서 뺀다 — 재시도 가능', async () => {
+      await ensureParticipation('alice', TOURNAMENT, 3);
+      const real = playsync.assertTableAccess.bind(playsync);
+      // 첫 대조는 이미 지났다. 접근 판정이 끝나는 순간 DB가 죽는다.
+      jest.spyOn(playsync, 'assertTableAccess').mockImplementationOnce(async (...args) => {
+        await real(...args);
+        jest.spyOn(prisma.tournamentParticipation, 'findUnique').mockRejectedValueOnce(new Error('db down'));
+      });
+      const t = await tickets.issue({
+        sub: 'alice', role: SEAT_ROLE, tournamentId: TOURNAMENT, seatTokenVersion: 3,
+      });
+
+      const client = await connect(t);
+
+      expect(client.close).toHaveBeenCalledWith(1008, expect.any(String));
+      expect(client.close).not.toHaveBeenCalledWith(4001, expect.anything());
+      expect([...((gateway as any).tableSessions.get(TABLE) ?? [])]).not.toContain(client);
+    });
+  });
+
+  describe('닫히는 소켓의 수신(T110)', () => {
+    // 해제로 close()된 소켓은 CLOSING(2)이지만 피어가 응답할 때까지 프레임이 계속 들어온다.
+    it('CLOSING 소켓의 딜러 명령은 실행하지 않는다', async () => {
+      const client = await connect(await dealerTicket(TABLE));
+      client.readyState = 2;
+      const res = await gateway.handleDealerAction(client, { action: 'START_PRE_FLOP' });
+      expect(res).toBeUndefined();
+      expect(dealer.startPreFlop).not.toHaveBeenCalled();
+    });
+
+    it('CLOSING 소켓의 좌석 액션은 실행하지 않는다', async () => {
+      const client = await connect(await playerTicket('alice'));
+      client.readyState = 2;
+      const res = await gateway.handlePlayerAction(client, { action: 'FOLD' });
+      expect(res).toBeUndefined();
+      expect(playsync.handleAction).not.toHaveBeenCalled();
+    });
+
+    it('CLOSING 소켓의 리바인 응답은 흘려보내지 않는다', async () => {
+      const client = await connect(await seatTicket('alice'));
+      client.readyState = 2;
+      const emit = jest.spyOn((gateway as any).eventEmitter, 'emit');
+      gateway.handleRebuyResponse(client, { accept: true });
+      expect(emit.mock.calls.some(([name]) => String(name).startsWith('rebuy_res_'))).toBe(false);
+      emit.mockRestore();
+    });
+  });
+
+  describe('@OnEvent 배선(T110)', () => {
+    const eventsOf = (name: 'handleSeatTokensRevoked' | 'handleDealerSessionRevoked') =>
+      (Reflect.getMetadata(EVENT_LISTENER_METADATA, WsGateway.prototype[name]) as { event: string }[]).map((m) => m.event);
+
+    it('좌석·딜러 폐기 핸들러는 서비스가 내는 이벤트 이름을 듣는다', () => {
+      expect(eventsOf('handleSeatTokensRevoked')).toEqual(['SEAT_TOKENS_REVOKED']);
+      expect(eventsOf('handleDealerSessionRevoked')).toEqual(['DEALER_SESSION_REVOKED']);
+    });
+  });
+
+  describe('딜러 폐기(T110)', () => {
+    it('DEALER_SESSION_REVOKED는 그 대회의 딜러 소켓만 4001로 닫는다', async () => {
+      const dealerSocket = async (tournamentId: string) => {
+        const t = await tickets.issue({
+          sub: 'dealer-' + tournamentId, role: Role.DEALER, tournamentId, tableId: TABLE, tokenVersion: 0,
+        });
+        const client = await connect(t);
+        expect(client.close).not.toHaveBeenCalled();
+        return client;
+      };
+      const dealerA = await dealerSocket('A');
+      const dealerB = await dealerSocket('B');
+      await ensureParticipation('u1', 'A', 0);
+      const seatA = makeClient();
+      await gateway.handleConnection(seatA, makeRequest(
+        `tournamentId=A&ticket=${await tickets.issue({ sub: 'u1', role: SEAT_ROLE, tournamentId: 'A', seatTokenVersion: 0 })}`,
+        ORIGIN,
+      ));
+      expect(seatA.close).not.toHaveBeenCalled();
+
+      gateway.handleDealerSessionRevoked({ tournamentId: 'A' });
+
+      expect(dealerA.close).toHaveBeenCalledWith(4001, DEALER_REVOKED_REASON);
+      for (const other of [dealerB, seatA]) expect(other.close).not.toHaveBeenCalled();
+    });
+
+    const dealerTicketV0 = () => tickets.issue({
+      sub: 'dealer-session-1', role: Role.DEALER, tournamentId: TOURNAMENT, tableId: TABLE, tokenVersion: 0,
+    });
+
+    it('딜러 티켓도 접속에서 세션을 다시 본다 — 30초 창에 내보내졌으면 4001로 거절', async () => {
+      dealer.assertDealerSessionValid.mockRejectedValueOnce(new ForbiddenException('만료된 딜러 세션입니다.'));
+      const client = await connect(await dealerTicketV0());
+      expect(client.close).toHaveBeenCalledWith(4001, '만료된 딜러 세션입니다.');
+    });
+
+    it('이른 대조가 낡음이 아닌 오류로 실패하면 1008 — 재시도 가능', async () => {
+      dealer.assertDealerSessionValid.mockRejectedValueOnce(new Error('db down'));
+      const client = await connect(await dealerTicketV0());
+      expect(client.close).toHaveBeenCalledWith(1008, expect.any(String));
+      expect(client.close).not.toHaveBeenCalledWith(4001, expect.anything());
+    });
+
+    it('방에 들어가는 사이 내보내지면 4001로 닫고 방에서 뺀다', async () => {
+      const real = playsync.assertTableAccess.bind(playsync);
+      jest.spyOn(playsync, 'assertTableAccess').mockImplementationOnce(async (...args) => {
+        await real(...args);
+        dealer.assertDealerSessionValid.mockRejectedValueOnce(new ForbiddenException('만료된 딜러 세션입니다.'));
+      });
+
+      const client = await connect(await dealerTicketV0());
+
+      expect(client.close).toHaveBeenCalledWith(4001, '만료된 딜러 세션입니다.');
+      expect([...((gateway as any).tableSessions.get(TABLE) ?? [])]).not.toContain(client);
+    });
+  });
+
+  describe('SEAT_TOKENS_REVOKED(T110)', () => {
+    const REASON = '다른 기기에서 이 좌석에 다시 들어왔습니다.';
+
+    it('그 대회 · 그 사람 · 좌석 역할의 소켓만 4001로 닫는다', async () => {
+      const state = makeState();
+      state.players = [makePlayer('u1', 0), makePlayer('u2', 1)];
+      await redis.set(`table:state:${TABLE}`, JSON.stringify(state));
+
+      const seatSocket = async (userId: string, tournamentId: string, tableId?: string) => {
+        await ensureParticipation(userId, tournamentId, 0);
+        const ticket = await tickets.issue({
+          sub: userId, role: SEAT_ROLE, tournamentId, seatTokenVersion: 0,
+        });
+        const client = makeClient();
+        const query = tableId ? `tableId=${tableId}` : `tournamentId=${tournamentId}`;
+        await gateway.handleConnection(client, makeRequest(`${query}&ticket=${ticket}`, ORIGIN));
+        expect(client.close).not.toHaveBeenCalled();
+        return client;
+      };
+
+      const u1TableA = await seatSocket('u1', 'A', TABLE);
+      const u1RoomA = await seatSocket('u1', 'A');
+      const u2A = await seatSocket('u2', 'A', TABLE);
+      // 같은 사람의 다른 대회. 좌석 소켓이 대회를 가르는지 본다.
+      const u1B = await seatSocket('u1', 'B');
+      // 같은 사람의 USER 폰. 대회 방에 붙지만 좌석 역할이 아니다.
+      const phone = makeClient();
+      await gateway.handleConnection(
+        phone,
+        makeRequest(`tournamentId=A&ticket=${await playerTicket('u1')}`, ORIGIN),
+      );
+      expect(phone.close).not.toHaveBeenCalled();
+
+      gateway.handleSeatTokensRevoked({ tournamentId: 'A', userIds: ['u1'], reason: REASON });
+
+      expect(u1TableA.close).toHaveBeenCalledWith(4001, REASON);
+      expect(u1RoomA.close).toHaveBeenCalledWith(4001, REASON);
+      for (const other of [u2A, u1B, phone]) expect(other.close).not.toHaveBeenCalled();
     });
   });
 });

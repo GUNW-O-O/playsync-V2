@@ -63,6 +63,8 @@ describe('토큰 수명', () => {
               user: { nickname: 'alice' },
               tournament: { status: TournamentStatus.ONGOING },
             }),
+            // T110. 입장이 세대를 올린다.
+            update: jest.fn().mockResolvedValue({ seatTokenVersion: 1 }),
           },
           tablePlayer: { findFirst: jest.fn().mockResolvedValue(null) },
         } as any,

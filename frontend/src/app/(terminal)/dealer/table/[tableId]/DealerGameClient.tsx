@@ -14,6 +14,7 @@ import {
   type ClosedTournamentStatus,
 } from '@playsync/contract';
 import WinnerOverlay, { type WinnerCandidate } from './WinnerOverlay';
+import SessionRevokedOverlay from '../../../SessionRevokedOverlay';
 import TournamentClosedOverlay from '@/component/TournamentClosedOverlay';
 
 // 서버·소켓이 문구를 안 줄 때의 최후 안내. WS 배선(티켓 요청·정리·배너)은
@@ -93,7 +94,7 @@ export default function DealerGameClient({
    * **딜러는 좌석보다 늦게 붙는다**(`reconnect-policy.ts`). 먼저 붙으면 아홉
    * 중 둘만 찬 테이블을 보게 되고, 사람이 판을 이르게 재개하는 순간이 거기다.
    */
-  const { socketRef, connectionError, reconnecting, outage } = useTableSocket({
+  const { socketRef, connectionError, reconnecting, outage, revoked } = useTableSocket({
     tableId,
     role: 'dealer',
     defaultError: DEFAULT_CONNECTION_ERROR,
@@ -523,6 +524,14 @@ export default function DealerGameClient({
       */}
       {closed !== null && (
         <TournamentClosedOverlay status={closed} storeId={storeId} terminal="dealer" />
+      )}
+      {/* T110. 서버가 이 딜러 세션을 끊었다(상점의 딜러 내보내기). 재접속은 멈췄다. */}
+      {revoked !== null && (
+        <SessionRevokedOverlay
+          reason={revoked}
+          hint="대기 화면에서 딜러 OTP를 다시 넣으세요."
+          href={storeId ? `/dealer?store=${storeId}` : undefined}
+        />
       )}
     </div>
   );

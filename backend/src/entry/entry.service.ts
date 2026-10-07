@@ -9,6 +9,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { JwtService } from '@nestjs/jwt';
 import { PlayerStatus, TournamentStatus } from '@prisma/client';
 import { EnterTournamentDto } from 'shared/dto/entry.dto';
+import { SEAT_REVOKED_REASON } from '@playsync/contract';
 import { SEAT_ROLE } from 'src/auth/seat-role';
 import { tokenTtl } from 'src/auth/token-ttl';
 import { GamePhase, TableState, createEmptyTableState } from 'src/game-engine/types';
@@ -99,6 +100,19 @@ export class EntryService {
       alreadySeated: seated !== null,
     });
 
+    // T110. **마지막 입장이 이긴다.** 세대를 올려 옛 좌석 토큰을 죽이고 그
+    // 기기의 소켓을 닫는다. 재부팅·교체라면 옛 기기는 이미 없고, 탈취라면
+    // 피해자 태블릿이 끊겨 현장에서 드러난다. `claimSeat` 뒤라야 한다 — 앞이면
+    // OTP를 아는 사람이 틀린 좌석으로 시도하는 것만으로 남을 끊는다.
+    const { seatTokenVersion } = await this.prisma.tournamentParticipation.update({
+      where: { id: participation.id },
+      data: { seatTokenVersion: { increment: 1 } },
+      select: { seatTokenVersion: true },
+    });
+    this.eventEmitter.emit('SEAT_TOKENS_REVOKED', { tournamentId, userIds: [participation.userId],
+      reason: SEAT_REVOKED_REASON,
+    });
+
     return {
       // **좌석 태블릿은 대회 내내 켜져 있다.** 전역 기본값(1시간)으로 두면
       // 한 시간 뒤부터 `POST /ws/ticket`이 401이라 태블릿이 스스로 재접속하지
@@ -111,6 +125,7 @@ export class EntryService {
           tableId: dto.tableId,
           seatIndex: dto.seatIndex,
           role: SEAT_ROLE,
+          ver: seatTokenVersion,
         },
         { expiresIn: tokenTtl(SEAT_ROLE) },
       ),

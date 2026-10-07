@@ -75,14 +75,17 @@ describe('JwtStrategy', () => {
       tournamentId: 'tour-1',
       tableId: 'table-1',
       seatIndex: 3,
+      ver: 4,
       role: 'PLAYER',
     });
 
+    // T110. `ver`를 내보내지 않으면 `/ws/ticket`의 세대 대조가 늘 undefined를 본다.
     expect(user).toEqual({
       userId: 'user-1',
       tournamentId: 'tour-1',
       tableId: 'table-1',
       seatIndex: 3,
+      ver: 4,
       role: 'PLAYER',
     });
   });

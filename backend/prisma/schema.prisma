@@ -308,6 +308,9 @@ model TournamentParticipation {
   /// 좌석 하나뿐이다. 노출은 PrismaService의 클라이언트 수준 omit이 막는다.
   playerOtp String
 
+  /// 좌석 토큰의 세대(T110). 입장이 성공할 때와 좌석을 해제할 때 오른다.
+  seatTokenVersion Int @default(0)
+
   createdAt DateTime @default(now())
 
   @@unique([tournamentId, userId])

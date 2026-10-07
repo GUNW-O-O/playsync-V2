@@ -2,7 +2,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/mocks/server';
-import { KEEPALIVE_EVENT, SERVER_OUTAGE_EVENT, SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
+import {
+  KEEPALIVE_EVENT,
+  SERVER_OUTAGE_EVENT,
+  SERVER_RECOVERING_MESSAGE,
+  SESSION_REVOKED_CLOSE_CODE,
+  SEAT_RELEASED_REASON,
+} from '@playsync/contract';
 import { SOCKET_SILENCE_MS, useTableSocket } from './use-table-socket';
 
 class FakeSocket {
@@ -26,8 +32,8 @@ class FakeSocket {
    * 뒤에 온다. `armWatchdog`가 재접속 전 옛 소켓의 핸들러를 떼 두지 않으면
    * 이 늦은 호출이 두 번째 `scheduleRetry`를 걸어 소켓 셋이 동시에 열린다.
    */
-  fireClose(code: number) {
-    act(() => this.onclose?.({ code, reason: '' }));
+  fireClose(code: number, reason = '') {
+    act(() => this.onclose?.({ code, reason }));
   }
 }
 
@@ -249,5 +255,87 @@ describe('useTableSocket 서버 장애(T97)', () => {
     FakeSocket.instances[0].emit('renderGame', { x: 2 }); // 같은 소켓의 다음 프레임
 
     expect(result.current.outage).toBe(true);
+  });
+});
+
+/**
+ * T110. 세대가 올라 서버가 신원을 끊으면(4001) 다시 붙어 봐야 티켓이 403이다.
+ * 재시도를 태우지 않고 이유를 `revoked`로 돌려준다.
+ */
+describe('useTableSocket 세션 폐기(T110)', () => {
+  it('4001로 닫히면 revoked가 그 이유이고 타이머를 끝까지 돌려도 소켓을 더 열지 않는다', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { result } = mount();
+    await waitForInstances(1);
+
+    FakeSocket.instances[0].fireClose(SESSION_REVOKED_CLOSE_CODE, SEAT_RELEASED_REASON);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+    });
+
+    expect(result.current.revoked).toBe(SEAT_RELEASED_REASON);
+    expect(FakeSocket.instances.length).toBe(1);
+  });
+
+  it('1006은 기존대로 재시도하고 revoked는 null이다(반대 입력)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { result } = mount();
+    await waitForInstances(1);
+
+    FakeSocket.instances[0].fireClose(1006);
+    await waitForInstances(2);
+
+    expect(result.current.revoked).toBeNull();
+  });
+
+  it('1000은 조용히 멈추고 revoked는 null이다', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { result } = mount();
+    await waitForInstances(1);
+
+    FakeSocket.instances[0].fireClose(1000);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+
+    expect(result.current.revoked).toBeNull();
+    expect(FakeSocket.instances.length).toBe(1);
+  });
+
+  it('티켓이 403이면 재시도 없이 revoked에 응답 문구를 싣는다', async () => {
+    let calls = 0;
+    server.use(
+      http.post('*/api/ws-ticket', () => {
+        calls += 1;
+        return HttpResponse.json({ message: '만료된 좌석입니다.' }, { status: 403 });
+      }),
+    );
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { result } = mount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+    });
+
+    expect(calls).toBe(1);
+    expect(result.current.revoked).toBe('만료된 좌석입니다.');
+    expect(FakeSocket.instances.length).toBe(0);
+  });
+
+  it('티켓이 500이면 기존대로 재시도하고 revoked는 null이다', async () => {
+    let calls = 0;
+    server.use(
+      http.post('*/api/ws-ticket', () => {
+        calls += 1;
+        return new HttpResponse(null, { status: 500 });
+      }),
+    );
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { result } = mount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+
+    expect(calls).toBeGreaterThan(1);
+    expect(result.current.revoked).toBeNull();
   });
 });

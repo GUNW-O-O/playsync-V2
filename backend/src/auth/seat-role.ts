@@ -19,4 +19,6 @@ export type SeatTokenPayload = {
   tableId: string;
   seatIndex: number;
   role: typeof SEAT_ROLE;
+  /** 좌석 토큰의 세대(T110). `TournamentParticipation.seatTokenVersion`과 대조한다. */
+  ver: number;
 };

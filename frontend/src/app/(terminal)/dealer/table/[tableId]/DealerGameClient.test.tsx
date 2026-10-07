@@ -5,8 +5,10 @@ import { http, HttpResponse } from 'msw';
 import { server } from '@/mocks/server';
 import { DEALER_OFFSET_MS } from '@/lib/reconnect-policy';
 import {
+  DEALER_REVOKED_REASON,
   GamePhase,
   SERVER_RECOVERING_MESSAGE,
+  SESSION_REVOKED_CLOSE_CODE,
   TOURNAMENT_SYNCING_EVENT,
   type TableState,
 } from '@playsync/contract';
@@ -89,7 +91,7 @@ function baseState(overrides: Partial<TableState> = {}): TableState {
 }
 
 /** WS 배선을 세우고 소켓 인스턴스가 만들어질 때까지 기다린다. */
-async function renderWithSocket(initialData: TableState, props: { tableOrder?: number } = {}) {
+async function renderWithSocket(initialData: TableState, props: { tableOrder?: number; storeId?: string } = {}) {
   FakeSocket.instances.length = 0;
   vi.stubGlobal('WebSocket', FakeSocket as unknown as typeof WebSocket);
   server.use(http.post('*/api/ws-ticket', () => HttpResponse.json({ ticket: 'tkt-1' })));
@@ -657,5 +659,18 @@ describe('DealerGameClient', () => {
       expect(screen.getByTestId('confirm-kick')).toBeDisabled();
       expect(screen.getByRole('button', { name: '저장 재시도' })).toBeDisabled();
     });
+  });
+
+  /** T110. 서버가 이 딜러 세션을 끊으면 덮개와 대기 화면 링크가 선다. */
+  it('4001로 끊기면 이유와 딜러 대기 화면 링크를 그린다', async () => {
+    const { socket } = await renderWithSocket(baseState(), { storeId: 'store-1' });
+
+    act(() => socket.onclose?.({ code: SESSION_REVOKED_CLOSE_CODE, reason: DEALER_REVOKED_REASON }));
+
+    expect(await screen.findByText(DEALER_REVOKED_REASON)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '대기 화면으로' })).toHaveAttribute(
+      'href',
+      '/dealer?store=store-1',
+    );
   });
 });

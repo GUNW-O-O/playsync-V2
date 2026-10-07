@@ -1,7 +1,12 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { KEEPALIVE_EVENT, SERVER_OUTAGE_EVENT, ServerOutageSchema } from '@playsync/contract';
+import {
+  KEEPALIVE_EVENT,
+  SERVER_OUTAGE_EVENT,
+  SESSION_REVOKED_CLOSE_CODE,
+  ServerOutageSchema,
+} from '@playsync/contract';
 import { apiFetch } from '@/lib/api';
 import { type SocketRole, retryAfterMs, waitFor } from '@/lib/reconnect-policy';
 
@@ -17,6 +22,9 @@ import { type SocketRole, retryAfterMs, waitFor } from '@/lib/reconnect-policy';
  * 그러면 아래 재접속이 영영 시작되지 않는다.
  */
 export const SOCKET_SILENCE_MS = 25_000;
+
+/** 닫기 이유나 403 본문에 문장이 없을 때 덮개가 그릴 말(T110). */
+const REVOKED_FALLBACK = '이 기기의 접속이 해제되었습니다.';
 
 /**
  * 테이블 소켓 하나를 들고, 끊기면 **스스로 다시 붙는다**(T93).
@@ -59,6 +67,11 @@ export function useTableSocket({
    * 두 벌이 되므로 이 훅이 값 하나로 들고 돌려준다.
    */
   const [outage, setOutage] = useState(false);
+  /**
+   * 서버가 이 신원을 폐기해 끊었나(T110). 닫기 이유 문장이 곧 값이다 — 없으면 null.
+   * 4001 닫기와 티켓 403(끊긴 사이 이미 폐기된 경우) 둘 다 이 값으로 모인다.
+   */
+  const [revoked, setRevoked] = useState<string | null>(null);
 
   // 콜백은 매 렌더 새 함수다. 의존성에 넣으면 렌더마다 소켓을 다시 연다.
   const onMessageRef = useRef(onMessage);
@@ -134,6 +147,14 @@ export function useTableSocket({
         const body = await res.json().catch(() => null);
         const message = (body as { message?: unknown } | null)?.message;
         if (cancelled) return;
+        // T110. 소켓이 다른 이유로 끊긴 사이 신원이 폐기됐으면 4001을 못 보고
+        // 티켓에서 403을 받는다. 4001과 같게 멈추고 이유를 그린다 — 429·5xx는
+        // 낫는 것이라 아래 재시도 길에 둔다.
+        if (res.status === 403) {
+          setRevoked(typeof message === 'string' && message ? message : REVOKED_FALLBACK);
+          setReconnecting(false);
+          return;
+        }
         console.error('WS 티켓을 받지 못했습니다.');
         setConnectionError(typeof message === 'string' && message ? message : defaultError);
         // 429면 서버가 "언제 다시 오라"를 숫자로 말해 준 것이다. 그 값을
@@ -171,6 +192,7 @@ export function useTableSocket({
         attempt = 0;
         setReconnecting(false);
         setConnectionError(null);
+        setRevoked(null);
         if (firstFrame) {
           firstFrame = false;
           setOutage(false);
@@ -198,6 +220,13 @@ export function useTableSocket({
         // 코드 1000은 서버가 정상적으로 닫은 것이다. 대회가 끝나 닫힌 경우가
         // 그것이라, 다시 붙으면 끝난 대회에 계속 매달린다.
         if (event.code === 1000) return;
+        // T110. 세대가 올라 서버가 이 신원을 끊었다. 다시 붙어 봐야 티켓이
+        // 403이라 재시도 8회를 태우고 「새로고침」에 멈춘다 — 멈추고 이유를 그린다.
+        if (event.code === SESSION_REVOKED_CLOSE_CODE) {
+          setRevoked(event.reason || REVOKED_FALLBACK);
+          setReconnecting(false);
+          return;
+        }
         setConnectionError(event.reason && event.reason.trim() ? event.reason : defaultError);
         scheduleRetry(null);
       };
@@ -221,5 +250,5 @@ export function useTableSocket({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tableId, role, defaultError]);
 
-  return { socketRef, connectionError, reconnecting, outage };
+  return { socketRef, connectionError, reconnecting, outage, revoked };
 }

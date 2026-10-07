@@ -111,9 +111,9 @@ npm run assets:settlement  # 정산 촬영을 자른다 (셋이 다 있어야 �
 
 ```
 contract       85  (8 suites)
-백엔드 단위   462  (46 suites)
-프론트 단위   355  (42 files)
-통합          738  (48 suites)
+백엔드 단위   466  (46 suites)
+프론트 단위   367  (43 files)
+통합          762  (49 suites)
 e2e            13  (4 files, regression 프로젝트)
 데모 촬영       1  (`npm run demo`)
 정산 촬영       1  (`npm run demo:settlement`, 마무리마다 한 번씩 셋)

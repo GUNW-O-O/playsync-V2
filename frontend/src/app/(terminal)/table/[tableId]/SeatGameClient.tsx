@@ -9,6 +9,7 @@ import { TableState, TournamentClosedSchema, type ClosedTournamentStatus } from 
 import SeatActionPanel from './SeatActionPanel';
 import RebuyOverlay, { type RebuyPrompt } from './RebuyOverlay';
 import EliminatedOverlay, { type ExitReason } from './EliminatedOverlay';
+import SessionRevokedOverlay from '../../SessionRevokedOverlay';
 import TournamentClosedOverlay from '@/component/TournamentClosedOverlay';
 
 // 서버·소켓이 문구를 안 줄 때의 최후 안내. WS 배선(티켓 요청·정리·배너)은
@@ -142,7 +143,7 @@ export default function SeatGameClient({
    * 좌석은 딜러보다 **먼저** 붙는다(`reconnect-policy.ts`) — 딜러가 판을
    * 재개할지 정할 때 이미 가라앉은 그림을 보게 하려는 것이다.
    */
-  const { socketRef, connectionError, reconnecting, outage } = useTableSocket({
+  const { socketRef, connectionError, reconnecting, outage, revoked } = useTableSocket({
     tableId,
     role: 'seat',
     defaultError: DEFAULT_CONNECTION_ERROR,
@@ -454,6 +455,16 @@ export default function SeatGameClient({
         />
       )}
       {exitReason && <EliminatedOverlay storeId={storeId} reason={exitReason} />}
+      {/* T110. 서버가 이 좌석 신원을 끊었다(해제·재입장). 재접속은 멈췄다.
+          해제 직전의 renderGame이 이미 이동 안내(EliminatedOverlay)를 띄웠으면
+          그것이 그 사정을 더 잘 말하므로 가리지 않는다. */}
+      {revoked !== null && exitReason === null && (
+        <SessionRevokedOverlay
+          reason={revoked}
+          hint="내 자리라면 대기 화면에서 OTP를 다시 넣으세요."
+          href={storeId ? `/table?store=${storeId}` : undefined}
+        />
+      )}
 
       {/*
         **탈락 덮개보다 뒤에 그린다.** 마지막 판의 패자는 두 사건을 거의

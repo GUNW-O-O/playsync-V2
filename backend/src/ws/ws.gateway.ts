@@ -1,4 +1,4 @@
-import { Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { ForbiddenException, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { ConnectedSocket, MessageBody, OnGatewayConnection, OnGatewayDisconnect, SubscribeMessage, WebSocketGateway } from '@nestjs/websockets';
 import { Role, TournamentStatus } from '@prisma/client';
@@ -13,11 +13,15 @@ import {
   TableState as WireTableState,
   TournamentClosedSchema,
   TournamentSyncingSchema,
+  DEALER_REVOKED_REASON,
   SERVER_OUTAGE_EVENT,
   SERVER_RECOVERING_MESSAGE,
+  SESSION_REVOKED_CLOSE_CODE,
   TOURNAMENT_SYNCING_EVENT,
 } from '@playsync/contract';
+import { SEAT_ROLE } from 'src/auth/seat-role';
 import { DealerService } from 'src/dealer/dealer.service';
+import { assertSeatTokenCurrent } from 'src/entry/seat-token';
 import { TableState } from 'src/game-engine/types';
 import { PlaysyncService } from 'src/playsync/playsync.service';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -185,14 +189,14 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
    * 뚫려 있던 비대칭 자체가 빠뜨렸다는 증거다.
    *
    * **티켓에 `tournamentId`가 없는 것은 결함이 아니다.** `POST /ws/ticket`은
-   * 딜러 티켓에만 그 값을 싣는다(`WsTicketController.issue`) — 딜러는 대회
-   * 하나에 묶인 세션이지만, 플레이어와 상점 계정은 한 사람이 여러 대회에
+   * 딜러와 좌석 티켓(T110)에만 그 값을 싣는다(`WsTicketController.issue`) — 둘은
+   * 대회 하나에 묶인 세션이지만, 플레이어와 상점 계정은 한 사람이 여러 대회에
    * 걸칠 수 있어 발급 시점에 대회를 정할 수 없다. 그래서 거절하지 않고
    * **다른 근거로** 가른다.
    */
   private async assertTournamentAccess(payload: WsIdentity, tournamentId: string) {
-    // 티켓이 대회를 들고 있으면(딜러) 그것이 권위다. `loginDealer`가 서명해
-    // 넣은 값이라 클라이언트가 고를 수 없다.
+    // 티켓이 대회를 들고 있으면(딜러 · 좌석) 그것이 권위다. `loginDealer`와
+    // `enterSeat`가 서명해 넣은 값이라 클라이언트가 고를 수 없다.
     if (payload.tournamentId) {
       if (payload.tournamentId !== tournamentId) {
         throw new Error('토큰에 없는 대회입니다.');
@@ -237,6 +241,19 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
       const payload = await this.tickets.consume(ticket);
       if (!payload) throw new Error('유효하지 않은 티켓입니다.');
 
+      // T110. 티켓은 30초 산다. 그 사이 세대가 오르면 발급 때 맞던 것이 지금은
+      // 틀리다 — 세대를 올리는 쪽이 소켓을 닫는 것은 「이미 붙은」 것뿐이라
+      // 여기서 한 번 더 본다.
+      try {
+        await this.assertIdentityCurrent(payload);
+      } catch (e) {
+        // 낡은 토큰은 4001 — 클라가 재연결을 멈춘다. 그 밖의 오류는 아래 1008.
+        if (!(e instanceof ForbiddenException)) throw e;
+        this.logger.warn(`연결 거부: ${e.message}`);
+        client.close(SESSION_REVOKED_CLOSE_CODE, e.message);
+        return;
+      }
+
       // 소켓 객체에 유저 정보 저장 (나중에 액션 시 사용)
       (client as any).userId = payload.sub;
       (client as any).role = payload.role;
@@ -255,6 +272,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
 
         (client as any).tournamentId = tournamentId;
         this.addToMap(this.tournamentSessions, tournamentId, client);
+        await this.closeIfStale(client, payload);
         return; // 테이블 세션에는 넣지 않는다
       }
 
@@ -264,6 +282,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
 
         (client as any).tableId = tableId;
         this.addToMap(this.tableSessions, tableId, client);
+        if (await this.closeIfStale(client, payload)) return;
 
         // 접속자 본인에게만 보낸다. 남이 접속했다고 테이블 전원이 같은 상태를
         // 다시 받을 이유가 없다.
@@ -540,6 +559,10 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
 
   @SubscribeMessage('PLAYER_ACTION')
   async handlePlayerAction(@ConnectedSocket() client: any, @MessageBody() data: any) {
+    // T110. 해제로 닫힌 소켓도 피어가 응답하거나 closeTimeout(30초)이 찰 때까지
+    // 프레임이 계속 들어온다 — 닫히는 중이면 처리하지 않는다.
+    if (client.readyState !== WebSocket.OPEN) return;
+
     const { tableId, userId, role } = client;
 
     // T97. Redis 장애 중에는 좌석 액션을 즉시 거절한다 — 예전엔 ioredis가
@@ -576,6 +599,10 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
 
   @SubscribeMessage('DEALER_ACTION')
   async handleDealerAction(@ConnectedSocket() client: any, @MessageBody() data: any) {
+    // T110. 해제로 닫힌 소켓도 피어가 응답하거나 closeTimeout(30초)이 찰 때까지
+    // 프레임이 계속 들어온다 — 닫히는 중이면 처리하지 않는다.
+    if (client.readyState !== WebSocket.OPEN) return;
+
     const { tableId, role, tournamentId } = client;
 
     // T97. `recovering` 동안에도 딜러 명령을 받지 않는다 — 재개는 딜러가
@@ -809,6 +836,85 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
   }
 
   /**
+   * 세대가 오른 신원의 열린 소켓을 닫는다(T110). 테이블 방과 대회 방을 다 본다.
+   * `close`가 던져도 나머지를 닫는다 — `closeTable`과 같은 이유다. 실제 정리는
+   * 뒤이어 오는 `handleDisconnect`가 한다.
+   */
+  private closeWhere(match: (socket: any) => boolean, reason: string) {
+    for (const map of [this.tableSessions, this.tournamentSessions]) {
+      for (const sessions of map.values()) {
+        for (const socket of sessions) {
+          if (!match(socket)) continue;
+          try {
+            socket.close(SESSION_REVOKED_CLOSE_CODE, reason);
+          } catch {
+            // 이미 닫힌 소켓.
+          }
+        }
+      }
+    }
+  }
+
+  @OnEvent('SEAT_TOKENS_REVOKED')
+  handleSeatTokensRevoked(payload: { tournamentId: string; userIds: string[]; reason: string }) {
+    const users = new Set(payload.userIds);
+    this.closeWhere(
+      (s) => s.role === SEAT_ROLE && s.tournamentId === payload.tournamentId && users.has(s.userId),
+      payload.reason,
+    );
+  }
+
+  @OnEvent('DEALER_SESSION_REVOKED')
+  handleDealerSessionRevoked(payload: { tournamentId: string }) {
+    this.closeWhere(
+      (s) => s.role === Role.DEALER && s.tournamentId === payload.tournamentId,
+      DEALER_REVOKED_REASON,
+    );
+  }
+
+  /** 좌석은 세대, 딜러는 세션을 지금 DB와 대조한다. 낡으면 `ForbiddenException`. */
+  private async assertIdentityCurrent(payload: WsIdentity): Promise<void> {
+    if (payload.role === SEAT_ROLE) {
+      await assertSeatTokenCurrent(this.prisma, {
+        userId: payload.sub,
+        tournamentId: payload.tournamentId,
+        ver: payload.seatTokenVersion,
+      });
+    } else if (payload.role === Role.DEALER) {
+      await this.dealer.assertDealerSessionValid({
+        sub: payload.sub,
+        tournamentId: payload.tournamentId!,
+        tableId: payload.tableId!,
+        tokenVersion: payload.tokenVersion!,
+      });
+    }
+  }
+
+  /**
+   * 방에 넣은 뒤 신원을 한 번 더 본다(T110). 앞선 대조와 `addToMap` 사이에
+   * 세대가 오르면 `SEAT_TOKENS_REVOKED`·`DEALER_SESSION_REVOKED`는 아직 방에 없는
+   * 이 소켓을 놓친다. 틀리면 닫고 방에서 뺀다. 닫혔으면 `true`. 낡은 토큰
+   * (`ForbiddenException`)만 4001이다 — 클라가 재연결을 멈추는 코드라, 일시적인
+   * 오류에는 재시도되는 1008로 닫는다.
+   */
+  private async closeIfStale(client: any, payload: WsIdentity): Promise<boolean> {
+    if (payload.role !== SEAT_ROLE && payload.role !== Role.DEALER) return false;
+    try {
+      await this.assertIdentityCurrent(payload);
+      return false;
+    } catch (e) {
+      try {
+        if (e instanceof ForbiddenException) client.close(SESSION_REVOKED_CLOSE_CODE, e.message);
+        else client.close(1008, '인증 실패');
+      } catch {
+        // 이미 닫힌 소켓.
+      }
+      await this.handleDisconnect(client);
+      return true;
+    }
+  }
+
+  /**
    * 한 테이블 방의 소켓을 전부 정상 종료로 닫고 방을 버린다.
    *
    * **`close`가 던져도 나머지를 닫는다.** `broadcast`가 죽은 소켓 하나에
@@ -861,6 +967,10 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
 
   @SubscribeMessage('REBUY_RESPONSE')
   handleRebuyResponse(@ConnectedSocket() client: any, @MessageBody() data: any) {
+    // T110. 해제로 닫힌 소켓도 피어가 응답하거나 closeTimeout(30초)이 찰 때까지
+    // 프레임이 계속 들어온다 — 닫히는 중이면 처리하지 않는다.
+    if (client.readyState !== WebSocket.OPEN) return;
+
     // T100. 장애 중의 응답은 받아도 반영할 수 없다 — 칩을 넣는 첫 쓰기가 Redis다.
     // 누른 사람에게 이유를 돌려주고, 판은 딜러가 다시 열 때 새로 묻는다.
     if (!this.redis.outage.isUp()) return { event: 'error', data: SERVER_RECOVERING_MESSAGE };

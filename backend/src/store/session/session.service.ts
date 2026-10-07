@@ -31,6 +31,8 @@ import { isRegistrationOpenLive } from './registration-gate';
 import { calculateAbortSettlement, calculateChop, completeBlocker, groupAbortRefunds } from './settlement';
 import { NOT_CLOSED_TOURNAMENT_FILTER, isClosedTournament } from './tournament-status';
 import { FINISH_BLOCKERS } from './finish-blockers';
+import { SEAT_RELEASED_REASON } from '@playsync/contract';
+import { generatePlayerOtp } from 'src/payment/player-otp';
 
 /**
  * 대회를 시작할 수 있는 최소 인원.
@@ -1571,7 +1573,8 @@ export class SessionService {
   }
 
   /**
-   * 붙어 있는 딜러를 끊는다. 남은 토큰은 만료(최대 1시간)까지 살아 있다.
+   * 붙어 있는 딜러를 끊는다. 세대를 올려 옛 토큰을 갱신·티켓에서 막고,
+   * `DEALER_SESSION_REVOKED`로 열린 딜러 소켓을 닫는다(T110).
    *
    * 소유권 확인이 먼저라, 없는 tournamentId를 넘기면 여기서 404로 걸린다
    * (예전에는 검사가 없어 `dealerSession.update`가 P2025를 던지고 그걸
@@ -1597,6 +1600,7 @@ export class SessionService {
       }
       throw e;
     }
+    this.eventEmitter.emit('DEALER_SESSION_REVOKED', { tournamentId });
   }
 
   /**
@@ -1718,6 +1722,7 @@ export class SessionService {
     tableId: string,
     seats: { seatIndex: number; userId: string }[],
     ownerId: string,
+    rotateOtp = false,
   ) {
     await this.assertTournamentOwnership(tournamentId, ownerId);
 
@@ -1835,10 +1840,26 @@ export class SessionService {
         // 아니다(`store/session/player-status.ts`의 `LIVE_PLAYER_STATUSES`).
         const updated = await tx.tournamentParticipation.updateMany({
           where: { tournamentId, userId: { in: userIds }, status: PlayerStatus.PLAYING },
-          data: { status: PlayerStatus.RELEASED },
+          // T110. 세대를 올려 옛 좌석 토큰을 죽인다 — 해제된 사람이 다시 앉으면
+          // 옛 토큰이 되살아나기 때문이다.
+          data: { status: PlayerStatus.RELEASED, seatTokenVersion: { increment: 1 } },
         });
         if (updated.count !== userIds.length) {
           throw new ConflictException('해제 중 참가 상태가 바뀌었습니다. 다시 시도해 주세요.');
+        }
+
+        // T110. 탈취를 의심해 해제할 때만 참가 OTP도 바꾼다. 쉬는 시간의 테이블
+        // 합치기마다 바꾸면 옮기는 사람 전원이 폰을 다시 봐야 한다.
+        // ponytail: 대회 안 유일 제약에 걸리면 트랜잭션째 409로 끝나고 상점이 다시
+        // 누른다 — 10^8 공간에 참가자 수백이라 사실상 안 난다. 재시도가 필요해지면
+        // `PaymentService`의 생성 재시도와 같은 고리를 둔다.
+        if (rotateOtp) {
+          for (const userId of userIds) {
+            await tx.tournamentParticipation.update({
+              where: { tournamentId_userId: { tournamentId, userId } },
+              data: { playerOtp: generatePlayerOtp() },
+            });
+          }
         }
       });
 
@@ -1902,5 +1923,15 @@ export class SessionService {
       여기서는 알리기만 한다.
     */
     if (released) this.eventEmitter.emit('game.state.updated', { tableId, state: released });
+
+    // T110. 세대가 올랐으니 그 사람들의 열린 좌석 소켓을 닫는다(커밋 뒤).
+    // **위 `game.state.updated` 뒤라야 한다.** 게이트웨이가 소켓을 동기로 닫고
+    // `broadcastRenderGame`은 OPEN이 아닌 소켓을 건너뛰므로, 앞서 쏘면 뗀 태블릿이
+    // 자기 자리가 null인 스냅샷을 못 받아 대기 화면으로 돌아가지 못한다(T29).
+    this.eventEmitter.emit('SEAT_TOKENS_REVOKED', {
+      tournamentId,
+      userIds: seats.map((s) => s.userId),
+      reason: SEAT_RELEASED_REASON,
+    });
   }
 }

@@ -21,7 +21,10 @@ import { Client } from 'pg';
 import { closeTestPrisma, createTestPrisma, truncateAll } from '../../../test/helpers/prisma';
 import { createTestRedis, flushTestRedis } from '../../../test/helpers/redis';
 import { UserService } from 'src/user/user.service';
+import { SEAT_RELEASED_REASON } from '@playsync/contract';
 import { SessionService } from './session.service';
+import { WsGateway } from 'src/ws/ws.gateway';
+import { SEAT_ROLE } from 'src/auth/seat-role';
 
 /**
  * **Redis가 죽은 동안 닫으면**(T103) 알림은 곧바로 나가고 Redis 정리는 복구
@@ -446,6 +449,31 @@ describe('SessionService — 딜러 OTP 재발급과 내보내기', () => {
     await sessionService.revokeDealerSession(tournamentId, ownerId);
 
     await expect(dealerService.refreshToken(payload)).rejects.toThrow(ForbiddenException);
+  });
+
+  it('내보내기는 DEALER_SESSION_REVOKED를 쏜다 — 딜러 세션이 없으면 쏘지 않는다', async () => {
+    const emit = jest.spyOn((sessionService as any).eventEmitter, 'emit');
+    const { tournamentId, ownerId } = await seedTournament({ status: TournamentStatus.ONGOING });
+
+    // 소켓을 닫은 쪽이 곧바로 재접속을 받으므로, 신호가 뜰 때 세대는 이미 올라 있어야 한다.
+    let readAtEmit: Promise<number | undefined> | undefined;
+    emit.mockImplementation((event: any) => {
+      if (event === 'DEALER_SESSION_REVOKED') {
+        readAtEmit = prisma.dealerSession.findUnique({ where: { tournamentId } }).then((r) => r?.tokenVersion);
+      }
+      return true;
+    });
+    const before = (await prisma.dealerSession.findUniqueOrThrow({ where: { tournamentId } })).tokenVersion;
+
+    await sessionService.revokeDealerSession(tournamentId, ownerId);
+    expect(emit).toHaveBeenCalledWith('DEALER_SESSION_REVOKED', { tournamentId });
+    await expect(readAtEmit).resolves.toBe(before + 1);
+
+    emit.mockClear();
+    await prisma.table.deleteMany({ where: { tournamentId } });
+    await prisma.dealerSession.delete({ where: { tournamentId } });
+    await sessionService.revokeDealerSession(tournamentId, ownerId);
+    expect(emit).not.toHaveBeenCalledWith('DEALER_SESSION_REVOKED', expect.anything());
   });
 
   /**
@@ -1512,6 +1540,89 @@ describe('SessionService.releaseSeats', () => {
     const seated = await prisma.tablePlayer.count({ where: { tableId } });
     expect(`${outcome instanceof ConflictException ? '409' : `결과 ${String(outcome)}`} / 좌석행 ${seated}`)
       .toBe('409 / 좌석행 2');
+  });
+
+  describe('좌석 토큰 세대와 OTP 회전(T110)', () => {
+    let revokedEvents: unknown[];
+    let gen: SessionService;
+
+    beforeEach(async () => {
+      const emitter = new EventEmitter2();
+      revokedEvents = [];
+      emitter.on('SEAT_TOKENS_REVOKED', (p) => revokedEvents.push(p));
+      gen = new SessionService(
+        prisma as unknown as PrismaService, redisService, new OtpAttempts(redis), emitter,
+      );
+      await seat('a', 0);
+      await seat('b', 1);
+      await putSnapshot(GamePhase.WAITING, [
+        { userId: 'a', seatIndex: 0, stack: 10000 },
+        { userId: 'b', seatIndex: 1, stack: 10000 },
+      ]);
+    });
+
+    const participationOf = (userId: string) =>
+      prisma.tournamentParticipation.findFirstOrThrow({
+        where: { tournamentId, userId }, omit: { playerOtp: false },
+      });
+    const otpOf = async (userId: string) => (await participationOf(userId)).playerOtp;
+
+    it('해제가 세대를 올리고 SEAT_TOKENS_REVOKED를 쏜다', async () => {
+      const before = await participationOf('a');
+      const bBefore = await participationOf('b');
+      await gen.releaseSeats(tournamentId, tableId, [{ seatIndex: 0, userId: 'a' }], ownerId);
+      const after = await participationOf('a');
+      const bAfter = await participationOf('b');
+      expect(`a +${after.seatTokenVersion - before.seatTokenVersion} / b +${bAfter.seatTokenVersion - bBefore.seatTokenVersion}`)
+        .toBe('a +1 / b +0');
+      expect(revokedEvents).toEqual([{ tournamentId, userIds: ['a'], reason: SEAT_RELEASED_REASON }]);
+    });
+
+    it('rotateOtp면 해제한 사람의 OTP만 바뀐다', async () => {
+      const [a0, b0] = [await otpOf('a'), await otpOf('b')];
+      await gen.releaseSeats(tournamentId, tableId, [{ seatIndex: 0, userId: 'a' }], ownerId, true);
+      const [a1, b1] = [await otpOf('a'), await otpOf('b')];
+      expect(a1).not.toBe(a0);
+      expect(a1).toMatch(/^\d{8}$/);
+      expect(b1).toBe(b0);
+    });
+
+    it('rotateOtp가 없으면 OTP는 그대로다', async () => {
+      const a0 = await otpOf('a');
+      await gen.releaseSeats(tournamentId, tableId, [{ seatIndex: 0, userId: 'a' }], ownerId);
+      expect(await otpOf('a')).toBe(a0);
+    });
+
+    it('해제된 태블릿은 닫히기 전에 자기 자리가 빈 스냅샷을 받는다', async () => {
+      // 게이트웨이는 소켓을 동기로 닫고 renderGame 브로드캐스트는 OPEN이 아닌
+      // 소켓을 건너뛴다. 닫기 이벤트가 스냅샷 알림보다 앞서면 뗀 태블릿은
+      // 대기 화면으로 돌아갈 근거(자기 자리 null)를 못 받는다(T29).
+      const emitter = new EventEmitter2();
+      const gateway = new WsGateway(
+        {} as any, {} as any, redisService, {} as any, emitter,
+        prisma as unknown as PrismaService, {} as any,
+      );
+      emitter.on('game.state.updated', (p) => gateway.handleGameStateUpdated(p));
+      emitter.on('SEAT_TOKENS_REVOKED', (p) => gateway.handleSeatTokensRevoked(p));
+
+      const calls: string[] = [];
+      const socket: any = {
+        readyState: 1, role: SEAT_ROLE, userId: 'a', tournamentId, on: jest.fn(),
+        send: jest.fn((m: string) => {
+          const { event, data } = JSON.parse(m);
+          calls.push(`send ${event} 0번=${data?.players?.[0] === null ? 'null' : '있음'}`);
+        }),
+        close: jest.fn((code: number) => { socket.readyState = 2; calls.push(`close ${code}`); }),
+      };
+      (gateway as any).addToMap((gateway as any).tableSessions, tableId, socket);
+
+      const svc = new SessionService(
+        prisma as unknown as PrismaService, redisService, new OtpAttempts(redis), emitter,
+      );
+      await svc.releaseSeats(tournamentId, tableId, [{ seatIndex: 0, userId: 'a' }], ownerId);
+
+      expect(calls.filter((c) => !c.startsWith('send SEAT'))).toEqual(['send renderGame 0번=null', 'close 4001']);
+    });
   });
 });
 
