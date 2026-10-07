@@ -120,6 +120,7 @@ export default function ConsoleClient({
     tournamentId: string,
     tableId: string,
     seats: { seatIndex: number; userId: string }[],
+    rotateOtp: boolean,
   ) => Promise<ActionResult>;
   reissueDealerOtp: (
     tournamentId: string,
@@ -151,6 +152,8 @@ export default function ConsoleClient({
     바뀐 자리가 409로 걸린다 — **거절이 사고가 아니라 설계다.**
   */
   const [selected, setSelected] = useState<Map<number, SeatOccupant>>(new Map());
+  // T110. 탈취 의심이면 해제와 함께 참가 OTP도 새로 발급한다. 기본은 해제.
+  const [rotateOtp, setRotateOtp] = useState(false);
   // 좌석 조회 실패(`seatError`)는 조작 결과(`message`)와 별개 슬롯이다.
   // `useState(seatError)`는 마운트 시점의 초깃값으로만 쓰이고, 이후
   // `router.refresh()`가 새 `seatError`를 내려도 리렌더는 이 state를 다시
@@ -599,6 +602,14 @@ export default function ConsoleClient({
                   </ul>
                 )}
               </div>
+              <label className="flex items-start gap-2 text-[13px] text-[var(--ink-subtle)]">
+                <input
+                  type="checkbox"
+                  checked={rotateOtp}
+                  onChange={(e) => setRotateOtp(e.target.checked)}
+                />
+                탈취 의심 — 참가 OTP도 새로 발급
+              </label>
               <button
                 type="button"
                 disabled={pending || selectedSeats.length === 0}
@@ -610,8 +621,12 @@ export default function ConsoleClient({
                         tournamentId,
                         activeTable.id,
                         selectedSeats.map((p) => ({ seatIndex: p.seatIndex, userId: p.userId })),
+                        rotateOtp,
                       ),
-                    () => setSelected(new Map()),
+                    () => {
+                      setSelected(new Map());
+                      setRotateOtp(false);
+                    },
                   )
                 }
                 className="w-full bg-[var(--blue)] py-3 text-sm text-white disabled:opacity-40"

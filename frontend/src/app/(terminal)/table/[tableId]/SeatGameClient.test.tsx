@@ -3,7 +3,12 @@ import { act, render, waitFor, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/mocks/server';
-import { SERVER_RECOVERING_MESSAGE, type TableState } from '@playsync/contract';
+import {
+  SEAT_RELEASED_REASON,
+  SERVER_RECOVERING_MESSAGE,
+  SESSION_REVOKED_CLOSE_CODE,
+  type TableState,
+} from '@playsync/contract';
 
 // Felt는 렌더링 폭이 넓은 컴포넌트다. 이 파일이 검증하려는 건 WS 배선과
 // 탈락 판정, 그리고 실패가 화면에 닿는가뿐이라 렌더만 되면 그만이다.
@@ -739,5 +744,18 @@ describe('SeatGameClient', () => {
       expect(screen.getByTestId('seat-resume-wait')).toBeInTheDocument();
       expect(screen.getByText(SERVER_RECOVERING_MESSAGE)).toBeInTheDocument();
     });
+  });
+
+  /** T110. 서버가 이 좌석을 끊으면 덮개와 대기 화면 링크가 선다. */
+  it('4001로 끊기면 이유와 대기 화면 링크를 그린다', async () => {
+    const { socket } = await renderWithSocket();
+
+    act(() => socket.onclose?.({ code: SESSION_REVOKED_CLOSE_CODE, reason: SEAT_RELEASED_REASON }));
+
+    expect(await screen.findByText(SEAT_RELEASED_REASON)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '대기 화면으로' })).toHaveAttribute(
+      'href',
+      '/table?store=store-1',
+    );
   });
 });

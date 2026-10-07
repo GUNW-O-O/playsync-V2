@@ -142,6 +142,7 @@ describe('ConsoleClient — 좌석 선택', () => {
         tournamentId: string,
         tableId: string,
         seats: { seatIndex: number; userId: string }[],
+        rotateOtp: boolean,
       ) => Promise<{ ok: true } | { error: string }>;
       openTable?: (tournamentId: string) => Promise<{ ok: true } | { error: string }>;
     } = {},
@@ -187,7 +188,20 @@ describe('ConsoleClient — 좌석 선택', () => {
 
     // 서버가 409로 거절하는 것이 설계된 동작이다(`releaseSeats`의 검사 1·2).
     // 화면이 id를 판과 함께 갱신해 버리면 그 가드가 항상 통과하고 B가 떨어진다.
-    expect(releaseSeats).toHaveBeenCalledWith('trn-1', 'tbl-1', [{ seatIndex: 3, userId: 'u1' }]);
+    expect(releaseSeats).toHaveBeenCalledWith('trn-1', 'tbl-1', [{ seatIndex: 3, userId: 'u1' }], false);
+  });
+
+  /** T110. 체크박스는 기본 해제이고, 켜야 참가 OTP까지 새로 발급한다. */
+  it('탈취 의심을 체크하면 rotateOtp: true로 해제한다', async () => {
+    const { releaseSeats } = renderSeats([SEAT_A]);
+
+    await userEvent.click(screen.getByTestId('console-seat-3'));
+    const box = screen.getByRole('checkbox', { name: /탈취 의심/ });
+    expect(box).not.toBeChecked();
+    await userEvent.click(box);
+    await userEvent.click(screen.getByRole('button', { name: '고른 자리 해제' }));
+
+    expect(releaseSeats).toHaveBeenCalledWith('trn-1', 'tbl-1', [{ seatIndex: 3, userId: 'u1' }], true);
   });
 
   /**

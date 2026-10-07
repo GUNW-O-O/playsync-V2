@@ -88,10 +88,12 @@ export async function releaseSeats(
   tournamentId: string,
   tableId: string,
   seats: { seatIndex: number; userId: string }[],
+  // T110. 참가 OTP가 새어 나간 것 같을 때 해제와 함께 새로 발급한다.
+  rotateOtp = false,
 ): Promise<ActionResult> {
   const result = await callConsoleApi(
     `/store/sessions/${tournamentId}/tables/${tableId}/seats/release`,
-    { method: 'POST', body: JSON.stringify({ seats }) },
+    { method: 'POST', body: JSON.stringify({ seats, rotateOtp }) },
   );
   return 'error' in result ? result : { ok: true };
 }

@@ -13,7 +13,7 @@ vi.mock('next/headers', () => ({
 process.env.BACKEND_URL = 'http://backend.test';
 
 const {
-  reissueDealerOtp, revokeDevices, startTournament,
+  reissueDealerOtp, revokeDevices, startTournament, releaseSeats,
   completeTournament, chopTournament, abortTournament, fetchFinishPreview,
 } = await import('./action');
 
@@ -61,6 +61,26 @@ describe('상점 콘솔 서버 액션', () => {
     const result = await revokeDevices('store-1');
     expect('ok' in result).toBe(true);
     expect(seenAuth).toBe('Bearer admin-jwt-token');
+  });
+
+  it('releaseSeats는 rotateOtp를 본문에 싣고, 안 주면 false다', async () => {
+    cookieStore.get.mockReturnValue({ value: 'admin-jwt-token' });
+    const bodies: unknown[] = [];
+    server.use(
+      http.post('http://backend.test/store/sessions/t1/tables/tb1/seats/release', async ({ request }) => {
+        bodies.push(await request.json());
+        return HttpResponse.json({ ok: true }, { status: 201 });
+      }),
+    );
+    const seats = [{ seatIndex: 3, userId: 'u1' }];
+
+    await releaseSeats('t1', 'tb1', seats);
+    await releaseSeats('t1', 'tb1', seats, true);
+
+    expect(bodies).toEqual([
+      { seats, rotateOtp: false },
+      { seats, rotateOtp: true },
+    ]);
   });
 
   it('쿠키가 없으면 백엔드를 부르지 않고 실패를 돌려준다', async () => {
