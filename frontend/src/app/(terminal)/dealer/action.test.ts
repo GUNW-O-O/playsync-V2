@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/mocks/server';
+import { DEVICE_UNREGISTERED_MESSAGE } from '@playsync/contract';
 
 const cookieStore = { set: vi.fn(), get: vi.fn(), delete: vi.fn() };
 vi.mock('next/headers', () => ({
@@ -135,5 +136,39 @@ describe('authenticateDealer', () => {
     const result = await authenticateDealer(INPUT);
 
     expect(result).toEqual({ error: 'OTP를 확인하세요.' });
+  });
+
+  it('기기 토큰을 x-device-token으로 싣는다', async () => {
+    cookieStore.get.mockImplementation((n: string) => (n === 'deviceToken' ? { value: 'dev-1' } : undefined));
+    let seen: string | null = null;
+    server.use(
+      http.post('http://backend.test/dealer/auth', ({ request }) => {
+        seen = request.headers.get('x-device-token');
+        return HttpResponse.json({ accessToken: DEALER_TOKEN });
+      }),
+    );
+    await authenticateDealer(INPUT);
+    expect(seen).toBe('dev-1');
+  });
+
+  it('기기 거절이면 deviceToken 쿠키를 지운다 — 다시 그리면 등록 폼이다', async () => {
+    server.use(
+      http.post('http://backend.test/dealer/auth', () =>
+        HttpResponse.json({ message: DEVICE_UNREGISTERED_MESSAGE }, { status: 401 }),
+      ),
+    );
+    const result = await authenticateDealer(INPUT);
+    expect(result).toEqual({ error: DEVICE_UNREGISTERED_MESSAGE });
+    expect(cookieStore.delete).toHaveBeenCalledWith('deviceToken');
+  });
+
+  it('OTP가 틀린 401은 쿠키를 지우지 않는다', async () => {
+    server.use(
+      http.post('http://backend.test/dealer/auth', () =>
+        HttpResponse.json({ message: '인증 정보가 올바르지 않습니다.' }, { status: 401 }),
+      ),
+    );
+    await authenticateDealer(INPUT);
+    expect(cookieStore.delete).not.toHaveBeenCalledWith('deviceToken');
   });
 });

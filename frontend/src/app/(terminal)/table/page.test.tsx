@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/mocks/server';
@@ -11,11 +11,27 @@ vi.mock('./WaitingClient', () => ({
   default: () => <div data-testid="waiting-client" />,
 }));
 
+// T112. 기기 토큰 쿠키. 기본은 이 상점의 기기 토큰이라 기존 케이스가 그대로 돈다.
+const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
+const token = (payload: unknown) => `${b64({ alg: 'HS256' })}.${b64(payload)}.sig`;
+let current: string | undefined;
+vi.mock('next/headers', () => ({
+  cookies: async () => ({
+    get: (n: string) => (n === 'deviceToken' && current ? { value: current } : undefined),
+  }),
+}));
+// 등록 폼은 useRouter를 쓴다. 이 파일이 보는 것은 어느 쪽을 그리느냐뿐이다.
+vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
+
 process.env.BACKEND_URL = 'http://backend.test';
 
 const { default: SeatWaitingPage } = await import('./page');
 
 const STORE = 'store-1';
+
+beforeEach(() => {
+  current = token({ role: 'STORE_DEVICE', storeId: STORE });
+});
 const TOURNAMENT = 'tournament-1';
 
 function mockTournaments(status: number, body: object) {
@@ -84,5 +100,26 @@ describe('SeatWaitingPage — 서버 장애(T97)', () => {
 
     expect(screen.queryByText(SERVER_RECOVERING_MESSAGE)).not.toBeInTheDocument();
     expect(screen.getByTestId('waiting-client')).toBeInTheDocument();
+  });
+});
+
+describe('SeatWaitingPage — 기기 등록(T112)', () => {
+  it('기기 토큰이 없으면 등록 폼을 그린다', async () => {
+    current = undefined;
+    render(await SeatWaitingPage({ searchParams: Promise.resolve({ store: 'store-1' }) }));
+    expect(screen.getByRole('heading', { name: '매장 태블릿 등록' })).toBeInTheDocument();
+  });
+
+  it('다른 상점의 기기 토큰이면 등록 폼을 그린다', async () => {
+    current = token({ role: 'STORE_DEVICE', storeId: 'store-2' });
+    render(await SeatWaitingPage({ searchParams: Promise.resolve({ store: 'store-1' }) }));
+    expect(screen.getByRole('heading', { name: '매장 태블릿 등록' })).toBeInTheDocument();
+  });
+
+  it('이 상점의 기기 토큰이면 대기 화면을 그린다', async () => {
+    mockTournaments(200, []);
+    current = token({ role: 'STORE_DEVICE', storeId: 'store-1' });
+    render(await SeatWaitingPage({ searchParams: Promise.resolve({ store: 'store-1' }) }));
+    expect(screen.queryByRole('heading', { name: '매장 태블릿 등록' })).not.toBeInTheDocument();
   });
 });

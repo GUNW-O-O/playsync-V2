@@ -60,6 +60,23 @@ describe('POST /api/ws-ticket', () => {
     expect(authorization).toBe('Bearer player-token');
   });
 
+  it('기기 토큰을 x-device-token으로 싣는다', async () => {
+    let seen: string | null = null;
+    server.use(
+      http.post('http://backend.test/ws/ticket', ({ request }) => {
+        seen = request.headers.get('x-device-token');
+        return HttpResponse.json({ ticket: 'tkt-1' });
+      }),
+    );
+    cookieStore.get.mockImplementation((name: string) =>
+      name === 'deviceToken' ? { value: 'dev-1' } : { value: 'player-token' },
+    );
+
+    await POST();
+
+    expect(seen).toBe('dev-1');
+  });
+
   it('딜러 쿠키가 있으면 그쪽을 먼저 쓴다', async () => {
     let authorization: string | null = null;
     server.use(

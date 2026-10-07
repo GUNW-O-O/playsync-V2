@@ -1,5 +1,9 @@
-import { SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
+import { cookies } from 'next/headers';
+import { DEVICE_TOKEN_COOKIE, SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
+import { deviceStoreId } from '@/lib/device-token';
 import { isServerRecovering } from '@/lib/server-outage';
+import DeviceRegistration from '../DeviceRegistration';
+import { registerDevice } from '../device-action';
 import WaitingClient from './WaitingClient';
 import { enterSeat } from './action';
 
@@ -61,6 +65,20 @@ export default async function SeatWaitingPage({
         주소에 상점이 없습니다. {'?store=<상점 id>'}를 붙여 주세요.
       </main>
     );
+
+  // T112. 이 상점에 등록된 태블릿만 입장 OTP를 넣을 수 있다. 쿠키가 없거나
+  // 다른 상점 것이면 설치하는 직원에게 등록 폼을 보여 준다.
+  const deviceToken = (await cookies()).get(DEVICE_TOKEN_COOKIE)?.value;
+  const deviceStore = deviceStoreId(deviceToken);
+  if (deviceStore !== store) {
+    return (
+      <DeviceRegistration
+        storeId={store}
+        register={registerDevice}
+        notice={deviceStore ? '이 기기는 다른 매장에 등록되어 있습니다. 이 매장으로 다시 등록해 주세요.' : undefined}
+      />
+    );
+  }
 
   const tournamentsResult = await json<{ id: string; name: string; status: string }[]>(
     `/tournaments/stores/${store}`,

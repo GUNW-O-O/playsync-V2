@@ -12,6 +12,7 @@ import {
   closeTable,
   releaseSeats,
   reissueDealerOtp,
+  revokeDevices,
   completeTournament,
   chopTournament,
   abortTournament,
@@ -215,6 +216,7 @@ export default async function ConsoleTournamentPage({
       closeTable={closeTable}
       releaseSeats={releaseSeats}
       reissueDealerOtp={reissueDealerOtp}
+      revokeDevices={revokeDevices}
       preview={ownershipDenied ? null : preview}
       completeTournament={completeTournament}
       chopTournament={chopTournament}
