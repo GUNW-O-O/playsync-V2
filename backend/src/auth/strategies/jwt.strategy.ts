@@ -1,8 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { Role } from '@prisma/client';
 import { SEAT_ROLE } from '../seat-role';
+import { DEVICE_ROLE } from '../../device/device-token';
 
 // 검증 쪽에 기본값이 남아 있으면 서명 쪽만 고쳐도 소용이 없다 — 리포지토리에
 // 적힌 키로 서명한 토큰이 그대로 통과한다. 두 곳을 같은 방식으로 막는다.
@@ -31,6 +32,11 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: any) {
+    // T112. 기기 토큰은 「등록된 태블릿에서 왔다」는 표지지 신원이 아니다.
+    // 여기서 받으면 기본 분기가 기기 id를 userId로 내보낸다.
+    if (payload.role === DEVICE_ROLE) {
+      throw new UnauthorizedException();
+    }
     if(payload.role === Role.DEALER) {
       return {
         id : payload.sub,

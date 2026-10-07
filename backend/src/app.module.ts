@@ -19,6 +19,7 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
 import { EntryModule } from './entry/entry.module';
 import { MetricsModule } from './metrics/metrics.module';
 import { RecoveryModule } from './recovery/recovery.module';
+import { DeviceModule } from './device/device.module';
 
 /**
  * 부하 실행 중에만 계측 모듈을 들인다.
@@ -57,6 +58,7 @@ const loadMetrics = process.env.LOAD_METRICS === '1' ? [MetricsModule] : [];
     WsModule,
     EntryModule,
     RecoveryModule,
+    DeviceModule,
   ],
   providers: [
     // 전역이라야 값이 있다. 라우트마다 붙이면 새 라우트가 조용히 빠지고,
