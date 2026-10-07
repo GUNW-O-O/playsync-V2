@@ -40,12 +40,13 @@ const steps = [...new Set([...buckets.keys()].map((k) => k.split(' ')[0]))].sort
   return Number(na) - Number(nb) || ka.localeCompare(kb);
 });
 
-console.log('단계 | 테이블 | 내액션p95 | 남의액션p95 | 서버lag p95 | 표본');
+console.log('단계 | 테이블 | 내액션p95 | 딜러액션p95 | 남의액션p95 | 서버lag p95 | 표본');
 for (const step of steps) {
   const tables = step.split('-')[1];
   const my = p95(buckets.get(`${step} my_action_ms`));
+  const dealer = p95(buckets.get(`${step} dealer_action_ms`));
   const others = p95(buckets.get(`${step} others_action_ms`));
   const lag = p95(buckets.get(`${step} server_lag_p95_ms`));
   const n = (buckets.get(`${step} my_action_ms`) || []).length;
-  console.log(`${step} | ${tables} | ${my ?? '-'} | ${others ?? '-'} | ${lag ?? '-'} | ${n}`);
+  console.log(`${step} | ${tables} | ${my ?? '-'} | ${dealer ?? '-'} | ${others ?? '-'} | ${lag ?? '-'} | ${n}`);
 }

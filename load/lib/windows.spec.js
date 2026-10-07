@@ -142,3 +142,27 @@ describe('createWindowQueue', () => {
     assert.equal(q.size, 0);
   });
 });
+
+describe('createWindowQueue — 라벨', () => {
+  it('창에 단 라벨이 적중에 실려 나온다', () => {
+    const q = createWindowQueue({ maxAgeMs: 10000 });
+    q.open(1000, 0, 'winners');
+
+    assert.equal(q.match(0, 1042, 1020, LIVE).label, 'winners');
+  });
+
+  it('라벨이 없으면 undefined다', () => {
+    const q = createWindowQueue({ maxAgeMs: 10000 });
+    q.open(1000, 0);
+
+    assert.equal(q.match(0, 1042, 1020, LIVE).label, undefined);
+  });
+
+  it('다른 소켓이 같은 창을 봐도 같은 라벨이다', () => {
+    const q = createWindowQueue({ maxAgeMs: 10000 });
+    q.open(1000, 0, 'deal');
+
+    assert.equal(q.match(0, 1042, 1020, LIVE).label, 'deal');
+    assert.equal(q.match(1, 1050, 1020, LIVE).label, 'deal');
+  });
+});

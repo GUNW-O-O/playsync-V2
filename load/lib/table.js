@@ -3,7 +3,6 @@ import { WebSocket } from 'k6/experimental/websockets';
 import { setTimeout, clearTimeout } from 'k6/timers';
 import { Trend, Counter } from 'k6/metrics';
 import {
-  RECONNECT_SPREAD_MS,
   chargeForEntry,
   dealerLogin,
   enterSeat,
@@ -13,6 +12,7 @@ import {
   signup,
   wsTicketAttempt,
 } from './api.js';
+import { BURST_DEFAULTS, burstWakeMs } from './reconnect-burst.js';
 import { createWindowQueue } from './windows.js';
 
 /**
@@ -39,6 +39,17 @@ const GamePhase = {
 
 /** 내가 누른 버튼이 내 화면에 반영되기까지. 합격선 p95 200ms. */
 export const myActionMs = new Trend('my_action_ms', true);
+/**
+ * 딜러가 누른 버튼이 딜러 화면에 반영되기까지. `action` 태그가 `deal`
+ * (`START_PRE_FLOP`)과 `winners`(`RESOLVE_WINNERS`)를 가른다(T113).
+ *
+ * **`my_action_ms`에 섞지 않는다.** 딜러 액션은 핸드당 둘뿐이라 좌석 액션 수십 건
+ * 사이에 묻히는데, `RESOLVE_WINNERS`는 락 · 탈락 처리 · 체크포인트 DB 쓰기 ·
+ * 리바인 대기를 다 타는 가장 무거운 서버 경로라 평균이 좌석 지연을 흐린다.
+ * 합격선(`my_action_ms` p95 200ms)은 좌석 손님의 체감이므로 이 지표는 거기에
+ * 걸지 않고, 중단 판정(`onMyAction`)에도 넣지 않는다.
+ */
+export const dealerActionMs = new Trend('dealer_action_ms', true);
 /** 남이 누른 액션이 내 화면에 반영되기까지. 합격선 p95 500ms. */
 export const othersActionMs = new Trend('others_action_ms', true);
 /** 완주한 핸드 수. 봇이 실제로 게임을 돌렸는지의 증거다. */
@@ -240,6 +251,23 @@ export const rebuysAccepted = new Counter('rebuys_accepted');
 export const reconnects = new Counter('reconnects');
 /** 전원이 다시 붙어 첫 renderGame을 받기까지. 티켓 발급 왕복이 포함된다. */
 export const reconnectMs = new Trend('reconnect_ms', true);
+/** 폭발 시작부터 **마지막 좌석 소켓**이 첫 renderGame을 받기까지(T113). */
+export const reconnectSeatMs = new Trend('reconnect_seat_ms', true);
+/** 폭발 시작부터 **딜러 소켓**이 첫 renderGame을 받기까지. 딜러는 좌석 폭 뒤에 깬다. */
+export const reconnectDealerMs = new Trend('reconnect_dealer_ms', true);
+
+/**
+ * 폭발의 지터 폭. **0을 허락해야 한다** — 전원이 한 순간에 몰리는 모양이
+ * 대조군이다. `Number(x) || 기본값`은 0을 기본값으로 되돌린다(`api.js`의
+ * `RECONNECT_SPREAD_MS`와 같은 이유).
+ */
+function spreadEnv(raw, fallback) {
+  return raw === undefined || raw === '' ? fallback : Number(raw);
+}
+const BURST_SPREAD = {
+  seatSpreadMs: spreadEnv(__ENV.LOAD_RECONNECT_SEAT_SPREAD_MS, BURST_DEFAULTS.seatSpreadMs),
+  dealerSpreadMs: spreadEnv(__ENV.LOAD_RECONNECT_DEALER_SPREAD_MS, BURST_DEFAULTS.dealerSpreadMs),
+};
 /** 레이즈와 폴드 횟수. 믹스가 의도대로 나왔는지 결과에서 본다. */
 export const raises = new Counter('raises');
 export const folds = new Counter('folds');
@@ -474,6 +502,14 @@ export function runHands({
       // 재접속 복구 시간 — 다시 붙은 소켓 전부가 첫 화면을 받은 순간.
       if (burstState && !burstState.seen.has(idx)) {
         burstState.seen.add(idx);
+        // 역할별 완료. 마지막 좌석과 딜러 중 어느 쪽이 전체 시간을 정했는지
+        // `reconnect_ms` 하나로는 안 보인다. 전체 판정보다 먼저 적어야 마지막
+        // 소켓이 `burstState`를 비우기 전에 자기 역할 값이 남는다.
+        if (entry.role === 'dealer') {
+          reconnectDealerMs.add(Date.now() - burstState.at);
+        } else if (++burstState.seatsSeen >= seats.length) {
+          reconnectSeatMs.add(Date.now() - burstState.at);
+        }
         // **`sockets.length`가 아니라 열려야 하는 수로 본다.** 티켓이 막힌
         // 소켓은 나중에 열리므로, 현재 길이로 재면 아직 두 개가 안 붙었는데
         // "전부 복구됐다"가 되어 `reconnect_ms`가 실제보다 짧게 남는다.
@@ -498,7 +534,12 @@ export function runHands({
         // 단계 태그가 붙어야 원시 시계열에서 "테이블 12개 구간"을 갈라
         // 볼 수 있다. 램프가 아니면(스모크) 라벨이 없다.
         const tags = stepLabel ? { step: stepLabel() } : undefined;
-        if (idx === hit.actorSocketIdx) {
+        if (idx === hit.actorSocketIdx && entry.role === 'dealer') {
+          // 딜러 본인의 화면 지연은 `dealer_action_ms`로만 간다. 좌석 소켓이 본
+          // 딜러 창의 브로드캐스트는 아래 `others_action_ms`에 **그대로 센다** —
+          // 딜러 액션도 좌석 손님에게는 "남이 누른 액션이 내 화면에 뜨기까지"다.
+          dealerActionMs.add(hit.elapsedMs, { ...tags, action: hit.label });
+        } else if (idx === hit.actorSocketIdx) {
           myActionMs.add(hit.elapsedMs, tags);
           // 왕복을 서버 쪽과 단말 쪽으로 쪼갠 값. 도장이 없는 서버를 상대하면
           // (`serverTime`은 계약상 optional이다) 지어내지 않고 비운다.
@@ -552,7 +593,17 @@ export function runHands({
       // `send`를 불러 InvalidStateError로 VU가 죽는다. 다시 붙은 소켓이
       // 새 브로드캐스트를 받아 자기 차례를 다시 판단한다.
       if (entry.retired) return;
-      if (measured) windows.open(Date.now(), entry.idx);
+      if (measured) {
+        // 딜러 창에만 라벨을 단다 — 적중 시점에 `dealer_action_ms`의 `action`
+        // 태그가 된다.
+        const label =
+          entry.role === 'dealer'
+            ? payload.data.action === 'START_PRE_FLOP'
+              ? 'deal'
+              : 'winners'
+            : undefined;
+        windows.open(Date.now(), entry.idx, label);
+      }
       entry.ws.send(JSON.stringify(payload));
     };
     const isDeal = entry.role === 'dealer' && payload.data.action === 'START_PRE_FLOP';
@@ -675,16 +726,17 @@ export function runHands({
           // 창을 비운다 — 끊긴 소켓이 못 받은 창은 영영 안 채워진다.
           windows.clear();
           reconnects.add(1);
-          burstState = { at: Date.now(), seen: new Set(), expect: seats.length + 1 };
-          const wake = () => Math.floor(Math.random() * RECONNECT_SPREAD_MS);
+          burstState = { at: Date.now(), seen: new Set(), expect: seats.length + 1, seatsSeen: 0 };
+          // 제품의 재접속 정책을 따른다(`reconnect-burst.js`). 좌석이 먼저 흩어지고
+          // 딜러는 그 뒤에 깬다. 티켓 429 재시도는 `RECONNECT_SPREAD_MS`가 따로 맡는다.
           seats.forEach((s) => {
             setTimeout(() => {
               if (!closing) open(s.seatToken, 'seat', s.seat);
-            }, wake());
+            }, burstWakeMs('seat', Math.random(), BURST_SPREAD));
           });
           setTimeout(() => {
             if (!closing) open(dealerToken, 'dealer', -1);
-          }, wake());
+          }, burstWakeMs('dealer', Math.random(), BURST_SPREAD));
         }, reconnectAtMs);
 
   return new Promise((resolve) => {

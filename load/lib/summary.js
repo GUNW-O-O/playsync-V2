@@ -97,9 +97,12 @@ function signupLine(summary) {
 function reconnectLine(summary) {
   if (!summary.reconnects) return '재접속 없음';
   const r = summary.reconnectMs;
+  const rs = summary.reconnectSeatMs;
+  const rd = summary.reconnectDealerMs;
   const gave = summary.ticketGaveUp ? ` 미복구 ${summary.ticketGaveUp} ⚠` : '';
   return (
     `재접속 ${summary.reconnects}회 복구 중앙 ${r ? r.med : '-'}ms 최대 ${r ? r.max : '-'}ms` +
+    ` · 좌석 최대 ${rs ? rs.max : '-'}ms/딜러 최대 ${rd ? rd.max : '-'}ms` +
     ` · 티켓상한 ${summary.ticketLimited}${gave}`
   );
 }
@@ -113,6 +116,7 @@ function reconnectLine(summary) {
 export function oneLine(label, summary) {
   const my = summary.myAction;
   const others = summary.othersAction;
+  const dealer = summary.dealerAction;
   const myServer = summary.myActionServer;
   const myClient = summary.myActionClient;
 
@@ -120,6 +124,7 @@ export function oneLine(label, summary) {
     label,
     `핸드 ${summary.hands}`,
     `내 액션 p95 ${my ? my.p95 : '-'}ms`,
+    `딜러 액션 p95 ${dealer ? dealer.p95 : '-'}ms`,
     `남의 액션 p95 ${others ? others.p95 : '-'}ms`,
     `소켓오류 ${summary.socketErrors}`,
     `자리비움 ${summary.absentActions}`,
@@ -171,6 +176,8 @@ export function buildSummary(data, name) {
     tableSetupMs: trend(data, 'table_setup_ms'),
     reconnects: counter(data, 'reconnects'),
     reconnectMs: trend(data, 'reconnect_ms'),
+    reconnectSeatMs: trend(data, 'reconnect_seat_ms'),
+    reconnectDealerMs: trend(data, 'reconnect_dealer_ms'),
     // 재접속이 문에 걸린 자리. `ticketGaveUp`이 0이 아니면 그 테이블의
     // `reconnectMs`는 기록되지 않는다 — 소켓 하나가 끝내 안 붙어서다.
     ticketLimited: counter(data, 'ticket_limited'),
@@ -181,6 +188,8 @@ export function buildSummary(data, name) {
     // "왕복 1초인데 서버 lag은 2ms"를 가릴 수 없었다.
     myActionServer: trend(data, 'my_action_server_ms'),
     myActionClient: trend(data, 'my_action_client_ms'),
+    // 딜러 액션은 `my_action_ms`에 섞지 않고 따로 잰다(T113).
+    dealerAction: trend(data, 'dealer_action_ms'),
     othersAction: trend(data, 'others_action_ms'),
     http: trend(data, 'http_req_duration'),
     server: server(data),
