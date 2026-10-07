@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { ArrayMinSize, IsArray, IsInt, IsString, Max, Min, ValidateNested } from 'class-validator';
+import { ArrayMinSize, IsArray, IsBoolean, IsInt, IsOptional, IsString, Max, Min, ValidateNested } from 'class-validator';
 
 /**
  * 해제할 좌석 하나.
@@ -25,4 +25,9 @@ export class ReleaseSeatsDto {
   @ValidateNested({ each: true })
   @Type(() => ReleaseSeatItem)
   seats: ReleaseSeatItem[];
+
+  /** 탈취 의심 해제(T110). 참이면 해제하는 사람마다 참가 OTP도 새로 발급한다. */
+  @IsOptional()
+  @IsBoolean()
+  rotateOtp?: boolean;
 }

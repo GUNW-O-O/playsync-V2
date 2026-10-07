@@ -1513,6 +1513,58 @@ describe('SessionService.releaseSeats', () => {
     expect(`${outcome instanceof ConflictException ? '409' : `결과 ${String(outcome)}`} / 좌석행 ${seated}`)
       .toBe('409 / 좌석행 2');
   });
+
+  describe('좌석 토큰 세대와 OTP 회전(T110)', () => {
+    let revokedEvents: unknown[];
+    let gen: SessionService;
+
+    beforeEach(async () => {
+      const emitter = new EventEmitter2();
+      revokedEvents = [];
+      emitter.on('SEAT_TOKENS_REVOKED', (p) => revokedEvents.push(p));
+      gen = new SessionService(
+        prisma as unknown as PrismaService, redisService, new OtpAttempts(redis), emitter,
+      );
+      await seat('a', 0);
+      await seat('b', 1);
+      await putSnapshot(GamePhase.WAITING, [
+        { userId: 'a', seatIndex: 0, stack: 10000 },
+        { userId: 'b', seatIndex: 1, stack: 10000 },
+      ]);
+    });
+
+    const participationOf = (userId: string) =>
+      prisma.tournamentParticipation.findFirstOrThrow({
+        where: { tournamentId, userId }, omit: { playerOtp: false },
+      });
+    const otpOf = async (userId: string) => (await participationOf(userId)).playerOtp;
+
+    it('해제가 세대를 올리고 SEAT_TOKENS_REVOKED를 쏜다', async () => {
+      const before = await participationOf('a');
+      const bBefore = await participationOf('b');
+      await gen.releaseSeats(tournamentId, tableId, [{ seatIndex: 0, userId: 'a' }], ownerId);
+      const after = await participationOf('a');
+      const bAfter = await participationOf('b');
+      expect(`a +${after.seatTokenVersion - before.seatTokenVersion} / b +${bAfter.seatTokenVersion - bBefore.seatTokenVersion}`)
+        .toBe('a +1 / b +0');
+      expect(revokedEvents).toEqual([{ tournamentId, userIds: ['a'] }]);
+    });
+
+    it('rotateOtp면 해제한 사람의 OTP만 바뀐다', async () => {
+      const [a0, b0] = [await otpOf('a'), await otpOf('b')];
+      await gen.releaseSeats(tournamentId, tableId, [{ seatIndex: 0, userId: 'a' }], ownerId, true);
+      const [a1, b1] = [await otpOf('a'), await otpOf('b')];
+      expect(a1).not.toBe(a0);
+      expect(a1).toMatch(/^\d{8}$/);
+      expect(b1).toBe(b0);
+    });
+
+    it('rotateOtp가 없으면 OTP는 그대로다', async () => {
+      const a0 = await otpOf('a');
+      await gen.releaseSeats(tournamentId, tableId, [{ seatIndex: 0, userId: 'a' }], ownerId);
+      expect(await otpOf('a')).toBe(a0);
+    });
+  });
 });
 
 /**

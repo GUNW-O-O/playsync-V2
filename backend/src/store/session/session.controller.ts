@@ -156,7 +156,7 @@ export class SessionController {
     @Param('tableId') tableId: string,
     @Body() dto: ReleaseSeatsDto,
   ) {
-    await this.sessionService.releaseSeats(tournamentId, tableId, dto.seats, req.user.userId);
+    await this.sessionService.releaseSeats(tournamentId, tableId, dto.seats, req.user.userId, dto.rotateOtp === true);
     return { ok: true };
   }
 

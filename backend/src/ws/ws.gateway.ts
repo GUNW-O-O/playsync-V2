@@ -13,11 +13,15 @@ import {
   TableState as WireTableState,
   TournamentClosedSchema,
   TournamentSyncingSchema,
+  SEAT_REVOKED_REASON,
   SERVER_OUTAGE_EVENT,
   SERVER_RECOVERING_MESSAGE,
+  SESSION_REVOKED_CLOSE_CODE,
   TOURNAMENT_SYNCING_EVENT,
 } from '@playsync/contract';
+import { SEAT_ROLE } from 'src/auth/seat-role';
 import { DealerService } from 'src/dealer/dealer.service';
+import { assertSeatTokenCurrent } from 'src/entry/seat-token';
 import { TableState } from 'src/game-engine/types';
 import { PlaysyncService } from 'src/playsync/playsync.service';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -236,6 +240,17 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
       // 토큰은 애초에 여기까지 오지 않는다.
       const payload = await this.tickets.consume(ticket);
       if (!payload) throw new Error('유효하지 않은 티켓입니다.');
+
+      // T110. 티켓은 30초 산다. 그 사이 세대가 오르면 발급 때 맞던 것이 지금은
+      // 틀리다 — 세대를 올리는 쪽이 소켓을 닫는 것은 「이미 붙은」 것뿐이라
+      // 여기서 한 번 더 본다.
+      if (payload.role === SEAT_ROLE) {
+        await assertSeatTokenCurrent(this.prisma, {
+          userId: payload.sub,
+          tournamentId: payload.tournamentId,
+          ver: payload.seatTokenVersion,
+        });
+      }
 
       // 소켓 객체에 유저 정보 저장 (나중에 액션 시 사용)
       (client as any).userId = payload.sub;
@@ -806,6 +821,35 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
       this.broadcastToTable(tableId, 'tournamentClosed', parsed.data);
       this.closeTable(tableId);
     }
+  }
+
+  /**
+   * 세대가 오른 신원의 열린 소켓을 닫는다(T110). 테이블 방과 대회 방을 다 본다.
+   * `close`가 던져도 나머지를 닫는다 — `closeTable`과 같은 이유다. 실제 정리는
+   * 뒤이어 오는 `handleDisconnect`가 한다.
+   */
+  private closeWhere(match: (socket: any) => boolean, reason: string) {
+    for (const map of [this.tableSessions, this.tournamentSessions]) {
+      for (const sessions of map.values()) {
+        for (const socket of sessions) {
+          if (!match(socket)) continue;
+          try {
+            socket.close(SESSION_REVOKED_CLOSE_CODE, reason);
+          } catch {
+            // 이미 닫힌 소켓.
+          }
+        }
+      }
+    }
+  }
+
+  @OnEvent('SEAT_TOKENS_REVOKED')
+  handleSeatTokensRevoked(payload: { tournamentId: string; userIds: string[] }) {
+    const users = new Set(payload.userIds);
+    this.closeWhere(
+      (s) => s.role === SEAT_ROLE && s.tournamentId === payload.tournamentId && users.has(s.userId),
+      SEAT_REVOKED_REASON,
+    );
   }
 
   /**

@@ -862,6 +862,55 @@ describe('EntryService.enterSeat', () => {
         .toBe('redis 1 / db 1');
     });
   });
+
+  describe('좌석 토큰 세대(T110)', () => {
+    const jwt = new JwtService({ secret: 'entry-spec-secret' });
+    let emitter: EventEmitter2;
+    let gen: EntryService;
+
+    beforeEach(async () => {
+      emitter = new EventEmitter2();
+      gen = new EntryService(prisma as unknown as PrismaService, redisService, jwt, emitter);
+      await participate('g1', '00000071');
+    });
+
+    const verOf = (token: string) => (jwt.decode(token) as { ver?: number }).ver;
+
+    it('입장마다 세대가 오르고 토큰의 ver가 그 값이다', async () => {
+      const first = await gen.enterSeat(TOURNAMENT, { otp: '00000071', tableId: TABLE, seatIndex: 0 });
+      const again = await gen.enterSeat(TOURNAMENT, { otp: '00000071', tableId: TABLE, seatIndex: 0 });
+      const row = await prisma.tournamentParticipation.findFirstOrThrow({ where: { tournamentId: TOURNAMENT } });
+      expect(`${verOf(first.accessToken)}/${verOf(again.accessToken)}/${row.seatTokenVersion}`).toBe('1/2/2');
+    });
+
+    it('409로 끝난 입장은 세대를 안 올린다 - 틀린 좌석 시도로 남을 끊지 못한다', async () => {
+      await gen.enterSeat(TOURNAMENT, { otp: '00000071', tableId: TABLE, seatIndex: 0 });
+      await expect(
+        gen.enterSeat(TOURNAMENT, { otp: '00000071', tableId: TABLE, seatIndex: 1 }),
+      ).rejects.toThrow(ConflictException);
+      const row = await prisma.tournamentParticipation.findFirstOrThrow({ where: { tournamentId: TOURNAMENT } });
+      expect(`세대 ${row.seatTokenVersion}`).toBe('세대 1');
+    });
+
+    it('claimSeat가 409로 거절한 입장도 세대를 안 올린다 - 남이 앉은 자리로 시도해도 끊지 못한다', async () => {
+      // 위 테스트의 409는 `claimSeat` 앞의 빠른 경로에서 난다. 올리는 자리가
+      // `claimSeat` 앞으로 옮겨져도 초록이 되지 않게, 안에서 거절당하는 입장을 본다.
+      await participate('g2', '00000072');
+      await gen.enterSeat(TOURNAMENT, { otp: '00000072', tableId: TABLE, seatIndex: 0 });
+      await expect(
+        gen.enterSeat(TOURNAMENT, { otp: '00000071', tableId: TABLE, seatIndex: 0 }),
+      ).rejects.toThrow(ConflictException);
+      const row = await prisma.tournamentParticipation.findFirstOrThrow({ where: { tournamentId: TOURNAMENT, userId: 'g1' } });
+      expect(`세대 ${row.seatTokenVersion}`).toBe('세대 0');
+    });
+
+    it('세대를 올린 뒤 SEAT_TOKENS_REVOKED를 쏜다', async () => {
+      const seen: unknown[] = [];
+      emitter.on('SEAT_TOKENS_REVOKED', (p) => seen.push(p));
+      await gen.enterSeat(TOURNAMENT, { otp: '00000071', tableId: TABLE, seatIndex: 0 });
+      expect(seen).toEqual([{ tournamentId: TOURNAMENT, userIds: ['g1'] }]);
+    });
+  });
 });
 
 // 위 `describe('EntryService.enterSeat', ...)`와는 별개의 최상위 describe다.

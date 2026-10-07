@@ -55,6 +55,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         tournamentId: payload.tournamentId,
         tableId: payload.tableId,
         seatIndex: payload.seatIndex,
+        ver: payload.ver,
         role: SEAT_ROLE,
       };
     }

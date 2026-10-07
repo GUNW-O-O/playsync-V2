@@ -20,3 +20,4 @@ export * from "./tournament-status";
 export * from "./tournament-syncing";
 export * from "./server-outage";
 export * from "./device";
+export * from "./session-revoked";

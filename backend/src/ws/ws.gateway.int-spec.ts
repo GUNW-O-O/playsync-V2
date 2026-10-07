@@ -114,8 +114,47 @@ describe('WsGateway 인바운드 경계', () => {
    * 위 `playerTicket`은 `Role.USER`를 써 왔으므로 **프로덕션이 진짜로 싣는
    * 값을 한 번도 태워 보지 않았다**(T71 잔여 목록).
    */
-  async function seatTicket(userId: string) {
-    return tickets.issue({ sub: userId, role: SEAT_ROLE });
+  async function seatTicket(userId: string, version = 0) {
+    // T110. 좌석 티켓은 대회와 세대를 싣고, 접속이 참가 행과 대조한다 — 행이
+    // 없으면 거절이라 티켓을 내기 전에 행을 세운다.
+    await ensureParticipation(userId, TOURNAMENT, version);
+    return tickets.issue({
+      sub: userId, role: SEAT_ROLE, tournamentId: TOURNAMENT, seatTokenVersion: version,
+    });
+  }
+
+  /** 대회와 참가 행을 (없으면) 만든다. 이미 있으면 세대만 맞춘다. */
+  async function ensureParticipation(userId: string, tournamentId: string, version: number) {
+    await prisma.user.upsert({
+      where: { id: 'gw-owner' }, update: {},
+      create: { id: 'gw-owner', nickname: 'gw-owner', password: 'x', role: Role.STORE_ADMIN },
+    });
+    await prisma.store.upsert({
+      where: { id: 'gw-store' }, update: {}, create: { id: 'gw-store', name: 'gw-store', ownerId: 'gw-owner' },
+    });
+    await prisma.blindStructure.upsert({
+      where: { id: 'gw-blind' }, update: {},
+      create: {
+        id: 'gw-blind', name: 'gw-blind', storeId: 'gw-store',
+        structure: [{ lv: 1, sb: 100, ante: false, duration: 10 }],
+      },
+    });
+    await prisma.tournament.upsert({
+      where: { id: tournamentId }, update: {},
+      create: {
+        id: tournamentId, name: tournamentId, storeId: 'gw-store', blindId: 'gw-blind',
+        dealerOtpHash: 'unused-hash', startStack: 10000, entryFee: 1000,
+        status: TournamentStatus.ONGOING,
+      },
+    });
+    await prisma.user.upsert({
+      where: { id: userId }, update: {}, create: { id: userId, nickname: userId, password: 'x' },
+    });
+    await prisma.tournamentParticipation.upsert({
+      where: { tournamentId_userId: { tournamentId, userId } },
+      update: { seatTokenVersion: version },
+      create: { tournamentId, userId, playerOtp: `otp-${tournamentId}-${userId}`.slice(0, 40), seatTokenVersion: version },
+    });
   }
 
   async function dealerTicket(tableId: string) {
@@ -1725,6 +1764,74 @@ describe('WsGateway 인바운드 경계', () => {
       const seat = await connect(await seatTicket('alice'));
 
       expect(events(seat, 'REBUY_PROMPT')).toHaveLength(1);
+    });
+  });
+
+  describe('좌석 세대 재대조(T110)', () => {
+    /** 참가 행의 세대를 `rowVersion`으로 세우고, 티켓에 실은 값으로 붙는다. */
+    async function connectSeat(
+      rowVersion: number,
+      ticket: { seatTokenVersion?: number; tournamentId?: string },
+    ) {
+      await ensureParticipation('alice', TOURNAMENT, rowVersion);
+      const t = await tickets.issue({ sub: 'alice', role: SEAT_ROLE, ...ticket });
+      return connect(t);
+    }
+
+    it('티켓의 세대가 참가 행과 같으면 붙는다', async () => {
+      const client = await connectSeat(3, { tournamentId: TOURNAMENT, seatTokenVersion: 3 });
+      expect(client.close).not.toHaveBeenCalled();
+    });
+
+    it('티켓 발급 뒤 세대가 오르면 접속에서 거절한다', async () => {
+      const client = await connectSeat(3, { tournamentId: TOURNAMENT, seatTokenVersion: 2 });
+      expect(client.close).toHaveBeenCalledWith(1008, expect.any(String));
+    });
+
+    it('세대가 없는 좌석 티켓은 거절한다', async () => {
+      const client = await connectSeat(0, { tournamentId: TOURNAMENT });
+      expect(client.close).toHaveBeenCalledWith(1008, expect.any(String));
+    });
+  });
+
+  describe('SEAT_TOKENS_REVOKED(T110)', () => {
+    const REASON = '다른 기기에서 이 좌석에 다시 들어왔습니다.';
+
+    it('그 대회 · 그 사람 · 좌석 역할의 소켓만 4001로 닫는다', async () => {
+      const state = makeState();
+      state.players = [makePlayer('u1', 0), makePlayer('u2', 1)];
+      await redis.set(`table:state:${TABLE}`, JSON.stringify(state));
+
+      const seatSocket = async (userId: string, tournamentId: string, tableId?: string) => {
+        await ensureParticipation(userId, tournamentId, 0);
+        const ticket = await tickets.issue({
+          sub: userId, role: SEAT_ROLE, tournamentId, seatTokenVersion: 0,
+        });
+        const client = makeClient();
+        const query = tableId ? `tableId=${tableId}` : `tournamentId=${tournamentId}`;
+        await gateway.handleConnection(client, makeRequest(`${query}&ticket=${ticket}`, ORIGIN));
+        expect(client.close).not.toHaveBeenCalled();
+        return client;
+      };
+
+      const u1TableA = await seatSocket('u1', 'A', TABLE);
+      const u1RoomA = await seatSocket('u1', 'A');
+      const u2A = await seatSocket('u2', 'A', TABLE);
+      // 같은 사람의 다른 대회. 좌석 소켓이 대회를 가르는지 본다.
+      const u1B = await seatSocket('u1', 'B');
+      // 같은 사람의 USER 폰. 대회 방에 붙지만 좌석 역할이 아니다.
+      const phone = makeClient();
+      await gateway.handleConnection(
+        phone,
+        makeRequest(`tournamentId=A&ticket=${await playerTicket('u1')}`, ORIGIN),
+      );
+      expect(phone.close).not.toHaveBeenCalled();
+
+      gateway.handleSeatTokensRevoked({ tournamentId: 'A', userIds: ['u1'] });
+
+      expect(u1TableA.close).toHaveBeenCalledWith(4001, REASON);
+      expect(u1RoomA.close).toHaveBeenCalledWith(4001, REASON);
+      for (const other of [u2A, u1B, phone]) expect(other.close).not.toHaveBeenCalled();
     });
   });
 });

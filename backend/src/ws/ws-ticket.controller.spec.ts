@@ -2,7 +2,9 @@ import { ForbiddenException } from '@nestjs/common';
 import { GUARDS_METADATA } from '@nestjs/common/constants';
 import { Role } from '@prisma/client';
 import { JwtAuthGuard } from 'src/auth/guard/jwt-auth.guard';
+import { SEAT_ROLE } from 'src/auth/seat-role';
 import { DealerService } from 'src/dealer/dealer.service';
+import { PrismaService } from 'src/prisma/prisma.service';
 import { WsTicketController } from './ws-ticket.controller';
 import { WsTicketService } from './ws-ticket.service';
 
@@ -33,15 +35,51 @@ describe('WsTicketController', () => {
 
   let tickets: { issue: jest.Mock };
   let dealer: { assertDealerSessionValid: jest.Mock };
+  let prisma: { tournamentParticipation: { findUnique: jest.Mock } };
   let controller: WsTicketController;
 
   beforeEach(() => {
     tickets = { issue: jest.fn().mockResolvedValue('tkt-1') };
     dealer = { assertDealerSessionValid: jest.fn().mockResolvedValue({}) };
+    prisma = { tournamentParticipation: { findUnique: jest.fn().mockResolvedValue({ seatTokenVersion: 3 }) } };
     controller = new WsTicketController(
       tickets as unknown as WsTicketService,
       dealer as unknown as DealerService,
+      prisma as unknown as PrismaService,
     );
+  });
+
+  describe('좌석 토큰(T110)', () => {
+    const seatUser = (ver?: number) => ({
+      user: { userId: 'alice', tournamentId: 'trnmt-1', tableId: 'tbl-7', seatIndex: 2, ver, role: SEAT_ROLE },
+    });
+
+    it('세대가 참가 행과 같으면 대회와 세대를 실은 티켓을 준다', async () => {
+      await controller.issue(seatUser(3));
+
+      expect(tickets.issue).toHaveBeenCalledWith({
+        sub: 'alice', role: SEAT_ROLE, tournamentId: 'trnmt-1', seatTokenVersion: 3,
+      });
+    });
+
+    it('세대가 다르면 403이고 티켓을 만들지 않는다', async () => {
+      // 상태 코드와 메시지로 본다 — 예외 클래스 `instanceof`는 격리 로드에 약하다.
+      await expect(controller.issue(seatUser(2))).rejects.toMatchObject({
+        status: 403,
+        message: '만료된 좌석입니다. OTP를 다시 입력해 주세요.',
+      });
+      expect(tickets.issue).not.toHaveBeenCalled();
+    });
+
+    it('ver가 없는 옛 토큰도 403이다', async () => {
+      await expect(controller.issue(seatUser(undefined))).rejects.toMatchObject({ status: 403 });
+      expect(tickets.issue).not.toHaveBeenCalled();
+    });
+
+    it('참가 행이 없으면 403이다', async () => {
+      prisma.tournamentParticipation.findUnique.mockResolvedValue(null);
+      await expect(controller.issue(seatUser(3))).rejects.toMatchObject({ status: 403 });
+    });
   });
 
   it('플레이어의 신원은 userId에서 온다', async () => {

@@ -30,6 +30,10 @@ export type WsIdentity = {
   role: Role | typeof SEAT_ROLE;
   tournamentId?: string;
   tableId?: string;
+  /** 좌석 티켓의 세대(T110). `TournamentParticipation.seatTokenVersion`과 대조한다. */
+  seatTokenVersion?: number;
+  /** 딜러 티켓의 세대(T110). `DealerSession.tokenVersion`과 대조한다. */
+  tokenVersion?: number;
 };
 
 /**

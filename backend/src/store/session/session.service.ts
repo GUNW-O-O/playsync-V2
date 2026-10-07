@@ -31,6 +31,7 @@ import { isRegistrationOpenLive } from './registration-gate';
 import { calculateAbortSettlement, calculateChop, completeBlocker, groupAbortRefunds } from './settlement';
 import { NOT_CLOSED_TOURNAMENT_FILTER, isClosedTournament } from './tournament-status';
 import { FINISH_BLOCKERS } from './finish-blockers';
+import { generatePlayerOtp } from 'src/payment/player-otp';
 
 /**
  * 대회를 시작할 수 있는 최소 인원.
@@ -1718,6 +1719,7 @@ export class SessionService {
     tableId: string,
     seats: { seatIndex: number; userId: string }[],
     ownerId: string,
+    rotateOtp = false,
   ) {
     await this.assertTournamentOwnership(tournamentId, ownerId);
 
@@ -1835,10 +1837,26 @@ export class SessionService {
         // 아니다(`store/session/player-status.ts`의 `LIVE_PLAYER_STATUSES`).
         const updated = await tx.tournamentParticipation.updateMany({
           where: { tournamentId, userId: { in: userIds }, status: PlayerStatus.PLAYING },
-          data: { status: PlayerStatus.RELEASED },
+          // T110. 세대를 올려 옛 좌석 토큰을 죽인다 — 해제된 사람이 다시 앉으면
+          // 옛 토큰이 되살아나기 때문이다.
+          data: { status: PlayerStatus.RELEASED, seatTokenVersion: { increment: 1 } },
         });
         if (updated.count !== userIds.length) {
           throw new ConflictException('해제 중 참가 상태가 바뀌었습니다. 다시 시도해 주세요.');
+        }
+
+        // T110. 탈취를 의심해 해제할 때만 참가 OTP도 바꾼다. 쉬는 시간의 테이블
+        // 합치기마다 바꾸면 옮기는 사람 전원이 폰을 다시 봐야 한다.
+        // ponytail: 대회 안 유일 제약에 걸리면 트랜잭션째 409로 끝나고 상점이 다시
+        // 누른다 — 10^8 공간에 참가자 수백이라 사실상 안 난다. 재시도가 필요해지면
+        // `PaymentService`의 생성 재시도와 같은 고리를 둔다.
+        if (rotateOtp) {
+          for (const userId of userIds) {
+            await tx.tournamentParticipation.update({
+              where: { tournamentId_userId: { tournamentId, userId } },
+              data: { playerOtp: generatePlayerOtp() },
+            });
+          }
         }
       });
 
@@ -1883,6 +1901,12 @@ export class SessionService {
       await this.redis.deleteUserContexts(tournamentId, userIds);
 
       return state;
+    });
+
+    // T110. 세대가 올랐으니 그 사람들의 열린 좌석 소켓을 닫는다(커밋 뒤).
+    this.eventEmitter.emit('SEAT_TOKENS_REVOKED', {
+      tournamentId,
+      userIds: seats.map((s) => s.userId),
     });
 
     // 락 밖. 락을 쥔 채로 브로드캐스트하지 않는다.
