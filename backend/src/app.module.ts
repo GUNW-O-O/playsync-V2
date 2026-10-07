@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { DeviceThrottlerGuard } from './device/device-throttler.guard';
 import { throttlerOptions } from './auth/throttle';
 import { PrismaExceptionFilter } from './common/prisma-exception.filter';
 import { RedisOutageFilter } from './common/redis-outage.filter';
@@ -64,7 +65,8 @@ const loadMetrics = process.env.LOAD_METRICS === '1' ? [MetricsModule] : [];
     // 전역이라야 값이 있다. 라우트마다 붙이면 새 라우트가 조용히 빠지고,
     // 빠진 상태는 아무 신호도 내지 않는다(요청이 다 통과한다). 좁혀야 하는
     // 라우트는 `@Throttle`로 그 자리에서 덮는다.
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    // 버킷은 기기 토큰이 있으면 기기, 없으면 주소다(`DeviceThrottlerGuard`, T112).
+    { provide: APP_GUARD, useClass: DeviceThrottlerGuard },
     // **`main.ts`가 아니라 여기다.** `main.ts`는 어떤 테스트도 부팅하지
     // 않아, 거기 건 줄은 지워져도 아무도 울지 않는다. 모듈에 걸면 등록
     // 자체를 스펙이 볼 수 있다(`app.module.filter.spec.ts`).

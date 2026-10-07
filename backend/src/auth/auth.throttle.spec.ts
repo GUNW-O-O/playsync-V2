@@ -103,7 +103,7 @@ describe('인증 라우트 요청율 상한', () => {
  * 그 상태가 조용하다(요청은 다 통과한다). 그래서 모듈 메타데이터를 직접 본다.
  */
 describe('AppModule 배선', () => {
-  it('ThrottlerGuard가 APP_GUARD로 등록돼 있다', () => {
+  it('DeviceThrottlerGuard가 APP_GUARD로 등록돼 있다', () => {
     // `AuthModule`이 import 시점에 시크릿을 요구한다(`jwt-secret.ts`) —
     // 없으면 던지도록 만든 것이 그쪽 설계다. 값의 내용은 여기서 무관하다.
     const secret = process.env.JWT_SECRET;
@@ -115,7 +115,8 @@ describe('AppModule 배선', () => {
     // 맞아도 실패한다.
     jest.resetModules();
     const { AppModule } = require('../app.module') as typeof import('../app.module');
-    const throttler = require('@nestjs/throttler') as typeof import('@nestjs/throttler');
+    const { DeviceThrottlerGuard } =
+      require('../device/device-throttler.guard') as typeof import('../device/device-throttler.guard');
     const core = require('@nestjs/core') as typeof import('@nestjs/core');
 
     if (secret === undefined) delete process.env.JWT_SECRET;
@@ -127,7 +128,7 @@ describe('AppModule 배선', () => {
     }[];
 
     const registered = providers.some(
-      (p) => p?.provide === core.APP_GUARD && p?.useClass === throttler.ThrottlerGuard,
+      (p) => p?.provide === core.APP_GUARD && p?.useClass === DeviceThrottlerGuard,
     );
 
     expect(`전역 가드 ${registered ? '있음' : '없음'}`).toBe('전역 가드 있음');
