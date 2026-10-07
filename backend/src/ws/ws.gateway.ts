@@ -14,7 +14,6 @@ import {
   TournamentClosedSchema,
   TournamentSyncingSchema,
   DEALER_REVOKED_REASON,
-  SEAT_REVOKED_REASON,
   SERVER_OUTAGE_EVENT,
   SERVER_RECOVERING_MESSAGE,
   SESSION_REVOKED_CLOSE_CODE,
@@ -251,7 +250,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
         // 낡은 토큰은 4001 — 클라가 재연결을 멈춘다. 그 밖의 오류는 아래 1008.
         if (!(e instanceof ForbiddenException)) throw e;
         this.logger.warn(`연결 거부: ${e.message}`);
-        client.close(SESSION_REVOKED_CLOSE_CODE, this.revokedReason(payload));
+        client.close(SESSION_REVOKED_CLOSE_CODE, e.message);
         return;
       }
 
@@ -560,6 +559,10 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
 
   @SubscribeMessage('PLAYER_ACTION')
   async handlePlayerAction(@ConnectedSocket() client: any, @MessageBody() data: any) {
+    // T110. 해제로 닫힌 소켓도 피어가 응답하거나 closeTimeout(30초)이 찰 때까지
+    // 프레임이 계속 들어온다 — 닫히는 중이면 처리하지 않는다.
+    if (client.readyState !== WebSocket.OPEN) return;
+
     const { tableId, userId, role } = client;
 
     // T97. Redis 장애 중에는 좌석 액션을 즉시 거절한다 — 예전엔 ioredis가
@@ -596,6 +599,10 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
 
   @SubscribeMessage('DEALER_ACTION')
   async handleDealerAction(@ConnectedSocket() client: any, @MessageBody() data: any) {
+    // T110. 해제로 닫힌 소켓도 피어가 응답하거나 closeTimeout(30초)이 찰 때까지
+    // 프레임이 계속 들어온다 — 닫히는 중이면 처리하지 않는다.
+    if (client.readyState !== WebSocket.OPEN) return;
+
     const { tableId, role, tournamentId } = client;
 
     // T97. `recovering` 동안에도 딜러 명령을 받지 않는다 — 재개는 딜러가
@@ -883,10 +890,6 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     }
   }
 
-  private revokedReason(payload: WsIdentity) {
-    return payload.role === Role.DEALER ? DEALER_REVOKED_REASON : SEAT_REVOKED_REASON;
-  }
-
   /**
    * 방에 넣은 뒤 신원을 한 번 더 본다(T110). 앞선 대조와 `addToMap` 사이에
    * 세대가 오르면 `SEAT_TOKENS_REVOKED`·`DEALER_SESSION_REVOKED`는 아직 방에 없는
@@ -901,7 +904,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
       return false;
     } catch (e) {
       try {
-        if (e instanceof ForbiddenException) client.close(SESSION_REVOKED_CLOSE_CODE, this.revokedReason(payload));
+        if (e instanceof ForbiddenException) client.close(SESSION_REVOKED_CLOSE_CODE, e.message);
         else client.close(1008, '인증 실패');
       } catch {
         // 이미 닫힌 소켓.
@@ -964,6 +967,10 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
 
   @SubscribeMessage('REBUY_RESPONSE')
   handleRebuyResponse(@ConnectedSocket() client: any, @MessageBody() data: any) {
+    // T110. 해제로 닫힌 소켓도 피어가 응답하거나 closeTimeout(30초)이 찰 때까지
+    // 프레임이 계속 들어온다 — 닫히는 중이면 처리하지 않는다.
+    if (client.readyState !== WebSocket.OPEN) return;
+
     // T100. 장애 중의 응답은 받아도 반영할 수 없다 — 칩을 넣는 첫 쓰기가 Redis다.
     // 누른 사람에게 이유를 돌려주고, 판은 딜러가 다시 열 때 새로 묻는다.
     if (!this.redis.outage.isUp()) return { event: 'error', data: SERVER_RECOVERING_MESSAGE };

@@ -525,7 +525,7 @@ export default function DealerGameClient({
       {closed !== null && (
         <TournamentClosedOverlay status={closed} storeId={storeId} terminal="dealer" />
       )}
-      {/* T110. 서버가 이 딜러 세션을 끊었다(OTP 재발급). 재접속은 멈췄다. */}
+      {/* T110. 서버가 이 딜러 세션을 끊었다(상점의 딜러 내보내기). 재접속은 멈췄다. */}
       {revoked !== null && (
         <SessionRevokedOverlay
           reason={revoked}

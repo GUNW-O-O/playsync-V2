@@ -746,6 +746,18 @@ describe('SeatGameClient', () => {
     });
   });
 
+  /** 해제 직전의 renderGame이 이동 안내를 세웠으면 뒤따르는 4001 덮개가 그것을 가리지 않는다. */
+  it('해제 이동 안내가 떠 있으면 4001 덮개는 그리지 않는다', async () => {
+    const { socket } = await renderWithSocket({ seatIndex: 3 });
+
+    socket.emitServerEvent('renderGame', { ...BASE_STATE, players: Array(9).fill(null) });
+    expect(await screen.findByRole('button', { name: /지금 돌아가기/ })).toBeInTheDocument();
+    act(() => socket.onclose?.({ code: SESSION_REVOKED_CLOSE_CODE, reason: SEAT_RELEASED_REASON }));
+
+    expect(screen.getByRole('button', { name: /지금 돌아가기/ })).toBeInTheDocument();
+    expect(screen.queryByRole('alertdialog', { name: '접속 해제' })).not.toBeInTheDocument();
+  });
+
   /** T110. 서버가 이 좌석을 끊으면 덮개와 대기 화면 링크가 선다. */
   it('4001로 끊기면 이유와 대기 화면 링크를 그린다', async () => {
     const { socket } = await renderWithSocket();

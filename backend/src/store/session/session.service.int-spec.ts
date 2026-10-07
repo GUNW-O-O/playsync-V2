@@ -456,10 +456,10 @@ describe('SessionService — 딜러 OTP 재발급과 내보내기', () => {
     const { tournamentId, ownerId } = await seedTournament({ status: TournamentStatus.ONGOING });
 
     // 소켓을 닫은 쪽이 곧바로 재접속을 받으므로, 신호가 뜰 때 세대는 이미 올라 있어야 한다.
-    let versionAtEmit: number | undefined;
+    let readAtEmit: Promise<number | undefined> | undefined;
     emit.mockImplementation((event: any) => {
       if (event === 'DEALER_SESSION_REVOKED') {
-        void prisma.dealerSession.findUnique({ where: { tournamentId } }).then((r) => { versionAtEmit = r?.tokenVersion; });
+        readAtEmit = prisma.dealerSession.findUnique({ where: { tournamentId } }).then((r) => r?.tokenVersion);
       }
       return true;
     });
@@ -467,8 +467,7 @@ describe('SessionService — 딜러 OTP 재발급과 내보내기', () => {
 
     await sessionService.revokeDealerSession(tournamentId, ownerId);
     expect(emit).toHaveBeenCalledWith('DEALER_SESSION_REVOKED', { tournamentId });
-    await new Promise((r) => setTimeout(r, 50));
-    expect(versionAtEmit).toBe(before + 1);
+    await expect(readAtEmit).resolves.toBe(before + 1);
 
     emit.mockClear();
     await prisma.table.deleteMany({ where: { tournamentId } });

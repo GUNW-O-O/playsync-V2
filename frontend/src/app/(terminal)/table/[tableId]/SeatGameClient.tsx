@@ -455,8 +455,10 @@ export default function SeatGameClient({
         />
       )}
       {exitReason && <EliminatedOverlay storeId={storeId} reason={exitReason} />}
-      {/* T110. 서버가 이 좌석 신원을 끊었다(해제·재입장). 재접속은 멈췄다. */}
-      {revoked !== null && (
+      {/* T110. 서버가 이 좌석 신원을 끊었다(해제·재입장). 재접속은 멈췄다.
+          해제 직전의 renderGame이 이미 이동 안내(EliminatedOverlay)를 띄웠으면
+          그것이 그 사정을 더 잘 말하므로 가리지 않는다. */}
+      {revoked !== null && exitReason === null && (
         <SessionRevokedOverlay
           reason={revoked}
           hint="내 자리라면 대기 화면에서 OTP를 다시 넣으세요."
