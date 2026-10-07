@@ -114,7 +114,7 @@ REST `GET /playsync/:id`(`PlaysyncController.joinTable`)도 요청을 처리하�
 | 6 | 테이블 선점이 없다. 같은 OTP로 동일 테이블의 딜러 토큰이 여러 개 발급된다 | `DealerService.loginDealer` | 2·4 | **닫지 않는다** (backlog B1) |
 | 7 | 딜러 `sub`가 대회 단위라 단말을 구분하지 못한다 | `DealerService.loginDealer` | 감사 | **닫지 않는다** (backlog B1·B10) |
 | 8 | OTP 제거가 손으로 하는 구조분해 세 곳이다. 새 엔드포인트가 하나 빠뜨리면 그대로 샌다 | `payment.service.ts`의 `getStoreAvailableSessions`, `payment.controller.ts`의 `findAvailableSessions`, `dealer.controller.ts`의 `getTournamentWithTables` | 2 | **닫힘 (T23 + T51)** — 평문은 저장 자체를 없앴고, 해시는 클라이언트 수준 omit이 기본으로 감춘다 |
-| 9 | JWT 만료 1시간, 폐기 경로가 없다. 유출된 토큰을 무효화할 방법이 없다 | `auth.module.ts`의 `JwtModule.register` | 1·2·3 | **딜러 토큰만 닫힘 (T23)** |
+| 9 | JWT 만료 1시간, 폐기 경로가 없다. 유출된 토큰을 무효화할 방법이 없다 | `auth.module.ts`의 `JwtModule.register` | 1·2·3 | **딜러 · 좌석 토큰 닫힘 (T23 · T110)** — 좌석은 `seatTokenVersion`, 딜러는 `tokenVersion`. 세대를 올리면 열린 소켓도 닫힌다. 사용자 토큰(1시간)은 그대로 |
 | 10 | 프론트가 httpOnly 쿠키를 읽어 클라이언트 prop으로 넘기고, 그것이 WS 쿼리스트링에 실린다. httpOnly를 건 이유를 정면으로 무효화한다 | T22 이월 항목 | 1·2·3 | **닫힘 (T24)** |
 
 **3·4·5가 겹치는 자리가 가장 나쁘다.** 자릿수가 짧고, 시도 제한이 없고,
