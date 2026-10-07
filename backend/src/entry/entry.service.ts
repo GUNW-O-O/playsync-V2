@@ -9,6 +9,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { JwtService } from '@nestjs/jwt';
 import { PlayerStatus, TournamentStatus } from '@prisma/client';
 import { EnterTournamentDto } from 'shared/dto/entry.dto';
+import { SEAT_REVOKED_REASON } from '@playsync/contract';
 import { SEAT_ROLE } from 'src/auth/seat-role';
 import { tokenTtl } from 'src/auth/token-ttl';
 import { GamePhase, TableState, createEmptyTableState } from 'src/game-engine/types';
@@ -108,7 +109,9 @@ export class EntryService {
       data: { seatTokenVersion: { increment: 1 } },
       select: { seatTokenVersion: true },
     });
-    this.eventEmitter.emit('SEAT_TOKENS_REVOKED', { tournamentId, userIds: [participation.userId] });
+    this.eventEmitter.emit('SEAT_TOKENS_REVOKED', { tournamentId, userIds: [participation.userId],
+      reason: SEAT_REVOKED_REASON,
+    });
 
     return {
       // **좌석 태블릿은 대회 내내 켜져 있다.** 전역 기본값(1시간)으로 두면

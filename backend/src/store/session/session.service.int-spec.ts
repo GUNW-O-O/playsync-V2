@@ -21,7 +21,10 @@ import { Client } from 'pg';
 import { closeTestPrisma, createTestPrisma, truncateAll } from '../../../test/helpers/prisma';
 import { createTestRedis, flushTestRedis } from '../../../test/helpers/redis';
 import { UserService } from 'src/user/user.service';
+import { SEAT_RELEASED_REASON } from '@playsync/contract';
 import { SessionService } from './session.service';
+import { WsGateway } from 'src/ws/ws.gateway';
+import { SEAT_ROLE } from 'src/auth/seat-role';
 
 /**
  * **Redis가 죽은 동안 닫으면**(T103) 알림은 곧바로 나가고 Redis 정리는 복구
@@ -1547,7 +1550,7 @@ describe('SessionService.releaseSeats', () => {
       const bAfter = await participationOf('b');
       expect(`a +${after.seatTokenVersion - before.seatTokenVersion} / b +${bAfter.seatTokenVersion - bBefore.seatTokenVersion}`)
         .toBe('a +1 / b +0');
-      expect(revokedEvents).toEqual([{ tournamentId, userIds: ['a'] }]);
+      expect(revokedEvents).toEqual([{ tournamentId, userIds: ['a'], reason: SEAT_RELEASED_REASON }]);
     });
 
     it('rotateOtp면 해제한 사람의 OTP만 바뀐다', async () => {
@@ -1563,6 +1566,37 @@ describe('SessionService.releaseSeats', () => {
       const a0 = await otpOf('a');
       await gen.releaseSeats(tournamentId, tableId, [{ seatIndex: 0, userId: 'a' }], ownerId);
       expect(await otpOf('a')).toBe(a0);
+    });
+
+    it('해제된 태블릿은 닫히기 전에 자기 자리가 빈 스냅샷을 받는다', async () => {
+      // 게이트웨이는 소켓을 동기로 닫고 renderGame 브로드캐스트는 OPEN이 아닌
+      // 소켓을 건너뛴다. 닫기 이벤트가 스냅샷 알림보다 앞서면 뗀 태블릿은
+      // 대기 화면으로 돌아갈 근거(자기 자리 null)를 못 받는다(T29).
+      const emitter = new EventEmitter2();
+      const gateway = new WsGateway(
+        {} as any, {} as any, redisService, {} as any, emitter,
+        prisma as unknown as PrismaService, {} as any,
+      );
+      emitter.on('game.state.updated', (p) => gateway.handleGameStateUpdated(p));
+      emitter.on('SEAT_TOKENS_REVOKED', (p) => gateway.handleSeatTokensRevoked(p));
+
+      const calls: string[] = [];
+      const socket: any = {
+        readyState: 1, role: SEAT_ROLE, userId: 'a', tournamentId, on: jest.fn(),
+        send: jest.fn((m: string) => {
+          const { event, data } = JSON.parse(m);
+          calls.push(`send ${event} 0번=${data?.players?.[0] === null ? 'null' : '있음'}`);
+        }),
+        close: jest.fn((code: number) => { socket.readyState = 2; calls.push(`close ${code}`); }),
+      };
+      (gateway as any).addToMap((gateway as any).tableSessions, tableId, socket);
+
+      const svc = new SessionService(
+        prisma as unknown as PrismaService, redisService, new OtpAttempts(redis), emitter,
+      );
+      await svc.releaseSeats(tournamentId, tableId, [{ seatIndex: 0, userId: 'a' }], ownerId);
+
+      expect(calls.filter((c) => !c.startsWith('send SEAT'))).toEqual(['send renderGame 0번=null', 'close 4001']);
     });
   });
 });

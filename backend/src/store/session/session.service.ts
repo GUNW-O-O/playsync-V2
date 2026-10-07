@@ -31,6 +31,7 @@ import { isRegistrationOpenLive } from './registration-gate';
 import { calculateAbortSettlement, calculateChop, completeBlocker, groupAbortRefunds } from './settlement';
 import { NOT_CLOSED_TOURNAMENT_FILTER, isClosedTournament } from './tournament-status';
 import { FINISH_BLOCKERS } from './finish-blockers';
+import { SEAT_RELEASED_REASON } from '@playsync/contract';
 import { generatePlayerOtp } from 'src/payment/player-otp';
 
 /**
@@ -1903,12 +1904,6 @@ export class SessionService {
       return state;
     });
 
-    // T110. 세대가 올랐으니 그 사람들의 열린 좌석 소켓을 닫는다(커밋 뒤).
-    this.eventEmitter.emit('SEAT_TOKENS_REVOKED', {
-      tournamentId,
-      userIds: seats.map((s) => s.userId),
-    });
-
     // 락 밖. 락을 쥔 채로 브로드캐스트하지 않는다.
     await this.emitSeatList(tournamentId);
 
@@ -1926,5 +1921,15 @@ export class SessionService {
       여기서는 알리기만 한다.
     */
     if (released) this.eventEmitter.emit('game.state.updated', { tableId, state: released });
+
+    // T110. 세대가 올랐으니 그 사람들의 열린 좌석 소켓을 닫는다(커밋 뒤).
+    // **위 `game.state.updated` 뒤라야 한다.** 게이트웨이가 소켓을 동기로 닫고
+    // `broadcastRenderGame`은 OPEN이 아닌 소켓을 건너뛰므로, 앞서 쏘면 뗀 태블릿이
+    // 자기 자리가 null인 스냅샷을 못 받아 대기 화면으로 돌아가지 못한다(T29).
+    this.eventEmitter.emit('SEAT_TOKENS_REVOKED', {
+      tournamentId,
+      userIds: seats.map((s) => s.userId),
+      reason: SEAT_RELEASED_REASON,
+    });
   }
 }

@@ -189,14 +189,14 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
    * 뚫려 있던 비대칭 자체가 빠뜨렸다는 증거다.
    *
    * **티켓에 `tournamentId`가 없는 것은 결함이 아니다.** `POST /ws/ticket`은
-   * 딜러 티켓에만 그 값을 싣는다(`WsTicketController.issue`) — 딜러는 대회
-   * 하나에 묶인 세션이지만, 플레이어와 상점 계정은 한 사람이 여러 대회에
+   * 딜러와 좌석 티켓(T110)에만 그 값을 싣는다(`WsTicketController.issue`) — 둘은
+   * 대회 하나에 묶인 세션이지만, 플레이어와 상점 계정은 한 사람이 여러 대회에
    * 걸칠 수 있어 발급 시점에 대회를 정할 수 없다. 그래서 거절하지 않고
    * **다른 근거로** 가른다.
    */
   private async assertTournamentAccess(payload: WsIdentity, tournamentId: string) {
-    // 티켓이 대회를 들고 있으면(딜러) 그것이 권위다. `loginDealer`가 서명해
-    // 넣은 값이라 클라이언트가 고를 수 없다.
+    // 티켓이 대회를 들고 있으면(딜러 · 좌석) 그것이 권위다. `loginDealer`와
+    // `enterSeat`가 서명해 넣은 값이라 클라이언트가 고를 수 없다.
     if (payload.tournamentId) {
       if (payload.tournamentId !== tournamentId) {
         throw new Error('토큰에 없는 대회입니다.');
@@ -270,6 +270,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
 
         (client as any).tournamentId = tournamentId;
         this.addToMap(this.tournamentSessions, tournamentId, client);
+        await this.closeIfSeatStale(client, payload);
         return; // 테이블 세션에는 넣지 않는다
       }
 
@@ -279,6 +280,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
 
         (client as any).tableId = tableId;
         this.addToMap(this.tableSessions, tableId, client);
+        if (await this.closeIfSeatStale(client, payload)) return;
 
         // 접속자 본인에게만 보낸다. 남이 접속했다고 테이블 전원이 같은 상태를
         // 다시 받을 이유가 없다.
@@ -844,12 +846,37 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
   }
 
   @OnEvent('SEAT_TOKENS_REVOKED')
-  handleSeatTokensRevoked(payload: { tournamentId: string; userIds: string[] }) {
+  handleSeatTokensRevoked(payload: { tournamentId: string; userIds: string[]; reason: string }) {
     const users = new Set(payload.userIds);
     this.closeWhere(
       (s) => s.role === SEAT_ROLE && s.tournamentId === payload.tournamentId && users.has(s.userId),
-      SEAT_REVOKED_REASON,
+      payload.reason,
     );
+  }
+
+  /**
+   * 방에 넣은 뒤 좌석 세대를 한 번 더 본다(T110). 앞선 대조와 `addToMap` 사이에
+   * 세대가 오르면 `SEAT_TOKENS_REVOKED`는 아직 방에 없는 이 소켓을 놓친다.
+   * 틀리면 닫고 방에서 뺀다. 닫혔으면 `true`.
+   */
+  private async closeIfSeatStale(client: any, payload: WsIdentity): Promise<boolean> {
+    if (payload.role !== SEAT_ROLE) return false;
+    try {
+      await assertSeatTokenCurrent(this.prisma, {
+        userId: payload.sub,
+        tournamentId: payload.tournamentId,
+        ver: payload.seatTokenVersion,
+      });
+      return false;
+    } catch {
+      try {
+        client.close(SESSION_REVOKED_CLOSE_CODE, SEAT_REVOKED_REASON);
+      } catch {
+        // 이미 닫힌 소켓.
+      }
+      await this.handleDisconnect(client);
+      return true;
+    }
   }
 
   /**

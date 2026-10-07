@@ -7,4 +7,5 @@
  */
 export const SESSION_REVOKED_CLOSE_CODE = 4001 as const;
 export const SEAT_REVOKED_REASON = "다른 기기에서 이 좌석에 다시 들어왔습니다." as const;
+export const SEAT_RELEASED_REASON = "상점이 이 좌석을 해제했습니다." as const;
 export const DEALER_REVOKED_REASON = "상점이 딜러 연결을 해제했습니다." as const;

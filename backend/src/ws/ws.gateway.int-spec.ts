@@ -15,7 +15,7 @@ import { PrismaClient, Role, TournamentStatus } from '@prisma/client';
 import { createTestRedis, flushTestRedis } from '../../test/helpers/redis';
 import { closeTestPrisma, createTestPrisma, truncateAll } from '../../test/helpers/prisma';
 import { RecoveryService } from 'src/recovery/recovery.service';
-import { SERVER_OUTAGE_EVENT, SERVER_RECOVERING_MESSAGE, TOURNAMENT_SYNCING_EVENT } from '@playsync/contract';
+import { SEAT_REVOKED_REASON, SERVER_OUTAGE_EVENT, SERVER_RECOVERING_MESSAGE, TOURNAMENT_SYNCING_EVENT } from '@playsync/contract';
 
 /**
  * 게이트웨이의 인바운드 경계.
@@ -1792,6 +1792,28 @@ describe('WsGateway 인바운드 경계', () => {
       const client = await connectSeat(0, { tournamentId: TOURNAMENT });
       expect(client.close).toHaveBeenCalledWith(1008, expect.any(String));
     });
+
+    it('방에 들어가는 사이 세대가 오르면 4001로 닫고 방에서 뺀다', async () => {
+      // 대조와 addToMap 사이에 터진 SEAT_TOKENS_REVOKED는 아직 방에 없는 소켓을
+      // 놓친다. 접근 판정이 끝나는 순간에 세대를 올려 그 틈을 만든다.
+      await ensureParticipation('alice', TOURNAMENT, 3);
+      const real = playsync.assertTableAccess.bind(playsync);
+      jest.spyOn(playsync, 'assertTableAccess').mockImplementationOnce(async (...args) => {
+        await real(...args);
+        await prisma.tournamentParticipation.update({
+          where: { tournamentId_userId: { tournamentId: TOURNAMENT, userId: 'alice' } },
+          data: { seatTokenVersion: 4 },
+        });
+      });
+      const t = await tickets.issue({
+        sub: 'alice', role: SEAT_ROLE, tournamentId: TOURNAMENT, seatTokenVersion: 3,
+      });
+
+      const client = await connect(t);
+
+      expect(client.close).toHaveBeenCalledWith(4001, expect.any(String));
+      expect([...((gateway as any).tableSessions.get(TABLE) ?? [])]).not.toContain(client);
+    });
   });
 
   describe('SEAT_TOKENS_REVOKED(T110)', () => {
@@ -1827,7 +1849,7 @@ describe('WsGateway 인바운드 경계', () => {
       );
       expect(phone.close).not.toHaveBeenCalled();
 
-      gateway.handleSeatTokensRevoked({ tournamentId: 'A', userIds: ['u1'] });
+      gateway.handleSeatTokensRevoked({ tournamentId: 'A', userIds: ['u1'], reason: REASON });
 
       expect(u1TableA.close).toHaveBeenCalledWith(4001, REASON);
       expect(u1RoomA.close).toHaveBeenCalledWith(4001, REASON);

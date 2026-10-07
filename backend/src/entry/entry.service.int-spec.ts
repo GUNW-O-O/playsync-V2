@@ -8,6 +8,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { closeTestPrisma, createTestPrisma, truncateAll } from '../../test/helpers/prisma';
 import { createTestRedis, flushTestRedis } from '../../test/helpers/redis';
+import { SEAT_REVOKED_REASON } from '@playsync/contract';
 import { EntryService } from './entry.service';
 
 describe('EntryService.enterSeat', () => {
@@ -908,7 +909,7 @@ describe('EntryService.enterSeat', () => {
       const seen: unknown[] = [];
       emitter.on('SEAT_TOKENS_REVOKED', (p) => seen.push(p));
       await gen.enterSeat(TOURNAMENT, { otp: '00000071', tableId: TABLE, seatIndex: 0 });
-      expect(seen).toEqual([{ tournamentId: TOURNAMENT, userIds: ['g1'] }]);
+      expect(seen).toEqual([{ tournamentId: TOURNAMENT, userIds: ['g1'], reason: SEAT_REVOKED_REASON }]);
     });
   });
 });
