@@ -2,7 +2,7 @@ import { sleep } from 'k6';
 import exec from 'k6/execution';
 import { SharedArray } from 'k6/data';
 import { Counter, Trend } from 'k6/metrics';
-import { createTableWithRetry, login, startTournament } from '../lib/api.js';
+import { createTableWithRetry, login, registerDevice, startTournament } from '../lib/api.js';
 import { sample, stepLabel as monitorLabel } from '../lib/monitor.js';
 import { buildSummary } from '../lib/summary.js';
 import { runHands, seatPlayers } from '../lib/table.js';
@@ -170,7 +170,14 @@ export function setup() {
     );
   }
 
-  return { runId, startedAt: Date.now(), endAt: Date.now() + TOTAL_S * 1000 };
+  // 기기 토큰은 365일 산다 — 어떤 실행보다 길어 VU에 물려줘도 된다. 상점마다 하나.
+  const ownerToken = login(manifest.ownerNickname, manifest.password);
+  const deviceTokens = {};
+  for (const t of manifest.tournaments) {
+    if (!deviceTokens[t.storeId]) deviceTokens[t.storeId] = registerDevice(ownerToken, t.storeId);
+  }
+
+  return { runId, deviceTokens, startedAt: Date.now(), endAt: Date.now() + TOTAL_S * 1000 };
 }
 
 export function table(data) {
@@ -212,6 +219,7 @@ export function table(data) {
     accountPrefix: manifest.accountPrefix,
     accountPool: manifest.accountPool,
     entryFee: manifest.entryFee,
+    deviceToken: data.deviceTokens[tournament.storeId],
   });
   tableSetupMs.add(Date.now() - setupStart);
 
@@ -253,6 +261,7 @@ export function table(data) {
     tournamentId: tournament.id,
     tableId: table.id,
     dealerOtp: manifest.dealerOtp,
+    deviceToken: data.deviceTokens[tournament.storeId],
     players,
     durationMs: Math.max(5000, data.endAt - Date.now()),
     bigBlind: manifest.bigBlind,

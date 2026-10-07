@@ -1,4 +1,4 @@
-import { login, startTournament } from '../lib/api.js';
+import { login, registerDevice, startTournament } from '../lib/api.js';
 import { sample } from '../lib/monitor.js';
 import { buildSummary } from '../lib/summary.js';
 import { runHands, seatPlayers } from '../lib/table.js';
@@ -45,7 +45,8 @@ export function setup() {
   // **네 글자로 자른다.** 닉네임은 3~10자다(`CreateUserDto`). 뒤에 VU와 좌석이
   // 붙으므로 접두사가 길면 램프에서 VU 번호가 커질 때 상한을 넘는다.
   const runId = Math.random().toString(36).slice(2, 6);
-  return { ownerToken, runId };
+  const deviceToken = registerDevice(ownerToken, manifest.tournaments[0].storeId);
+  return { ownerToken, runId, deviceToken };
 }
 
 export default function (data) {
@@ -68,6 +69,7 @@ export default function (data) {
     accountPrefix: manifest.accountPrefix,
     accountPool: manifest.accountPool,
     entryFee: manifest.entryFee,
+    deviceToken: data.deviceToken,
   });
 
   // 대회를 시작해야 Redis에 블라인드 메타가 서고, 그래야 `startPreFlop`이
@@ -78,6 +80,7 @@ export default function (data) {
     tournamentId: tournament.id,
     tableId: table.id,
     dealerOtp: manifest.dealerOtp,
+    deviceToken: data.deviceToken,
     players,
     durationMs: DURATION_MS,
     bigBlind: manifest.bigBlind,

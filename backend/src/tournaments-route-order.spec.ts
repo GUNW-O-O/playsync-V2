@@ -5,6 +5,8 @@ import { EntryController } from './entry/entry.controller';
 import { EntryService } from './entry/entry.service';
 import { PaymentController } from './payment/payment.controller';
 import { PaymentService } from './payment/payment.service';
+import { PrismaService } from './prisma/prisma.service';
+import { JwtService } from '@nestjs/jwt';
 
 /**
  * `PaymentController`·`EntryController`가 둘 다 `@Controller('tournaments')`를
@@ -69,6 +71,9 @@ describe('PaymentController·EntryController — tournaments 라우트 순서', 
           },
         },
         { provide: EntryService, useValue: { getSeatMap, enterSeat: jest.fn() } },
+        // `EntryController.enter`의 `DeviceGuard`가 요구하는 의존성(T112) — 이 스펙은 `enter`를 부르지 않는다.
+        { provide: PrismaService, useValue: {} },
+        { provide: JwtService, useValue: {} },
       ],
     }).compile();
 
@@ -110,6 +115,9 @@ describe('PaymentController·EntryController — tournaments 라우트 순서', 
           },
         },
         { provide: EntryService, useValue: { getSeatMap, enterSeat: jest.fn() } },
+        // `EntryController.enter`의 `DeviceGuard`가 요구하는 의존성(T112) — 이 스펙은 `enter`를 부르지 않는다.
+        { provide: PrismaService, useValue: {} },
+        { provide: JwtService, useValue: {} },
       ],
     }).compile();
 

@@ -1,6 +1,6 @@
 import { APIRequestContext } from '@playwright/test';
 import WebSocket from 'ws';
-import { BACKEND_URL, bearer } from './backstage';
+import { BACKEND_URL, bearer, deviceHeaders } from './backstage';
 
 /**
  * **카메라 밖에서 소켓을 잡는 손.**
@@ -155,6 +155,7 @@ export async function dealerToken(
 ): Promise<string> {
   const res = await request.post(`${BACKEND_URL}/dealer/auth`, {
     data: { tournamentId: opts.tournamentId, tableId: opts.tableId, otp: opts.otp },
+    headers: await deviceHeaders(request),
   });
   if (!res.ok()) {
     throw new Error(`딜러 인증 실패 (${opts.tableId}): ${res.status()} ${await res.text()}`);

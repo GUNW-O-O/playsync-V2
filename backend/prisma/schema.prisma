@@ -111,6 +111,9 @@ model Store {
   tournaments     Tournament[]
   blindStructures BlindStructure[]
 
+  /// 매장 태블릿 기기 토큰의 세대(T112). 올리면 이 상점의 기기 토큰이 전부 죽는다.
+  deviceTokenVersion Int @default(0)
+
   createdAt DateTime @default(now())
 
   // 이름은 소유자 안에서만 유일하다. 전역 유니크였을 때는 남이 먼저 쓴

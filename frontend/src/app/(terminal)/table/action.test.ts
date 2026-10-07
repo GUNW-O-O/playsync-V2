@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/mocks/server';
+import { DEVICE_UNREGISTERED_MESSAGE } from '@playsync/contract';
 
 const cookieStore = { set: vi.fn(), get: vi.fn(), delete: vi.fn() };
 vi.mock('next/headers', () => ({
@@ -84,5 +85,39 @@ describe('enterSeat', () => {
       deleted: cookieStore.delete.mock.calls.length,
       result,
     }).toEqual({ set: 0, deleted: 0, result: { error: '이미 사용 중인 좌석입니다.' } });
+  });
+
+  it('기기 토큰을 x-device-token으로 싣는다', async () => {
+    cookieStore.get.mockImplementation((n: string) => (n === 'deviceToken' ? { value: 'dev-1' } : undefined));
+    let seen: string | null = null;
+    server.use(
+      http.post('http://backend.test/tournaments/trnmt-1/enter', ({ request }) => {
+        seen = request.headers.get('x-device-token');
+        return HttpResponse.json({ accessToken: SEAT_TOKEN });
+      }),
+    );
+    await enterSeat(INPUT);
+    expect(seen).toBe('dev-1');
+  });
+
+  it('기기 거절이면 deviceToken 쿠키를 지운다 — 다시 그리면 등록 폼이다', async () => {
+    server.use(
+      http.post('http://backend.test/tournaments/trnmt-1/enter', () =>
+        HttpResponse.json({ message: DEVICE_UNREGISTERED_MESSAGE }, { status: 401 }),
+      ),
+    );
+    const result = await enterSeat(INPUT);
+    expect(result).toEqual({ error: DEVICE_UNREGISTERED_MESSAGE });
+    expect(cookieStore.delete).toHaveBeenCalledWith('deviceToken');
+  });
+
+  it('OTP가 틀린 401은 쿠키를 지우지 않는다', async () => {
+    server.use(
+      http.post('http://backend.test/tournaments/trnmt-1/enter', () =>
+        HttpResponse.json({ message: '인증 정보가 올바르지 않습니다.' }, { status: 401 }),
+      ),
+    );
+    await enterSeat(INPUT);
+    expect(cookieStore.delete).not.toHaveBeenCalledWith('deviceToken');
   });
 });

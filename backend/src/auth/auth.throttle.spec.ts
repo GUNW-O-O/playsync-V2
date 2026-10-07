@@ -1,6 +1,3 @@
-import { APP_GUARD } from '@nestjs/core';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
-import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 
@@ -41,14 +38,22 @@ describe('인증 라우트 요청율 상한', () => {
     const { AuthController } = require('./auth.controller') as typeof import('./auth.controller');
     const { AuthService } = require('./auth.service') as typeof import('./auth.service');
     const { throttlerOptions } = require('./throttle') as typeof import('./throttle');
+    // `resetModules` 뒤라, 가드가 주입받는 것들(`Reflector` · `JwtService` · 상한 저장소)은
+    // 가드와 **같은 레지스트리**에서 꺼내야 토큰이 맞는다. 위에서 import하면 다른 클래스 객체다.
+    const { APP_GUARD } = require('@nestjs/core') as typeof import('@nestjs/core');
+    const { Test } = require('@nestjs/testing') as typeof import('@nestjs/testing');
+    const { ThrottlerModule } = require('@nestjs/throttler') as typeof import('@nestjs/throttler');
+    const { JwtModule } = require('@nestjs/jwt') as typeof import('@nestjs/jwt');
+    const { DeviceThrottlerGuard } =
+      require('../device/device-throttler.guard') as typeof import('../device/device-throttler.guard');
     errorMessage = throttlerOptions().errorMessage;
 
     const moduleRef = await Test.createTestingModule({
-      imports: [ThrottlerModule.forRoot(throttlerOptions())],
+      imports: [ThrottlerModule.forRoot(throttlerOptions()), JwtModule.register({ secret: 'x' })],
       controllers: [AuthController],
       providers: [
         { provide: AuthService, useValue: { login: async () => ({ accessToken: 'x' }) } },
-        { provide: APP_GUARD, useClass: ThrottlerGuard },
+        { provide: APP_GUARD, useClass: DeviceThrottlerGuard },
       ],
     }).compile();
 
@@ -103,7 +108,7 @@ describe('인증 라우트 요청율 상한', () => {
  * 그 상태가 조용하다(요청은 다 통과한다). 그래서 모듈 메타데이터를 직접 본다.
  */
 describe('AppModule 배선', () => {
-  it('ThrottlerGuard가 APP_GUARD로 등록돼 있다', () => {
+  it('DeviceThrottlerGuard가 APP_GUARD로 등록돼 있다', () => {
     // `AuthModule`이 import 시점에 시크릿을 요구한다(`jwt-secret.ts`) —
     // 없으면 던지도록 만든 것이 그쪽 설계다. 값의 내용은 여기서 무관하다.
     const secret = process.env.JWT_SECRET;
@@ -115,7 +120,8 @@ describe('AppModule 배선', () => {
     // 맞아도 실패한다.
     jest.resetModules();
     const { AppModule } = require('../app.module') as typeof import('../app.module');
-    const throttler = require('@nestjs/throttler') as typeof import('@nestjs/throttler');
+    const { DeviceThrottlerGuard } =
+      require('../device/device-throttler.guard') as typeof import('../device/device-throttler.guard');
     const core = require('@nestjs/core') as typeof import('@nestjs/core');
 
     if (secret === undefined) delete process.env.JWT_SECRET;
@@ -127,7 +133,7 @@ describe('AppModule 배선', () => {
     }[];
 
     const registered = providers.some(
-      (p) => p?.provide === core.APP_GUARD && p?.useClass === throttler.ThrottlerGuard,
+      (p) => p?.provide === core.APP_GUARD && p?.useClass === DeviceThrottlerGuard,
     );
 
     expect(`전역 가드 ${registered ? '있음' : '없음'}`).toBe('전역 가드 있음');

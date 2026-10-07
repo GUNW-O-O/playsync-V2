@@ -13,7 +13,7 @@ vi.mock('next/headers', () => ({
 process.env.BACKEND_URL = 'http://backend.test';
 
 const {
-  reissueDealerOtp, startTournament,
+  reissueDealerOtp, revokeDevices, startTournament,
   completeTournament, chopTournament, abortTournament, fetchFinishPreview,
 } = await import('./action');
 
@@ -47,6 +47,20 @@ describe('상점 콘솔 서버 액션', () => {
     // "애초에 안 불렀다"로 우연히 통과하지 않는다.
     expect(sentAuth).toBe('Bearer admin-jwt-token');
     expect(JSON.stringify(result)).not.toContain('admin-jwt-token');
+  });
+
+  it('revokeDevices는 점주 토큰으로 상점의 기기 토큰을 전부 해제한다', async () => {
+    cookieStore.get.mockReturnValue({ value: 'admin-jwt-token' });
+    let seenAuth: string | null = null;
+    server.use(
+      http.post('http://backend.test/store/store-1/devices/revoke', ({ request }) => {
+        seenAuth = request.headers.get('authorization');
+        return HttpResponse.json({ ok: true }, { status: 201 });
+      }),
+    );
+    const result = await revokeDevices('store-1');
+    expect('ok' in result).toBe(true);
+    expect(seenAuth).toBe('Bearer admin-jwt-token');
   });
 
   it('쿠키가 없으면 백엔드를 부르지 않고 실패를 돌려준다', async () => {

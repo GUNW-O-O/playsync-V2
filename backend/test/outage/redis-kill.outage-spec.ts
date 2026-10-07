@@ -2,7 +2,7 @@ import { execSync } from 'child_process';
 import { readFileSync } from 'fs';
 import { Client } from 'pg';
 import WebSocket from 'ws';
-import { SERVER_OUTAGE_EVENT, SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
+import { DEVICE_TOKEN_HEADER, SERVER_OUTAGE_EVENT, SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
 import { BACKEND_PORT, OUTAGE_ENV, REDIS_CONTAINER, ROOT_MANIFEST } from './global-teardown';
 
 /**
@@ -24,17 +24,33 @@ const OBSERVE_MS = 40_000;
 const PRE_FLOP = 1;
 const SHOWDOWN = 5;
 
+/**
+ * 매장 태블릿 기기 토큰(T112). `/enter`와 `/dealer/auth`는 등록된 기기만 부른다.
+ * 점주로 로그인해 한 번 받고 두 호출에 싣는다.
+ */
+let deviceToken = '';
+const device = () => ({ [DEVICE_TOKEN_HEADER]: deviceToken });
+async function registerDevice(storeId: string, password: string): Promise<string> {
+  const owner = await http('POST', '/auth/login', { nickname: 'owner', password });
+  const res = await http('POST', `/store/${storeId}/devices`, undefined, owner.accessToken);
+  deviceToken = res.deviceToken;
+  return owner.accessToken;
+}
+
 type Msg = { at: number; event: string; data: any };
 type Sock = { name: string; ws: WebSocket; inbox: Msg[] };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const sleepUntil = (at: number) => sleep(Math.max(0, at - Date.now()));
 
-async function http<T = any>(method: string, path: string, body?: unknown, token?: string): Promise<T> {
+async function http<T = any>(
+  method: string, path: string, body?: unknown, token?: string, extraHeaders: Record<string, string> = {},
+): Promise<T> {
   const res = await fetch(BASE + path, {
     method,
     headers: {
       'Content-Type': 'application/json',
+      ...extraHeaders,
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -140,24 +156,24 @@ describe('T97 실제 kill — Redis 컨테이너가 죽었다 살아도 차례�
       table: i < 4 ? tables[0] : tables[1],
       seatIndex: i < 4 ? i : i - 4,
     }));
+    const ownerToken = await registerDevice(m.store.id, m.password);
     for (const p of layout) {
       const body = await http('POST', `/tournaments/${tournamentId}/enter`, {
         otp: p.otp,
         tableId: p.table.id,
         seatIndex: p.seatIndex,
-      });
+      }, undefined, device());
       seatTokens.push({ nickname: p.nickname, tableId: p.table.id, token: body.accessToken });
     }
 
-    const owner = await http('POST', '/auth/login', { nickname: 'owner', password: m.password });
-    await http('PATCH', `/store/sessions/${tournamentId}/start`, undefined, owner.accessToken);
+    await http('PATCH', `/store/sessions/${tournamentId}/start`, undefined, ownerToken);
     expect(`1. 시작 뒤 status ${(await tournamentRow()).status}`).toBe('1. 시작 뒤 status ONGOING');
   });
 
   it('2. 좌석 일곱 · 딜러 둘이 소켓으로 붙는다', async () => {
     // n/n은 **착석한 테이블마다** 딜러가 있어야 찬다 — 테이블 2에도 붙인다.
     for (const [i, table] of tables.slice(0, 2).entries()) {
-      const body = await http('POST', '/dealer/auth', { tournamentId, tableId: table.id, otp: dealerOtp });
+      const body = await http('POST', '/dealer/auth', { tournamentId, tableId: table.id, otp: dealerOtp }, undefined, device());
       const token = body.accessToken ?? body.dealerToken ?? body.token;
       const sock = await connect(`딜러${i + 1}`, token, table.id);
       if (i === 0) dealer1 = sock;

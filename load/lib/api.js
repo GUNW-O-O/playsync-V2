@@ -165,22 +165,40 @@ export function myPlayerOtp(token, tournamentId) {
   return mine.playerOtp;
 }
 
+/**
+ * 매장 태블릿 기기 토큰을 받는다(T112). 봇은 태블릿 하나처럼 굴어 이 토큰
+ * 하나를 모두가 쓴다 — 기기 단위 버킷 하나라, 예전의 「k6 주소 하나」와 같은
+ * 몫이다(부하 프로파일은 env로 상한을 올린다).
+ */
+export function registerDevice(ownerToken, storeId) {
+  const res = http.post(`${BASE}/store/${storeId}/devices`, null, {
+    headers: { Authorization: `Bearer ${ownerToken}` },
+    tags: { step: 'register_device' },
+  });
+  return must(res, '기기 등록').deviceToken;
+}
+
+/** 기기 토큰 헤더. 이름은 계약의 `DEVICE_TOKEN_HEADER`와 같다(k6는 패키지를 못 쓴다). */
+function deviceHeaders(deviceToken) {
+  return { ...JSON_HEADERS, 'x-device-token': deviceToken };
+}
+
 /** 좌석 확정. 돌려받는 것은 좌석 토큰(`role: SEAT`)이다. */
-export function enterSeat(tournamentId, otp, tableId, seatIndex) {
+export function enterSeat(tournamentId, otp, tableId, seatIndex, deviceToken) {
   const res = http.post(
     `${BASE}/tournaments/${tournamentId}/enter`,
     JSON.stringify({ otp, tableId, seatIndex }),
-    { headers: JSON_HEADERS, tags: { step: 'enter' } },
+    { headers: deviceHeaders(deviceToken), tags: { step: 'enter' } },
   );
   return must(res, `착석(${seatIndex}번)`).accessToken;
 }
 
 /** 딜러 인증. 여기서 bcrypt 대조가 한 번 돈다(T23). */
-export function dealerLogin(tournamentId, tableId, otp) {
+export function dealerLogin(tournamentId, tableId, otp, deviceToken) {
   const res = http.post(
     `${BASE}/dealer/auth`,
     JSON.stringify({ tournamentId, tableId, otp }),
-    { headers: JSON_HEADERS, tags: { step: 'dealer-auth' } },
+    { headers: deviceHeaders(deviceToken), tags: { step: 'dealer-auth' } },
   );
   const body = must(res, '딜러 인증');
   return body.accessToken || body.dealerToken || body.token;

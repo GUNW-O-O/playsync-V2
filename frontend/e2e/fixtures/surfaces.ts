@@ -1,4 +1,6 @@
 import { BrowserContext, Page, test as base } from '@playwright/test';
+import { DEVICE_TOKEN_COOKIE } from '@playsync/contract';
+import { deviceTokenFor } from './backstage';
 import { mkdirSync, writeFileSync } from 'fs';
 import { join, resolve } from 'path';
 import { CURSOR_SCRIPT } from './cursor';
@@ -126,7 +128,7 @@ export const test = base.extend<{
     await use(mark);
   },
 
-  stage: async ({ browser, film }, use, testInfo) => {
+  stage: async ({ browser, film, request, baseURL }, use, testInfo) => {
     const dir = film.dir;
 
     // 커서는 **촬영 프로젝트에만** 꽂는다. 회귀는 사람이 보는 영상이 아니라
@@ -146,6 +148,12 @@ export const test = base.extend<{
         // 전광판의 큰 숫자가 뭉갠 채로 남는다.
         recordVideo: { dir, size: viewport },
       });
+      // 태블릿 화면(/table · /dealer)은 등록된 기기라야 대기 화면을 그린다(T112).
+      // 등록 폼은 거치지 않고 쿠키를 먼저 심는다. 폰·콘솔에는 무해하다.
+      const storeId = readManifest().store.id;
+      await context.addCookies([
+        { name: DEVICE_TOKEN_COOKIE, value: await deviceTokenFor(request, storeId), url: baseURL! },
+      ]);
       if (filming) await context.addInitScript(CURSOR_SCRIPT);
       const page = await context.newPage();
       opened.push({ label, context, page });

@@ -94,4 +94,16 @@ describe('JwtStrategy', () => {
 
     expect(user.role).not.toBe(Role.USER);
   });
+
+  // T112. 기기 토큰은 Bearer가 아니다. 통과시키면 `JwtAuthGuard`만 거는
+  // 라우트(`/ws/ticket` · `/playsync/*`)가 기기 id를 userId로 받아 돈다.
+  it('기기 토큰 페이로드는 거절한다', async () => {
+    const strategy = loadStrategy();
+
+    // `loadStrategy`가 격리 레지스트리에서 불러 `UnauthorizedException` 클래스가
+    // 여기 것과 달라 `instanceof`는 못 쓴다 — 상태 코드로 본다.
+    await expect(
+      strategy.validate({ sub: 'device-1', storeId: 's', ver: 0, role: 'STORE_DEVICE' }),
+    ).rejects.toMatchObject({ status: 401 });
+  });
 });

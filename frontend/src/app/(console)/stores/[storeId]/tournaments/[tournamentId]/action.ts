@@ -117,6 +117,15 @@ export async function reissueDealerOtp(
 }
 
 /**
+ * 이 상점의 매장 태블릿 등록을 전부 해제한다(T112). 태블릿을 잃어버렸을 때
+ * 쓴다 — 남은 태블릿은 대기 화면에서 다시 등록한다.
+ */
+export async function revokeDevices(storeId: string): Promise<ActionResult> {
+  const result = await callConsoleApi(`/store/${storeId}/devices/revoke`, { method: 'POST' });
+  return 'error' in result ? result : { ok: true };
+}
+
+/**
  * `PATCH /store/sessions/:id/complete`. **되돌릴 수 없다.**
  *
  * 서버가 「걷은 것 == 나간 상금 + 상점 몫」을 다시 재고, 안 맞으면 남은

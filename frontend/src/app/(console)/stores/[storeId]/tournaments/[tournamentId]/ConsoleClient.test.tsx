@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ConsoleClient, { type SeatOccupant, type TournamentMeta } from './ConsoleClient';
@@ -27,6 +27,7 @@ function renderConsole(
   reissue = vi.fn(async () => ({ ok: true as const, dealerOtp: '920576' })),
   overrides: { tournament?: TournamentMeta; dashboard?: unknown; preview?: unknown } = {},
 ) {
+  const revoke = vi.fn(async () => ({ ok: true as const }));
   render(
     <ConsoleClient
       storeId="store-1"
@@ -41,6 +42,7 @@ function renderConsole(
       closeTable={vi.fn(async () => ({ ok: true as const }))}
       releaseSeats={vi.fn(async () => ({ ok: true as const }))}
       reissueDealerOtp={reissue}
+      revokeDevices={revoke}
       preview={(overrides.preview ?? null) as never}
       completeTournament={vi.fn(async () => ({ ok: true as const }))}
       chopTournament={vi.fn(async () => ({ ok: true as const }))}
@@ -48,7 +50,7 @@ function renderConsole(
       fetchFinishPreview={vi.fn(async () => ({ error: '없음' }))}
     />,
   );
-  return { reissue };
+  return { reissue, revoke };
 }
 
 /**
@@ -160,6 +162,7 @@ describe('ConsoleClient — 좌석 선택', () => {
         closeTable={vi.fn(async () => ({ ok: true as const }))}
         releaseSeats={releaseSeats}
         reissueDealerOtp={vi.fn(async () => ({ ok: true as const, dealerOtp: '920576' }))}
+        revokeDevices={vi.fn(async () => ({ ok: true as const }))}
         preview={null}
         completeTournament={vi.fn(async () => ({ ok: true as const }))}
         chopTournament={vi.fn(async () => ({ ok: true as const }))}
@@ -331,5 +334,32 @@ describe('새로고침', () => {
     await userEvent.click(screen.getByRole('button', { name: '새로고침' }));
 
     expect(router.refresh).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('매장 태블릿 전체 등록 해제(T112)', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('확인하면 revokeDevices(storeId)를 부른다', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const { revoke } = renderConsole();
+    await userEvent.click(screen.getByRole('button', { name: '매장 태블릿 전체 등록 해제' }));
+    expect(revoke).toHaveBeenCalledWith('store-1');
+  });
+
+  it('성공하면 해제했다는 안내가 보인다', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderConsole();
+    await userEvent.click(screen.getByRole('button', { name: '매장 태블릿 전체 등록 해제' }));
+    expect(
+      await screen.findByText('매장 태블릿 등록을 모두 해제했습니다. 남은 태블릿은 다시 등록해 주세요.'),
+    ).toBeVisible();
+  });
+
+  it('취소하면 부르지 않는다', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const { revoke } = renderConsole();
+    await userEvent.click(screen.getByRole('button', { name: '매장 태블릿 전체 등록 해제' }));
+    expect(revoke).not.toHaveBeenCalled();
   });
 });

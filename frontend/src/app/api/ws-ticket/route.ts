@@ -1,6 +1,7 @@
 import { cookies } from 'next/headers';
 import { NextResponse } from 'next/server';
-import { WsTicketResponseSchema } from '@playsync/contract';
+import { DEVICE_TOKEN_COOKIE, WsTicketResponseSchema } from '@playsync/contract';
+import { deviceHeader } from '@/lib/device-token';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
 
@@ -11,6 +12,9 @@ const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
  * 쿠키는 httpOnly라 클라이언트 JS가 읽지 못하고, 서버 컴포넌트가 prop으로
  * 내려보내면 RSC 페이로드에 실려 페이지 소스에 그대로 남는다. 그래서 토큰을
  * 읽는 일을 여기 한 곳에 가두고, 밖으로는 티켓만 내보낸다.
+ *
+ * 기기 토큰도 싣는다(T112). 재접속은 이 라우트를 지나는데, 싣지 않으면 태블릿이
+ * Next 주소 버킷에 남아 누가 그 버킷을 채우는 동안 다시 붙지 못한다.
  */
 export async function POST() {
   const cookieStore = await cookies();
@@ -22,7 +26,10 @@ export async function POST() {
 
   const res = await fetch(`${BACKEND_URL}/ws/ticket`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...deviceHeader(cookieStore.get(DEVICE_TOKEN_COOKIE)?.value),
+    },
     cache: 'no-store',
   });
 

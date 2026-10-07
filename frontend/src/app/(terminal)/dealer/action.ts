@@ -1,6 +1,8 @@
 'use server';
 
 import { cookies } from 'next/headers';
+import { DEVICE_TOKEN_COOKIE, DEVICE_UNREGISTERED_MESSAGE } from '@playsync/contract';
+import { deviceHeader } from '@/lib/device-token';
 import { cookieMaxAgeFromToken } from '@/lib/token-cookie';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
@@ -36,9 +38,13 @@ export async function authenticateDealer(input: {
   tableId: string;
   otp: string;
 }): Promise<{ ok: true } | { error: string }> {
+  const cookieStore = await cookies();
   const res = await fetch(`${BACKEND_URL}/dealer/auth`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...deviceHeader(cookieStore.get(DEVICE_TOKEN_COOKIE)?.value),
+    },
     body: JSON.stringify(input),
     cache: 'no-store',
   });
@@ -46,11 +52,14 @@ export async function authenticateDealer(input: {
   const body = await res.json().catch(() => null);
 
   if (!res.ok) {
-    return { error: failureMessage(body) };
+    const error = failureMessage(body);
+    // T112. 해제됐거나 다른 상점 기기다. 쿠키를 지워 두면 화면을 다시 그릴 때
+    // 등록 폼이 뜬다 — 직원이 무엇을 해야 하는지가 화면에 나온다.
+    if (error === DEVICE_UNREGISTERED_MESSAGE) cookieStore.delete(DEVICE_TOKEN_COOKIE);
+    return { error };
   }
 
   const token = (body as { accessToken: string }).accessToken;
-  const cookieStore = await cookies();
 
   cookieStore.set('dealerToken', token, {
     httpOnly: true,
