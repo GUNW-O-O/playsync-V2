@@ -296,6 +296,7 @@ function pickAction(state, me, bigBlind) {
  * @param poolBase 이 테이블이 쓸 풀 계정의 시작 인덱스. 램프에서 테이블끼리
  *   겹치면 `@@unique([tournamentId, userId])`가 두 번째를 409로 막는다.
  * @param prefix 신규 가입용 접두사. 닉네임은 3~10자다(`CreateUserDto`).
+ * @param deviceToken 매장 태블릿 기기 토큰(T112). 착석 요청에 싣는다.
  * @param entryFee 참가비. 봇이 "거절되는 금액"을 계산하는 데 쓴다(T72).
  */
 export function seatPlayers({
@@ -308,6 +309,7 @@ export function seatPlayers({
   accountPrefix,
   accountPool,
   entryFee,
+  deviceToken,
 }) {
   const players = [];
   for (let seat = 0; seat < seatCount; seat++) {
@@ -340,7 +342,7 @@ export function seatPlayers({
     chargeForEntry(token, entryFee || 1);
     joinTournament(token, tournamentId);
     const otp = myPlayerOtp(token, tournamentId);
-    const seatToken = enterSeat(tournamentId, otp, tableId, seat);
+    const seatToken = enterSeat(tournamentId, otp, tableId, seat, deviceToken);
     players.push({ seat, nickname, seatToken });
   }
   return players;
@@ -360,6 +362,7 @@ export function runHands({
   tournamentId,
   tableId,
   dealerOtp,
+  deviceToken,
   players,
   durationMs,
   bigBlind,
@@ -367,7 +370,7 @@ export function runHands({
   onMyAction,
   reconnectAtMs,
 }) {
-  const dealerToken = dealerLogin(tournamentId, tableId, dealerOtp);
+  const dealerToken = dealerLogin(tournamentId, tableId, dealerOtp, deviceToken);
 
   const seats = players;
 

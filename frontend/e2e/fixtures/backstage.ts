@@ -1,4 +1,6 @@
 import { APIRequestContext, Page } from '@playwright/test';
+import { DEVICE_TOKEN_HEADER } from '@playsync/contract';
+import { readManifest } from './manifest';
 
 /**
  * 카메라에 잡히지 않는 손. 백엔드 API를 직접 친다.
@@ -34,6 +36,37 @@ export async function login(
   return body.accessToken;
 }
 
+const deviceTokens = new Map<string, string>();
+
+/**
+ * 매장 태블릿 기기 토큰(T112). `/enter`와 `/dealer/auth`는 등록된 기기만 부른다.
+ * 점주로 로그인해 `POST /store/:storeId/devices`로 받고, 상점마다 한 번만 받아
+ * 메모한다. 로그인 폼이 아니라 API로 받는다 — 등록 화면은 회귀 대상이 아니다.
+ */
+export async function deviceTokenFor(
+  request: APIRequestContext,
+  storeId: string,
+): Promise<string> {
+  const hit = deviceTokens.get(storeId);
+  if (hit) return hit;
+  const ownerToken = await login(request, 'owner', readManifest().password);
+  const res = await request.post(`${BACKEND_URL}/store/${storeId}/devices`, {
+    headers: bearer(ownerToken),
+  });
+  if (!res.ok()) {
+    throw new Error(`기기 등록 실패 (${storeId}): ${res.status()} ${await res.text()}`);
+  }
+  const { deviceToken } = (await res.json()) as { deviceToken: string };
+  deviceTokens.set(storeId, deviceToken);
+  return deviceToken;
+}
+
+/** 기기 헤더. 매니페스트의 상점(시드가 상점 하나를 깐다)의 토큰을 싣는다. */
+export async function deviceHeaders(request: APIRequestContext) {
+  const token = await deviceTokenFor(request, readManifest().store.id);
+  return { [DEVICE_TOKEN_HEADER]: token };
+}
+
 export function bearer(token: string) {
   return { Authorization: `Bearer ${token}` };
 }
@@ -65,8 +98,8 @@ export async function dealerBearerToken(page: Page): Promise<string> {
 /**
  * 사람 하나를 자리에 앉힌다. `POST /tournaments/:id/enter`.
  *
- * 가드가 없는 라우트다 — **참가 OTP 자체가 자격 증명**이다
- * (`entry.controller.ts`). 그래서 토큰 없이 부른다.
+ * **참가 OTP 자체가 자격 증명**이다(`entry.controller.ts`). 다만 T112부터
+ * 등록된 매장 태블릿에서만 받으므로 기기 토큰을 싣는다.
  *
  * 이것이 여기 있는 이유: 촬영에서 자리에 앉는 것은 장면이지만, **한 번만**
  * 장면이다. 태블릿 넷을 띄워 네 번 찍는 것은 영상에 아무것도 더하지 않으면서
@@ -84,6 +117,7 @@ export async function seat(
 ): Promise<void> {
   const res = await request.post(`${BACKEND_URL}/tournaments/${tournamentId}/enter`, {
     data: seat,
+    headers: await deviceHeaders(request),
   });
   if (!res.ok()) {
     throw new Error(

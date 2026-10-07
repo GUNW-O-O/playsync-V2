@@ -2,6 +2,7 @@ import { readFileSync } from 'fs';
 import { Client } from 'pg';
 import Redis from 'ioredis';
 import WebSocket from 'ws';
+import { DEVICE_TOKEN_HEADER } from '@playsync/contract';
 import {
   BACKEND_PORT,
   OUTAGE_ENV,
@@ -48,14 +49,30 @@ const PRE_FLOP = 1;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const sleepUntil = (at: number) => sleep(Math.max(0, at - Date.now()));
 
+/**
+ * 매장 태블릿 기기 토큰(T112). `/enter`와 `/dealer/auth`는 등록된 기기만 부른다.
+ * 점주로 로그인해 한 번 받고 두 호출에 싣는다.
+ */
+let deviceToken = '';
+const device = () => ({ [DEVICE_TOKEN_HEADER]: deviceToken });
+async function registerDevice(storeId: string, password: string): Promise<string> {
+  const owner = await http('POST', '/auth/login', { nickname: 'owner', password });
+  const res = await http('POST', `/store/${storeId}/devices`, undefined, owner.accessToken);
+  deviceToken = res.deviceToken;
+  return owner.accessToken;
+}
+
 type Msg = { at: number; event: string; data: any };
 type Sock = { name: string; ws: WebSocket; inbox: Msg[] };
 
-async function http<T = any>(method: string, path: string, body?: unknown, token?: string): Promise<T> {
+async function http<T = any>(
+  method: string, path: string, body?: unknown, token?: string, extraHeaders: Record<string, string> = {},
+): Promise<T> {
   const res = await fetch(BASE + path, {
     method,
     headers: {
       'Content-Type': 'application/json',
+      ...extraHeaders,
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -215,14 +232,14 @@ describe('실제 kill — 백엔드를 죽였다 살린다', () => {
       .filter((x: any) => x.tableOrder === tables[0].tableOrder)
       .slice(0, 4);
     expect(`1. 앉힐 사람 ${mine.length}`).toBe('1. 앉힐 사람 4');
+    const ownerToken = await registerDevice(root.store.id, root.password);
     for (const [i, p] of mine.entries()) {
       const body = await http('POST', `/tournaments/${tournamentId}/enter`, {
         otp: p.otp, tableId: tables[0].id, seatIndex: i,
-      });
+      }, undefined, device());
       seatTokens.push({ nickname: p.nickname, tableId: tables[0].id, token: body.accessToken });
     }
-    const owner = await http('POST', '/auth/login', { nickname: 'owner', password: root.password });
-    await http('PATCH', `/store/sessions/${tournamentId}/start`, undefined, owner.accessToken);
+    await http('PATCH', `/store/sessions/${tournamentId}/start`, undefined, ownerToken);
 
     const row = await tournamentRow();
     pausedMsBefore = row.pausedMs;
@@ -230,7 +247,7 @@ describe('실제 kill — 백엔드를 죽였다 살린다', () => {
   });
 
   it('2. 딜러와 좌석이 붙고, 판을 열어 차례를 만든다', async () => {
-    const body = await http('POST', '/dealer/auth', { tournamentId, tableId: tables[0].id, otp: dealerOtp });
+    const body = await http('POST', '/dealer/auth', { tournamentId, tableId: tables[0].id, otp: dealerOtp }, undefined, device());
     const dealer = await connect('딜러1', body.accessToken ?? body.token, tables[0].id);
     for (const seat of seatTokens) await connect(seat.nickname, seat.token, seat.tableId);
 
@@ -333,7 +350,7 @@ describe('실제 kill — 백엔드를 죽였다 살린다', () => {
    * 못 하는 상태로 굳었다」와 구별된다.
    */
   it('8. 딜러가 돌아와 재개하면 victim이 그대로 행동한다', async () => {
-    const body = await http('POST', '/dealer/auth', { tournamentId, tableId: tables[0].id, otp: dealerOtp });
+    const body = await http('POST', '/dealer/auth', { tournamentId, tableId: tables[0].id, otp: dealerOtp }, undefined, device());
     const dealer = await connect('딜러1-재접속', body.accessToken ?? body.token, tables[0].id);
     await sleep(1_000);   // n/n → completeSync → ONGOING
 
@@ -420,7 +437,7 @@ describe('실제 kill — 백엔드를 죽였다 살린다', () => {
     return sock;
   }
   async function connectDealer(name: string) {
-    const body = await http('POST', '/dealer/auth', { tournamentId, tableId: tables[0].id, otp: dealerOtp });
+    const body = await http('POST', '/dealer/auth', { tournamentId, tableId: tables[0].id, otp: dealerOtp }, undefined, device());
     dealerSock = await connect(name, body.accessToken ?? body.token, tables[0].id);
     return dealerSock;
   }
