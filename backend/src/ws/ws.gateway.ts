@@ -245,20 +245,14 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
       // T110. 티켓은 30초 산다. 그 사이 세대가 오르면 발급 때 맞던 것이 지금은
       // 틀리다 — 세대를 올리는 쪽이 소켓을 닫는 것은 「이미 붙은」 것뿐이라
       // 여기서 한 번 더 본다.
-      if (payload.role === SEAT_ROLE) {
-        await assertSeatTokenCurrent(this.prisma, {
-          userId: payload.sub,
-          tournamentId: payload.tournamentId,
-          ver: payload.seatTokenVersion,
-        });
-      }
-      if (payload.role === Role.DEALER) {
-        await this.dealer.assertDealerSessionValid({
-          sub: payload.sub,
-          tournamentId: payload.tournamentId!,
-          tableId: payload.tableId!,
-          tokenVersion: payload.tokenVersion!,
-        });
+      try {
+        await this.assertIdentityCurrent(payload);
+      } catch (e) {
+        // 낡은 토큰은 4001 — 클라가 재연결을 멈춘다. 그 밖의 오류는 아래 1008.
+        if (!(e instanceof ForbiddenException)) throw e;
+        this.logger.warn(`연결 거부: ${e.message}`);
+        client.close(SESSION_REVOKED_CLOSE_CODE, this.revokedReason(payload));
+        return;
       }
 
       // 소켓 객체에 유저 정보 저장 (나중에 액션 시 사용)
@@ -279,7 +273,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
 
         (client as any).tournamentId = tournamentId;
         this.addToMap(this.tournamentSessions, tournamentId, client);
-        await this.closeIfSeatStale(client, payload);
+        await this.closeIfStale(client, payload);
         return; // 테이블 세션에는 넣지 않는다
       }
 
@@ -289,7 +283,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
 
         (client as any).tableId = tableId;
         this.addToMap(this.tableSessions, tableId, client);
-        if (await this.closeIfSeatStale(client, payload)) return;
+        if (await this.closeIfStale(client, payload)) return;
 
         // 접속자 본인에게만 보낸다. 남이 접속했다고 테이블 전원이 같은 상태를
         // 다시 받을 이유가 없다.
@@ -871,25 +865,43 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     );
   }
 
-  /**
-   * 방에 넣은 뒤 좌석 세대를 한 번 더 본다(T110). 앞선 대조와 `addToMap` 사이에
-   * 세대가 오르면 `SEAT_TOKENS_REVOKED`는 아직 방에 없는 이 소켓을 놓친다.
-   * 틀리면 닫고 방에서 뺀다. 닫혔으면 `true`. 낡은 토큰(`ForbiddenException`)만
-   * 4001이다 — 클라가 재연결을 멈추는 코드라, 일시적인 DB 오류에는 재시도되는
-   * 1008로 닫는다.
-   */
-  private async closeIfSeatStale(client: any, payload: WsIdentity): Promise<boolean> {
-    if (payload.role !== SEAT_ROLE) return false;
-    try {
+  /** 좌석은 세대, 딜러는 세션을 지금 DB와 대조한다. 낡으면 `ForbiddenException`. */
+  private async assertIdentityCurrent(payload: WsIdentity): Promise<void> {
+    if (payload.role === SEAT_ROLE) {
       await assertSeatTokenCurrent(this.prisma, {
         userId: payload.sub,
         tournamentId: payload.tournamentId,
         ver: payload.seatTokenVersion,
       });
+    } else if (payload.role === Role.DEALER) {
+      await this.dealer.assertDealerSessionValid({
+        sub: payload.sub,
+        tournamentId: payload.tournamentId!,
+        tableId: payload.tableId!,
+        tokenVersion: payload.tokenVersion!,
+      });
+    }
+  }
+
+  private revokedReason(payload: WsIdentity) {
+    return payload.role === Role.DEALER ? DEALER_REVOKED_REASON : SEAT_REVOKED_REASON;
+  }
+
+  /**
+   * 방에 넣은 뒤 신원을 한 번 더 본다(T110). 앞선 대조와 `addToMap` 사이에
+   * 세대가 오르면 `SEAT_TOKENS_REVOKED`·`DEALER_SESSION_REVOKED`는 아직 방에 없는
+   * 이 소켓을 놓친다. 틀리면 닫고 방에서 뺀다. 닫혔으면 `true`. 낡은 토큰
+   * (`ForbiddenException`)만 4001이다 — 클라가 재연결을 멈추는 코드라, 일시적인
+   * 오류에는 재시도되는 1008로 닫는다.
+   */
+  private async closeIfStale(client: any, payload: WsIdentity): Promise<boolean> {
+    if (payload.role !== SEAT_ROLE && payload.role !== Role.DEALER) return false;
+    try {
+      await this.assertIdentityCurrent(payload);
       return false;
     } catch (e) {
       try {
-        if (e instanceof ForbiddenException) client.close(SESSION_REVOKED_CLOSE_CODE, SEAT_REVOKED_REASON);
+        if (e instanceof ForbiddenException) client.close(SESSION_REVOKED_CLOSE_CODE, this.revokedReason(payload));
         else client.close(1008, '인증 실패');
       } catch {
         // 이미 닫힌 소켓.

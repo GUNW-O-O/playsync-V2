@@ -1,4 +1,4 @@
-import { Logger } from '@nestjs/common';
+import { ForbiddenException, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { JwtService } from '@nestjs/jwt';
 import { Queue } from 'bullmq';
@@ -1787,12 +1787,12 @@ describe('WsGateway 인바운드 경계', () => {
 
     it('티켓 발급 뒤 세대가 오르면 접속에서 거절한다', async () => {
       const client = await connectSeat(3, { tournamentId: TOURNAMENT, seatTokenVersion: 2 });
-      expect(client.close).toHaveBeenCalledWith(1008, expect.any(String));
+      expect(client.close).toHaveBeenCalledWith(4001, SEAT_REVOKED_REASON);
     });
 
     it('세대가 없는 좌석 티켓은 거절한다', async () => {
       const client = await connectSeat(0, { tournamentId: TOURNAMENT });
-      expect(client.close).toHaveBeenCalledWith(1008, expect.any(String));
+      expect(client.close).toHaveBeenCalledWith(4001, SEAT_REVOKED_REASON);
     });
 
     it('방에 들어가는 사이 세대가 오르면 4001로 닫고 방에서 뺀다', async () => {
@@ -1863,13 +1863,34 @@ describe('WsGateway 인바운드 경계', () => {
       for (const other of [dealerB, seatA]) expect(other.close).not.toHaveBeenCalled();
     });
 
-    it('딜러 티켓도 접속에서 세션을 다시 본다 — 30초 창에 내보내졌으면 거절', async () => {
-      dealer.assertDealerSessionValid.mockRejectedValueOnce(new Error('만료된 딜러 세션입니다.'));
-      const t = await tickets.issue({
-        sub: 'dealer-session-1', role: Role.DEALER, tournamentId: TOURNAMENT, tableId: TABLE, tokenVersion: 0,
-      });
-      const client = await connect(t);
+    const dealerTicketV0 = () => tickets.issue({
+      sub: 'dealer-session-1', role: Role.DEALER, tournamentId: TOURNAMENT, tableId: TABLE, tokenVersion: 0,
+    });
+
+    it('딜러 티켓도 접속에서 세션을 다시 본다 — 30초 창에 내보내졌으면 4001로 거절', async () => {
+      dealer.assertDealerSessionValid.mockRejectedValueOnce(new ForbiddenException('만료된 딜러 세션입니다.'));
+      const client = await connect(await dealerTicketV0());
+      expect(client.close).toHaveBeenCalledWith(4001, DEALER_REVOKED_REASON);
+    });
+
+    it('이른 대조가 낡음이 아닌 오류로 실패하면 1008 — 재시도 가능', async () => {
+      dealer.assertDealerSessionValid.mockRejectedValueOnce(new Error('db down'));
+      const client = await connect(await dealerTicketV0());
       expect(client.close).toHaveBeenCalledWith(1008, expect.any(String));
+      expect(client.close).not.toHaveBeenCalledWith(4001, expect.anything());
+    });
+
+    it('방에 들어가는 사이 내보내지면 4001로 닫고 방에서 뺀다', async () => {
+      const real = playsync.assertTableAccess.bind(playsync);
+      jest.spyOn(playsync, 'assertTableAccess').mockImplementationOnce(async (...args) => {
+        await real(...args);
+        dealer.assertDealerSessionValid.mockRejectedValueOnce(new ForbiddenException('만료된 딜러 세션입니다.'));
+      });
+
+      const client = await connect(await dealerTicketV0());
+
+      expect(client.close).toHaveBeenCalledWith(4001, DEALER_REVOKED_REASON);
+      expect([...((gateway as any).tableSessions.get(TABLE) ?? [])]).not.toContain(client);
     });
   });
 
