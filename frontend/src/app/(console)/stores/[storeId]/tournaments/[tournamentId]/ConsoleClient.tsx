@@ -308,7 +308,11 @@ export default function ConsoleClient({
   // T112. 결과 표시는 다른 조작과 같은 `message` 자리를 쓴다(`run`).
   function handleRevokeDevices() {
     if (!window.confirm('이 상점의 매장 태블릿 등록을 전부 해제합니다. 남은 태블릿은 다시 등록해야 합니다.')) return;
-    run(() => revokeDevices(storeId));
+    // 성공 안내는 `onSuccess`로 — `run`이 성공 때 `message`를 비운 뒤에 실린다.
+    run(
+      () => revokeDevices(storeId),
+      () => setMessage('매장 태블릿 등록을 모두 해제했습니다. 남은 태블릿은 다시 등록해 주세요.'),
+    );
   }
 
   if (!tournament) {

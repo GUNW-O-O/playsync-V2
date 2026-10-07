@@ -347,6 +347,15 @@ describe('매장 태블릿 전체 등록 해제(T112)', () => {
     expect(revoke).toHaveBeenCalledWith('store-1');
   });
 
+  it('성공하면 해제했다는 안내가 보인다', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderConsole();
+    await userEvent.click(screen.getByRole('button', { name: '매장 태블릿 전체 등록 해제' }));
+    expect(
+      await screen.findByText('매장 태블릿 등록을 모두 해제했습니다. 남은 태블릿은 다시 등록해 주세요.'),
+    ).toBeVisible();
+  });
+
   it('취소하면 부르지 않는다', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(false);
     const { revoke } = renderConsole();

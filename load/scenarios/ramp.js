@@ -170,7 +170,7 @@ export function setup() {
     );
   }
 
-  // 기기 토큰은 만료가 없어 VU에 물려줘도 된다(JWT와 다르다). 상점마다 하나.
+  // 기기 토큰은 365일 산다 — 어떤 실행보다 길어 VU에 물려줘도 된다. 상점마다 하나.
   const ownerToken = login(manifest.ownerNickname, manifest.password);
   const deviceTokens = {};
   for (const t of manifest.tournaments) {
