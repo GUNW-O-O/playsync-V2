@@ -84,32 +84,49 @@ describe('SyncQueue', () => {
 });
 
 describe('SyncQueue 보류 창', () => {
-  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const HOLD = 60;
+  beforeEach(() => { jest.useFakeTimers(); });
+  afterEach(() => { jest.useRealTimers(); });
 
   it('보류 동안 들어온 요청은 하나로 합친다', async () => {
     const calls: string[][] = [];
     const q = new SyncQueue<string>(async (_k, joiners) => { calls.push([...joiners]); }, () => {}, HOLD);
 
     const waits = [q.recountLater('t', 'a')];
-    await sleep(HOLD / 4);
+    await jest.advanceTimersByTimeAsync(HOLD / 4);
     waits.push(q.recountLater('t'));
-    await sleep(HOLD / 4);
+    await jest.advanceTimersByTimeAsync(HOLD / 4);
     waits.push(q.recountLater('t', 'b'));
+    await jest.advanceTimersByTimeAsync(HOLD / 4);
     expect(calls).toEqual([]);
-    await Promise.all(waits);
 
+    await jest.advanceTimersByTimeAsync(HOLD);
+    await Promise.all(waits);
     expect(calls).toEqual([['a', 'b']]);
   });
 
   it('보류가 끝나면 시작하고, 그 뒤 요청은 새로 줄 선다', async () => {
     const calls: string[][] = [];
-    const q = new SyncQueue<string>(async (_k, joiners) => { calls.push([...joiners]); }, () => {}, HOLD);
+    const order: string[] = [];
+    const g = gate();
+    const q = new SyncQueue<string>(async (_k, joiners) => {
+      calls.push([...joiners]);
+      order.push('recount');
+      if (calls.length === 1) await g.shut;
+    }, () => {}, HOLD);
 
-    await q.recountLater('t', 'a');
-    await q.recountLater('t', 'b');
+    const first = q.recountLater('t', 'a');
+    const later = q.enqueue('t', async () => { order.push('enqueue'); });
+    await jest.advanceTimersByTimeAsync(HOLD);
+    expect(calls).toEqual([['a']]); // 보류가 끝나 시작했고 아직 달리는 중
+
+    const second = q.recountLater('t', 'b'); // 달리는 중에 온 요청
+    g.open();
+    await jest.advanceTimersByTimeAsync(HOLD);
+    await Promise.all([first, later, second]);
 
     expect(calls).toEqual([['a'], ['b']]);
+    expect(order).toEqual(['recount', 'enqueue', 'recount']);
   });
 });
 
@@ -124,6 +141,6 @@ describe('syncRecountHoldMs', () => {
     expect(hold('250')).toBe(250);
   });
   it('그 밖은 기본값', () => {
-    for (const v of ['abc', '-5', '1.5']) expect(hold(v)).toBe(1000);
+    for (const v of ['abc', '-5', '1.5', ' ', '1e3', '0x10', ' 5 ']) expect(hold(v)).toBe(1000);
   });
 });

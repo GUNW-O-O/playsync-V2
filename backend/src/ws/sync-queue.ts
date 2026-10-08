@@ -4,8 +4,7 @@ const DEFAULT_HOLD_MS = 1000;
 export function syncRecountHoldMs(env: Record<string, string | undefined> = process.env): number {
   const raw = env.SYNC_RECOUNT_HOLD_MS;
   if (raw === undefined || raw === '') return DEFAULT_HOLD_MS;
-  const n = Number(raw);
-  return Number.isInteger(n) && n >= 0 ? n : DEFAULT_HOLD_MS;
+  return /^[0-9]+$/.test(raw) ? Number(raw) : DEFAULT_HOLD_MS;
 }
 
 /**
