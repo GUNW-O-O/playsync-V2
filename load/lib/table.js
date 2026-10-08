@@ -501,6 +501,9 @@ export function runHands({
       // 이 소켓을 열기까지 기다린 횟수. 끊기면 여기서 이어 센다 — 제품
       // 단말처럼 첫 프레임을 받아야 0으로 돌아간다.
       attempt,
+      // 복구 판정은 폭발 **뒤에 열린** 소켓만 센다 — 끊기기 직전 살아 있던
+      // 소켓이 받은 프레임이 「돌아왔다」로 세어지지 않게.
+      bornAt: Date.now(),
     };
     sockets.push(entry);
 
@@ -539,7 +542,7 @@ export function runHands({
       latestState = parsed.data;
 
       // 재접속 복구 시간 — 모든 자리가 첫 화면을 받은 순간.
-      const saw = burstState && burstState.tracker.see(entry.seat);
+      const saw = burstState && entry.bornAt >= burstState.at && burstState.tracker.see(entry.seat);
       if (saw) {
         // 역할별 완료. 마지막 좌석과 딜러 중 어느 쪽이 전체 시간을 정했는지
         // `reconnect_ms` 하나로는 안 보인다. 전체 판정보다 먼저 적어야 마지막
@@ -609,6 +612,16 @@ export function runHands({
       // 대회가 끝난 것, 4001(`SESSION_REVOKED_CLOSE_CODE`)은 신원이 폐기된 것이라
       // 멈춘다. 예전에는 아무 코드에도 안 열어 1008 하나가 테이블 하나를 미복구로 남겼다.
       if (code === 1000 || code === 4001) return;
+      // **서버가 끊었으면(1006) 그것도 폭발이다**(T116). 백엔드를 죽이면 테이블의
+      // 열 소켓이 한꺼번에 1006으로 닫힌다 — 첫 닫힘이 시계를 켜고, 예약 폭발과
+      // 같은 판정(`reconnect_ms`)으로 다시 다 붙기까지를 잰다.
+      // ponytail: 소켓 하나만 1006으로 끊기면 이 폭발은 끝나지 않고 그 VU의 다음
+      // 1006 폭발을 못 연다. 예약 폭발은 덮어쓰므로 막히지 않는다. 한 실행에 kill이
+      // 여럿 필요해지면 끝나지 않은 폭발에 만료를 둔다.
+      if (code === 1006 && !burstState) {
+        reconnects.add(1);
+        burstState = { at: Date.now(), tracker: createBurst(seats.length) };
+      }
       // 이 소켓에 예약된 액션이 닫힌 소켓에 보내지 않게 한다(`send`의 `fire`).
       entry.retired = true;
       const wait = delay(entry.attempt, role);
