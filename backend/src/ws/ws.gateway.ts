@@ -293,6 +293,9 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
         const state = await this.redis.getSnapShot(tableId);
         // T117. 좌석 소켓은 자기 자리 번호를 들고 다닌다 — 재집계가 스냅샷을
         // 다시 읽지 않고 이 값으로 「그 자리가 돌아왔나」를 센다(`tablePresence`).
+        // 열린 소켓의 자리는 바뀌지 않는다 — 자리 해제는 좌석 토큰을 폐기하고
+        // (`SEAT_TOKENS_REVOKED` → 4001 종료 → `handleDisconnect` 재집계), 재진입은
+        // 새 티켓이 필요하다. 그래서 접속 때 한 번 적어 두면 된다.
         if (payload.role !== Role.DEALER && state) {
           const seatIndex = state.players.findIndex((p) => p?.id === payload.sub);
           if (seatIndex >= 0) {
@@ -631,8 +634,8 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
 
     const { tableId, role, tournamentId } = client;
 
-    // T97. `recovering` 동안에도 딜러 명령을 받지 않는다 — 재개는 딜러가
-    // 다 돌아온 뒤라야 뜻이 있다(SYNCING 가드와 같은 이유).
+    // T97. `recovering` 동안에도 딜러 명령을 받지 않는다 — 재개는 딜러와 좌석
+    // 기기가 모두 돌아온 뒤라야 뜻이 있다(T117, SYNCING 가드와 같은 이유).
     if (!this.redis.outage.isUp()) return { event: 'error', data: SERVER_RECOVERING_MESSAGE };
 
     if (role !== Role.DEALER) return { event: 'error', data: '딜러만 가능한 액션입니다.' };
@@ -818,7 +821,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
   ): Promise<TableState> {
     // **복구 중에는 딜러 명령을 전부 받지 않는다**(T96). 핸드 시작은 깜깜한
     // 좌석을 판에 넣고(30초 뒤 자동 폴드), 승자 입력은 리바인 창(15초)을 꺼진
-    // 태블릿으로 보낸다. 재개는 딜러가 다 돌아온 뒤라야 뜻이 있다.
+    // 태블릿으로 보낸다. 재개는 딜러와 좌석 기기가 모두 돌아온 뒤라야 뜻이 있다(T117).
     const t = await this.prisma.tournament.findUnique({ where: { id: tournamentId }, select: { status: true } });
     if (t?.status === TournamentStatus.SYNCING) {
       throw new Error('모든 기기가 돌아올 때까지 기다려 주세요.');

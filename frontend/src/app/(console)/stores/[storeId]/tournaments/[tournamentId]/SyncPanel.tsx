@@ -26,6 +26,10 @@ export default function SyncPanel({
 }) {
   const [confirming, setConfirming] = useState(false);
   const order = new Map(tables.map((t) => [t.id, t.tableOrder]));
+  // 테이블 순서(모르는 테이블은 맨 뒤) → 딜러 → 좌석 번호.
+  const byTableThenDealerThenSeat = (a: SyncStatus['missing'][number], b: SyncStatus['missing'][number]) =>
+    (order.get(a.tableId) ?? Infinity) - (order.get(b.tableId) ?? Infinity) ||
+    (a.seatIndex ?? -1) - (b.seatIndex ?? -1);
   const nickname = (tableId: string, seatIndex: number) =>
     seatOccupants.find((t) => t.tableId === tableId)?.players.find((p) => p.seatIndex === seatIndex)?.nickname ?? '';
 
@@ -40,7 +44,7 @@ export default function SyncPanel({
       </p>
       {sync.missing.length > 0 && (
         <ul className="mt-2 list-disc pl-5">
-          {sync.missing.map((m) => (
+          {[...sync.missing].sort(byTableThenDealerThenSeat).map((m) => (
             <li key={`${m.tableId}:${m.seatIndex ?? 'dealer'}`}>
               {m.seatIndex === null
                 ? `테이블 ${order.get(m.tableId) ?? '?'} · 딜러`

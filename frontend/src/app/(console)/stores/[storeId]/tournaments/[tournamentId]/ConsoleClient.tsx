@@ -238,12 +238,15 @@ export default function ConsoleClient({
    * 잡지 않으면 처리되지 않은 프라미스 거부 하나만 남고 화면에는 아무
    * 안내도 뜨지 않는다 — 상점은 눌렀는데 아무 일도 안 일어난 것으로 본다.
    */
-  function run(action: () => Promise<ActionResult>, onSuccess?: () => void) {
+  function run(action: () => Promise<ActionResult>, onSuccess?: () => void, refreshOnError = false) {
     startTransition(async () => {
       try {
         const result = await action();
         if ('error' in result) {
           setMessage(result.error);
+          // 강제 해제(T117)는 실패해도 패널이 낡았다 — 자연 완료가 먼저 이겼거나(409)
+          // 장애 중(503)이면 다시 읽어야 「지금 진행」이 사라진다.
+          if (refreshOnError) router.refresh();
           return;
         }
         setMessage(null);
@@ -426,7 +429,7 @@ export default function ConsoleClient({
             tables={tables}
             seatOccupants={seatOccupants}
             pending={pending}
-            onForce={() => run(() => forceSync(tournamentId))}
+            onForce={() => run(() => forceSync(tournamentId), undefined, true)}
           />
         )}
 

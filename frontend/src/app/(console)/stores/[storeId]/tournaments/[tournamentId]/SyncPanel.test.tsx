@@ -42,3 +42,31 @@ describe('SyncPanel', () => {
     expect(screen.getByRole('button', { name: '지금 진행' })).toBeDisabled();
   });
 });
+
+describe('SyncPanel 정렬', () => {
+  it('안 돌아온 자리를 테이블 순서, 딜러 먼저, 좌석 번호 순으로 보여준다', () => {
+    render(
+      <SyncPanel
+        sync={{
+          syncing: true, present: 0, required: 4,
+          missing: [
+            { tableId: 't2', seatIndex: 5 },
+            { tableId: 't1', seatIndex: 3 },
+            { tableId: 't1', seatIndex: null },
+            { tableId: 't2', seatIndex: null },
+          ],
+        }}
+        tables={tables}
+        seatOccupants={[]}
+        pending={false}
+        onForce={() => {}}
+      />,
+    );
+    expect(screen.getAllByRole('listitem').map((li) => li.textContent)).toEqual([
+      '테이블 1 · 딜러',
+      '테이블 1 · 4번',
+      '테이블 2 · 딜러',
+      '테이블 2 · 6번',
+    ]);
+  });
+});

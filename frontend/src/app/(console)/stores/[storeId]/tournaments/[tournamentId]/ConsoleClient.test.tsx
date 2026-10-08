@@ -25,7 +25,7 @@ const TOURNAMENT: TournamentMeta = {
  */
 function renderConsole(
   reissue = vi.fn(async () => ({ ok: true as const, dealerOtp: '920576' })),
-  overrides: { tournament?: TournamentMeta; dashboard?: unknown; preview?: unknown } = {},
+  overrides: { tournament?: TournamentMeta; dashboard?: unknown; preview?: unknown; sync?: unknown; forceSync?: () => Promise<unknown> } = {},
 ) {
   const revoke = vi.fn(async () => ({ ok: true as const }));
   render(
@@ -48,8 +48,8 @@ function renderConsole(
       chopTournament={vi.fn(async () => ({ ok: true as const }))}
       abortTournament={vi.fn(async () => ({ ok: true as const }))}
       fetchFinishPreview={vi.fn(async () => ({ error: '없음' }))}
-      sync={null}
-      forceSync={vi.fn()}
+      sync={(overrides.sync ?? null) as never}
+      forceSync={(overrides.forceSync ?? vi.fn()) as never}
     />,
   );
   return { reissue, revoke };
@@ -379,5 +379,27 @@ describe('매장 태블릿 전체 등록 해제(T112)', () => {
     const { revoke } = renderConsole();
     await userEvent.click(screen.getByRole('button', { name: '매장 태블릿 전체 등록 해제' }));
     expect(revoke).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * 강제 해제(T117)가 실패해도 복구 패널은 새로 그려져야 한다 — 자연 완료가 먼저
+ * 이겨(409) 이미 열린 대회, 또는 Redis 장애(503)에서 패널의 「지금 진행」이 새로
+ * 고침 전까지 남으면 상점이 죽은 버튼을 계속 누른다.
+ */
+describe('복구 강제 해제 실패(T117)', () => {
+  it('실패해도 안내를 띄우고 화면을 다시 읽는다', async () => {
+    router.refresh.mockClear();
+    renderConsole(undefined, {
+      tournament: { ...TOURNAMENT, status: 'SYNCING' as never },
+      sync: { syncing: true, present: 1, required: 2, missing: [{ tableId: 'tbl-1', seatIndex: null }] },
+      forceSync: async () => ({ error: '복구 중인 대회가 아닙니다.' }),
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: '지금 진행' }));
+    await userEvent.click(screen.getByRole('button', { name: '진행한다' }));
+
+    expect(await screen.findByText('복구 중인 대회가 아닙니다.')).toBeInTheDocument();
+    expect(router.refresh).toHaveBeenCalledTimes(1);
   });
 });

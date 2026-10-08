@@ -1233,7 +1233,7 @@ describe('WsGateway 인바운드 경계', () => {
       expect(result).toBeUndefined();
     });
 
-    /** 좌석 소켓(플레이어)은 딜러가 아니라 k에 안 든다. */
+    /** T117. 좌석 소켓(플레이어)은 딜러가 아니어도 자기 자리로 k에 든다. */
     it('좌석 소켓은 자기 자리로 센다', async () => {
       await seedSyncingTournament();
       await seedSeats();
@@ -1290,7 +1290,7 @@ describe('WsGateway 인바운드 경계', () => {
       // TABLE만 한 자리 앉힌다 — OTHER_TABLE은 비트맵은 있지만 전부 0이다.
       // (필드 자체가 없으면 `getTournamentTables`가 그 테이블을 읽지 않아
       // seatMaps에도 안 잡힌다 — 실제 운영에서는 테이블 생성 시점에 이미
-      // 빈 비트맵이 깔려 있으므로 여기서도 명시적으로 세워 둔다.) n(required)=1.
+      // 빈 비트맵이 깔려 있으므로 여기서도 명시적으로 세워 둔다.) n(required)=2 — TABLE 딜러 + 0번 좌석.
       await new RedisService(redis).rebuildSeatBitmap(TOURNAMENT, TABLE, [0]);
       await new RedisService(redis).rebuildSeatBitmap(TOURNAMENT, OTHER_TABLE, []);
 
@@ -1312,7 +1312,7 @@ describe('WsGateway 인바운드 경계', () => {
     /**
      * I1(리뷰). 판정이 끝나지 않은 재집계끼리는 「세고 → 곧바로 보낸다」가
      * 동기라 서로 어긋나지 않는다. 어긋나는 자리는 **끝난 판정의
-     * `await completeSync` 창**이다 — 마지막 딜러 접속이 2/2를 세고
+     * `await completeSync` 창**이다 — 마지막 딜러 접속이 4/4를 세고
      * `completeSync`에 들어간 사이, 다른 딜러가 끊겨 새 재집계가 `SYNCING`을
      * (아직 커밋 전이라) 그대로 읽으면, 그 재집계가 나중에 `{syncing:false}`
      * 뒤에 낡은 `{syncing:true}`를 보낼 수 있다. 대회마다 `reportSync`를
@@ -1361,7 +1361,7 @@ describe('WsGateway 인바운드 경계', () => {
       });
 
       try {
-        // #1: OTHER_TABLE 딜러가 접속해 2/2를 세고 completeSync에 들어간다.
+        // #1: OTHER_TABLE 딜러가 접속해 4/4를 세고 completeSync에 들어간다.
         const connectPromise = connect(await dealerTicket(OTHER_TABLE), OTHER_TABLE);
         await waitUntil(() => recovery.completeSync.mock.calls.length === 1);
 
@@ -1460,7 +1460,7 @@ describe('WsGateway 인바운드 경계', () => {
      *
      * 여기서는 그 순서를 그대로 만든다 — 딜러 소켓을 죽은 상태로 만들고
      * `broadcast`를 한 번 태워 방에서 빠지게 한 뒤에 `handleDisconnect`를
-     * 부른다. 남은 딜러 하나가 새 집계(1/2)를 받아야 한다.
+     * 부른다. 남은 딜러 하나가 새 집계(1/4)를 받아야 한다.
      */
     it('broadcast가 먼저 방에서 뺀 딜러도 끊기면 집계가 다시 돈다', async () => {
       await seedSyncingTournament();
@@ -1484,7 +1484,7 @@ describe('WsGateway 인바운드 경계', () => {
       // **알림이 한 번 더 나갔다는 것이 요점이다.** 값만 보면 「안 돌았다」와
       // 「돌았는데 값이 같다」를 못 가른다 — 고치기 전에는 0건이었다.
       // (`completeSync`는 이 스펙에서 목이라 DB는 SYNCING에 남아 있고,
-      //  그래서 딜러가 하나 빠진 지금 다시 세면 1/2이다.)
+      //  그래서 딜러가 하나 빠진 지금 다시 세면 1/4이다.)
       expect(`늘어난 알림 ${countSyncing(staying) - before}`).toBe('늘어난 알림 1');
       expect(lastSyncingPayload(staying)).toEqual({ syncing: true, present: 1, required: 4 });
     });
