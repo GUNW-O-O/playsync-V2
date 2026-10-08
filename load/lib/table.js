@@ -139,6 +139,14 @@ const THINK_SLOW_RATIO = Number(__ENV.LOAD_THINK_SLOW_RATIO || 0.15);
 const DEAL_MS = Number(__ENV.LOAD_DEAL_MS || 25000);
 
 /**
+ * 서버가 멈췄다 돌아온 테이블을 딜러가 다시 열기까지(T116). 핸드 도중에 멈춘
+ * 테이블은 `resumePending`이 서고, 딜러의 `RESUME_TABLE` 말고는 아무도 그것을
+ * 못 푼다(`PlaysyncService`가 액션을 거절한다). 카드가 물리라 딜러는 테이블을
+ * 한 번 둘러보고 누른다.
+ */
+const RESUME_MS = Number(__ENV.LOAD_RESUME_MS || 5000);
+
+/**
  * 아예 누르지 않는 액션의 비율. **타임아웃 경로를 실제로 돌리려는 것이다.**
  *
  * 봇이 언제나 30초 안에 누르면 `TIME_OUT` 잡이 한 번도 돌지 않는다. 그런데
@@ -419,6 +427,8 @@ export function runHands({
   });
   let latestState = null;
   let closing = false;
+  /** 이 대회가 `SYNCING`인가 — 딜러 소켓이 받은 마지막 `tournamentSyncing`. */
+  let syncing = false;
   /**
    * 재접속 폭발이 진행 중이면 `{ at, tracker }`. 모든 자리가 첫 `renderGame`을
    * 다시 받은 순간이 복구 완료다(`createBurst`) — 소켓을 여는 데 걸린 시간이
@@ -491,6 +501,9 @@ export function runHands({
       // 이 소켓을 열기까지 기다린 횟수. 끊기면 여기서 이어 센다 — 제품
       // 단말처럼 첫 프레임을 받아야 0으로 돌아간다.
       attempt,
+      // 복구 판정은 폭발 **뒤에 열린** 소켓만 센다 — 끊기기 직전 살아 있던
+      // 소켓이 받은 프레임이 「돌아왔다」로 세어지지 않게.
+      bornAt: Date.now(),
     };
     sockets.push(entry);
 
@@ -512,6 +525,14 @@ export function runHands({
       // `processRebuy`는 이 응답을 락 **밖에서** 최대 15초 기다리고
       // (`REBUY_TIMEOUT_MS`), 그동안 `HAND_END`가 다음 핸드를 막는다.
       // 즉시 답해도 왕복이 끼므로 핸드 주기가 늘어난다 — 실제 대회도 그렇다.
+      // 재기동 뒤 「딜러가 모두 돌아올 때까지」 띠(T96). 딜러 소켓만 받는다.
+      // 띠가 걷힐 때 서버는 `renderGame`을 다시 보내지 않으므로, 사람 딜러가
+      // 버튼을 다시 누르듯 여기서 다시 판단한다(T116).
+      if (parsed.event === 'tournamentSyncing' && parsed.data) {
+        syncing = parsed.data.syncing;
+        if (!syncing && latestState && !closing) step(entry, latestState);
+        return;
+      }
       if (parsed.event === 'REBUY_PROMPT') {
         rebuysAccepted.add(1);
         entry.ws.send(JSON.stringify({ event: 'REBUY_RESPONSE', data: { accept: true } }));
@@ -521,7 +542,7 @@ export function runHands({
       latestState = parsed.data;
 
       // 재접속 복구 시간 — 모든 자리가 첫 화면을 받은 순간.
-      const saw = burstState && burstState.tracker.see(entry.seat);
+      const saw = burstState && entry.bornAt >= burstState.at && burstState.tracker.see(entry.seat);
       if (saw) {
         // 역할별 완료. 마지막 좌석과 딜러 중 어느 쪽이 전체 시간을 정했는지
         // `reconnect_ms` 하나로는 안 보인다. 전체 판정보다 먼저 적어야 마지막
@@ -591,6 +612,18 @@ export function runHands({
       // 대회가 끝난 것, 4001(`SESSION_REVOKED_CLOSE_CODE`)은 신원이 폐기된 것이라
       // 멈춘다. 예전에는 아무 코드에도 안 열어 1008 하나가 테이블 하나를 미복구로 남겼다.
       if (code === 1000 || code === 4001) return;
+      // **서버가 끊었으면 그것도 폭발이다**(T116). 백엔드를 죽이면 테이블의 열
+      // 소켓이 한꺼번에 닫힌다 — 첫 닫힘이 시계를 켜고, 예약 폭발과 같은 판정
+      // (`reconnect_ms`)으로 다시 다 붙기까지를 잰다. 조건은 다시 여는 조건과
+      // 같다 — 1006만 보던 동안 1,000테이블 kill에서 216테이블이 코드 없이 닫혀
+      // 시계를 못 켰다.
+      // ponytail: 소켓 하나만 끊기면 이 폭발은 끝나지 않고 그 VU의 다음 kill
+      // 폭발을 못 연다. 예약 폭발은 덮어쓰므로 막히지 않는다. 한 실행에 kill이
+      // 여럿 필요해지면 끝나지 않은 폭발에 만료를 둔다.
+      if (!burstState) {
+        reconnects.add(1);
+        burstState = { at: Date.now(), tracker: createBurst(seats.length) };
+      }
       // 이 소켓에 예약된 액션이 닫힌 소켓에 보내지 않게 한다(`send`의 `fire`).
       entry.retired = true;
       const wait = delay(entry.attempt, role);
@@ -635,6 +668,11 @@ export function runHands({
       entry.ws.send(JSON.stringify(payload));
     };
     const isDeal = entry.role === 'dealer' && payload.data.action === 'START_PRE_FLOP';
+    // 재개는 재지 않는다 — 경합으로 거절되면 브로드캐스트가 없어 창이 고아가 된다.
+    if (entry.role === 'dealer' && payload.data.action === 'RESUME_TABLE') {
+      setTimeout(fire(false), RESUME_MS);
+      return;
+    }
     const wait = isDeal ? (burning() ? BURN_DEAL_MS : DEAL_MS) : thinkMs();
 
     // `null`은 "자리에 없다" — 아예 보내지 않고 서버 타임아웃에 맡긴다.
@@ -676,6 +714,13 @@ export function runHands({
    */
   function step(entry, state) {
     if (entry.role === 'dealer') {
+      // 대회가 SYNCING이면 딜러 명령은 전부 거절된다(`WsGateway.runDealerAction`).
+      // 띠가 걷히면 `tournamentSyncing`이 다시 부른다(T116).
+      if (syncing) return;
+      if (state.resumePending) {
+        send(entry, { event: 'DEALER_ACTION', data: { action: 'RESUME_TABLE' } });
+        return;
+      }
       if (state.phase === GamePhase.WAITING || state.phase === GamePhase.HAND_END) {
         send(entry, { event: 'DEALER_ACTION', data: { action: 'START_PRE_FLOP' } });
         return;
