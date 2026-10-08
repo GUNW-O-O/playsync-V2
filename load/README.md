@@ -30,6 +30,10 @@ npm run load:ramp-a    # 성장 램프 — 6테이블마다 다음 대회로
 npm run load:down      # 정리
 ```
 
+**Git Bash에서 compose를 직접 부르면 `MSYS_NO_PATHCONV=1`이 필요하다.** 없으면
+`/load/scenarios/ramp.js`가 `C:/Program Files/Git/load/...`로 바뀌어 k6가 파일을
+못 찾고 바로 끝난다(T113). npm 스크립트는 cmd로 돌아 걸리지 않는다.
+
 **결제 거절을 부하에 넣으려면 `LOAD_DECLINE_RATIO`를 켠다**(T72). 기본값 0이면
 충전 요청 자체가 안 나가므로 기본 부하 모양은 그대로다. 백엔드 쪽은 부하 무대가
 `MOCK_PAYMENT=1`로 이미 켜 둔다 — 그 값이 없으면 `POST /payments/charge`가
@@ -42,7 +46,7 @@ docker compose -f backend/docker-compose.test.yml --profile load --profile k6   
 하네스에 붙은 유일한 자동 검증은 창 큐의 단위 테스트다. 인프라가 필요 없다.
 
 ```bash
-cd load && npm test    # node --test. 12건
+cd load && npm test    # node --test. 개수는 CLAUDE.md 기준선
 ```
 
 **나머지는 여전히 사람이 실행 요약을 읽는 것이다.** 그 한계가 T76을 낳았다 —
@@ -565,6 +569,8 @@ lag으로, 각각 **연속 2회**에 `exec.test.abort()`. **k6 `thresholds`로�
 | `LOAD_MY_ACTION_ABORT_MS` | 1000 | 불편선 |
 | `LOAD_BREACH_STREAK` | 2 | 몇 번 연속으로 넘어야 멈추나 |
 | `LOAD_RECONNECT_AT_TABLES` | 0 | 이 테이블 수의 고원 중간에 재접속 폭발. npm 스크립트는 30 |
+| `LOAD_RECONNECT_SEAT_SPREAD_MS` | 40000 | 폭발 때 좌석이 깨어나는 폭. 제품 `SEAT_SPREAD_MS`의 복사 |
+| `LOAD_RECONNECT_DEALER_SPREAD_MS` | 10000 | 딜러가 좌석 폭 **뒤에** 깨어나는 폭. 제품 `DEALER_SPREAD_MS`의 복사. 둘 다 0이면 전원이 같은 순간(대조군) |
 | `LOAD_STORES` | 12 | 시드가 세우는 상점·대회 수 |
 | `LOAD_ACCOUNT_POOL` | `LOAD_MAX_TABLES × 9` | 미리 만드는 풀 계정. 좌석보다 작으면 시드가 경고를 찍는다 |
 | `LOAD_START_STACK_BB` | 10 | 시작 스택을 **BB 배수**로. 커지면 아무도 안 터진다 |
@@ -574,15 +580,36 @@ lag으로, 각각 **연속 2회**에 `exec.test.abort()`. **k6 `thresholds`로�
 별도 실행이 아니라 **고원 중에 한 번 일어나는 사건**이다. 별도로 두면 규모 축이
 하나 더 생기고 실행 시간만 배가 된다.
 
-전 VU가 같은 절대 시각에 소켓 열 개를 통째로 끊고 다시 붙는다. **지터를 걸지
-않는다** — 실제 모양이 "배너를 본 사람들이 동시에 새로고침"이고
-(`SeatGameClient.tsx:118`에 자동 재접속이 없다) 백오프가 낄 자리 자체가 없다.
+전 VU가 같은 절대 시각에 소켓 열 개를 끊고 **제품의 지터로** 다시 붙는다 —
+좌석은 40초 폭, 딜러는 그 뒤 10초 폭(`frontend/src/lib/reconnect-policy.ts`,
+하네스 쪽 복사는 `lib/reconnect-burst.js`). T93 전에는 단말에 자동 재접속이 없어
+지터를 걸지 않았다.
 
 **티켓은 1회용이라 소켓마다 새로 받아야 한다.** 그래서 이 사건은 WS만이 아니라
-`POST /ws/ticket`을 전원이 동시에 치는 REST 부하이기도 하다.
+`POST /ws/ticket`을 전원이 치는 REST 부하이기도 하고, T110 뒤로는 소켓마다 세대
+대조(DB 조회)가 세 번 붙는다.
 
-`reconnect_ms`는 **다시 붙은 소켓 전부가 첫 `renderGame`을 받기까지**다. 소켓을
-여는 데 걸린 시간이 아니라 화면이 다시 살아나기까지가 사람이 겪는 시간이다.
+`reconnect_ms`는 **다시 붙은 소켓 전부가 첫 `renderGame`을 받기까지**다. 딜러가
+좌석 폭 뒤에 깨어나므로 40초 아래로는 안 나온다 — T113 전 실행과 직접 비교하지
+않는다. 좌석과 딜러를 따로 본다(`reconnect_seat_ms` · `reconnect_dealer_ms`).
+
+**합격선은 5분이다.** 폭발 후 300초 안에 모든 테이블이 돌아와야 하고, 하나라도
+넘거나 못 돌아오면 실패다. 재접속을 잴 때는 중단 조건을 끈다
+(`LOAD_BREACH_STREAK`를 크게) — 켜 두면 폭발 구간의 튐이 딜러가 붙기도 전에
+실행을 멈춘다.
+
+티켓이 서버 무응답(연결 실패 0 · 5xx)이면 제품처럼 다시 두드리고
+`ticket_unreachable`로 따로 센다. 상한에 걸린 것(`ticket_limited`)과 섞지 않는다.
+
+**재시도는 제품 정책 그대로다**(T113). 폭발의 첫 깨어남과 티켓 · 소켓 실패 뒤의
+재시도가 `reconnect-burst.js`의 `reconnectDelayMs` 하나를 쓴다 — 좌석 40초 폭,
+딜러는 40초 뒤 10초 폭, 시도마다 폭이 두 배(×8에서 멈춤), 8회 넘으면 포기. 429면
+`Retry-After`를 바닥으로 깐다. 소켓이 1000 · 4001이 아닌 코드로 닫히면 같은
+정책으로 다시 연다. 복구 판정은 소켓이 아니라 **자리**로 센다(`createBurst`).
+`socket_errors`에는 닫힘 코드가 `code` 태그로 붙는다.
+
+이 폭발은 **서버가 살아 있는 채 회선이 흔들린 경우**다(클라이언트가 끊는다).
+서버를 실제로 죽였다 살리는 재접속은 따로 잰다.
 
 ### 단계별로 읽는다
 
@@ -590,7 +617,9 @@ lag으로, 각각 **연속 2회**에 `exec.test.abort()`. **k6 `thresholds`로�
 node scripts/load-report.mjs load/results/ramp-b-raw.json
 ```
 
-원시 시계열을 `step` 태그로 갈라 단계마다 한 줄씩 낸다. 요약 하나로는 "터졌다"
+원시 시계열을 `step` 태그로 갈라 100테이블 단위 띠마다 한 줄씩 낸다. **줄 단위로
+읽는다** — 1,400테이블 실행의 원시 파일이 2GB라 통째로 읽으면 V8 문자열 상한에
+걸린다(T113). 요약 하나로는 "터졌다"
 까지만 알 수 있고, 필요한 것은 **어느 테이블 수에서 꺾였는가**다.
 
 ## 지표
@@ -605,7 +634,10 @@ node scripts/load-report.mjs load/results/ramp-b-raw.json
 | `raises` · `folds` | 액션 믹스가 의도대로 나왔는지 | > 0 |
 | `table_create_conflicts` | 테이블 생성이 409로 거절된 횟수 | 기록용 |
 | `table_setup_ms` | 테이블 하나를 열고 좌석 아홉을 채우기까지. 증설 비용 | 기록용 |
-| `reconnects` · `reconnect_ms` | 재접속 폭발 횟수와 복구 시간 | 기록용 |
+| `reconnects` · `reconnect_ms` | 재접속 폭발 횟수와 복구 시간 | **최대 300초**(T113) |
+| `reconnect_seat_ms` · `reconnect_dealer_ms` | 그중 마지막 좌석 · 딜러가 돌아오기까지 | 기록용 |
+| `dealer_action_ms` | 딜러의 딜(`deal`) · 승자 입력(`winners`)이 반영되기까지. `my_action_ms`에 안 섞는다 | 기록용 |
+| `ticket_unreachable` | 재접속 티켓이 서버 무응답이라 다시 두드린 횟수 | 기록용 |
 | `my_action_server_ms` | 그 왕복 중 **서버가 답을 만들기까지** | 기록용 |
 | `my_action_client_ms` | 그 왕복 중 **선과 측정기가 나르기까지** | 기록용 |
 | `stale_windows` | 응답이 끝내 안 와서 버린 측정 창 | 기록용 |

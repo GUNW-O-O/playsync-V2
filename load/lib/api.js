@@ -2,7 +2,7 @@ import http from 'k6/http';
 import { fail, sleep } from 'k6';
 import { Counter, Trend } from 'k6/metrics';
 
-import { nextAttempt, spreadForHerd } from './reconnect-backoff.js';
+import { nextAttempt } from './reconnect-backoff.js';
 
 /**
  * 부하 봇이 타는 REST 경로.
@@ -211,24 +211,9 @@ export function dealerLogin(tournamentId, tableId, otp, deviceToken) {
  */
 export const ticketLimited = new Counter('ticket_limited');
 export const ticketGaveUp = new Counter('ticket_gave_up');
+/** 서버가 답을 못 해(연결 실패 0 · 5xx) 다시 두드린 횟수. 상한에 걸린 것(`ticket_limited`)과 가른다(T113). */
+export const ticketUnreachable = new Counter('ticket_unreachable');
 export const ticketWaitMs = new Trend('ticket_wait_ms', true);
-
-/**
- * 재접속 무리를 흩는 폭. 상한에 걸린 단말이 다시 두드릴 시각을 이 폭에 걸쳐
- * 고르게 뿌린다.
- *
- * 기본값을 무대 규모에서 만든다 — 무리(테이블 × 소켓 10)를 전역 상한
- * (`throttle.ts`의 `DEFAULT_LIMIT`, 분당 600)으로 나눈 값이다. 감으로 잡으면
- * 두 번째 파도가 또 문에 걸린다(`reconnect-backoff.js`의 `spreadForHerd`).
- */
-export const RECONNECT_SPREAD_MS =
-  __ENV.LOAD_RECONNECT_SPREAD_MS === undefined || __ENV.LOAD_RECONNECT_SPREAD_MS === ''
-    // 무리(테이블 × 소켓 10)를 버킷 상한으로 나눈 값이 기본이다.
-    ? spreadForHerd(Number(__ENV.LOAD_MAX_TABLES || 66) * 10, Number(__ENV.LOAD_TICKET_LIMIT || 600))
-    // **0을 허락해야 한다.** 0이 곧 지금 제품의 모양(전원이 같은 순간에
-    // 새로고침)이고, 그것이 이 측정의 대조군이다. `Number('0') || 기본값`으로
-    // 쓰면 0이 falsy라 조용히 기본값으로 돌아간다 — 대조군이 사라진다.
-    : Number(__ENV.LOAD_RECONNECT_SPREAD_MS);
 
 /**
  * 티켓을 한 번 두드린다. **막으면 기다리지 않고 돌아온다.**
@@ -240,20 +225,23 @@ export const RECONNECT_SPREAD_MS =
  * p95 2291ms · 그때 서버 lag 중앙값 0.4ms · CPU 4%). 호출자는 타이머로
  * 다시 부른다.
  *
+ * @param {number|null} delayMs 막히면 기다릴 시간. 호출자가 제품 정책에서 받아 온다
+ *   (`reconnect-burst.js`의 `reconnectDelayMs`). `null`이면 횟수를 다 썼다
  * @returns {{ticket: string}|{waitMs: number}|{gaveUp: true}}
  */
-export function wsTicketAttempt(token, attempt = 0) {
+export function wsTicketAttempt(token, delayMs) {
   const res = http.post(`${BASE}/ws/ticket`, null, {
     headers: bearer(token),
     tags: { step: 'ticket' },
   });
 
-  const verdict = nextAttempt(res, attempt, { spreadMs: RECONNECT_SPREAD_MS });
+  const verdict = nextAttempt(res, delayMs);
 
   if (verdict.retry) {
     // 상한에 걸린 것은 결함이 아니라 **재려던 것**이다 — 무대를 제품 기본
     // 상한으로 띄우면 재접속 폭발이 실제로 여기 걸린다(T93).
-    ticketLimited.add(1);
+    if (verdict.reason === 'unreachable') ticketUnreachable.add(1);
+    else ticketLimited.add(1);
     ticketWaitMs.add(verdict.waitMs);
     return { waitMs: verdict.waitMs };
   }

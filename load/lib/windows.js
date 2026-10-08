@@ -60,13 +60,19 @@
  *   재려던 것(1초가 진짜인가)을 못 본다. 이 값은 "아예 안 왔다"만 걸러낸다.
  */
 export function createWindowQueue({ maxAgeMs }) {
-  /** @type {{ at: number, actorSocketIdx: number, seen: Set<number> }[]} */
+  /** @type {{ at: number, actorSocketIdx: number, label?: string, seen: Set<number> }[]} */
   const windows = [];
 
   return {
-    /** 액션을 보낸 순간. `at`은 보낸 쪽의 시계다. */
-    open(at, actorSocketIdx) {
-      windows.push({ at, actorSocketIdx, seen: new Set() });
+    /**
+     * 액션을 보낸 순간. `at`은 보낸 쪽의 시계다.
+     *
+     * `label`은 짝짓기에 쓰이지 않는다. 창에 실려 `match`의 적중에 그대로
+     * 나온다 — 부르는 쪽이 "이 창이 무슨 액션이었나"를 적중 시점에 알게 하려는
+     * 것이다(딜러의 `deal`·`winners`를 좌석 액션과 갈라 재는 데 쓴다, T113).
+     */
+    open(at, actorSocketIdx, label) {
+      windows.push({ at, actorSocketIdx, label, seen: new Set() });
     },
 
     /**
@@ -126,7 +132,7 @@ export function createWindowQueue({ maxAgeMs }) {
       // 살아 있는 소켓이 다 본 창은 앞에서 걷어낸다.
       while (windows.length > 0 && windows[0].seen.size >= liveCount) windows.shift();
 
-      return { actorSocketIdx: win.actorSocketIdx, elapsedMs, ...split };
+      return { actorSocketIdx: win.actorSocketIdx, label: win.label, elapsedMs, ...split };
     },
 
     /** 재접속 폭발. 끊긴 소켓이 못 받은 창은 영영 안 채워진다. */
