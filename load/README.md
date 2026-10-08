@@ -609,7 +609,15 @@ lag으로, 각각 **연속 2회**에 `exec.test.abort()`. **k6 `thresholds`로�
 `socket_errors`에는 닫힘 코드가 `code` 태그로 붙는다.
 
 이 폭발은 **서버가 살아 있는 채 회선이 흔들린 경우**다(클라이언트가 끊는다).
-서버를 실제로 죽였다 살리는 재접속은 따로 잰다.
+
+**서버를 죽였다 살리는 재접속**(T116)은 예약 폭발 없이(`LOAD_RECONNECT_AT_TABLES`
+미설정) 램프를 돌리고 바깥에서 `docker kill playsync-backend-load` → `docker start`
+한다. 서버가 끊은 소켓의 첫 닫힘이 그 테이블의 시계를 켜고, 같은 `reconnect_ms`로
+잰다. 재기동 뒤의 판은 봇 딜러가 연다 — 대회가 `SYNCING`이면 기다렸다가
+`tournamentSyncing`이 띠를 걷으면 다시 판단하고, `resumePending`이면
+`LOAD_RESUME_MS`(5초) 뒤 `RESUME_TABLE`을 누른다. **좌석이 다 돌아왔는지는 보지
+않는다** — 사람 딜러의 화면에도 그 정보가 없다(T117). kill 실행은 소켓 오류
+문턱(`socket_errors`)에 걸려 k6가 99로 끝나는 것이 정상이다.
 
 ### 단계별로 읽는다
 
