@@ -139,6 +139,14 @@ const THINK_SLOW_RATIO = Number(__ENV.LOAD_THINK_SLOW_RATIO || 0.15);
 const DEAL_MS = Number(__ENV.LOAD_DEAL_MS || 25000);
 
 /**
+ * 서버가 멈췄다 돌아온 테이블을 딜러가 다시 열기까지(T116). 핸드 도중에 멈춘
+ * 테이블은 `resumePending`이 서고, 딜러의 `RESUME_TABLE` 말고는 아무도 그것을
+ * 못 푼다(`PlaysyncService`가 액션을 거절한다). 카드가 물리라 딜러는 테이블을
+ * 한 번 둘러보고 누른다.
+ */
+const RESUME_MS = Number(__ENV.LOAD_RESUME_MS || 5000);
+
+/**
  * 아예 누르지 않는 액션의 비율. **타임아웃 경로를 실제로 돌리려는 것이다.**
  *
  * 봇이 언제나 30초 안에 누르면 `TIME_OUT` 잡이 한 번도 돌지 않는다. 그런데
@@ -419,6 +427,8 @@ export function runHands({
   });
   let latestState = null;
   let closing = false;
+  /** 이 대회가 `SYNCING`인가 — 딜러 소켓이 받은 마지막 `tournamentSyncing`. */
+  let syncing = false;
   /**
    * 재접속 폭발이 진행 중이면 `{ at, tracker }`. 모든 자리가 첫 `renderGame`을
    * 다시 받은 순간이 복구 완료다(`createBurst`) — 소켓을 여는 데 걸린 시간이
@@ -512,6 +522,14 @@ export function runHands({
       // `processRebuy`는 이 응답을 락 **밖에서** 최대 15초 기다리고
       // (`REBUY_TIMEOUT_MS`), 그동안 `HAND_END`가 다음 핸드를 막는다.
       // 즉시 답해도 왕복이 끼므로 핸드 주기가 늘어난다 — 실제 대회도 그렇다.
+      // 재기동 뒤 「딜러가 모두 돌아올 때까지」 띠(T96). 딜러 소켓만 받는다.
+      // 띠가 걷힐 때 서버는 `renderGame`을 다시 보내지 않으므로, 사람 딜러가
+      // 버튼을 다시 누르듯 여기서 다시 판단한다(T116).
+      if (parsed.event === 'tournamentSyncing' && parsed.data) {
+        syncing = parsed.data.syncing;
+        if (!syncing && latestState && !closing) step(entry, latestState);
+        return;
+      }
       if (parsed.event === 'REBUY_PROMPT') {
         rebuysAccepted.add(1);
         entry.ws.send(JSON.stringify({ event: 'REBUY_RESPONSE', data: { accept: true } }));
@@ -635,6 +653,11 @@ export function runHands({
       entry.ws.send(JSON.stringify(payload));
     };
     const isDeal = entry.role === 'dealer' && payload.data.action === 'START_PRE_FLOP';
+    // 재개는 재지 않는다 — 경합으로 거절되면 브로드캐스트가 없어 창이 고아가 된다.
+    if (entry.role === 'dealer' && payload.data.action === 'RESUME_TABLE') {
+      setTimeout(fire(false), RESUME_MS);
+      return;
+    }
     const wait = isDeal ? (burning() ? BURN_DEAL_MS : DEAL_MS) : thinkMs();
 
     // `null`은 "자리에 없다" — 아예 보내지 않고 서버 타임아웃에 맡긴다.
@@ -676,6 +699,13 @@ export function runHands({
    */
   function step(entry, state) {
     if (entry.role === 'dealer') {
+      // 대회가 SYNCING이면 딜러 명령은 전부 거절된다(`WsGateway.runDealerAction`).
+      // 띠가 걷히면 `tournamentSyncing`이 다시 부른다(T116).
+      if (syncing) return;
+      if (state.resumePending) {
+        send(entry, { event: 'DEALER_ACTION', data: { action: 'RESUME_TABLE' } });
+        return;
+      }
       if (state.phase === GamePhase.WAITING || state.phase === GamePhase.HAND_END) {
         send(entry, { event: 'DEALER_ACTION', data: { action: 'START_PRE_FLOP' } });
         return;
