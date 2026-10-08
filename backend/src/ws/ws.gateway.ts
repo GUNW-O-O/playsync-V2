@@ -14,6 +14,8 @@ import {
   TournamentClosedSchema,
   TournamentSyncingSchema,
   TournamentSyncing,
+  SyncStatus,
+  SyncStatusSchema,
   DEALER_REVOKED_REASON,
   SERVER_OUTAGE_EVENT,
   SERVER_RECOVERING_MESSAGE,
@@ -714,6 +716,44 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
       syncing = false;
     }
     this.sendSyncing(seatMaps, { syncing, present: progress.present, required: progress.required });
+  }
+
+  /**
+   * 상점 콘솔의 복구 상태(T117). 판정은 재집계와 같은 함수다 — 딜러 띠와 상점
+   * 목록이 같은 숫자를 본다.
+   */
+  async syncStatus(tournamentId: string): Promise<SyncStatus> {
+    const t = await this.prisma.tournament.findUnique({ where: { id: tournamentId }, select: { status: true } });
+    if (t?.status !== TournamentStatus.SYNCING) {
+      return SyncStatusSchema.parse({ syncing: false, present: 0, required: 0, missing: [] });
+    }
+    const { progress } = await this.measureSync(tournamentId);
+    return SyncStatusSchema.parse({ syncing: true, ...progress });
+  }
+
+  /**
+   * 상점의 「지금 진행」(T117). 참가자가 장애 뒤 아무 의사도 밝히지 않고 떠나면 그
+   * 자리는 끝내 안 돌아와 대회가 영영 멈춘다 — 현장 판단으로 푼다. 안 돌아온 자리는
+   * 평소 규칙대로 접히고 칩이 떨어지면 리바인 시간초과로 탈락한다.
+   *
+   * **재집계와 같은 줄에 선다** — 앞선 재집계가 낡은 `{syncing:true}`를 이 뒤에 보내지
+   * 않게(T96 리뷰 I1). 자연 완료와 겹치면 `completeSync`의 조건부 갱신이 한쪽만
+   * 이기게 한다.
+   *
+   * @returns 이 호출이 풀었으면 true. 이미 풀렸거나 진 쪽이면 false
+   */
+  async forceSync(tournamentId: string): Promise<boolean> {
+    return this.syncQueue.enqueue(tournamentId, async () => {
+      const t = await this.prisma.tournament.findUnique({ where: { id: tournamentId }, select: { status: true } });
+      if (t?.status !== TournamentStatus.SYNCING) return false;
+      const { seatMaps, progress } = await this.measureSync(tournamentId);
+      if (!(await this.recovery.completeSync(tournamentId))) return false;
+      this.logger.warn(
+        `상점이 SYNCING을 풀었다 (tournament=${tournamentId}, 기기 ${progress.present}/${progress.required})`,
+      );
+      this.sendSyncing(seatMaps, { syncing: false, present: progress.present, required: progress.required });
+      return true;
+    });
   }
 
   /**

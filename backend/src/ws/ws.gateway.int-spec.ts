@@ -1540,6 +1540,70 @@ describe('WsGateway 인바운드 경계', () => {
 
       expect(lastSyncingPayload(tableDealer)).toEqual({ syncing: true, present: 1, required: 4 });
     });
+
+    it('syncStatus는 안 돌아온 자리를 낸다', async () => {
+      await seedSyncingTournament();
+      await seedSeats();
+      await connectSeats([TABLE]);
+      await connect(await dealerTicket(TABLE), TABLE);
+
+      expect(await gateway.syncStatus(TOURNAMENT)).toEqual({
+        syncing: true, present: 2, required: 4,
+        missing: [{ tableId: OTHER_TABLE, seatIndex: null }, { tableId: OTHER_TABLE, seatIndex: 0 }],
+      });
+    });
+
+    it('SYNCING이 아니면 syncStatus는 비어 있다', async () => {
+      await seedSyncingTournament(TournamentStatus.ONGOING);
+      expect(await gateway.syncStatus(TOURNAMENT)).toEqual({ syncing: false, present: 0, required: 0, missing: [] });
+    });
+
+    it('forceSync는 completeSync를 부르고 딜러들에게 syncing:false를 보낸다', async () => {
+      await seedSyncingTournament();
+      await seedSeats();
+      const tableDealer = await connect(await dealerTicket(TABLE), TABLE);
+
+      expect(await gateway.forceSync(TOURNAMENT)).toBe(true);
+
+      expect(recovery.completeSync).toHaveBeenCalledWith(TOURNAMENT);
+      expect(lastSyncingPayload(tableDealer)).toEqual({ syncing: false, present: 1, required: 4 });
+    });
+
+    /** 자연 완료와 겹쳐 진 쪽이거나 이미 풀린 대회 — 아무에게도 보내지 않는다. */
+    it('forceSync는 SYNCING이 아니거나 completeSync가 지면 false다', async () => {
+      await seedSyncingTournament();
+      await seedSeats();
+      const tableDealer = await connect(await dealerTicket(TABLE), TABLE);
+      tableDealer.send.mockClear();
+      recovery.completeSync.mockResolvedValueOnce(false);
+
+      expect(await gateway.forceSync(TOURNAMENT)).toBe(false);
+      expect(lastSyncingPayload(tableDealer)).toBeUndefined();
+
+      await prisma.tournament.update({ where: { id: TOURNAMENT }, data: { status: TournamentStatus.ONGOING, pausedAt: null } });
+      recovery.completeSync.mockClear();
+      expect(await gateway.forceSync(TOURNAMENT)).toBe(false);
+      expect(recovery.completeSync).not.toHaveBeenCalled();
+    });
+
+    it('진짜 RecoveryService로 forceSync하면 DB가 ONGOING이 되고 두 번째는 false다', async () => {
+      await seedSyncingTournament();
+      await seedSeats();
+      const realRecovery = new RecoveryService(prisma as unknown as PrismaService, new RedisService(redis));
+      const realGateway = new WsGateway(
+        dealer as unknown as DealerService, playsync, new RedisService(redis), tickets,
+        new EventEmitter2(), prisma as unknown as PrismaService, realRecovery,
+      );
+      try {
+        expect(await realGateway.forceSync(TOURNAMENT)).toBe(true);
+        const t = await prisma.tournament.findUniqueOrThrow({ where: { id: TOURNAMENT } });
+        expect(`상태 ${t.status} ${t.pausedAt}`).toBe('상태 ONGOING null');
+        expect(await realGateway.forceSync(TOURNAMENT)).toBe(false);
+      } finally {
+        realGateway.onModuleDestroy();
+        realRecovery.onModuleDestroy();
+      }
+    });
   });
 
   /**
