@@ -71,10 +71,11 @@
 ## 상점의 「지금 진행」
 
 - `GET store/sessions/:id/sync` — `{ syncing, present, required, missing: [{ tableId,
-  seatIndex | null(딜러), nickname | null }] }`. 콘솔이 대회가 `SYNCING`일 때 그린다.
-  닉네임은 좌석 비트맵이 아니라 DB(`TablePlayer`)에서 읽는다 — 콘솔 요청이라 비용이
-  문제 되지 않는다. 판정 자체는 게이트웨이의 소켓 맵에 있으므로 서비스가 게이트웨이의
-  집계 함수를 부른다.
+  seatIndex | null(딜러) }] }`. 콘솔이 대회가 `SYNCING`일 때 그린다. 테이블 번호와
+  닉네임은 콘솔이 이미 받는 좌석 점유자 목록(`GET store/sessions/:id/seats`)으로
+  잇는다 — 백엔드가 같은 것을 두 번 읽지 않는다. 판정은 게이트웨이의 소켓 맵에 있으므로
+  이 두 라우트는 `WsModule`의 컨트롤러가 든다(`SessionModule`에 두면 `DealerModule`을
+  거쳐 모듈 순환이 된다). 소유권은 `SessionService.assertTournamentOwnership`.
 - `POST store/sessions/:id/sync/force` — 상점 주인만(기존 세션 컨트롤러의 가드).
   대회가 `SYNCING`이 아니면 409. `completeSync`를 부르고, 이긴 쪽이면 딜러들에게
   `{syncing:false}`를 보낸다(자연 완료와 같은 송신 경로). 자연 완료와 겹치면 한쪽만
