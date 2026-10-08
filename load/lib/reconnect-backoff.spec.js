@@ -1,13 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import {
-  DEFAULT_MAX_ATTEMPTS,
-  FALLBACK_FLOOR_MS,
-  nextAttempt,
-  retryAfterMs,
-  spreadForHerd,
-} from './reconnect-backoff.js';
+import { nextAttempt, retryAfterMs } from './reconnect-backoff.js';
 
 /**
  * 재접속 백오프 정책의 테스트.
@@ -42,30 +36,9 @@ describe('retryAfterMs', () => {
   });
 });
 
-describe('spreadForHerd', () => {
-  /**
-   * T93이 정해야 하는 숫자다. 1,000대가 분당 600짜리 버킷을 나눠 쓰면
-   * 100초에 걸쳐 흩어져야 두 번째 파도가 문에 안 걸린다.
-   */
-  it('무리를 상한으로 나눠 분 단위로 환산한다', () => {
-    assert.equal(spreadForHerd(1000, 600), 100_000);
-    assert.equal(spreadForHerd(600, 600), 60_000);
-  });
-
-  it('상한 안에 들어가는 무리는 흩을 이유가 없다', () => {
-    // 300대면 30초다 — 상한의 절반이라 한 창에 다 들어간다.
-    assert.equal(spreadForHerd(300, 600), 30_000);
-  });
-
-  it('말이 안 되는 입력은 0이다', () => {
-    assert.equal(spreadForHerd(0, 600), 0);
-    assert.equal(spreadForHerd(1000, 0), 0);
-  });
-});
-
 describe('nextAttempt', () => {
   it('통과했으면 다시 두드리지 않는다', () => {
-    const r = nextAttempt({ status: 200 }, 0);
+    const r = nextAttempt({ status: 200 }, 1234);
     assert.equal(`${r.retry} ${r.reason}`, 'false ok');
   });
 
@@ -75,7 +48,7 @@ describe('nextAttempt', () => {
    */
   it('429가 아닌 4xx는 재시도가 아니다', () => {
     for (const status of [401, 403, 404]) {
-      const r = nextAttempt({ status }, 0);
+      const r = nextAttempt({ status }, 1234);
       assert.equal(`${status} ${r.retry} ${r.reason}`, `${status} false not-limited`);
     }
   });
@@ -83,74 +56,33 @@ describe('nextAttempt', () => {
   /**
    * **서버가 응답을 못 한 것은 다시 두드린다 — 단 사유를 따로 남긴다**(T113).
    * 제품 단말(`useTableSocket`)이 그렇게 하므로 하네스가 여기서 테이블을 죽이면
-   * 제품보다 엄격한 것을 잰다. 사유를 `backoff`와 가르는 이유는 "문에 걸렸다"와
-   * "서버가 못 받았다"가 한 숫자로 뭉개지지 않게 하려는 것이다. k6는 응답을 못
-   * 받으면 0을 준다.
+   * 제품보다 엄격한 것을 잰다. k6는 응답을 못 받으면 0을 준다.
+   *
+   * **바닥이 없다.** 제품은 429가 아니면 지터만 기다린다(`waitFor`의
+   * `floorMs ?? 0`). 예전 하네스는 여기에 30초를 깔았다.
    */
-  it('연결 실패(0)와 5xx는 unreachable로 다시 두드린다', () => {
+  it('연결 실패(0)와 5xx는 unreachable로 지연만큼 기다린다', () => {
     for (const status of [0, 500, 502, 503]) {
-      const r = nextAttempt({ status }, 0, { spreadMs: 1000, rand: () => 0 });
-      assert.equal(`${status} ${r.retry} ${r.reason} ${r.waitMs}`, `${status} true unreachable ${FALLBACK_FLOOR_MS}`);
+      const r = nextAttempt({ status }, 1234);
+      assert.equal(`${status} ${r.retry} ${r.reason} ${r.waitMs}`, `${status} true unreachable 1234`);
     }
   });
 
-  it('unreachable도 정해진 횟수를 넘기면 포기한다', () => {
-    const last = nextAttempt({ status: 0 }, 4, { maxAttempts: 5, rand: () => 0 });
-    assert.equal(`${last.retry} ${last.reason}`, 'false gave-up');
+  it('429면 `Retry-After`를 바닥으로 지연을 얹는다', () => {
+    const r = nextAttempt({ status: 429, headers: { 'Retry-After': '7' } }, 1234);
+    assert.equal(`${r.retry} ${r.reason} ${r.waitMs}`, 'true backoff 8234');
   });
 
-  it('429면 `Retry-After`를 바닥으로 삼는다', () => {
-    const r = nextAttempt({ status: 429, headers: { 'Retry-After': '7' } }, 0, {
-      spreadMs: 1000,
-      rand: () => 0,
-    });
-    assert.equal(`${r.retry} ${r.waitMs}`, 'true 7000');
+  it('`Retry-After`가 없으면 지연만 기다린다', () => {
+    const r = nextAttempt({ status: 429, headers: {} }, 1234);
+    assert.equal(r.waitMs, 1234);
   });
 
-  it('`Retry-After`가 없으면 바닥으로 떨어진다', () => {
-    const r = nextAttempt({ status: 429, headers: {} }, 0, { spreadMs: 1000, rand: () => 0 });
-    assert.equal(r.waitMs, FALLBACK_FLOOR_MS);
-  });
-
-  /**
-   * **전폭 지터다.** `rand()`가 0이면 바닥 그대로, 1에 가까우면 바닥 + 폭
-   * 가까이가 나와야 한다. `바닥 + 폭/2 ± 조금`으로 구현하면 첫 단언이 깨진다 —
-   * 그런 구현은 무리를 흩는 게 아니라 통째로 늦췄다가 다시 뭉치게 한다.
-   */
-  it('지터가 폭 전체에 고르게 흩어진다', () => {
-    const at = (rand) =>
-      nextAttempt({ status: 429, headers: { 'Retry-After': '7' } }, 0, { spreadMs: 10_000, rand }).waitMs;
-
-    assert.equal(at(() => 0), 7000);
-    assert.equal(at(() => 0.5), 12_000);
-    assert.equal(at(() => 0.999), 16_990);
-  });
-
-  it('지터를 빼면 무리가 같은 순간에 깨어난다', () => {
-    // 같은 응답을 받은 단말 열이 서로 다른 시각을 받아야 한다. 지터가 없는
-    // 구현이면 열이 전부 같은 값이라 이 집합의 크기가 1이 된다.
-    const waits = new Set();
-    for (let i = 0; i < 10; i++) {
-      waits.add(nextAttempt({ status: 429, headers: { 'Retry-After': '7' } }, 0, {
-        spreadMs: 100_000,
-        rand: () => i / 10,
-      }).waitMs);
+  /** 지연이 `null`이면 정책이 횟수를 다 썼다(`reconnectDelayMs`). */
+  it('지연이 null이면 포기하고 그 사실을 남긴다', () => {
+    for (const res of [{ status: 0 }, { status: 429, headers: { 'Retry-After': '7' } }]) {
+      const r = nextAttempt(res, null);
+      assert.equal(`${res.status} ${r.retry} ${r.reason}`, `${res.status} false gave-up`);
     }
-    assert.equal(waits.size, 10);
-  });
-
-  it('정해진 횟수를 넘기면 포기하고 그 사실을 남긴다', () => {
-    const opts = { maxAttempts: 5, rand: () => 0 };
-    const res = { status: 429, headers: { 'Retry-After': '7' } };
-
-    // 다섯 번까지다 — 0..3은 더 두드리고, 4는 다섯 번째라 여기서 끝난다.
-    assert.equal(nextAttempt(res, 3, opts).retry, true);
-    const last = nextAttempt(res, 4, opts);
-    assert.equal(`${last.retry} ${last.reason}`, 'false gave-up');
-  });
-
-  it('기본 횟수가 무한이 아니다', () => {
-    const res = { status: 429, headers: { 'Retry-After': '7' } };
-    assert.equal(nextAttempt(res, DEFAULT_MAX_ATTEMPTS, {}).retry, false);
   });
 });

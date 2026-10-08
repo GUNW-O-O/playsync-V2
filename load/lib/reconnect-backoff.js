@@ -30,12 +30,6 @@
  * 반복된다. 지터만 있으면 아직 닫혀 있는 문을 때려 블록이 갱신된다.
  */
 
-/** `Retry-After`가 없을 때 쓰는 바닥. `throttle.ts`의 `BLOCK_MS`와 같은 값이다. */
-export const FALLBACK_FLOOR_MS = 30_000;
-
-/** 몇 번까지 다시 두드리나. 넘으면 포기하고 그 사실을 실행 요약에 남긴다. */
-export const DEFAULT_MAX_ATTEMPTS = 5;
-
 /**
  * 응답의 `Retry-After`를 밀리초로. 초 단위 정수만 다룬다 — `ThrottlerGuard`가
  * 싣는 것이 그 모양이다(`auth.throttle.spec.ts`가 `'7'`을 확인한다).
@@ -65,22 +59,6 @@ export function retryAfterMs(res) {
 }
 
 /**
- * 무리 전체가 상한 안에 들어가려면 재시도를 몇 초에 걸쳐 흩어야 하나.
- *
- * **이것이 T93이 정해야 하는 숫자다.** 지터 폭을 무리 크기가 아니라 감으로
- * 잡으면 두 번째 파도가 또 문에 걸린다 — 400대가 30초 창에 몰리면 분당 800이라
- * 상한(600)을 그대로 다시 넘는다.
- *
- * @param {number} herd 동시에 복귀하려는 단말 수
- * @param {number} limitPerMin 그 버킷의 분당 상한 (`throttle.ts`의 `DEFAULT_LIMIT`)
- * @returns {number} 밀리초
- */
-export function spreadForHerd(herd, limitPerMin) {
-  if (!(herd > 0) || !(limitPerMin > 0)) return 0;
-  return Math.ceil((herd / limitPerMin) * 60_000);
-}
-
-/**
  * 이 응답을 받고 한 번 더 두드릴지, 얼마나 기다릴지.
  *
  * **다시 두드리는 것은 429와 「서버가 답을 못 한 것」(연결 실패 0 · 5xx)이다**(T113).
@@ -90,17 +68,16 @@ export function spreadForHerd(herd, limitPerMin) {
  * (`useTableSocket`)이 그렇게 하기 때문이다 — 하네스가 여기서 테이블을 죽이면
  * 제품보다 엄격한 것을 잰다. 401·403·404는 다시 와도 같은 답이라 멈춘다.
  *
- * 지터는 **전폭(full jitter)**이다. `바닥 + rand()*폭`이라 대기 시각이 폭 전체에
- * 고르게 흩어진다. `바닥 + 폭/2 ± 조금`처럼 가운데로 모으면 무리가 흩어지는 게
- * 아니라 잠깐 늦춰졌다가 다시 뭉친다.
+ * **대기는 호출자가 정책에서 받아 온다**(`reconnect-burst.js`의 `reconnectDelayMs`).
+ * 여기서는 429의 `Retry-After`만 그 위에 바닥으로 깐다 — 제품 `waitFor`와 같다.
+ * 서버 무응답에는 바닥이 없다. 예전에는 30초 바닥 + T93 공식 폭(소켓 1만이면
+ * 16.7분)이라 무응답 14건이 5분 초과 2 · 미복구 6이 됐다(T113).
  *
  * @param {{status: number, headers?: Record<string, string>}} res
- * @param {number} attempt 0부터. 이미 몇 번 두드렸나
- * @param {{spreadMs?: number, maxAttempts?: number, rand?: () => number}} [opts]
+ * @param {number|null} delayMs 정책이 준 이번 대기. `null`이면 횟수를 다 썼다
  * @returns {{retry: boolean, waitMs: number, reason: 'ok'|'not-limited'|'gave-up'|'backoff'|'unreachable'}}
  */
-export function nextAttempt(res, attempt, opts = {}) {
-  const { spreadMs = FALLBACK_FLOOR_MS, maxAttempts = DEFAULT_MAX_ATTEMPTS, rand = Math.random } = opts;
+export function nextAttempt(res, delayMs) {
   const status = res && res.status;
 
   if (status >= 200 && status < 300) return { retry: false, waitMs: 0, reason: 'ok' };
@@ -108,12 +85,12 @@ export function nextAttempt(res, attempt, opts = {}) {
   // 다시 두드리되, 문에 걸린 것(`backoff`)과 사유를 가른다(T113).
   const unreachable = !status || status >= 500;
   if (status !== 429 && !unreachable) return { retry: false, waitMs: 0, reason: 'not-limited' };
-  if (attempt + 1 >= maxAttempts) return { retry: false, waitMs: 0, reason: 'gave-up' };
+  if (delayMs === null) return { retry: false, waitMs: 0, reason: 'gave-up' };
 
   const floor = unreachable ? null : retryAfterMs(res);
   return {
     retry: true,
-    waitMs: (floor === null ? FALLBACK_FLOOR_MS : floor) + Math.floor(rand() * spreadMs),
+    waitMs: (floor ?? 0) + delayMs,
     reason: unreachable ? 'unreachable' : 'backoff',
   };
 }

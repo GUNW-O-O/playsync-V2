@@ -10,9 +10,10 @@ import {
   login,
   myPlayerOtp,
   signup,
+  ticketGaveUp,
   wsTicketAttempt,
 } from './api.js';
-import { BURST_DEFAULTS, burstWakeMs } from './reconnect-burst.js';
+import { BURST_DEFAULTS, createBurst, reconnectDelayMs } from './reconnect-burst.js';
 import { createWindowQueue } from './windows.js';
 
 /**
@@ -257,9 +258,9 @@ export const reconnectSeatMs = new Trend('reconnect_seat_ms', true);
 export const reconnectDealerMs = new Trend('reconnect_dealer_ms', true);
 
 /**
- * 폭발의 지터 폭. **0을 허락해야 한다** — 전원이 한 순간에 몰리는 모양이
- * 대조군이다. `Number(x) || 기본값`은 0을 기본값으로 되돌린다(`api.js`의
- * `RECONNECT_SPREAD_MS`와 같은 이유).
+ * 재접속의 지터 폭. 폭발의 첫 깨어남과 그 뒤의 재시도가 같이 쓴다.
+ * **0을 허락해야 한다** — 전원이 한 순간에 몰리는 모양이 대조군이다.
+ * `Number(x) || 기본값`은 0을 기본값으로 되돌린다.
  */
 function spreadEnv(raw, fallback) {
   return raw === undefined || raw === '' ? fallback : Number(raw);
@@ -419,11 +420,29 @@ export function runHands({
   let latestState = null;
   let closing = false;
   /**
-   * 재접속 폭발이 진행 중이면 `{ at, seen:Set }`. 다시 붙은 소켓이 전부 첫
-   * `renderGame`을 받은 순간이 복구 완료다 — 소켓을 여는 데 걸린 시간이
+   * 재접속 폭발이 진행 중이면 `{ at, tracker }`. 모든 자리가 첫 `renderGame`을
+   * 다시 받은 순간이 복구 완료다(`createBurst`) — 소켓을 여는 데 걸린 시간이
    * 아니라 **화면이 다시 살아나기까지**가 사람이 겪는 시간이다.
    */
   let burstState = null;
+  /**
+   * 폭발마다 오른다. 폭발 전에 걸어 둔 재시도 타이머가 폭발 뒤에 깨면 같은
+   * 자리에 소켓이 둘 열린다 — 그 타이머를 버리는 표시다.
+   */
+  let epoch = 0;
+
+  /** 제품 단말의 대기(`reconnectDelayMs`). `null`이면 그만 둔다. */
+  function delay(attempt, role) {
+    return reconnectDelayMs(attempt, role, Math.random(), BURST_SPREAD);
+  }
+
+  /** 실행이 안 끝났고 그 사이 폭발이 없었으면 `fn`을 부른다. */
+  function later(ms, fn) {
+    const at = epoch;
+    setTimeout(() => {
+      if (!closing && at === epoch) fn();
+    }, ms);
+  }
 
   // 게이트웨이 경로는 `/playsync`다(`@WebSocketGateway({ path: '/playsync' })`).
   // 루트로 붙으면 핸드셰이크 이전에 거절돼 서버 로그에도 남지 않는다.
@@ -443,16 +462,14 @@ export function runHands({
     // **티켓이 막히면 여기서 자지 않는다.** `sleep`은 VU를 통째로 멈춰 아직
     // 살아 있는 소켓의 측정 창까지 그만큼 부풀린다(`api.js`의
     // `wsTicketAttempt` 주석). 타이머로 다시 온다.
-    const got = wsTicketAttempt(token, attempt);
+    const got = wsTicketAttempt(token, delay(attempt, role));
     if (got.waitMs !== undefined) {
-      setTimeout(() => {
-        if (!closing) open(token, role, seat, attempt + 1);
-      }, got.waitMs);
+      later(got.waitMs, () => open(token, role, seat, attempt + 1));
       return;
     }
-    // 끝내 못 받았다. 이 소켓은 안 열린다 — `burstState.expect`가 채워지지
-    // 않으므로 이 테이블의 `reconnect_ms`는 기록되지 않는다. 그 침묵이 곧
-    // "복구 못 함"이고, `ticket_gave_up`이 몇 개인지를 센다.
+    // 끝내 못 받았다. 이 소켓은 안 열린다 — 그 자리가 안 채워지므로 이
+    // 테이블의 `reconnect_ms`는 기록되지 않는다. 그 침묵이 곧 "복구 못 함"이고,
+    // `ticket_gave_up`이 몇 개인지를 센다.
     if (got.gaveUp) return;
 
     const ws = new WebSocket(url(got.ticket), null, { headers: { Origin: ORIGIN } });
@@ -471,6 +488,9 @@ export function runHands({
       scheduled: false,
       retired: false,
       closed: false,
+      // 이 소켓을 열기까지 기다린 횟수. 끊기면 여기서 이어 센다 — 제품
+      // 단말처럼 첫 프레임을 받아야 0으로 돌아간다.
+      attempt,
     };
     sockets.push(entry);
 
@@ -484,6 +504,7 @@ export function runHands({
       } catch (e) {
         return;
       }
+      entry.attempt = 0;
       // 리바인 팝업(`ws.gateway.ts:316`)은 좌석 하나에게만 간다. 즉시
       // 수락해 좌석이 비지 않게 한다 — 램프의 규모 축이 인원 감소로
       // 흔들리면 안 된다.
@@ -499,21 +520,15 @@ export function runHands({
       if (parsed.event !== 'renderGame' || !parsed.data) return;
       latestState = parsed.data;
 
-      // 재접속 복구 시간 — 다시 붙은 소켓 전부가 첫 화면을 받은 순간.
-      if (burstState && !burstState.seen.has(idx)) {
-        burstState.seen.add(idx);
+      // 재접속 복구 시간 — 모든 자리가 첫 화면을 받은 순간.
+      const saw = burstState && burstState.tracker.see(entry.seat);
+      if (saw) {
         // 역할별 완료. 마지막 좌석과 딜러 중 어느 쪽이 전체 시간을 정했는지
         // `reconnect_ms` 하나로는 안 보인다. 전체 판정보다 먼저 적어야 마지막
         // 소켓이 `burstState`를 비우기 전에 자기 역할 값이 남는다.
-        if (entry.role === 'dealer') {
-          reconnectDealerMs.add(Date.now() - burstState.at);
-        } else if (++burstState.seatsSeen >= seats.length) {
-          reconnectSeatMs.add(Date.now() - burstState.at);
-        }
-        // **`sockets.length`가 아니라 열려야 하는 수로 본다.** 티켓이 막힌
-        // 소켓은 나중에 열리므로, 현재 길이로 재면 아직 두 개가 안 붙었는데
-        // "전부 복구됐다"가 되어 `reconnect_ms`가 실제보다 짧게 남는다.
-        if (burstState.seen.size >= burstState.expect) {
+        if (saw.dealer) reconnectDealerMs.add(Date.now() - burstState.at);
+        else if (saw.seatsDone) reconnectSeatMs.add(Date.now() - burstState.at);
+        if (saw.allDone) {
           reconnectMs.add(Date.now() - burstState.at);
           burstState = null;
         }
@@ -568,9 +583,22 @@ export function runHands({
       if (closing || entry.retired) return;
       const code = e && e.code;
       if (code && code !== 1000) {
-        socketErrors.add(1);
+        // 코드를 태그로 남긴다 — T113에서 원시 파일로는 1008인지 1006인지 못 읽었다.
+        socketErrors.add(1, { code: String(code) });
         console.error(`소켓 종료 code=${code} reason=${(e && e.reason) || ''}`);
       }
+      // **제품 단말처럼 다시 붙는다**(`useTableSocket`의 `onclose`, T113). 1000은
+      // 대회가 끝난 것, 4001(`SESSION_REVOKED_CLOSE_CODE`)은 신원이 폐기된 것이라
+      // 멈춘다. 예전에는 아무 코드에도 안 열어 1008 하나가 테이블 하나를 미복구로 남겼다.
+      if (code === 1000 || code === 4001) return;
+      // 이 소켓에 예약된 액션이 닫힌 소켓에 보내지 않게 한다(`send`의 `fire`).
+      entry.retired = true;
+      const wait = delay(entry.attempt, role);
+      if (wait === null) {
+        ticketGaveUp.add(1);
+        return;
+      }
+      later(wait, () => open(token, role, seat, entry.attempt + 1));
     };
 
     return entry;
@@ -726,17 +754,15 @@ export function runHands({
           // 창을 비운다 — 끊긴 소켓이 못 받은 창은 영영 안 채워진다.
           windows.clear();
           reconnects.add(1);
-          burstState = { at: Date.now(), seen: new Set(), expect: seats.length + 1, seatsSeen: 0 };
+          // 폭발 전에 걸어 둔 재시도는 버린다 — 아래가 모든 자리를 다시 연다.
+          epoch += 1;
+          burstState = { at: Date.now(), tracker: createBurst(seats.length) };
           // 제품의 재접속 정책을 따른다(`reconnect-burst.js`). 좌석이 먼저 흩어지고
-          // 딜러는 그 뒤에 깬다. 티켓 429 재시도는 `RECONNECT_SPREAD_MS`가 따로 맡는다.
+          // 딜러는 그 뒤에 깬다. 첫 깨어남이 한 번이라 그 뒤 재시도는 1부터 센다.
           seats.forEach((s) => {
-            setTimeout(() => {
-              if (!closing) open(s.seatToken, 'seat', s.seat);
-            }, burstWakeMs('seat', Math.random(), BURST_SPREAD));
+            later(delay(0, 'seat'), () => open(s.seatToken, 'seat', s.seat, 1));
           });
-          setTimeout(() => {
-            if (!closing) open(dealerToken, 'dealer', -1);
-          }, burstWakeMs('dealer', Math.random(), BURST_SPREAD));
+          later(delay(0, 'dealer'), () => open(dealerToken, 'dealer', -1, 1));
         }, reconnectAtMs);
 
   return new Promise((resolve) => {
