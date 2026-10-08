@@ -32,7 +32,7 @@ import { RecoveryService } from 'src/recovery/recovery.service';
 import { RedisService } from 'src/redis/redis.service';
 import { markAlive, socketPingMs, sweep } from './keepalive';
 import { RequiredTable, syncProgress, TablePresence } from './sync-progress';
-import { SyncQueue } from './sync-queue';
+import { SyncQueue, syncRecountHoldMs } from './sync-queue';
 import { WsIdentity, WsTicketService } from './ws-ticket.service';
 
 /**
@@ -660,6 +660,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
   private readonly syncQueue = new SyncQueue<WebSocket>(
     (tournamentId, joiners) => this.recount(tournamentId, joiners),
     (e) => this.logger.error('SYNCING 재집계 실패', e),
+    syncRecountHoldMs(),
   );
 
   /**

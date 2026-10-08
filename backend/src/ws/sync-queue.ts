@@ -1,3 +1,13 @@
+const DEFAULT_HOLD_MS = 1000;
+
+/** `SYNC_RECOUNT_HOLD_MS` — 0 이상의 정수. 미설정 · 빈 문자열 · 그 밖은 기본값. */
+export function syncRecountHoldMs(env: Record<string, string | undefined> = process.env): number {
+  const raw = env.SYNC_RECOUNT_HOLD_MS;
+  if (raw === undefined || raw === '') return DEFAULT_HOLD_MS;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : DEFAULT_HOLD_MS;
+}
+
 /**
  * 대회별 재집계 줄(T96 리뷰 I1 · T117). 순수하다 — 소켓도 Redis도 모른다.
  *
@@ -10,6 +20,12 @@
  * 최신 상태를 읽으므로 하나로 충분하다. 「달리는 것 하나 + 기다리는 것 하나」라
  * 위 성질은 그대로다.
  *
+ * **보류 창(T117 실측)**: 합치기는 재집계가 다음 마이크로태스크에 시작하면 거의 일어나지
+ * 않는다. 한 대회 1,000테이블·9,000명이 재시작 뒤 재접속하자 1만여 번이 각자 1,000테이블
+ * 재집계와 1,000번 전송을 만들어 이벤트 루프가 포화됐고, 티켓 459개가 핸드셰이크 전에
+ * 만료됐다. 새 재집계는 `holdMs` 동안 `waiting`에 머문 채 요청을 모은 뒤 시작한다 —
+ * 풀림이 최대 `holdMs` 늦는 대신 대회당 재집계는 `holdMs`마다 많아야 한 번이다.
+ *
  * 프로세스가 하나라(`backlog.md` B9) 메모리 줄로 충분하다.
  */
 export class SyncQueue<W> {
@@ -19,6 +35,7 @@ export class SyncQueue<W> {
   constructor(
     private readonly recount: (key: string, joiners: W[]) => Promise<void>,
     private readonly onError: (e: unknown) => void,
+    private readonly holdMs = 0,
   ) {}
 
   recountLater(key: string, joiner?: W): Promise<void> {
@@ -28,12 +45,16 @@ export class SyncQueue<W> {
       return pending.done;
     }
     const joiners: W[] = joiner === undefined ? [] : [joiner];
-    const done = this.enqueue(key, () => {
+    const start = () => {
       // 시작하는 순간 합치기를 닫는다 — 이 뒤에 온 요청은 이 재집계가 못 본
       // 변화를 들고 있을 수 있어 새로 줄을 선다.
       this.waiting.delete(key);
       return this.recount(key, joiners);
-    }).catch((e) => this.onError(e));
+    };
+    // 0이면 기다리지 않는다 — 타이머 틱 하나가 순서를 바꾸지 않게.
+    const done = this.enqueue(key, this.holdMs > 0
+      ? () => new Promise<void>((r) => setTimeout(r, this.holdMs)).then(start)
+      : start).catch((e) => this.onError(e));
     this.waiting.set(key, { joiners, done });
     return done;
   }

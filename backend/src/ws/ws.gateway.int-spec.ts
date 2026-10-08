@@ -18,6 +18,10 @@ import { closeTestPrisma, createTestPrisma, truncateAll } from '../../test/helpe
 import { RecoveryService } from 'src/recovery/recovery.service';
 import { DEALER_REVOKED_REASON, SERVER_OUTAGE_EVENT, SERVER_RECOVERING_MESSAGE, TOURNAMENT_SYNCING_EVENT } from '@playsync/contract';
 
+// 재집계 보류 창(T117)은 SyncQueue 단위 검사가 맡는다. 통합 검사는 `connect` 직후 결과를
+// 읽으므로 게이트웨이를 보류 0으로 세운다 — `new WsGateway`보다 먼저 정해져야 한다.
+process.env.SYNC_RECOUNT_HOLD_MS = '0';
+
 /**
  * 게이트웨이의 인바운드 경계.
  *

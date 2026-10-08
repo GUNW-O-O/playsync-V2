@@ -1,4 +1,4 @@
-import { SyncQueue } from './sync-queue';
+import { SyncQueue, syncRecountHoldMs } from './sync-queue';
 
 /** 테스트가 직접 여는 문. 열기 전까지 그 일은 끝나지 않는다. */
 function gate() {
@@ -80,5 +80,50 @@ describe('SyncQueue', () => {
     await Promise.all([q.recountLater('t', 'a'), q.enqueue('t', async () => 1)]);
     await new Promise((r) => setImmediate(r));
     expect(`${(q as any).chains.size} ${(q as any).waiting.size}`).toBe('0 0');
+  });
+});
+
+describe('SyncQueue 보류 창', () => {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const HOLD = 60;
+
+  it('보류 동안 들어온 요청은 하나로 합친다', async () => {
+    const calls: string[][] = [];
+    const q = new SyncQueue<string>(async (_k, joiners) => { calls.push([...joiners]); }, () => {}, HOLD);
+
+    const waits = [q.recountLater('t', 'a')];
+    await sleep(HOLD / 4);
+    waits.push(q.recountLater('t'));
+    await sleep(HOLD / 4);
+    waits.push(q.recountLater('t', 'b'));
+    expect(calls).toEqual([]);
+    await Promise.all(waits);
+
+    expect(calls).toEqual([['a', 'b']]);
+  });
+
+  it('보류가 끝나면 시작하고, 그 뒤 요청은 새로 줄 선다', async () => {
+    const calls: string[][] = [];
+    const q = new SyncQueue<string>(async (_k, joiners) => { calls.push([...joiners]); }, () => {}, HOLD);
+
+    await q.recountLater('t', 'a');
+    await q.recountLater('t', 'b');
+
+    expect(calls).toEqual([['a'], ['b']]);
+  });
+});
+
+describe('syncRecountHoldMs', () => {
+  const hold = (v: string | undefined) => syncRecountHoldMs({ SYNC_RECOUNT_HOLD_MS: v });
+  it('미설정과 빈 문자열은 기본 1000', () => {
+    expect(syncRecountHoldMs({})).toBe(1000);
+    expect(hold('')).toBe(1000);
+  });
+  it('음이 아닌 정수는 그대로(0 포함)', () => {
+    expect(hold('0')).toBe(0);
+    expect(hold('250')).toBe(250);
+  });
+  it('그 밖은 기본값', () => {
+    for (const v of ['abc', '-5', '1.5']) expect(hold(v)).toBe(1000);
   });
 });
