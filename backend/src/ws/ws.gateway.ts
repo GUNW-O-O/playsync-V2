@@ -1,4 +1,4 @@
-import { ForbiddenException, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { ForbiddenException, Logger, ServiceUnavailableException, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { ConnectedSocket, MessageBody, OnGatewayConnection, OnGatewayDisconnect, SubscribeMessage, WebSocketGateway } from '@nestjs/websockets';
 import { Role, TournamentStatus } from '@prisma/client';
@@ -740,16 +740,22 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
    * 않게(T96 리뷰 I1). 자연 완료와 겹치면 `completeSync`의 조건부 갱신이 한쪽만
    * 이기게 한다.
    *
+   * @param actorId 누가 강제했는지 로그에 남긴다(상점 사용자 id)
    * @returns 이 호출이 풀었으면 true. 이미 풀렸거나 진 쪽이면 false
    */
-  async forceSync(tournamentId: string): Promise<boolean> {
+  async forceSync(tournamentId: string, actorId: string): Promise<boolean> {
     return this.syncQueue.enqueue(tournamentId, async () => {
+      // T97 최종 리뷰 I1. `recount`와 같은 가드다. down·recovering 동안 풀면 복구 스윕의
+      // `findMany({ status: SYNCING })`가 이 대회를 못 봐 테이블이 안 얼고 낡은 마감이
+      // 차례인 사람을 접는다. false가 아니라 503인 이유: 409 「복구 중인 대회가
+      // 아닙니다」는 거짓이다. 대기 중에 phase가 바뀔 수 있어 큐 안에서 확인한다.
+      if (!this.redis.outage.isUp()) throw new ServiceUnavailableException(SERVER_RECOVERING_MESSAGE);
       const t = await this.prisma.tournament.findUnique({ where: { id: tournamentId }, select: { status: true } });
       if (t?.status !== TournamentStatus.SYNCING) return false;
       const { seatMaps, progress } = await this.measureSync(tournamentId);
       if (!(await this.recovery.completeSync(tournamentId))) return false;
       this.logger.warn(
-        `상점이 SYNCING을 풀었다 (tournament=${tournamentId}, 기기 ${progress.present}/${progress.required})`,
+        `상점이 SYNCING을 풀었다 (tournament=${tournamentId}, actor=${actorId}, 기기 ${progress.present}/${progress.required})`,
       );
       this.sendSyncing(seatMaps, { syncing: false, present: progress.present, required: progress.required });
       return true;

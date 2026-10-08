@@ -32,7 +32,7 @@ export class SyncController {
   @Post(':id/sync/force')
   async force(@Req() req, @Param('id') id: string) {
     await this.sessions.assertTournamentOwnership(id, req.user.userId);
-    if (!(await this.gateway.forceSync(id))) {
+    if (!(await this.gateway.forceSync(id, req.user.userId))) {
       throw new ConflictException('복구 중인 대회가 아닙니다.');
     }
     return { ok: true };

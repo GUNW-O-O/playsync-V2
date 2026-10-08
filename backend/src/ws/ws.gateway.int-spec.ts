@@ -1,4 +1,4 @@
-import { ForbiddenException, Logger } from '@nestjs/common';
+import { ForbiddenException, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { EVENT_LISTENER_METADATA } from '@nestjs/event-emitter/dist/constants';
 import { JwtService } from '@nestjs/jwt';
@@ -1563,7 +1563,7 @@ describe('WsGateway 인바운드 경계', () => {
       await seedSeats();
       const tableDealer = await connect(await dealerTicket(TABLE), TABLE);
 
-      expect(await gateway.forceSync(TOURNAMENT)).toBe(true);
+      expect(await gateway.forceSync(TOURNAMENT, 'owner-1')).toBe(true);
 
       expect(recovery.completeSync).toHaveBeenCalledWith(TOURNAMENT);
       expect(lastSyncingPayload(tableDealer)).toEqual({ syncing: false, present: 1, required: 4 });
@@ -1577,12 +1577,12 @@ describe('WsGateway 인바운드 경계', () => {
       tableDealer.send.mockClear();
       recovery.completeSync.mockResolvedValueOnce(false);
 
-      expect(await gateway.forceSync(TOURNAMENT)).toBe(false);
+      expect(await gateway.forceSync(TOURNAMENT, 'owner-1')).toBe(false);
       expect(lastSyncingPayload(tableDealer)).toBeUndefined();
 
       await prisma.tournament.update({ where: { id: TOURNAMENT }, data: { status: TournamentStatus.ONGOING, pausedAt: null } });
       recovery.completeSync.mockClear();
-      expect(await gateway.forceSync(TOURNAMENT)).toBe(false);
+      expect(await gateway.forceSync(TOURNAMENT, 'owner-1')).toBe(false);
       expect(recovery.completeSync).not.toHaveBeenCalled();
     });
 
@@ -1595,13 +1595,27 @@ describe('WsGateway 인바운드 경계', () => {
         new EventEmitter2(), prisma as unknown as PrismaService, realRecovery,
       );
       try {
-        expect(await realGateway.forceSync(TOURNAMENT)).toBe(true);
+        expect(await realGateway.forceSync(TOURNAMENT, 'owner-1')).toBe(true);
         const t = await prisma.tournament.findUniqueOrThrow({ where: { id: TOURNAMENT } });
         expect(`상태 ${t.status} ${t.pausedAt}`).toBe('상태 ONGOING null');
-        expect(await realGateway.forceSync(TOURNAMENT)).toBe(false);
+        expect(await realGateway.forceSync(TOURNAMENT, 'owner-1')).toBe(false);
       } finally {
         realGateway.onModuleDestroy();
         realRecovery.onModuleDestroy();
+      }
+    });
+
+    /** Redis 장애 중에는 풀지 않는다 — 복구 스윕이 SYNCING 대회를 얼리기 전에 ONGOING이 되면 안 된다(T97 최종 리뷰 I1). */
+    it('forceSync는 Redis가 recovering이면 503이고 completeSync를 부르지 않는다', async () => {
+      await seedSyncingTournament();
+      await seedSeats();
+      const outage = (gateway as any).redis.outage;
+      try {
+        outage.phase = 'recovering';
+        await expect(gateway.forceSync(TOURNAMENT, 'owner-1')).rejects.toThrow(ServiceUnavailableException);
+        expect(recovery.completeSync).not.toHaveBeenCalled();
+      } finally {
+        outage.phase = 'up';
       }
     });
   });

@@ -47,8 +47,9 @@ describe('SyncController', () => {
   });
 
   it('풀었으면 ok', async () => {
-    const { controller, sessions } = make(true);
+    const { controller, sessions, gateway } = make(true);
     await expect(controller.force(req, 't1')).resolves.toEqual({ ok: true });
     expect(sessions.assertTournamentOwnership).toHaveBeenCalledWith('t1', 'owner-1');
+    expect(gateway.forceSync).toHaveBeenCalledWith('t1', 'owner-1');
   });
 });
