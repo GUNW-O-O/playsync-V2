@@ -37,9 +37,12 @@ export async function POST() {
 
   if (!res.ok) {
     const message = (body as { message?: unknown } | null)?.message;
+    // `Retry-After`는 옮겨 싣는다(T114). 단말의 재접속이 이 값을 바닥으로
+    // 삼는데(`useTableSocket`), 다시 싸면서 버리면 그 경로가 늘 죽어 있다.
+    const retryAfter = res.headers.get('Retry-After');
     return NextResponse.json(
       { message: typeof message === 'string' ? message : '티켓을 받지 못했습니다.' },
-      { status: res.status },
+      { status: res.status, headers: retryAfter === null ? undefined : { 'Retry-After': retryAfter } },
     );
   }
 

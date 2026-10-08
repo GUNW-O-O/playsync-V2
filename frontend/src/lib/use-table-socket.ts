@@ -158,7 +158,7 @@ export function useTableSocket({
         console.error('WS 티켓을 받지 못했습니다.');
         setConnectionError(typeof message === 'string' && message ? message : defaultError);
         // 429면 서버가 "언제 다시 오라"를 숫자로 말해 준 것이다. 그 값을
-        // 무시하고 우리 지터만 쓰면 아직 닫힌 문을 때려 블록이 갱신된다.
+        // 무시하고 우리 지터만 쓰면 아직 닫힌 문을 때려 헛 429로 시도를 태운다.
         scheduleRetry(res.status === 429 ? retryAfterMs(res.headers) : null);
         return;
       }

@@ -144,4 +144,39 @@ describe('POST /api/ws-ticket', () => {
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ message: '만료된 딜러 세션입니다.' });
   });
+
+  /**
+   * T114. 단말의 재접속은 `Retry-After`를 바닥으로 삼는다(`useTableSocket`의
+   * `retryAfterMs(res.headers)`). 실패를 다시 싸면서 헤더를 버리면 그 경로가
+   * 운영에서 늘 `null`이다 — 훅 테스트는 이 라우트를 목으로 세워 이음매를 안 지난다.
+   */
+  it('429의 Retry-After를 그대로 전한다', async () => {
+    server.use(
+      http.post('http://backend.test/ws/ticket', () =>
+        HttpResponse.json({ message: '요청이 너무 많습니다.' }, { status: 429, headers: { 'Retry-After': '7' } }),
+      ),
+    );
+    cookieStore.get.mockImplementation((name: string) =>
+      name === 'accessToken' ? { value: 'player-token' } : undefined,
+    );
+
+    const res = await POST();
+
+    expect(`${res.status} ${res.headers.get('Retry-After')}`).toBe('429 7');
+  });
+
+  it('Retry-After가 없으면 지어내지 않는다', async () => {
+    server.use(
+      http.post('http://backend.test/ws/ticket', () =>
+        HttpResponse.json({ message: '요청이 너무 많습니다.' }, { status: 429 }),
+      ),
+    );
+    cookieStore.get.mockImplementation((name: string) =>
+      name === 'accessToken' ? { value: 'player-token' } : undefined,
+    );
+
+    const res = await POST();
+
+    expect(res.headers.get('Retry-After')).toBeNull();
+  });
 });
