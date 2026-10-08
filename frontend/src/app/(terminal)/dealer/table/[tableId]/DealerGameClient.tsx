@@ -300,7 +300,7 @@ export default function DealerGameClient({
               보고 버튼을 열면 그 자리 하나만 다르다 — `syncing: false`가
               올 때까지는 서버가 끝났다고 말한 것이 아니다(T96).
             */}
-            {sync && ` 딜러 ${sync.present}/${sync.required} 복귀 — 전원이 돌아오면 이어서 진행할 수 있습니다.`}
+            {sync && ` 기기 ${sync.present}/${sync.required} 복귀 — 딜러와 좌석이 모두 돌아오면 이어서 진행할 수 있습니다.`}
           </span>
           <button
             type="button"
@@ -326,7 +326,7 @@ export default function DealerGameClient({
           data-testid="dealer-sync-strip"
           className="absolute inset-x-0 top-0 z-50 bg-err px-4 py-3 text-center text-sm text-white"
         >
-          딜러 {sync.present}/{sync.required} 복귀 — 전원이 돌아오면 이어서 진행할 수 있습니다.
+          기기 {sync.present}/{sync.required} 복귀 — 딜러와 좌석이 모두 돌아오면 이어서 진행할 수 있습니다.
         </div>
       )}
 

@@ -6,8 +6,10 @@ import {
   ClosedTournamentStatusSchema,
   type FinishPreview,
   type FullTournamentInfo,
+  type SyncStatus,
   type TournamentStatus,
 } from '@playsync/contract';
+import SyncPanel from './SyncPanel';
 
 /**
  * 대회 메타. `GET /tournaments/:id`가 주는 `{ tournament, seatStatus }`
@@ -105,6 +107,8 @@ export default function ConsoleClient({
   chopTournament,
   abortTournament,
   fetchFinishPreview,
+  sync,
+  forceSync,
 }: {
   storeId: string;
   tournamentId: string;
@@ -134,6 +138,9 @@ export default function ConsoleClient({
   fetchFinishPreview: (
     tournamentId: string,
   ) => Promise<{ preview: FinishPreview } | { error: string }>;
+  /** 재기동 복구 상태(T117). 조회에 실패했거나 복구 중이 아니면 패널을 안 그린다. */
+  sync: SyncStatus | null;
+  forceSync: (tournamentId: string) => Promise<ActionResult>;
 }) {
   const router = useRouter();
   const [activeTableId, setActiveTableId] = useState<string | null>(tables[0]?.id ?? null);
@@ -412,6 +419,16 @@ export default function ConsoleClient({
             </a>
           </div>
         </div>
+
+        {sync?.syncing && (
+          <SyncPanel
+            sync={sync}
+            tables={tables}
+            seatOccupants={seatOccupants}
+            pending={pending}
+            onForce={() => run(() => forceSync(tournamentId))}
+          />
+        )}
 
         {seatError && (
           <p role="alert" className="text-sm text-[var(--err)]">

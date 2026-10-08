@@ -48,6 +48,8 @@ function renderConsole(
       chopTournament={vi.fn(async () => ({ ok: true as const }))}
       abortTournament={vi.fn(async () => ({ ok: true as const }))}
       fetchFinishPreview={vi.fn(async () => ({ error: '없음' }))}
+      sync={null}
+      forceSync={vi.fn()}
     />,
   );
   return { reissue, revoke };
@@ -169,6 +171,8 @@ describe('ConsoleClient — 좌석 선택', () => {
         chopTournament={vi.fn(async () => ({ ok: true as const }))}
         abortTournament={vi.fn(async () => ({ ok: true as const }))}
         fetchFinishPreview={vi.fn(async () => ({ error: '없음' }))}
+        sync={null}
+        forceSync={vi.fn()}
       />
     );
     const { rerender } = render(view(players));

@@ -545,7 +545,7 @@ describe('DealerGameClient', () => {
 
       socket.emitServerEvent(TOURNAMENT_SYNCING_EVENT, { syncing: true, present: 7, required: 9 });
 
-      expect(screen.getByTestId('dealer-resume')).toHaveTextContent('딜러 7/9 복귀');
+      expect(screen.getByTestId('dealer-resume')).toHaveTextContent('기기 7/9 복귀');
       expect(screen.getByRole('button', { name: '이어서 진행' })).toBeDisabled();
 
       socket.emitServerEvent(TOURNAMENT_SYNCING_EVENT, { syncing: false, present: 9, required: 9 });
@@ -565,7 +565,7 @@ describe('DealerGameClient', () => {
 
       socket.emitServerEvent(TOURNAMENT_SYNCING_EVENT, { syncing: true, present: 7, required: 9 });
 
-      expect(screen.getByTestId('dealer-sync-strip')).toHaveTextContent('딜러 7/9 복귀');
+      expect(screen.getByTestId('dealer-sync-strip')).toHaveTextContent('기기 7/9 복귀');
       expect(screen.getByRole('button', { name: '핸드 시작' })).toBeDisabled();
 
       socket.emitServerEvent(TOURNAMENT_SYNCING_EVENT, { syncing: false, present: 9, required: 9 });

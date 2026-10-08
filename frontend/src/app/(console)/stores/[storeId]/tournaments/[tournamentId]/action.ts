@@ -183,3 +183,9 @@ export async function fetchFinishPreview(
   if (!parsed.success) return { error: '마무리 정보를 읽지 못했습니다.' };
   return { preview: parsed.data };
 }
+
+/** 재기동 복구를 상점 판단으로 끝낸다(T117). */
+export async function forceSync(tournamentId: string): Promise<ActionResult> {
+  const result = await callConsoleApi(`/store/sessions/${tournamentId}/sync/force`, { method: 'POST' });
+  return 'error' in result ? result : { ok: true };
+}
