@@ -145,6 +145,17 @@ const DEAL_MS = Number(__ENV.LOAD_DEAL_MS || 25000);
  * 한 번 둘러보고 누른다.
  */
 const RESUME_MS = Number(__ENV.LOAD_RESUME_MS || 5000);
+/**
+ * 띠가 걷힌 뒤 딜러가 움직이기까지를 흩는 폭(T120). 딜러마다 [0, 이 값) 뒤에 화면을 다시
+ * 본다 — 기본 10초라 재개는 5~15초, 승자 입력과 판 시작은 0~10초에 평소 손놀림을 더한
+ * 때다.
+ *
+ * **재개만 흩어서는 안 줄었다.** `SYNCING` 동안에는 재개만이 아니라 승자 입력도 판 시작도
+ * 거절되므로, 띠가 걷히면 쇼다운이던 테이블은 재개 없이 곧바로 승자를 넣고 리바인을
+ * 묻는다. 사람은 띠가 걷힌 것을 알아채는 데부터 시간이 든다. 0이면 전원이 같은
+ * 순간이다(대조군).
+ */
+const RESUME_SPREAD_MS = spreadEnv(__ENV.LOAD_RESUME_SPREAD_MS, 10000);
 
 /**
  * 아예 누르지 않는 액션의 비율. **타임아웃 경로를 실제로 돌리려는 것이다.**
@@ -530,7 +541,11 @@ export function runHands({
       // 버튼을 다시 누르듯 여기서 다시 판단한다(T116).
       if (parsed.event === 'tournamentSyncing' && parsed.data) {
         syncing = parsed.data.syncing;
-        if (!syncing && latestState && !closing) step(entry, latestState);
+        if (!syncing) {
+          later(Math.random() * RESUME_SPREAD_MS, () => {
+            if (!syncing && latestState) step(entry, latestState);
+          });
+        }
         return;
       }
       if (parsed.event === 'REBUY_PROMPT') {

@@ -8,7 +8,8 @@
 #   bash load/kill-run.sh <테이블 수> <태그> [build]
 #
 # 환경변수: RATE(초당 착석 인원, 기본 8) · LOAD_LISTEN_SOCKETS · LOAD_PG_POOL_MAX ·
-# LOAD_CPU_PROFILE_S(부팅 뒤 이 초만큼 CPU 프로파일). 설명은 load/README.md.
+# LOAD_CPU_PROFILE_S(부팅 뒤 이 초만큼 CPU 프로파일) · K6_ENV(봇에 넘길 `-e 이름=값`).
+# 설명은 load/README.md.
 set -u
 N=$1; TAG=$2; BUILD=${3:-}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -47,7 +48,7 @@ say "k6 시작 (증설 ${GROW}초)"
 $C --profile load --profile k6 run --rm \
   -e LOAD_START_TABLES=$N -e LOAD_STEP_TABLES=$N -e LOAD_MAX_TABLES=$N \
   -e LOAD_START_GROW_S=$GROW -e LOAD_GROW_S=$GROW -e LOAD_STEADY_S=2400 \
-  -e LOAD_BREACH_STREAK=100000 -e LOAD_RAMP_NAME=kill-$TAG \
+  -e LOAD_BREACH_STREAK=100000 -e LOAD_RAMP_NAME=kill-$TAG ${K6_ENV:-} \
   k6 run /load/scenarios/ramp.js >"$OUT-console.txt" 2>&1 &
 K6=$!
 
