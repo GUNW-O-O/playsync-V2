@@ -32,8 +32,11 @@ export class PrismaService
       throw new Error('❌ DATABASE_URL 환경 변수가 설정되지 않았습니다.');
     }
     // 2. pg Pool을 명시적으로 생성하여 어댑터에 전달 (권장 방식)
-    // 풀 크기(`PG_POOL_MAX`). 기본 10은 pg의 기본값 그대로다 — 적정값을 재는 중이다(T119).
-    const pool = new Pool({ connectionString, max: Number(process.env.PG_POOL_MAX ?? 10) });
+    // 풀 크기(`PG_POOL_MAX`, 기본 20). pg의 기본값 10에서 올렸다(T119) — 667테이블 kill의
+    // 재접속에서 접속 한 번의 대기가 3.4초 → 0.9초, 풀 대기가 102 → 52였다. 재접속은
+    // CPU가 한계라 그 이상은 재지 않았다. **`SYNCING` 해제 순간의 몰림은 풀로 안 풀린다**
+    // — 그 구간도 CPU가 꽉 차서, 20으로 올려도 리바인 일시 실패가 줄지 않았다(243 → 306).
+    const pool = new Pool({ connectionString, max: Number(process.env.PG_POOL_MAX ?? 20) });
     const adapter = new PrismaPg(pool);
     // const adapter = new PrismaPg({ url: process.env.DATABASE_URL });
     super({
