@@ -352,7 +352,15 @@ describe('실제 kill — 백엔드를 죽였다 살린다', () => {
   it('8. 딜러가 돌아와 재개하면 victim이 그대로 행동한다', async () => {
     const body = await http('POST', '/dealer/auth', { tournamentId, tableId: tables[0].id, otp: dealerOtp }, undefined, device());
     const dealer = await connect('딜러1-재접속', body.accessToken ?? body.token, tables[0].id);
-    await sleep(1_000);   // n/n → completeSync → ONGOING
+    // **딜러만으로는 안 풀린다**(T117). 보류 창(기본 1초)을 넘겨 기다린 뒤에도
+    // `SYNCING`이어야 한다 — 이 줄이 없으면 「딜러만 세는」 옛 규칙도 아래를 통과한다.
+    await sleep(2_000);
+    expect(`8. 딜러만 ${(await tournamentRow()).status}`).toBe('8. 딜러만 SYNCING');
+
+    // 좌석 넷까지 돌아와야 n/n이다. 고정 대기는 못 쓴다 — 보류 창과 같은 값이라
+    // 재집계가 돌기 직전을 읽는다.
+    for (const s of seatTokens) await connectSeat(s.nickname);
+    await until(async () => (await tournamentRow()).status === 'ONGOING', 20_000, '8. n/n 복귀');
 
     resumedAt = Date.now();
     expect(`8. status ${(await tournamentRow()).status}`).toBe('8. status ONGOING');
@@ -361,7 +369,7 @@ describe('실제 kill — 백엔드를 죽였다 살린다', () => {
     send(dealer, 'DEALER_ACTION', { action: 'RESUME_TABLE' });
     await waitFor(dealer, from, (m) => m.event === 'renderGame' && m.data.resumePending === undefined, 10_000, '8. 재개');
 
-    const seat = await connect(victimNickname, seatTokens.find((s) => s.nickname === victimNickname)!.token, tables[0].id);
+    const seat = live.get(victimNickname)!;
     from = dealer.inbox.length;
     send(seat, 'PLAYER_ACTION', { action: 'CALL' });
     const acted = await waitFor(
@@ -496,7 +504,7 @@ describe('실제 kill — 백엔드를 죽였다 살린다', () => {
 
     // **남길 사람은 victim이다.** 8번에서 이미 콜했으므로 `bet == currentBet`이고,
     // 그래야 나머지가 접힌 순간 엔진이 쇼다운으로 넘어간다 — 아직 안 낸 사람을
-    // 남기면 그 사람의 액션을 영영 기다린다(그 좌석의 소켓은 재시작이 끊었다).
+    // 남기면 그 사람의 액션을 영영 기다린다(여기서는 좌석을 몰지 않는다).
     for (const p of seated) {
       if (p.id === victimId) continue;
       send(dealerSock, 'DEALER_ACTION', { action: 'DEALER_FOLD', targetUserId: p.id });
@@ -564,11 +572,13 @@ describe('실제 kill — 백엔드를 죽였다 살린다', () => {
    * 함께 재는 이유는 그것이 곧 「이 테이블은 정지가 아니라 **미완의 핸드**다」의
    * 증거라서다.
    *
-   * 앞을 막는 것은 `SYNCING` 하나다 — 딜러가 다 돌아올 때까지 명령을 전부 거절한다.
+   * 앞을 막는 것은 `SYNCING` 하나다 — 딜러와 좌석 기기가 다 돌아올 때까지 명령을
+   * 전부 거절한다(T117). 파산자의 자리도 비트맵에 켜져 있으므로 넷 다 붙인다.
    */
   it('12. 다시 띄우면 딜러가 체크포인트 재시도 하나로 빠져나온다', async () => {
     await startBackend();
     await connectDealer('딜러1-재시작');
+    for (const s of seatTokens) await connectSeat(s.nickname);
     await until(async () => (await tournamentRow()).status === 'ONGOING', 20_000, '12. n/n 복귀');
 
     const held = await snapshot(tables[0].id);
