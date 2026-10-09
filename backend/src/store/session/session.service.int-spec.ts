@@ -2357,7 +2357,7 @@ describe('SessionService.cancelSession', () => {
    * 주는 것이 되고, 그건 정산이지 취소가 아니다.
    *
    * 판정은 `status`가 아니라 `startedAt`으로 한다. 그것이 "시작했다"의
-   * 정본이다(`domain.md`의 두 `startedAt` 구분).
+   * 정본이다(`domain/hand.md`의 두 `startedAt` 구분).
    */
   it('시작한 대회는 취소할 수 없고 포인트도 그대로다', async () => {
     const playerId = await seedPaidPlayer('player1');

@@ -107,7 +107,7 @@ export interface AbortSettlement {
  * 남으면 상점 몫이다. 갈 곳을 정해 두지 않으면 그 돈이 장부에서 사라진다.
  *
  * @param entryFee 대회의 참가비. `Tournament.entryFee`
- * @param totalBuyinAmount 걷은 총액. 돈의 진실은 DB다(`domain.md`)
+ * @param totalBuyinAmount 걷은 총액. 돈의 진실은 DB다(`domain/money.md`)
  */
 export function calculateAbortSettlement(
   participants: SettlementParticipant[],
