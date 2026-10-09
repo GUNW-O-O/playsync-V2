@@ -171,6 +171,30 @@ describe('SeatGameClient', () => {
      * 안 움직이는" 상태로 멈췄다. 딜러 클릭이 게임 진행의 트리거인 시스템에서
      * 가장 나쁜 실패 모드라, 최소한 눈에 띄는 배너로 알린다.
      */
+    /**
+     * T119. 재접속을 기다리는 띠에서 사람이 걸음을 건너뛸 수 있다. 버튼이 훅에
+     * 안 이어져 있으면 눌러도 요청이 늘지 않는다.
+     */
+    it('재접속을 기다리는 띠의 「지금 다시 연결」을 누르면 티켓을 다시 요청한다', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.spyOn(Math, 'random').mockReturnValue(0.5); // 다음 걸음까지 20초 — 저절로는 안 온다
+      let calls = 0;
+      server.use(http.post('*/api/ws-ticket', () => {
+        calls += 1;
+        return HttpResponse.json({ message: '서버 장애를 복구하는 중입니다.' }, { status: 503 });
+      }));
+
+      render(<SeatGameClient tableId="tbl-1" seatIndex={0} />);
+      const button = await screen.findByTestId('retry-now');
+      await waitFor(() => expect(calls).toBe(1));
+
+      await userEvent.click(button);
+
+      await waitFor(() => expect(calls).toBe(2));
+      errorSpy.mockRestore();
+      vi.restoreAllMocks();
+    });
+
     it('티켓 발급이 403이면 화면에 배너가 뜬다', async () => {
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       server.use(

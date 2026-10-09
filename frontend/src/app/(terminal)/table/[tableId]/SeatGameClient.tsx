@@ -143,7 +143,7 @@ export default function SeatGameClient({
    * 좌석은 딜러보다 **먼저** 붙는다(`reconnect-policy.ts`) — 딜러가 판을
    * 재개할지 정할 때 이미 가라앉은 그림을 보게 하려는 것이다.
    */
-  const { socketRef, connectionError, reconnecting, outage, revoked } = useTableSocket({
+  const { socketRef, connectionError, reconnecting, outage, revoked, retryNow } = useTableSocket({
     tableId,
     role: 'seat',
     defaultError: DEFAULT_CONNECTION_ERROR,
@@ -276,6 +276,18 @@ export default function SeatGameClient({
             새로고침해야 하는 줄 안다 — 실제로는 기다리면 낫는다.
           */}
           {reconnecting ? `${connectionError} 다시 연결하는 중입니다…` : connectionError}
+          {/*
+            **기다리지 않고 지금 두드릴 수 있다**(T119). 없으면 사람은 새로고침을 누른다 —
+            화면을 통째로 다시 받는 무거운 길이다.
+          */}
+          <button
+            type="button"
+            data-testid="retry-now"
+            onClick={retryNow}
+            className="ml-3 rounded border border-white/60 px-2 py-0.5 text-xs font-semibold"
+          >
+            지금 다시 연결
+          </button>
         </div>
       )}
 
