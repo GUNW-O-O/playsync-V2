@@ -2,8 +2,10 @@ import { cookies } from 'next/headers';
 import {
   FinishPreviewSchema,
   FullTournamentInfoSchema,
+  SyncStatusSchema,
   type FinishPreview,
   type FullTournamentInfo,
+  type SyncStatus,
 } from '@playsync/contract';
 import ConsoleClient, { type TournamentMeta, type TableInfo, type TableSeatInfo } from './ConsoleClient';
 import {
@@ -17,6 +19,7 @@ import {
   chopTournament,
   abortTournament,
   fetchFinishPreview,
+  forceSync,
 } from './action';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
@@ -125,6 +128,21 @@ async function fetchPreview(
 }
 
 /**
+ * 재기동 복구 상태(T117). 실패하거나 모양이 어긋나면 `null` — 패널을 안 그린다.
+ * 소유권 문지기는 `fetchSeatOccupants`다.
+ */
+async function fetchSync(tournamentId: string, token: string | undefined): Promise<SyncStatus | null> {
+  if (!token) return null;
+  const res = await fetch(`${BACKEND_URL}/store/sessions/${tournamentId}/sync`, {
+    cache: 'no-store',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) return null;
+  const parsed = SyncStatusSchema.safeParse(await res.json().catch(() => null));
+  return parsed.success ? parsed.data : null;
+}
+
+/**
  * 좌석 해제의 입력. `GET /store/sessions/:id/seats`는 STORE_ADMIN 전용
  * 가드가 걸려 있다(다른 운영 조작과 같은 문) — 그래서 관리자의 쿠키
  * 토큰을 Authorization 헤더로 실어 보내야 한다.
@@ -192,12 +210,13 @@ export default async function ConsoleTournamentPage({
   const { storeId, tournamentId } = await params;
   const token = (await cookies()).get('accessToken')?.value;
 
-  const [tournament, dashboard, tables, seatResult, preview] = await Promise.all([
+  const [tournament, dashboard, tables, seatResult, preview, sync] = await Promise.all([
     fetchTournament(tournamentId),
     fetchDashboard(tournamentId),
     fetchTables(tournamentId),
     fetchSeatOccupants(tournamentId, token),
     fetchPreview(tournamentId, token),
+    fetchSync(tournamentId, token),
   ]);
 
   const ownershipDenied = seatResult.seatError !== null;
@@ -222,6 +241,8 @@ export default async function ConsoleTournamentPage({
       chopTournament={chopTournament}
       abortTournament={abortTournament}
       fetchFinishPreview={fetchFinishPreview}
+      sync={ownershipDenied ? null : sync}
+      forceSync={forceSync}
     />
   );
 }

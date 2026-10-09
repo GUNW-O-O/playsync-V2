@@ -9,6 +9,10 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { RecoveryService } from 'src/recovery/recovery.service';
 import { checkInvariants, forceClose, Harness, SCENARIO, setupTournament } from './harness';
 
+// 재집계 보류 창(T117)은 SyncQueue 단위 검사가 맡는다. 통합 검사는 `connect` 직후 결과를
+// 읽으므로 게이트웨이를 보류 0으로 세운다 — `new WsGateway`보다 먼저 정해져야 한다.
+process.env.SYNC_RECOUNT_HOLD_MS = '0';
+
 /**
  * 좌석 탈취와 대응(T110) — 입장 · 티켓 · 소켓 · 상점 해제가 한 줄로 이어지는지.
  *

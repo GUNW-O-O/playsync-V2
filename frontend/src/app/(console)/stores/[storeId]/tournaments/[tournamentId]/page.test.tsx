@@ -50,6 +50,7 @@ function useFixtures(seatStatus: number) {
     http.get('http://backend.test/store/sessions/trn-1/finish-preview', () =>
       HttpResponse.json({ statusCode: 404, message: '세션을 찾을 수 없습니다.' }, { status: 404 }),
     ),
+    http.get('http://backend.test/store/sessions/trn-1/sync', () => new HttpResponse(null, { status: 404 })),
     http.get('http://backend.test/store/sessions/trn-1/seats', () => {
       if (seatStatus === 200) return HttpResponse.json([]);
       return HttpResponse.json(
@@ -181,6 +182,7 @@ describe('상점 콘솔 대회 상세 — 서버 장애(T97)', () => {
       http.get('http://backend.test/store/sessions/trn-1/finish-preview', () =>
         HttpResponse.json({ statusCode: 404, message: '세션을 찾을 수 없습니다.' }, { status: 404 }),
       ),
+      http.get('http://backend.test/store/sessions/trn-1/sync', () => new HttpResponse(null, { status: 404 })),
       http.get('http://backend.test/store/sessions/trn-1/seats', () =>
         HttpResponse.json(
           { statusCode: 503, message: SERVER_RECOVERING_MESSAGE, error: 'Service Unavailable' },

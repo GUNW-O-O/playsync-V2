@@ -1,4 +1,4 @@
-import { ForbiddenException, Logger } from '@nestjs/common';
+import { ForbiddenException, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { EVENT_LISTENER_METADATA } from '@nestjs/event-emitter/dist/constants';
 import { JwtService } from '@nestjs/jwt';
@@ -17,6 +17,10 @@ import { createTestRedis, flushTestRedis } from '../../test/helpers/redis';
 import { closeTestPrisma, createTestPrisma, truncateAll } from '../../test/helpers/prisma';
 import { RecoveryService } from 'src/recovery/recovery.service';
 import { DEALER_REVOKED_REASON, SERVER_OUTAGE_EVENT, SERVER_RECOVERING_MESSAGE, TOURNAMENT_SYNCING_EVENT } from '@playsync/contract';
+
+// 재집계 보류 창(T117)은 SyncQueue 단위 검사가 맡는다. 통합 검사는 `connect` 직후 결과를
+// 읽으므로 게이트웨이를 보류 0으로 세운다 — `new WsGateway`보다 먼저 정해져야 한다.
+process.env.SYNC_RECOUNT_HOLD_MS = '0';
 
 /**
  * 게이트웨이의 인바운드 경계.
@@ -1081,6 +1085,17 @@ describe('WsGateway 인바운드 경계', () => {
       return events.at(-1)?.data;
     }
 
+    /**
+     * T117. `seedSeats`가 켠 자리(두 테이블의 0번)에 좌석 소켓을 붙인다 — 그 자리의
+     * 주인은 최상위 `beforeEach`의 스냅샷에서 alice다. 필요한 기기는 테이블마다
+     * 딜러 1 + 좌석 1이라 `seedSeats` 뒤에는 required가 4다.
+     */
+    async function connectSeats(tables: string[] = [TABLE, OTHER_TABLE]) {
+      const clients: Awaited<ReturnType<typeof connect>>[] = [];
+      for (const t of tables) clients.push(await connect(await seatTicket('alice'), t));
+      return clients;
+    }
+
     beforeEach(async () => {
       // 이 describe만 Prisma 대회 데이터를 쓴다. 마지막 describe라 다른
       // 테스트의 상태를 지울 걱정이 없다(`prisma`는 이 파일의 다른 describe와
@@ -1096,26 +1111,27 @@ describe('WsGateway 인바운드 경계', () => {
       (gateway as any).tournamentSessions.clear();
     });
 
-    it('테이블 딜러가 접속하면 present 1/2를 알리고 completeSync는 안 부른다', async () => {
+    it('테이블 딜러가 접속하면 present 1/4를 알리고 completeSync는 안 부른다', async () => {
       await seedSyncingTournament();
       await seedSeats();
 
       const dealerClient = await connect(await dealerTicket(TABLE), TABLE);
 
-      expect(lastSyncingPayload(dealerClient)).toEqual({ syncing: true, present: 1, required: 2 });
+      expect(lastSyncingPayload(dealerClient)).toEqual({ syncing: true, present: 1, required: 4 });
       expect(recovery.completeSync).not.toHaveBeenCalled();
     });
 
-    it('나머지 딜러까지 접속하면 completeSync를 부르고 두 딜러 모두 syncing:false를 받는다', async () => {
+    it('좌석과 딜러가 다 붙으면 completeSync를 부르고 두 딜러 모두 syncing:false를 받는다', async () => {
       await seedSyncingTournament();
       await seedSeats();
+      await connectSeats();
 
       const tableDealer = await connect(await dealerTicket(TABLE), TABLE);
       const otherDealer = await connect(await dealerTicket(OTHER_TABLE), OTHER_TABLE);
 
       expect(recovery.completeSync).toHaveBeenCalledWith(TOURNAMENT);
-      expect(lastSyncingPayload(tableDealer)).toEqual({ syncing: false, present: 2, required: 2 });
-      expect(lastSyncingPayload(otherDealer)).toEqual({ syncing: false, present: 2, required: 2 });
+      expect(lastSyncingPayload(tableDealer)).toEqual({ syncing: false, present: 4, required: 4 });
+      expect(lastSyncingPayload(otherDealer)).toEqual({ syncing: false, present: 4, required: 4 });
     });
 
     /**
@@ -1127,6 +1143,7 @@ describe('WsGateway 인바운드 경계', () => {
     it('completeSync가 false를 돌려주면 syncing:false를 보내지 않는다(Task4 M3)', async () => {
       await seedSyncingTournament();
       await seedSeats();
+      await connectSeats();
       const tableDealer = await connect(await dealerTicket(TABLE), TABLE);
       recovery.completeSync.mockResolvedValueOnce(false);
 
@@ -1134,7 +1151,7 @@ describe('WsGateway 인바운드 경계', () => {
 
       expect(recovery.completeSync).toHaveBeenCalledWith(TOURNAMENT);
       expect(lastSyncingPayload(otherDealer)).toBeUndefined();
-      expect(lastSyncingPayload(tableDealer)).toEqual({ syncing: true, present: 1, required: 2 });
+      expect(lastSyncingPayload(tableDealer)).toEqual({ syncing: true, present: 3, required: 4 });
     });
 
     /**
@@ -1166,6 +1183,12 @@ describe('WsGateway 인바운드 경계', () => {
       // 깨어나 대회 상태를 조용히 건드리고, 그 테스트들이 실은 이 리스너가
       // 대신 채워 준 값으로 통과하게 만든다.
       try {
+        for (const t of [TABLE, OTHER_TABLE]) {
+          await realGateway.handleConnection(
+            makeClient(),
+            makeRequest(`tableId=${t}&ticket=${await seatTicket('alice')}`, ORIGIN),
+          );
+        }
         await realGateway.handleConnection(
           makeClient(),
           makeRequest(`tableId=${TABLE}&ticket=${await dealerTicket(TABLE)}`, ORIGIN),
@@ -1191,7 +1214,7 @@ describe('WsGateway 인바운드 경계', () => {
 
       const result = await gateway.handleDealerAction(dealerClient, { action: 'START_PRE_FLOP' });
 
-      expect(result).toEqual({ event: 'error', data: '딜러가 모두 돌아올 때까지 기다려 주세요.' });
+      expect(result).toEqual({ event: 'error', data: '모든 기기가 돌아올 때까지 기다려 주세요.' });
       expect(dealer.startPreFlop).not.toHaveBeenCalled();
     });
 
@@ -1214,8 +1237,8 @@ describe('WsGateway 인바운드 경계', () => {
       expect(result).toBeUndefined();
     });
 
-    /** 좌석 소켓(플레이어)은 딜러가 아니라 k에 안 든다. */
-    it('좌석 소켓은 딜러 복귀로 세지 않는다', async () => {
+    /** T117. 좌석 소켓(플레이어)은 딜러가 아니어도 자기 자리로 k에 든다. */
+    it('좌석 소켓은 자기 자리로 센다', async () => {
       await seedSyncingTournament();
       await seedSeats();
       // OTHER_TABLE에는 플레이어(좌석) 소켓만 붙는다 — alice가 그 테이블
@@ -1224,7 +1247,7 @@ describe('WsGateway 인바운드 경계', () => {
 
       const dealerClient = await connect(await dealerTicket(TABLE), TABLE);
 
-      expect(lastSyncingPayload(dealerClient)).toEqual({ syncing: true, present: 1, required: 2 });
+      expect(lastSyncingPayload(dealerClient)).toEqual({ syncing: true, present: 2, required: 4 });
     });
 
     it('딜러 소켓이 끊기면 남은 딜러가 줄어든 present를 받는다', async () => {
@@ -1236,7 +1259,7 @@ describe('WsGateway 인바운드 경계', () => {
 
       await gateway.handleDisconnect(otherDealer);
 
-      expect(lastSyncingPayload(tableDealer)).toEqual({ syncing: true, present: 1, required: 2 });
+      expect(lastSyncingPayload(tableDealer)).toEqual({ syncing: true, present: 1, required: 4 });
     });
 
     /**
@@ -1271,14 +1294,14 @@ describe('WsGateway 인바운드 경계', () => {
       // TABLE만 한 자리 앉힌다 — OTHER_TABLE은 비트맵은 있지만 전부 0이다.
       // (필드 자체가 없으면 `getTournamentTables`가 그 테이블을 읽지 않아
       // seatMaps에도 안 잡힌다 — 실제 운영에서는 테이블 생성 시점에 이미
-      // 빈 비트맵이 깔려 있으므로 여기서도 명시적으로 세워 둔다.) n(required)=1.
+      // 빈 비트맵이 깔려 있으므로 여기서도 명시적으로 세워 둔다.) n(required)=2 — TABLE 딜러 + 0번 좌석.
       await new RedisService(redis).rebuildSeatBitmap(TOURNAMENT, TABLE, [0]);
       await new RedisService(redis).rebuildSeatBitmap(TOURNAMENT, OTHER_TABLE, []);
 
       // 옛 코드(`required`로 송신)라면 OTHER_TABLE은 required 밖이라
       // 이 딜러는 아무것도 못 받는다.
       const otherDealer = await connect(await dealerTicket(OTHER_TABLE), OTHER_TABLE);
-      expect(lastSyncingPayload(otherDealer)).toEqual({ syncing: true, present: 0, required: 1 });
+      expect(lastSyncingPayload(otherDealer)).toEqual({ syncing: true, present: 0, required: 2 });
 
       // 좌석을 뗀다. 딜러 접속·접속해제 경로는 안 도므로 SEAT_LIST_UPDATED가
       // 대신 알린다(위 테스트와 같은 자리) — 이번엔 빈 테이블의 딜러가 실제로
@@ -1293,7 +1316,7 @@ describe('WsGateway 인바운드 경계', () => {
     /**
      * I1(리뷰). 판정이 끝나지 않은 재집계끼리는 「세고 → 곧바로 보낸다」가
      * 동기라 서로 어긋나지 않는다. 어긋나는 자리는 **끝난 판정의
-     * `await completeSync` 창**이다 — 마지막 딜러 접속이 2/2를 세고
+     * `await completeSync` 창**이다 — 마지막 딜러 접속이 4/4를 세고
      * `completeSync`에 들어간 사이, 다른 딜러가 끊겨 새 재집계가 `SYNCING`을
      * (아직 커밋 전이라) 그대로 읽으면, 그 재집계가 나중에 `{syncing:false}`
      * 뒤에 낡은 `{syncing:true}`를 보낼 수 있다. 대회마다 `reportSync`를
@@ -1312,6 +1335,7 @@ describe('WsGateway 인바운드 경계', () => {
     it('completeSync가 끝나기 전에 줄 선 재집계는 그 뒤에 낡은 syncing:true를 보내지 않는다(I1)', async () => {
       await seedSyncingTournament();
       await seedSeats();
+      await connectSeats();
       const tableDealer = await connect(await dealerTicket(TABLE), TABLE);
 
       // `recount`가 읽는 상태를 확정적으로 통제한다. `committed`가 false인
@@ -1341,7 +1365,7 @@ describe('WsGateway 인바운드 경계', () => {
       });
 
       try {
-        // #1: OTHER_TABLE 딜러가 접속해 2/2를 세고 completeSync에 들어간다.
+        // #1: OTHER_TABLE 딜러가 접속해 4/4를 세고 completeSync에 들어간다.
         const connectPromise = connect(await dealerTicket(OTHER_TABLE), OTHER_TABLE);
         await waitUntil(() => recovery.completeSync.mock.calls.length === 1);
 
@@ -1358,7 +1382,7 @@ describe('WsGateway 인바운드 경계', () => {
 
         const [otherDealer] = await Promise.all([connectPromise, disconnectPromise]);
 
-        expect(lastSyncingPayload(otherDealer)).toEqual({ syncing: false, present: 2, required: 2 });
+        expect(lastSyncingPayload(otherDealer)).toEqual({ syncing: false, present: 4, required: 4 });
       } finally {
         findUniqueSpy.mockRestore();
       }
@@ -1372,6 +1396,7 @@ describe('WsGateway 인바운드 경계', () => {
     it('recovered 뒤 딜러가 이미 n/n이면 completeSync를 부른다(T97)', async () => {
       await seedSyncingTournament();
       await seedSeats();
+      await connectSeats();
       const tableDealer = await connect(await dealerTicket(TABLE), TABLE);
       const otherDealer = await connect(await dealerTicket(OTHER_TABLE), OTHER_TABLE);
       jest.clearAllMocks();
@@ -1380,8 +1405,8 @@ describe('WsGateway 인바운드 경계', () => {
       await waitUntil(() => recovery.completeSync.mock.calls.length > 0);
 
       expect(recovery.completeSync).toHaveBeenCalledWith(TOURNAMENT);
-      expect(lastSyncingPayload(tableDealer)).toEqual({ syncing: false, present: 2, required: 2 });
-      expect(lastSyncingPayload(otherDealer)).toEqual({ syncing: false, present: 2, required: 2 });
+      expect(lastSyncingPayload(tableDealer)).toEqual({ syncing: false, present: 4, required: 4 });
+      expect(lastSyncingPayload(otherDealer)).toEqual({ syncing: false, present: 4, required: 4 });
     });
 
     /**
@@ -1396,8 +1421,9 @@ describe('WsGateway 인바운드 경계', () => {
     it('recovering 동안 n/n이 채워져도 completeSync를 부르지 않고 SYNCING에 머문다(최종 리뷰 I1)', async () => {
       await seedSyncingTournament();
       await seedSeats();
+      await connectSeats();
       const tableDealer = await connect(await dealerTicket(TABLE), TABLE);
-      expect(lastSyncingPayload(tableDealer)).toEqual({ syncing: true, present: 1, required: 2 });
+      expect(lastSyncingPayload(tableDealer)).toEqual({ syncing: true, present: 3, required: 4 });
 
       const outage = (gateway as any).redis.outage;
       try {
@@ -1420,8 +1446,8 @@ describe('WsGateway 인바운드 경계', () => {
         await waitUntil(() => recovery.completeSync.mock.calls.length > 0);
 
         expect(recovery.completeSync).toHaveBeenCalledWith(TOURNAMENT);
-        expect(lastSyncingPayload(tableDealer)).toEqual({ syncing: false, present: 2, required: 2 });
-        expect(lastSyncingPayload(otherDealer)).toEqual({ syncing: false, present: 2, required: 2 });
+        expect(lastSyncingPayload(tableDealer)).toEqual({ syncing: false, present: 4, required: 4 });
+        expect(lastSyncingPayload(otherDealer)).toEqual({ syncing: false, present: 4, required: 4 });
       } finally {
         outage.phase = 'up';
       }
@@ -1438,7 +1464,7 @@ describe('WsGateway 인바운드 경계', () => {
      *
      * 여기서는 그 순서를 그대로 만든다 — 딜러 소켓을 죽은 상태로 만들고
      * `broadcast`를 한 번 태워 방에서 빠지게 한 뒤에 `handleDisconnect`를
-     * 부른다. 남은 딜러 하나가 새 집계(1/2)를 받아야 한다.
+     * 부른다. 남은 딜러 하나가 새 집계(1/4)를 받아야 한다.
      */
     it('broadcast가 먼저 방에서 뺀 딜러도 끊기면 집계가 다시 돈다', async () => {
       await seedSyncingTournament();
@@ -1462,9 +1488,139 @@ describe('WsGateway 인바운드 경계', () => {
       // **알림이 한 번 더 나갔다는 것이 요점이다.** 값만 보면 「안 돌았다」와
       // 「돌았는데 값이 같다」를 못 가른다 — 고치기 전에는 0건이었다.
       // (`completeSync`는 이 스펙에서 목이라 DB는 SYNCING에 남아 있고,
-      //  그래서 딜러가 하나 빠진 지금 다시 세면 1/2이다.)
+      //  그래서 딜러가 하나 빠진 지금 다시 세면 1/4이다.)
       expect(`늘어난 알림 ${countSyncing(staying) - before}`).toBe('늘어난 알림 1');
-      expect(lastSyncingPayload(staying)).toEqual({ syncing: true, present: 1, required: 2 });
+      expect(lastSyncingPayload(staying)).toEqual({ syncing: true, present: 1, required: 4 });
+    });
+
+    /** T117. 옛 판정(딜러만)이면 여기서 completeSync가 불려 대회가 열렸다. */
+    it('딜러가 다 와도 좌석 하나가 없으면 SYNCING에 머물고 딜러 명령을 거절한다', async () => {
+      await seedSyncingTournament();
+      await seedSeats();
+      await connectSeats([TABLE]);
+      const tableDealer = await connect(await dealerTicket(TABLE), TABLE);
+      await connect(await dealerTicket(OTHER_TABLE), OTHER_TABLE);
+
+      expect(recovery.completeSync).not.toHaveBeenCalled();
+      expect(lastSyncingPayload(tableDealer)).toEqual({ syncing: true, present: 3, required: 4 });
+      const result = await gateway.handleDealerAction(tableDealer, { action: 'START_PRE_FLOP' });
+      expect(result).toEqual({ event: 'error', data: '모든 기기가 돌아올 때까지 기다려 주세요.' });
+    });
+
+    it('마지막 좌석이 붙으면 completeSync를 부르고 딜러들이 syncing:false를 받는다', async () => {
+      await seedSyncingTournament();
+      await seedSeats();
+      await connectSeats([TABLE]);
+      const tableDealer = await connect(await dealerTicket(TABLE), TABLE);
+      const otherDealer = await connect(await dealerTicket(OTHER_TABLE), OTHER_TABLE);
+
+      await connectSeats([OTHER_TABLE]);
+
+      expect(recovery.completeSync).toHaveBeenCalledWith(TOURNAMENT);
+      expect(lastSyncingPayload(tableDealer)).toEqual({ syncing: false, present: 4, required: 4 });
+      expect(lastSyncingPayload(otherDealer)).toEqual({ syncing: false, present: 4, required: 4 });
+    });
+
+    /** **반대 입력.** bob은 스냅샷 1번이지만 비트맵은 0번만 켰다 — 필요 없는 자리다. */
+    it('비트맵에 없는 자리의 좌석 소켓은 세지 않는다', async () => {
+      await seedSyncingTournament();
+      await seedSeats();
+      await connect(await seatTicket('bob'), TABLE);
+      await connect(await seatTicket('bob'), OTHER_TABLE);
+
+      const tableDealer = await connect(await dealerTicket(TABLE), TABLE);
+
+      expect(lastSyncingPayload(tableDealer)).toEqual({ syncing: true, present: 1, required: 4 });
+    });
+
+    it('좌석 소켓이 끊기면 딜러가 줄어든 present를 받는다', async () => {
+      await seedSyncingTournament();
+      await seedSeats();
+      const [tableSeat] = await connectSeats([TABLE]);
+      const tableDealer = await connect(await dealerTicket(TABLE), TABLE);
+      expect(lastSyncingPayload(tableDealer)).toEqual({ syncing: true, present: 2, required: 4 });
+
+      await gateway.handleDisconnect(tableSeat);
+
+      expect(lastSyncingPayload(tableDealer)).toEqual({ syncing: true, present: 1, required: 4 });
+    });
+
+    it('syncStatus는 안 돌아온 자리를 낸다', async () => {
+      await seedSyncingTournament();
+      await seedSeats();
+      await connectSeats([TABLE]);
+      await connect(await dealerTicket(TABLE), TABLE);
+
+      expect(await gateway.syncStatus(TOURNAMENT)).toEqual({
+        syncing: true, present: 2, required: 4,
+        missing: [{ tableId: OTHER_TABLE, seatIndex: null }, { tableId: OTHER_TABLE, seatIndex: 0 }],
+      });
+    });
+
+    it('SYNCING이 아니면 syncStatus는 비어 있다', async () => {
+      await seedSyncingTournament(TournamentStatus.ONGOING);
+      expect(await gateway.syncStatus(TOURNAMENT)).toEqual({ syncing: false, present: 0, required: 0, missing: [] });
+    });
+
+    it('forceSync는 completeSync를 부르고 딜러들에게 syncing:false를 보낸다', async () => {
+      await seedSyncingTournament();
+      await seedSeats();
+      const tableDealer = await connect(await dealerTicket(TABLE), TABLE);
+
+      expect(await gateway.forceSync(TOURNAMENT, 'owner-1')).toBe(true);
+
+      expect(recovery.completeSync).toHaveBeenCalledWith(TOURNAMENT);
+      expect(lastSyncingPayload(tableDealer)).toEqual({ syncing: false, present: 1, required: 4 });
+    });
+
+    /** 자연 완료와 겹쳐 진 쪽이거나 이미 풀린 대회 — 아무에게도 보내지 않는다. */
+    it('forceSync는 SYNCING이 아니거나 completeSync가 지면 false다', async () => {
+      await seedSyncingTournament();
+      await seedSeats();
+      const tableDealer = await connect(await dealerTicket(TABLE), TABLE);
+      tableDealer.send.mockClear();
+      recovery.completeSync.mockResolvedValueOnce(false);
+
+      expect(await gateway.forceSync(TOURNAMENT, 'owner-1')).toBe(false);
+      expect(lastSyncingPayload(tableDealer)).toBeUndefined();
+
+      await prisma.tournament.update({ where: { id: TOURNAMENT }, data: { status: TournamentStatus.ONGOING, pausedAt: null } });
+      recovery.completeSync.mockClear();
+      expect(await gateway.forceSync(TOURNAMENT, 'owner-1')).toBe(false);
+      expect(recovery.completeSync).not.toHaveBeenCalled();
+    });
+
+    it('진짜 RecoveryService로 forceSync하면 DB가 ONGOING이 되고 두 번째는 false다', async () => {
+      await seedSyncingTournament();
+      await seedSeats();
+      const realRecovery = new RecoveryService(prisma as unknown as PrismaService, new RedisService(redis));
+      const realGateway = new WsGateway(
+        dealer as unknown as DealerService, playsync, new RedisService(redis), tickets,
+        new EventEmitter2(), prisma as unknown as PrismaService, realRecovery,
+      );
+      try {
+        expect(await realGateway.forceSync(TOURNAMENT, 'owner-1')).toBe(true);
+        const t = await prisma.tournament.findUniqueOrThrow({ where: { id: TOURNAMENT } });
+        expect(`상태 ${t.status} ${t.pausedAt}`).toBe('상태 ONGOING null');
+        expect(await realGateway.forceSync(TOURNAMENT, 'owner-1')).toBe(false);
+      } finally {
+        realGateway.onModuleDestroy();
+        realRecovery.onModuleDestroy();
+      }
+    });
+
+    /** Redis 장애 중에는 풀지 않는다 — 복구 스윕이 SYNCING 대회를 얼리기 전에 ONGOING이 되면 안 된다(T97 최종 리뷰 I1). */
+    it('forceSync는 Redis가 recovering이면 503이고 completeSync를 부르지 않는다', async () => {
+      await seedSyncingTournament();
+      await seedSeats();
+      const outage = (gateway as any).redis.outage;
+      try {
+        outage.phase = 'recovering';
+        await expect(gateway.forceSync(TOURNAMENT, 'owner-1')).rejects.toThrow(ServiceUnavailableException);
+        expect(recovery.completeSync).not.toHaveBeenCalled();
+      } finally {
+        outage.phase = 'up';
+      }
     });
   });
 

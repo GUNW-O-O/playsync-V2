@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 import { DealerModule } from 'src/dealer/dealer.module';
 import { PlaysyncModule } from 'src/playsync/playsync.module';
 import { RecoveryModule } from 'src/recovery/recovery.module';
+import { SessionModule } from 'src/store/session/session.module';
+import { SyncController } from './sync.controller';
 import { WsGateway } from './ws.gateway';
 import { WsTicketController } from './ws-ticket.controller';
 import { WsTicketService } from './ws-ticket.service';
@@ -21,10 +23,13 @@ import { WsTicketService } from './ws-ticket.service';
  *
  * RecoveryModule도 같은 이유로 더한다 — `WsGateway`가 `RecoveryService`를
  * 주입받아, 딜러가 다 돌아온 순간(n/n) `completeSync`를 부른다(T96).
+ *
+ * SessionModule은 상점 복구 컨트롤러(`SyncController`)의 소유권 확인 때문이다(T117).
+ * 반대 방향(SessionModule → WsModule)은 없어 순환이 아니다.
  */
 @Module({
-  imports: [DealerModule, PlaysyncModule, RecoveryModule],
-  controllers: [WsTicketController],
+  imports: [DealerModule, PlaysyncModule, RecoveryModule, SessionModule],
+  controllers: [WsTicketController, SyncController],
   providers: [WsGateway, WsTicketService],
 })
 export class WsModule {}

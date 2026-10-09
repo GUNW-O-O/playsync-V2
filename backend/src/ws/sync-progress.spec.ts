@@ -1,19 +1,54 @@
-import { syncProgress } from './sync-progress';
+import { syncProgress, TablePresence } from './sync-progress';
 
-it('앉은 테이블 전부에 딜러가 있으면 done', () => {
-  expect(syncProgress(['a', 'b'], ['a', 'b'])).toEqual({ present: 2, required: 2, done: true });
+function at(dealer: boolean, seats: number[]): TablePresence {
+  return { dealer, seats: new Set(seats) };
+}
+
+it('딜러와 좌석이 다 있으면 done', () => {
+  const r = syncProgress(
+    [{ tableId: 'a', seats: [0, 1] }],
+    new Map([['a', at(true, [0, 1])]]),
+  );
+  expect(r).toEqual({ present: 3, required: 3, done: true, missing: [] });
 });
-it('하나라도 없으면 아직이다', () => {
-  expect(syncProgress(['a', 'b'], ['a'])).toEqual({ present: 1, required: 2, done: false });
+
+/** T117. 딜러가 다 와도 좌석 하나가 없으면 아직이다 — 옛 판정은 여기서 done이었다. */
+it('딜러가 다 와도 좌석 하나가 없으면 아직이다', () => {
+  const r = syncProgress(
+    [{ tableId: 'a', seats: [0, 1] }, { tableId: 'b', seats: [4] }],
+    new Map([['a', at(true, [0])], ['b', at(true, [4])]]),
+  );
+  expect(r).toEqual({ present: 4, required: 5, done: false, missing: [{ tableId: 'a', seatIndex: 1 }] });
 });
-/** **반대 입력.** 셈 밖 테이블의 딜러가 k를 부풀리면 안 된다. */
-it('앉은 사람이 없는 테이블의 딜러는 세지 않는다', () => {
-  expect(syncProgress(['a'], ['a', 'z'])).toEqual({ present: 1, required: 1, done: true });
-  expect(syncProgress(['a', 'b'], ['a', 'z'])).toEqual({ present: 1, required: 2, done: false });
+
+it('딜러가 없으면 딜러가 빠진 자리로 나온다', () => {
+  const r = syncProgress([{ tableId: 'a', seats: [2] }], new Map([['a', at(false, [2])]]));
+  expect(r).toEqual({ present: 1, required: 2, done: false, missing: [{ tableId: 'a', seatIndex: null }] });
 });
-it('한 테이블에 딜러 소켓이 둘이어도 한 번 센다', () => {
-  expect(syncProgress(['a', 'b'], ['a', 'a'])).toEqual({ present: 1, required: 2, done: false });
+
+/** **반대 입력.** 비트맵에 없는 자리(탈락 · 해제된 사람)의 소켓은 present를 부풀리지 않는다. */
+it('필요 없는 자리의 소켓은 세지 않는다', () => {
+  const r = syncProgress([{ tableId: 'a', seats: [0] }], new Map([['a', at(true, [0, 5, 7])]]));
+  expect(r).toEqual({ present: 2, required: 2, done: true, missing: [] });
 });
+
+it('필요 없는 테이블의 소켓은 세지 않는다', () => {
+  const r = syncProgress(
+    [{ tableId: 'a', seats: [0] }],
+    new Map([['a', at(false, [])], ['z', at(true, [0])]]),
+  );
+  expect(r.present).toBe(0);
+  expect(r.done).toBe(false);
+});
+
+it('소켓이 하나도 없는 테이블은 전부 빠진 자리다', () => {
+  const r = syncProgress([{ tableId: 'a', seats: [3] }], new Map());
+  expect(r).toEqual({
+    present: 0, required: 2, done: false,
+    missing: [{ tableId: 'a', seatIndex: null }, { tableId: 'a', seatIndex: 3 }],
+  });
+});
+
 it('앉은 테이블이 없으면 done', () => {
-  expect(syncProgress([], [])).toEqual({ present: 0, required: 0, done: true });
+  expect(syncProgress([], new Map())).toEqual({ present: 0, required: 0, done: true, missing: [] });
 });
