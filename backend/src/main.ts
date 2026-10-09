@@ -33,6 +33,14 @@ async function bootstrap() {
       next();
     });
   }
-  await app.listen(process.env.PORT ?? 3001);
+  // **접속 대기열을 넓힌다**(T119). Node의 기본값은 511이다. 서버가 죽었다 뜨면
+  // 태블릿 전원이 소켓마다 새 TCP 연결을 여는데, 이벤트 루프가 수백 ms만 밀려도 그
+  // 사이 도착분이 511을 넘어 커널이 연결을 버린다 — 667테이블 kill에서 부팅 45초
+  // 동안 33,095건이 넘쳤고(`ListenOverflows`), 버려진 쪽은 수 초~30초 뒤에야 다시
+  // 닿아 티켓(수명 30초)이 그 사이 낡았다. 커널 상한(`net.core.somaxconn`)이 이 값을
+  // 다시 자른다.
+  const backlog = Number(process.env.LISTEN_BACKLOG ?? 4096);
+  // Nest의 타입에는 backlog 자리가 없지만 인자는 `http.Server.listen`으로 그대로 간다.
+  await app.listen(process.env.PORT ?? 3001, backlog as never);
 }
 bootstrap();
