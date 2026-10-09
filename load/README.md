@@ -615,7 +615,9 @@ lag으로, 각각 **연속 2회**에 `exec.test.abort()`. **k6 `thresholds`로�
 한다. 서버가 끊은 소켓의 첫 닫힘이 그 테이블의 시계를 켜고, 같은 `reconnect_ms`로
 잰다. 재기동 뒤의 판은 봇 딜러가 연다 — 대회가 `SYNCING`이면 기다렸다가
 `tournamentSyncing`이 띠를 걷으면 다시 판단하고, `resumePending`이면
-`LOAD_RESUME_MS`(5초) 뒤 `RESUME_TABLE`을 누른다. **좌석이 다 돌아왔는지는 보지
+딜러마다 `LOAD_RESUME_SPREAD_MS`(10초) 안의 무작위 뒤에 화면을 다시 보고(T120 — 띠가 걷히는
+순간 전원이 같이 움직이면 해제 직후가 몰린다), `resumePending`이면 `LOAD_RESUME_MS`(5초) 뒤
+`RESUME_TABLE`을 누른다. **좌석이 다 돌아왔는지는 보지
 않는다** — 사람 딜러의 화면에도 그 정보가 없다(T117). kill 실행은 소켓 오류
 문턱(`socket_errors`)에 걸려 k6가 99로 끝나는 것이 정상이다.
 
@@ -635,6 +637,7 @@ bash load/kill-run.sh 667 태그 build   # 테이블 수 · 결과 파일 이름
 | `LOAD_LISTEN_SOCKETS` | 16 | 접속을 받는 리스너 수(`main.ts`). 1이면 T119 전과 같다 |
 | `LOAD_PG_POOL_MAX` | 20 | pg 풀 크기 |
 | `LOAD_CPU_PROFILE_S` | 0 | 부팅 뒤 이 초만큼 CPU 프로파일을 떠서 `kill-<태그>.cpuprofile`로 꺼낸다 |
+| `K6_ENV` | 없음 | 봇에 넘길 `-e 이름=값`. 예: `K6_ENV="-e LOAD_RESUME_SPREAD_MS=0"`(띠가 걷히면 딜러 전원이 같은 순간에 움직인다 — 가장 나쁜 몰림) |
 
 **백엔드 로그의 `[stage]` 줄이 구간 계측이다**(`backend/src/metrics/stage-timer.ts`,
 `LOAD_METRICS=1`일 때만). 5초마다 한 줄 — CPU, 이벤트 루프 지연, pg 풀(전체 · 유휴 ·
