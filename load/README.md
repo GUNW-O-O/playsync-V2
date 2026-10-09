@@ -637,6 +637,7 @@ bash load/kill-run.sh 667 태그 build   # 테이블 수 · 결과 파일 이름
 | `LOAD_LISTEN_SOCKETS` | 16 | 접속을 받는 리스너 수(`main.ts`). 1이면 T119 전과 같다 |
 | `LOAD_PG_POOL_MAX` | 20 | pg 풀 크기 |
 | `LOAD_CPU_PROFILE_S` | 0 | 부팅 뒤 이 초만큼 CPU 프로파일을 떠서 `kill-<태그>.cpuprofile`로 꺼낸다 |
+| `K6_ENV` | 없음 | 봇에 넘길 `-e 이름=값`. 예: `K6_ENV="-e LOAD_RESUME_SPREAD_MS=0"`(띠가 걷히면 딜러 전원이 같은 순간에 움직인다 — 가장 나쁜 몰림) |
 
 **백엔드 로그의 `[stage]` 줄이 구간 계측이다**(`backend/src/metrics/stage-timer.ts`,
 `LOAD_METRICS=1`일 때만). 5초마다 한 줄 — CPU, 이벤트 루프 지연, pg 풀(전체 · 유휴 ·
