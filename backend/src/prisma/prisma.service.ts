@@ -1,6 +1,7 @@
 // src/prisma/prisma.service.ts
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { PrismaPg } from '@prisma/adapter-pg';
+import { gauge } from 'src/metrics/stage-timer';
 import { PrismaClient } from '@prisma/client';
 import { Pool } from 'pg';
 
@@ -64,6 +65,7 @@ export class PrismaService
       },
     });
     this.pool = pool;
+    gauge('pg', () => ({ total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount }));
   }
 
   async onModuleInit() {

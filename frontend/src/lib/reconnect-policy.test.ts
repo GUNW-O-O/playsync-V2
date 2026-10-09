@@ -39,20 +39,36 @@ describe('reconnectDelayMs', () => {
   });
 
   /**
-   * 거듭 실패하면 폭을 넓힌다. 상한이 30초 블록을 걸고 있으면 같은 폭으로
-   * 계속 두드려 봐야 전부 429다.
+   * T119. **실패한 뒤에는 폭을 다시 벌리지 않고 짧은 걸음으로 두드린다.**
+   * 예전에는 실패마다 폭이 두 배(80 · 160 · 320초)였고, `SYNCING`은 가장 늦은
+   * 한 대가 풀므로 그 꼬리가 곧 대회 전체의 대기였다 — 667테이블 kill에서
+   * 서버는 2분째부터 한가한데 해제가 407초였다.
    */
-  it('실패가 쌓이면 폭이 넓어진다', () => {
-    const 배수 = [0, 1, 2, 3].map((n) => reconnectDelayMs(n, 'seat', fixed(0.5))!);
-    expect(배수).toEqual([20_000, 40_000, 80_000, 160_000]);
+  it('실패한 뒤에는 5초에서 두 배씩 — 5 · 10 · 20 · 40초', () => {
+    const 걸음 = [1, 2, 3, 4].map((n) => reconnectDelayMs(n, 'seat', fixed(0.5))!);
+    expect(걸음).toEqual([5_000, 10_000, 20_000, 40_000]);
+  });
+
+  /** 이 검사가 없으면 상한 없는 구현도 위 검사를 통과한다. */
+  it('걸음은 40초에서 멈춘다', () => {
+    expect(reconnectDelayMs(5, 'seat', fixed(0.5))).toBe(40_000);
+    expect(reconnectDelayMs(20, 'seat', fixed(0.5))).toBe(40_000);
   });
 
   /**
-   * 폭이 무한히 커지면 마지막 시도가 몇 시간 뒤가 된다. 세 번에서 멈춘다 —
-   * 이 검사가 없으면 상한 없는 구현도 위 검사를 통과한다.
+   * 걸음에도 지터가 있다(±50%). 서버가 같은 순간에 거절한 기기들이 같은 순간에
+   * 돌아오지 않게 한다. **0은 없다** — 방금 실패한 문을 곧바로 다시 두드리지 않는다.
    */
-  it('넓히기는 멈춘다', () => {
-    expect(reconnectDelayMs(4, 'seat', fixed(0.5))).toBe(reconnectDelayMs(3, 'seat', fixed(0.5)));
+  it('걸음은 절반에서 한 배 반 사이로 흩어진다', () => {
+    expect(reconnectDelayMs(1, 'seat', fixed(0))).toBe(2_500);
+    expect(reconnectDelayMs(1, 'seat', fixed(0.999))).toBeLessThan(7_500);
+    expect(reconnectDelayMs(1, 'seat', fixed(0.999))).toBeGreaterThan(7_400);
+  });
+
+  /** 딜러를 좌석 뒤로 미는 것은 첫 시도뿐이다. 재시도마다 40초를 깔면 딜러가 꼬리가 된다. */
+  it('딜러의 재시도에는 뒤로 미는 offset이 없다', () => {
+    expect(reconnectDelayMs(1, 'dealer', fixed(0.5))).toBe(5_000);
+    expect(reconnectDelayMs(4, 'dealer', fixed(0.5))).toBe(40_000);
   });
 
   /**

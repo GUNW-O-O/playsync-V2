@@ -221,7 +221,7 @@ export function useTableSocket({
         // 그것이라, 다시 붙으면 끝난 대회에 계속 매달린다.
         if (event.code === 1000) return;
         // T110. 세대가 올라 서버가 이 신원을 끊었다. 다시 붙어 봐야 티켓이
-        // 403이라 재시도 8회를 태우고 「새로고침」에 멈춘다 — 멈추고 이유를 그린다.
+        // 403이라 재시도를 다 태우고 「새로고침」에 멈춘다 — 멈추고 이유를 그린다.
         if (event.code === SESSION_REVOKED_CLOSE_CODE) {
           setRevoked(event.reason || REVOKED_FALLBACK);
           setReconnecting(false);
