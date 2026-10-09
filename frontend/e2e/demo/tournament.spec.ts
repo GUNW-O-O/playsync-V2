@@ -1,5 +1,8 @@
 import { Page } from '@playwright/test';
-import { chipsOnTable, dealerBearerToken, login, seat, tableState } from '../fixtures/backstage';
+import { ChildProcess } from 'child_process';
+import {
+  chipsOnTable, dealerBearerToken, killBackend, login, seat, startBackend, tableState,
+} from '../fixtures/backstage';
 import { playerAt, tableByOrder } from '../fixtures/manifest';
 import {
   PHASE,
@@ -64,6 +67,10 @@ const TABLE2_SEATS = { p3: 1, p4: 5, p5: 7 } as const;
 const MOVED_SEATS = { p3: SEATS.p1, p4: 6, p5: 8 } as const;
 
 test.describe('데모 — 한 대회', () => {
+  /** 장면 6이 다시 띄운 백엔드. Playwright가 띄운 것이 아니라 여기서 닫아야 한다. */
+  let revived: ChildProcess | null = null;
+  test.afterAll(() => { revived?.kill(); });
+
   /**
    * 장면 다섯이 테스트 하나다(파일 머리글). 각 장면의 화면·정합·짝 테스트는
    * 명세 §5에 있고, 여기서는 그 순서대로 판을 몬다.
@@ -642,6 +649,56 @@ test.describe('데모 — 한 대회', () => {
       timeout: 15_000,
     });
     await linger(console_, 3_000);
+
+    // =====================================================================
+    // 장면 6 — 판이 도는 중에 서버가 죽었다 돌아온다
+    //
+    // 태블릿이 끊긴 것을 알고, 서버가 돌아오면 다시 붙고, 대회는 모든 기기가
+    // 돌아올 때까지 멈춰 있다. 태블릿 없이 앉은 두 자리(배경으로 옮긴 사람들)는
+    // 끝내 안 돌아오므로 **상점이 연다.** 그 뒤 딜러가 재개해야 판이 이어진다.
+    // =====================================================================
+    mark('장면 6 — 판이 도는 중에 서버가 죽는다');
+    const live = () => tableState(request, table1.id, tableToken);
+    await pressUntilEffective(dealer, '핸드 시작', async () => (await live()).phase !== PHASE.WAITING);
+    const before = await live();
+    await linger(dealer, 1_500);
+
+    killBackend();
+    // 끊긴 것을 태블릿이 안다 — 띠와 「지금 다시 연결」이 뜬다.
+    await expect(heroPage.getByTestId('retry-now')).toBeVisible({ timeout: 40_000 });
+    await expect(dealer.getByTestId('retry-now')).toBeVisible({ timeout: 40_000 });
+    await linger(heroPage, 3_000);
+
+    mark('장면 6 — 서버를 다시 띄운다');
+    revived = await startBackend();
+
+    // 기다리지 않고 지금 두드린다. 그 사이 저절로 붙은 태블릿은 띠가 이미 없다.
+    mark('장면 6 — 태블릿이 다시 붙는다');
+    for (const page of [heroPage, p2Page, moverPage, dealer]) {
+      const retry = page.getByTestId('retry-now');
+      if (await retry.isVisible()) await press(page, retry, 400, 600);
+    }
+    // 딜러 화면에 정지 띠가 선다. 대회는 아직 복구 중이다.
+    await expect(dealer.getByTestId('dealer-resume')).toBeVisible({ timeout: 60_000 });
+    await linger(dealer, 2_500);
+
+    // 태블릿 없이 앉은 자리는 끝내 안 돌아온다. 상점이 누가 빠졌는지 보고 연다.
+    mark('장면 6 — 안 돌아온 자리는 상점이 연다');
+    await console_.reload();
+    await expect(console_.getByTestId('sync-panel')).toBeVisible({ timeout: 15_000 });
+    await linger(console_, 3_000);
+    await press(console_, console_.getByRole('button', { name: '지금 진행' }), 600, 900);
+    await press(console_, console_.getByRole('button', { name: '진행한다' }), 600, 1_500);
+    await expect(console_.getByTestId('sync-panel')).toBeHidden({ timeout: 15_000 });
+
+    // 판을 다시 여는 것은 딜러다. 차례였던 사람은 그 사이 접히지 않았다.
+    mark('장면 6 — 딜러가 판을 다시 연다');
+    await press(dealer, dealer.getByRole('button', { name: '이어서 진행' }), 700, 1_200);
+    await expect(dealer.getByTestId('dealer-resume')).toBeHidden({ timeout: 15_000 });
+    const resumed = await live();
+    expectChips(resumed, '재개 뒤', chipsOnTable(before));
+    expect(`차례 ${resumed.currentTurnSeatIndex}`).toBe(`차례 ${before.currentTurnSeatIndex}`);
+    await linger(dealer, 4_000);
 
     mark('끝');
   });

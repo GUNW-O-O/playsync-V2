@@ -1245,7 +1245,7 @@ test.describe('데모 — 정산', () => {
 
     mark('마무리 — 셋이 한 화면에 있다');
     await linger(console_, 1_500);
-    const finishCard = console_.getByText('대회 마무리 — 되돌릴 수 없습니다');
+    const finishCard = console_.getByText('대회 마무리 (되돌릴 수 없습니다)');
     await expect(finishCard).toBeVisible();
     // **그 카드로 굴리고 찍는다.** 콘솔은 720px보다 길어서 마무리 카드가
     // 화면 밖에 있고, `toBeVisible()`은 스크롤 밖도 통과한다 — 앞 촬영본의
@@ -1333,7 +1333,7 @@ test.describe('데모 — 정산', () => {
 
     await console_.reload();
     await linger(console_, 1_500);
-    await expect(console_.getByText('대회 마무리 — 되돌릴 수 없습니다')).toBeHidden({
+    await expect(console_.getByText('대회 마무리 (되돌릴 수 없습니다)')).toBeHidden({
       timeout: 30_000,
     });
     await linger(console_, 2_500);

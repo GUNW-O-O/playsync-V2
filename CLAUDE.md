@@ -88,9 +88,9 @@ npm run test:int       # 통합 테스트 (컨테이너 기동부터 자동)
 npm run test:e2e       # 화면 회귀 (Playwright, 시드 필요)
 npm run test:outage    # Redis 컨테이너를 실제로 죽였다 살린다 (Docker, 약 3분)
 npm run seed           # 개발 시드 (= npm run seed -w backend)
-npm run demo           # 데모 촬영 (시드 → 프론트 빌드 → 장면 다섯)
+npm run demo           # 데모 촬영 (시드 → 프론트 빌드 → 장면 여섯. 여섯째는 백엔드를 죽였다 살린다)
 npm run demo:settlement  # 정산 촬영. 마무리 셋을 각각 시드부터 다시 돈다
-npm run assets         # 장면 1~5 촬영본을 자르고 합쳐 img/ 로 (ffmpeg-static)
+npm run assets         # 촬영본을 자르고 합쳐 img/ 로 (ffmpeg-static). README가 안 쓰는 그림도 만든다 — 지우고 커밋한다
 npm run assets:settlement  # 정산 촬영을 자른다 (셋이 다 있어야 돈다)
 ```
 
@@ -113,13 +113,13 @@ npm run assets:settlement  # 정산 촬영을 자른다 (셋이 다 있어야 �
 ```
 contract       89  (9 suites)
 백엔드 단위   489  (49 suites)
-프론트 단위   382  (44 files)
+프론트 단위   378  (43 files)
 통합          781  (50 suites)
 e2e            13  (4 files, regression 프로젝트)
 데모 촬영       1  (`npm run demo`)
 정산 촬영       1  (`npm run demo:settlement`, 마무리마다 한 번씩 셋)
 부하 하네스    47  (4 files, `cd load && npm test`)
-실제 kill      26  (2 suites, `npm run test:outage`, jest 125초)
+실제 kill      26  (2 suites, `npm run test:outage`, jest 126초)
 타입 에러       0
 ```
 
