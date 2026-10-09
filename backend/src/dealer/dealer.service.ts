@@ -572,8 +572,12 @@ export class DealerService {
       while (asked.length > 0) {
         const generation = outage.generation;
         const outcomes = await this.askRebuyRound(tournamentId, tableId, asked, tournamentInfo, generation);
-        const interrupted = asked.filter((_, i) => outcomes[i] === 'interrupted');
+        // `deferred`(DB의 일시 실패, T118)도 같은 길을 탄다 — 확정하지 않고
+        // 딜러의 재개 뒤에 다시 묻는다.
+        const interrupted = asked.filter((_, i) => outcomes[i] === 'interrupted' || outcomes[i] === 'deferred');
         if (interrupted.length === 0) break;
+        // 서버가 멈춘 것이 아니면 화면이 「N초 멈췄다」 대신 일시 오류라고 적는다.
+        const reason = outcomes.includes('interrupted') ? undefined : 'transientError' as const;
 
         // **지금이 아니라 장애가 시작된 시각이다**(T100 리뷰 M-f). 이 줄
         // 바로 위 `Promise.all`(`askRebuyRound` 안)이 I1의 `whenUp` 경로를
@@ -588,7 +592,7 @@ export class DealerService {
         // 누른 재개가 풀 대상을 못 찾고, 이 고리는 영영 기다린다. 먼저 걸면 그
         // 전의 재개는 `resumePending`이 없어 `resumeTable`이 거절한다.
         const resumed = new Promise<void>((resolve) => this.resumeWaiters.set(tableId, resolve));
-        const hadSnapshot = await this.holdForDealer(tableId, stoppedAt);
+        const hadSnapshot = await this.holdForDealer(tableId, stoppedAt, reason);
 
         // **대회가 닫혔으면 기다리지 않고 고리를 끝낸다**(T100 잔여). 상점이
         // 「이어서 진행」 대신 대회를 중단·종료하면 `SessionService`가 이
@@ -673,11 +677,11 @@ export class DealerService {
    * 끝낸다 — 이 재시도 루프 밖에서 따로 `getSnapShot`을 다시 읽으면 그 왕복
    * 사이의 재장애가 이 함수의 방어를 안 타는 새 던짐 자리가 된다.
    */
-  private async holdForDealer(tableId: string, stoppedAt: number): Promise<boolean> {
+  private async holdForDealer(tableId: string, stoppedAt: number, reason?: 'transientError'): Promise<boolean> {
     for (;;) {
       await this.redis.outage.whenUp();
       try {
-        return await this.playsync.markRebuyInterrupted(tableId, Date.now() - stoppedAt);
+        return await this.playsync.markRebuyInterrupted(tableId, Date.now() - stoppedAt, reason);
       } catch (error) {
         if (this.redis.outage.isUp()) throw error;
       }

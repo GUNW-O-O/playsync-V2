@@ -698,6 +698,20 @@ describe('SeatGameClient', () => {
       expect(banner).toHaveTextContent('딜러');
     });
 
+    /** T118. 서버가 멈춘 것이 아니면 「0초 멈췄다」가 아니라 일시 오류라고 적는다. */
+    it('일시 오류로 선 테이블은 멈춘 길이 대신 일시 오류라고 적는다', async () => {
+      const { socket } = await renderWithSocket();
+
+      socket.emitServerEvent('renderGame', {
+        ...BASE_STATE, resumePending: { downMs: 0, reason: 'transientError' },
+      });
+
+      const banner = screen.getByTestId('seat-resume-wait');
+      expect(banner).toHaveTextContent('일시적인 서버 오류입니다');
+      expect(banner).toHaveTextContent('딜러');
+      expect(banner).not.toHaveTextContent('멈췄다');
+    });
+
     /** **반대 입력.** 멈추지 않은 판에 이 안내가 뜨면 참가자가 손을 멈춘다. */
     it('멈추지 않았으면 뜨지 않는다', async () => {
       const { socket } = await renderWithSocket();

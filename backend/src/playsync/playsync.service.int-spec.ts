@@ -5,6 +5,7 @@ import Redis from 'ioredis';
 import { PlaysyncService } from './playsync.service';
 import { RedisService } from 'src/redis/redis.service';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { CLOSED_TOURNAMENT_WRITE } from 'src/store/session/tournament-status';
 import { ActionType, GamePhase, TablePlayer, TableState } from 'src/game-engine/types';
 import { closeTestPrisma, createTestPrisma, truncateAll } from '../../test/helpers/prisma';
 import { createTestRedis, flushTestRedis } from '../../test/helpers/redis';
@@ -720,6 +721,97 @@ describe('PlaysyncService.processRebuy', () => {
       expect(`${result} DB ${tx.mock.calls.length}`).toBe('interrupted DB 0');
       const state: TableState = JSON.parse((await redis.get(stateKey))!);
       expect(state.players[0]!.stack).toBe(0);
+    });
+  });
+
+  /**
+   * T118 — **DB의 일시 실패는 거절이 아니다.** 예전에는 `executeRebuyTransaction`이
+   * 무엇을 던지든 `skipped`였고, 그 값은 곧 탈락이다. 1,000테이블 kill에서 pg 풀
+   * 고갈이 그렇게 382명을 탈락시켰다.
+   *
+   * 진짜 거절(포인트 부족 · 닫힌 대회)이 반대 입력이다 — 없으면 「언제나
+   * 재시도」도 「언제나 미룸」도 앞의 둘을 통과한다.
+   */
+  describe('DB 실패 (T118)', () => {
+    const TRANSIENT = 'Unable to start a transaction in the given time.';
+    const poolExhausted = () => Object.assign(new Error(TRANSIENT), { code: 'P2028' });
+    const stack = async () =>
+      (JSON.parse((await redis.get(stateKey))!) as TableState).players[0]!.stack;
+
+    beforeAll(() => { process.env.DB_SYNC_RETRY_BASE_MS = '1'; });
+    afterAll(() => { delete process.env.DB_SYNC_RETRY_BASE_MS; });
+
+    it('일시 실패는 다시 시도한다 — 두 번 실패하고 세 번째에 반영된다', async () => {
+      const tx = jest.spyOn(service, 'executeRebuyTransaction')
+        .mockRejectedValueOnce(poolExhausted())
+        .mockRejectedValueOnce(poolExhausted())
+        .mockResolvedValue(10000);
+      answerWhenPrompted(true);
+
+      const result = await callProcessRebuy();
+
+      expect(`${result} DB ${tx.mock.calls.length} 스택 ${await stack()}`).toBe('applied DB 3 스택 10000');
+    });
+
+    it('끝까지 실패하면 거절이 아니라 미룬다 — 칩을 되돌리고 deferred', async () => {
+      const tx = jest.spyOn(service, 'executeRebuyTransaction').mockRejectedValue(poolExhausted());
+      answerWhenPrompted(true);
+
+      const result = await callProcessRebuy();
+
+      expect(`${result} DB ${tx.mock.calls.length} 스택 ${await stack()}`).toBe('deferred DB 4 스택 0');
+    });
+
+    it.each([
+      ['포인트 부족', '포인트 부족 혹은 유저 없음'],
+      ['닫힌 대회', CLOSED_TOURNAMENT_WRITE],
+    ])('반대 입력: %s은 진짜 거절이다 — 다시 시도하지 않고 skipped', async (_name, message) => {
+      const tx = jest.spyOn(service, 'executeRebuyTransaction').mockRejectedValue(new Error(message));
+      answerWhenPrompted(true);
+
+      const result = await callProcessRebuy();
+
+      expect(`${result} DB ${tx.mock.calls.length} 스택 ${await stack()}`).toBe('skipped DB 1 스택 0');
+    });
+
+    it('포인트 조회가 끝까지 던지면 묻지 않고 미룬다', async () => {
+      let reads = 0;
+      const down = {
+        user: { findUnique: async () => { reads++; throw poolExhausted(); } },
+      } as unknown as PrismaService;
+      const downService = new PlaysyncService(queue, redisService, down, emitter);
+      let prompted = false;
+      emitter.on('rebuy.request.sent', () => { prompted = true; });
+
+      const result = await downService.processRebuy(TOURNAMENT, TABLE, USER, 1000, 10000, 'T');
+
+      expect(`${result} 조회 ${reads} 팝업 ${prompted}`).toBe('deferred 조회 4 팝업 false');
+    });
+
+    /**
+     * 트랜잭션 안의 `user.update`는 예전에 **모든 오류**를 「포인트 부족」으로
+     * 바꿨다. 그러면 위의 분류가 일시 실패를 진짜 거절로 읽는다.
+     */
+    it.each([
+      ['P2025', '포인트 부족 혹은 유저 없음'],
+      ['P2028', TRANSIENT],
+    ])('executeRebuyTransaction: 포인트 차감의 %s는 「%s」로 올라온다', async (code, message) => {
+      const failing = {
+        $transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({
+          user: { update: async () => { throw Object.assign(new Error(TRANSIENT), { code }); } },
+        }),
+      } as unknown as PrismaService;
+      const txService = new PlaysyncService(queue, redisService, failing, emitter);
+
+      await expect(txService.executeRebuyTransaction(TOURNAMENT, TABLE, USER, 1000, 10000, 'T'))
+        .rejects.toThrow(message);
+    });
+
+    it('markRebuyInterrupted는 사유를 재개 대기에 싣는다', async () => {
+      await service.markRebuyInterrupted(TABLE, 0, 'transientError');
+
+      const saved: TableState = JSON.parse((await redis.get(stateKey))!);
+      expect(`${saved.resumePending?.downMs} ${saved.resumePending?.reason}`).toBe('0 transientError');
     });
   });
 

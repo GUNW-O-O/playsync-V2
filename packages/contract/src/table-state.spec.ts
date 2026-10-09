@@ -173,6 +173,14 @@ describe("RenderGameEventSchema", () => {
       expect(TableStateSchema.safeParse(snapshot({ resumePending: {} })).success).toBe(false);
     });
 
+    it("일시 오류 사유는 통과하고, 모르는 사유는 거절한다 (T118)", () => {
+      const pending = { downMs: 0, reason: "transientError" };
+      expect(TableStateSchema.parse(snapshot({ resumePending: pending })).resumePending).toEqual(pending);
+      expect(
+        TableStateSchema.safeParse(snapshot({ resumePending: { downMs: 0, reason: "other" } })).success,
+      ).toBe(false);
+    });
+
     it("음수 정지는 거절한다", () => {
       expect(
         TableStateSchema.safeParse(snapshot({ resumePending: { downMs: -1 } })).success,

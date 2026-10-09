@@ -12,11 +12,12 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { LIVE_PLAYER_STATUSES } from 'src/store/session/player-status';
 import {
   NOT_CLOSED_TOURNAMENT_FILTER,
+  CLOSED_TOURNAMENT_WRITE,
   asClosedTournamentWrite,
 } from 'src/store/session/tournament-status';
 import { RedisService } from 'src/redis/redis.service';
 import { closeRegistration } from 'src/store/session/registration-gate';
-import { retryAsync } from 'src/common/retry';
+import { RetryOptions, retryAsync } from 'src/common/retry';
 import { entryCountOf, payoutsForRaw } from './payout-table';
 import { awardPrize, prizeFor, prizePoolOf, splitBustedRanks } from './prize';
 import { SEAT_ROLE } from 'src/auth/seat-role';
@@ -45,7 +46,19 @@ function rebuyTimeoutMs(): number {
  * - `skipped`: 묻지 않았거나 반영할 수 없었다 — 포인트 부족, DB 거절(칩은 되돌렸다), 스냅샷·좌석 없음
  * - `interrupted`: Redis 장애가 끼었다. 아무것도 확정하지 않았다
  */
-export type RebuyOutcome = 'applied' | 'declined' | 'timeout' | 'skipped' | 'interrupted';
+/**
+ * `interrupted`와 `deferred`는 둘 다 **확정하지 않고 딜러의 재개 뒤에 다시 묻는다.**
+ * 앞은 Redis 장애가 창을 끊은 것(T100), 뒤는 DB가 일시적으로 못 받은 것(T118)이다.
+ */
+export type RebuyOutcome = 'applied' | 'declined' | 'timeout' | 'skipped' | 'interrupted' | 'deferred';
+
+const REBUY_POINTS_SHORT = '포인트 부족 혹은 유저 없음';
+/**
+ * 리바인 트랜잭션의 **진짜 거절** — 포인트가 모자라거나 대회가 닫혔다(T118).
+ * 다시 해도 답이 같다. 그 밖의 오류(풀 고갈 · 연결 끊김)는 일시 실패로 본다.
+ */
+const isRebuyRefusal = (error: unknown) =>
+  [REBUY_POINTS_SHORT, CLOSED_TOURNAMENT_WRITE].includes((error as Error)?.message);
 
 @Injectable()
 export class PlaysyncService {
@@ -472,11 +485,13 @@ export class PlaysyncService {
    * `getSnapShot`을 다시 읽으면 그 한 번의 왕복 사이에 장애가 다시 나는 창이
    * `holdForDealer`의 재시도 밖에 생긴다.
    */
-  public async markRebuyInterrupted(tableId: string, downMs: number): Promise<boolean> {
+  public async markRebuyInterrupted(
+    tableId: string, downMs: number, reason?: 'transientError',
+  ): Promise<boolean> {
     const state = await this.redis.mutateSnapshot(tableId, async (snapshot) => {
       if (!snapshot) return null;
       delete snapshot.rebuyPending;
-      snapshot.resumePending ??= { downMs };
+      snapshot.resumePending ??= { downMs, ...(reason ? { reason } : {}) };
       return snapshot;
     });
     if (state) {
@@ -700,6 +715,11 @@ export class PlaysyncService {
    * 장애가 **돈이 움직이기 전에** 첫 쓰기를 멈춘다. 대신 DB가 거절하면 넣은 칩을
    * 되돌린다(`revertRebuy`). 전광판(`rebuyPlayer`)은 없는 키를 만들므로 DB 뒤다.
    *
+   * **DB의 일시 실패는 거절이 아니다(T118).** 예전에는 트랜잭션이 무엇을 던지든
+   * `skipped`였고 그 값은 곧 탈락이라, pg 풀 고갈이 수락한 사람 382명을
+   * 탈락시켰다(1,000테이블 kill). 진짜 거절(`isRebuyRefusal`)만 `skipped`고, 그 밖은
+   * 다시 시도한 뒤 끝내 안 되면 `deferred`로 미룬다 — 체크포인트와 같은 백오프다.
+   *
    * @param generation 이 리바인 판을 시작할 때의 장애 세대. 락 안에서 달라졌으면
    *   그 사이에 끊겼다는 뜻이라 쓰지 않는다(`handleAction`의 세대 가드와 같다).
    */
@@ -712,10 +732,17 @@ export class PlaysyncService {
     tournamentName: string,
     generation: number = this.redis.outage.generation,
   ): Promise<RebuyOutcome> {
-    const userPoints = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { points: true }
-    });
+    // 이 조회가 던지면 `resolveWinners`가 통째로 실패하고, 딜러가 체크포인트
+    // 재시도로 빠져나올 때 묻지도 않은 파산자가 탈락한다(T118).
+    const read = await retryAsync(
+      () => this.prisma.user.findUnique({ where: { id: userId }, select: { points: true } }),
+      this.rebuyRetry(`포인트 조회 (user=${userId})`),
+    );
+    if (!read.ok) {
+      this.logger.error(`리바인 포인트 조회 실패 — 묻지 않고 미룬다 (table=${tableId}, user=${userId}): ${(read.error as Error)?.message}`);
+      return 'deferred';
+    }
+    const userPoints = read.value;
     if (!userPoints) throw new Error('플레이어 정보 오류');
     if (userPoints.points < entryFee) return 'skipped';
 
@@ -769,13 +796,29 @@ export class PlaysyncService {
     }
     if (verdict !== 'applied') return verdict;
 
-    // 2. DB — 거절되면 1을 되돌린다.
-    try {
-      await this.executeRebuyTransaction(
-        tournamentId, tableId, userId, entryFee, startStack, tournamentName,
-      );
-    } catch (error) {
-      this.logger.error(`리바인 트랜잭션 거절 — 칩을 되돌린다 (table=${tableId}, user=${userId}): ${error.message}`);
+    // 2. DB — 거절되면 1을 되돌린다. 진짜 거절은 값으로 돌려 재시도를 끝낸다 —
+    //    트랜잭션이라 실패한 시도는 아무것도 안 남기므로 다시 해도 안전하다.
+    const paid = await retryAsync<Error | null>(
+      async () => {
+        try {
+          await this.executeRebuyTransaction(
+            tournamentId, tableId, userId, entryFee, startStack, tournamentName,
+          );
+          return null;
+        } catch (error) {
+          if (isRebuyRefusal(error)) return error;
+          throw error;
+        }
+      },
+      this.rebuyRetry(`트랜잭션 (table=${tableId}, user=${userId})`),
+    );
+    if (!paid.ok) {
+      this.logger.error(`리바인 트랜잭션 일시 실패 — 칩을 되돌리고 미룬다 (table=${tableId}, user=${userId}): ${(paid.error as Error)?.message}`);
+      await this.revertRebuy(tableId, userId, startStack);
+      return 'deferred';
+    }
+    if (paid.value) {
+      this.logger.error(`리바인 트랜잭션 거절 — 칩을 되돌린다 (table=${tableId}, user=${userId}): ${paid.value.message}`);
       await this.revertRebuy(tableId, userId, startStack);
       return 'skipped';
     }
@@ -803,6 +846,19 @@ export class PlaysyncService {
       }
     }
     return 'applied';
+  }
+
+  /** 리바인의 DB 재시도. 값은 체크포인트(`checkpointTableToDb`)와 같은 env를 쓴다. */
+  private rebuyRetry(what: string): RetryOptions {
+    const attempts = Number(process.env.DB_SYNC_RETRY_ATTEMPTS ?? 4);
+    return {
+      attempts,
+      baseMs: Number(process.env.DB_SYNC_RETRY_BASE_MS ?? 200),
+      maxMs: 3000,
+      onRetry: (attempt, delayMs) => {
+        this.logger.warn(`[리바인] ${what} 재시도 ${attempt}/${attempts - 1}, ${Math.round(delayMs)}ms 후`);
+      },
+    };
   }
 
   /**
@@ -908,7 +964,12 @@ export class PlaysyncService {
           points: { gte: entryFee }
         },
         data: { points: { decrement: entryFee } }
-      }).catch(() => { throw new Error('포인트 부족 혹은 유저 없음'); });
+      }).catch((error) => {
+        // **P2025만 바꾼다**(T118, `asClosedTournamentWrite`와 같은 이유). 전부
+        // 바꾸면 풀 고갈이 「포인트 부족」으로 둔갑해 진짜 거절로 읽힌다.
+        if ((error as { code?: string }).code === 'P2025') throw new Error(REBUY_POINTS_SHORT);
+        throw error;
+      });
 
       await tx.pointTransaction.create({
         data: {
