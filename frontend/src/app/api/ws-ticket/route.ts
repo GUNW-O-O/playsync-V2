@@ -41,7 +41,7 @@ export async function POST() {
     // 삼는데(`useTableSocket`), 다시 싸면서 버리면 그 경로가 늘 죽어 있다.
     const retryAfter = res.headers.get('Retry-After');
     return NextResponse.json(
-      { message: typeof message === 'string' ? message : '티켓을 받지 못했습니다.' },
+      { message: typeof message === 'string' ? message : '서버에 연결하지 못했습니다.' },
       { status: res.status, headers: retryAfter === null ? undefined : { 'Retry-After': retryAfter } },
     );
   }
@@ -55,6 +55,6 @@ export async function POST() {
   } catch {
     // 백엔드가 ticket을 안 줬거나 모양이 다르다. 액세스 토큰이 새지 않는
     // 응답이면 되므로 본문은 담지 않는다.
-    return NextResponse.json({ message: '티켓 응답 형식이 올바르지 않습니다.' }, { status: 502 });
+    return NextResponse.json({ message: '서버 응답을 읽지 못했습니다.' }, { status: 502 });
   }
 }

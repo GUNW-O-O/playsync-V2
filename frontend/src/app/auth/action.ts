@@ -43,7 +43,7 @@ function failureMessage(body: unknown, fallback: string): string {
 function throttleMessage(res: Response): string {
   const retryAfter = Number(res.headers.get('Retry-After'));
   const wait = Number.isFinite(retryAfter) && retryAfter > 0 ? `${retryAfter}초 뒤` : '잠시 후';
-  return `요청이 몰려 잠시 닫혔습니다. ${wait} 다시 시도해 주세요.`;
+  return `요청이 많아 잠시 막혔습니다. ${wait} 다시 시도해 주세요.`;
 }
 
 // [회원가입 Action]

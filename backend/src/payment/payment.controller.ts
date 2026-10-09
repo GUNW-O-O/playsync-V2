@@ -20,7 +20,7 @@ export class PaymentController {
   @Get('/stores/:storeId')
   async findAvailableSessions(@Param('storeId') storeId: string) {
     const data = await this.paymentService.getStoreAvailableSessions(storeId);
-    if (!data) throw new NotFoundException('세션을 찾을 수 없습니다.');
+    if (!data) throw new NotFoundException('대회를 찾을 수 없습니다.');
     return data;
   }
 

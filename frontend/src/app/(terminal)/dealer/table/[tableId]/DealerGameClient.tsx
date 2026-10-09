@@ -3,8 +3,8 @@
 import { useState } from 'react';
 import { DealerAction, SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
 import Felt from '@/component/felt/Felt';
-import { formatDuration } from '@/lib/format-duration';
 import { useTableSocket } from '@/lib/use-table-socket';
+import ReconnectOverlay from '../../../ReconnectOverlay';
 import {
   GamePhase,
   TableState,
@@ -94,7 +94,7 @@ export default function DealerGameClient({
    * **딜러는 좌석보다 늦게 붙는다**(`reconnect-policy.ts`). 먼저 붙으면 아홉
    * 중 둘만 찬 테이블을 보게 되고, 사람이 판을 이르게 재개하는 순간이 거기다.
    */
-  const { socketRef, connectionError, reconnecting, outage, revoked, retryNow } = useTableSocket({
+  const { socketRef, connectionError, reconnecting, stalled, outage, revoked, retryNow } = useTableSocket({
     tableId,
     role: 'dealer',
     defaultError: DEFAULT_CONNECTION_ERROR,
@@ -248,7 +248,9 @@ export default function DealerGameClient({
 
   return (
     <div className="relative flex h-screen w-screen flex-col overflow-hidden bg-tb-bg text-tb-ink">
-      {connectionError && (
+      {/* 재시도를 다 쓰고 멈췄으면 줄이 아니라 모달이다 — 눌러야만 돌아온다. */}
+      {stalled && <ReconnectOverlay onRetry={retryNow} />}
+      {connectionError && !stalled && (
         <div className="absolute inset-x-0 top-0 z-50 bg-err px-4 py-2 text-center text-sm font-medium text-white">
           {/*
             **다시 붙는 중인지를 함께 적는다.** 문구만 있으면 읽는 사람은 자기가
@@ -299,31 +301,45 @@ export default function DealerGameClient({
         붙는다(`reconnect-policy.ts`) — 먼저 붙으면 아홉 중 둘만 찬 테이블을
         보게 되고, 이르게 누르는 순간이 정확히 거기다.
       */}
+      {/*
+        **모달로 띄운다.** 딜러가 「이어서 진행」을 눌러야만 게임이 이어진다 — 위쪽
+        줄로 두면 다른 버튼들 사이에서 지나친다. 복구 중에는 버튼이 꺼져 있고, 몇 대가
+        돌아왔는지를 같은 자리에 적는다.
+      */}
       {resumePending && (
         <div
           data-testid="dealer-resume"
-          className="absolute inset-x-0 top-0 z-50 flex items-center justify-between gap-3 bg-err px-4 py-3 text-left text-sm text-white"
+          role="alertdialog"
+          aria-label="게임 재개"
+          className="absolute inset-0 z-40 flex items-center justify-center bg-tb-bg/85 p-6"
         >
-          <span>
-            {/* 서버가 멈춘 것이 아니면 잴 시간이 없다 — 리바인을 DB가 못 받았다(T118). */}
-            {resumePending.reason === 'transientError'
-              ? '일시적인 서버 오류입니다. 이어서 진행하면 리바인을 다시 묻습니다.'
-              : `서버가 ${formatDuration(resumePending.downMs)} 멈췄다 돌아왔습니다. 자리가 다 찼는지 보고 이어서 진행하세요.`}
-            {/*
-              **서버가 아직 끝내지 못한 재개는 거절된다.** `present === required`만
-              보고 버튼을 열면 그 자리 하나만 다르다 — `syncing: false`가
-              올 때까지는 서버가 끝났다고 말한 것이 아니다(T96).
-            */}
-            {sync && ` 기기 ${sync.present}/${sync.required} 복귀 — 딜러와 좌석이 모두 돌아오면 이어서 진행할 수 있습니다.`}
-          </span>
-          <button
-            type="button"
-            disabled={sync !== null || outage}
-            onClick={resumeTable}
-            className="shrink-0 border border-white px-4 py-2 text-sm font-semibold disabled:opacity-40"
-          >
-            이어서 진행
-          </button>
+          <div className="w-full max-w-[460px] border border-tb-line bg-tb-panel p-6 text-center">
+            <div className="text-2xl font-light leading-snug text-tb-ink">
+              {/* 서버가 멈춘 것이 아니면 리바인을 DB가 못 받은 것이다(T118). */}
+              {resumePending.reason === 'transientError'
+                ? '일시적인 서버 오류입니다'
+                : '서버가 멈췄다가 복구됐습니다'}
+            </div>
+            <p className="mt-3 text-sm leading-relaxed text-tb-muted">
+              {/*
+                **서버가 아직 끝내지 못한 재개는 거절된다.** `syncing: false`가 올 때까지는
+                서버가 끝났다고 말한 것이 아니다(T96). 그동안은 누르라고 적지 않는다.
+              */}
+              {sync
+                ? `태블릿 ${sync.present}/${sync.required}대 연결됨. 딜러와 좌석 태블릿이 모두 연결되면 이어서 진행할 수 있습니다.`
+                : resumePending.reason === 'transientError'
+                  ? '이어서 진행하면 리바인을 다시 묻습니다.'
+                  : '참가자가 모두 자리에 있는지 확인하고 이어서 진행하세요.'}
+            </p>
+            <button
+              type="button"
+              disabled={sync !== null || outage}
+              onClick={resumeTable}
+              className="mt-5 block w-full bg-tb-act py-3 text-sm font-semibold text-[#06201a] disabled:opacity-40"
+            >
+              이어서 진행
+            </button>
+          </div>
         </div>
       )}
 
@@ -340,7 +356,7 @@ export default function DealerGameClient({
           data-testid="dealer-sync-strip"
           className="absolute inset-x-0 top-0 z-50 bg-err px-4 py-3 text-center text-sm text-white"
         >
-          기기 {sync.present}/{sync.required} 복귀 — 딜러와 좌석이 모두 돌아오면 이어서 진행할 수 있습니다.
+          태블릿 {sync.present}/{sync.required}대 연결됨. 딜러와 좌석 태블릿이 모두 연결되면 이어서 진행할 수 있습니다.
         </div>
       )}
 
@@ -449,7 +465,7 @@ export default function DealerGameClient({
                 </button>
               </div>
               <p className="text-xs text-tb-sub">
-                폴드는 이 핸드만 접습니다. 내보내면 칩은 남고, 참가 OTP로 다시 앉습니다.
+                폴드는 이 핸드에서만 빠집니다. 내보내면 칩은 그대로 남고, 참가 OTP로 다시 앉을 수 있습니다.
               </p>
             </div>
           ) : (
@@ -468,15 +484,15 @@ export default function DealerGameClient({
         */}
         {rebuyPending && (
           <p data-testid="rebuy-pending" className="mb-2 text-xs text-tb-act">
-            {rebuyPending.seatIndexes.map((i) => i + 1).join('·')}번 자리의 리바인을
-            기다립니다 — 답이 오거나 시간이 지나면 다음 핸드로 갑니다.
+            {rebuyPending.seatIndexes.map((i) => i + 1).join('·')}번 자리의 리바인 응답을
+            기다리는 중입니다. 응답이 오거나 시간이 지나면 다음 핸드로 넘어갑니다.
           </p>
         )}
         {isCheckpointStuck && (
           <p data-testid="db-sync-status" className="mb-2 text-xs text-err">
             {dbSyncStatus === 'FAILED'
-              ? '저장 실패 — 저장이 끝나야 다음 핸드로 갑니다.'
-              : '저장 재시도 중 — 잠시 기다려 주세요.'}
+              ? '저장에 실패했습니다. 저장이 끝나야 다음 핸드로 넘어갑니다.'
+              : '저장을 다시 시도하는 중입니다. 잠시 기다려 주세요.'}
           </p>
         )}
         <div className="flex gap-2">

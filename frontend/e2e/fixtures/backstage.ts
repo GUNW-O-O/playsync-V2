@@ -1,3 +1,5 @@
+import { ChildProcess, execSync, spawn } from 'child_process';
+import { resolve } from 'path';
 import { APIRequestContext, Page } from '@playwright/test';
 import { DEVICE_TOKEN_HEADER } from '@playsync/contract';
 import { readManifest } from './manifest';
@@ -16,6 +18,45 @@ import { readManifest } from './manifest';
  */
 
 export const BACKEND_URL = 'http://localhost:3001';
+
+/**
+ * 백엔드 프로세스를 **실제로 죽인다**(장애 복구 장면). 3001번을 듣는 프로세스를 찾아
+ * 강제 종료한다 — 소켓이 정상 종료 없이 끊기는 것이 이 장면이 보여 주려는 것이다.
+ */
+export function killBackend() {
+  if (process.platform === 'win32') {
+    const pids = new Set(
+      execSync('netstat -ano -p tcp').toString().split(/\r?\n/)
+        .filter((line) => /:3001\s/.test(line) && /LISTENING/.test(line))
+        .map((line) => line.trim().split(/\s+/).pop()!),
+    );
+    for (const pid of pids) execSync(`taskkill /F /PID ${pid}`);
+  } else {
+    execSync("kill -9 $(lsof -ti tcp:3001 -sTCP:LISTEN)", { shell: '/bin/sh' });
+  }
+}
+
+/**
+ * 백엔드를 다시 띄우고 요청을 받을 때까지 기다린다. Playwright가 띄운 것은 감시
+ * 모드(`nest start --watch`)라 죽은 자식을 다시 살리지 않는다 — 그 감시가 이미 지어
+ * 놓은 `dist`를 그대로 돌린다. 돌려준 프로세스는 부른 쪽이 끝에 닫는다.
+ */
+export async function startBackend(): Promise<ChildProcess> {
+  const child = spawn(process.execPath, ['dist/src/main.js'], {
+    cwd: resolve(__dirname, '../../../backend'),
+    stdio: 'ignore',
+  });
+  const deadline = Date.now() + 90_000;
+  for (;;) {
+    try {
+      await fetch(BACKEND_URL);
+      return child;
+    } catch {
+      if (Date.now() > deadline) throw new Error('백엔드가 90초 안에 다시 뜨지 않았다');
+      await new Promise((r) => setTimeout(r, 300));
+    }
+  }
+}
 
 /** 시드가 만든 계정으로 토큰을 받는다. 실패하면 그 자리에서 멈춘다. */
 export async function login(

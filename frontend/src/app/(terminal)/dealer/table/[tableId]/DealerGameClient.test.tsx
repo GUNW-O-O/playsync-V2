@@ -146,7 +146,7 @@ describe('DealerGameClient', () => {
         baseState({ phase: GamePhase.HAND_END, dbSyncStatus: 'FAILED' }),
       );
 
-      expect(screen.getByTestId('db-sync-status')).toHaveTextContent('저장 실패');
+      expect(screen.getByTestId('db-sync-status')).toHaveTextContent('저장에 실패했습니다');
     });
 
     it('서버가 재시도 중이면 누르지 못한다', async () => {
@@ -490,7 +490,7 @@ describe('DealerGameClient', () => {
    * 테이블을 영영 묶는다.
    */
   describe('정지와 재개', () => {
-    it('정지 표시가 오면 멈춘 길이와 재개 버튼을 띄운다', async () => {
+    it('정지 표시가 오면 멈췄다 복구됐다고 알리고 재개 버튼을 띄운다', async () => {
       const { socket } = await renderWithSocket(baseState({ phase: GamePhase.FLOP }));
 
       socket.emitServerEvent(
@@ -498,12 +498,13 @@ describe('DealerGameClient', () => {
         baseState({ phase: GamePhase.FLOP, resumePending: { downMs: 192_000 } }),
       );
 
-      // 3분 12초. 밀리초를 그대로 보여 주면 딜러가 머릿속 나눗셈을 해야 한다.
-      expect(screen.getByTestId('dealer-resume')).toHaveTextContent('3분 12초');
+      // 몇 초 멈췄는지는 적지 않는다. 딜러가 그 숫자로 할 일이 없다.
+      expect(screen.getByTestId('dealer-resume')).toHaveTextContent('서버가 멈췄다가 복구됐습니다');
+      expect(screen.getByTestId('dealer-resume')).not.toHaveTextContent('3분');
     });
 
     /** T118. 서버가 멈춘 것이 아니면 「0초 멈췄다」가 아니라 일시 오류라고 적는다. */
-    it('일시 오류로 선 테이블은 멈춘 길이 대신 일시 오류라고 적는다', async () => {
+    it('일시 오류로 선 테이블은 서버가 멈췄다는 말 대신 일시 오류라고 적는다', async () => {
       const { socket } = await renderWithSocket(baseState({ phase: GamePhase.FLOP }));
 
       socket.emitServerEvent(
@@ -559,7 +560,7 @@ describe('DealerGameClient', () => {
 
       socket.emitServerEvent(TOURNAMENT_SYNCING_EVENT, { syncing: true, present: 7, required: 9 });
 
-      expect(screen.getByTestId('dealer-resume')).toHaveTextContent('기기 7/9 복귀');
+      expect(screen.getByTestId('dealer-resume')).toHaveTextContent('태블릿 7/9대 연결됨');
       expect(screen.getByRole('button', { name: '이어서 진행' })).toBeDisabled();
 
       socket.emitServerEvent(TOURNAMENT_SYNCING_EVENT, { syncing: false, present: 9, required: 9 });
@@ -579,7 +580,7 @@ describe('DealerGameClient', () => {
 
       socket.emitServerEvent(TOURNAMENT_SYNCING_EVENT, { syncing: true, present: 7, required: 9 });
 
-      expect(screen.getByTestId('dealer-sync-strip')).toHaveTextContent('기기 7/9 복귀');
+      expect(screen.getByTestId('dealer-sync-strip')).toHaveTextContent('태블릿 7/9대 연결됨');
       expect(screen.getByRole('button', { name: '핸드 시작' })).toBeDisabled();
 
       socket.emitServerEvent(TOURNAMENT_SYNCING_EVENT, { syncing: false, present: 9, required: 9 });

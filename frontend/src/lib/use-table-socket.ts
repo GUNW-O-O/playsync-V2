@@ -62,6 +62,8 @@ export function useTableSocket({
   const [connectionError, setConnectionError] = useState<string | null>(null);
   /** 다시 붙는 중인가. 화면이 "연결 중"과 "포기했다"를 가르는 근거다. */
   const [reconnecting, setReconnecting] = useState(false);
+  // 재시도를 다 쓰고 멈췄다. 여기서부터는 사람이 눌러야 돌아온다 — 화면이 모달로 바꿔 그린다.
+  const [stalled, setStalled] = useState(false);
   /**
    * 서버가 Redis 장애를 복구하는 중인가(T97). 좌석·딜러가 각자 판정하면
    * 두 벌이 되므로 이 훅이 값 하나로 들고 돌려준다.
@@ -118,8 +120,9 @@ export function useTableSocket({
 
       if (wait === null) {
         gaveUp = true;
+        setStalled(true);
         setReconnecting(false);
-        setConnectionError('연결이 계속 실패합니다. 화면을 새로고침해 주세요.');
+        setConnectionError('연결이 계속 실패합니다.');
         return;
       }
 
@@ -260,6 +263,7 @@ export function useTableSocket({
       if (gaveUp) {
         gaveUp = false;
         attempt = 1;
+        setStalled(false);
       }
       setReconnecting(true);
       void connect();
@@ -278,5 +282,5 @@ export function useTableSocket({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tableId, role, defaultError]);
 
-  return { socketRef, connectionError, reconnecting, outage, revoked, retryNow: () => retryNowRef.current() };
+  return { socketRef, connectionError, reconnecting, stalled, outage, revoked, retryNow: () => retryNowRef.current() };
 }

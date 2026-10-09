@@ -88,7 +88,7 @@ describe('시나리오 — 정지와 재개', () => {
 
     await expect(
       h.playsync.handleAction(id, h.tableId, { action: ActionType.CALL } as never),
-    ).rejects.toThrow(/딜러가 판을 다시 열/);
+    ).rejects.toThrow(/딜러가 게임을 재개할 때까지/);
 
     // 거절이 상태를 건드리지 않았는지까지 본다. 던지고 나서 절반만 쓰면
     // 칩 총량이 어긋난다.

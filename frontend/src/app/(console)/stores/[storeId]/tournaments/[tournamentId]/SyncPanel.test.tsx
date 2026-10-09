@@ -18,7 +18,7 @@ describe('SyncPanel', () => {
         onForce={() => {}}
       />,
     );
-    expect(screen.getByTestId('sync-panel')).toHaveTextContent('기기 10/12 복귀');
+    expect(screen.getByTestId('sync-panel')).toHaveTextContent('태블릿 10/12대 연결됨');
     expect(screen.getByText('테이블 1 · 4번 민수')).toBeInTheDocument();
     expect(screen.getByText('테이블 2 · 딜러')).toBeInTheDocument();
   });

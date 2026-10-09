@@ -36,11 +36,11 @@ export default function SyncPanel({
   return (
     <div data-testid="sync-panel" className="border border-[var(--hairline)] bg-[var(--surface)] p-4 text-sm">
       <p className="font-semibold">
-        서버 복구 중 — 기기 {sync.present}/{sync.required} 복귀
+        서버 복구 중. 태블릿 {sync.present}/{sync.required}대 연결됨
       </p>
       <p className="mt-1 text-[var(--ink-subtle)]">
-        딜러와 좌석 태블릿이 모두 돌아오면 서버가 대회를 엽니다. 끝내 안 돌아오는 자리가 있으면 지금 진행할 수
-        있습니다 — 그 자리는 시간초과로 접힙니다.
+        딜러와 좌석 태블릿이 모두 다시 연결되면 대회가 자동으로 재개됩니다. 끝내 연결되지 않는 자리가 있으면 지금
+        진행할 수 있습니다. 그 자리의 참가자는 차례가 오면 시간 초과로 폴드됩니다.
       </p>
       {sync.missing.length > 0 && (
         <ul className="mt-2 list-disc pl-5">

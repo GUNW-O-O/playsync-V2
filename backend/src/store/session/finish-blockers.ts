@@ -14,7 +14,7 @@
  * `completeBlocker`가 든다.
  */
 export const FINISH_BLOCKERS = {
-  closed: '이미 닫힌 세션입니다.',
+  closed: '이미 끝난 대회입니다.',
   chopNotStarted: '시작하지 않은 대회는 딜로 끝낼 수 없습니다.',
   chopNotFinalTable: '파이널 테이블에서만 딜로 끝낼 수 있습니다.',
   chopHandRunning:

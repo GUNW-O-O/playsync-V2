@@ -48,7 +48,7 @@ function useFixtures(seatStatus: number) {
     // 마무리 미리보기도 같은 문(STORE_ADMIN + 소유권)이라 좌석 조회와 같이
     // 움직인다. 여기서는 소유권 판정만 보므로 시작 전 대회처럼 404를 준다.
     http.get('http://backend.test/store/sessions/trn-1/finish-preview', () =>
-      HttpResponse.json({ statusCode: 404, message: '세션을 찾을 수 없습니다.' }, { status: 404 }),
+      HttpResponse.json({ statusCode: 404, message: '대회를 찾을 수 없습니다.' }, { status: 404 }),
     ),
     http.get('http://backend.test/store/sessions/trn-1/sync', () => new HttpResponse(null, { status: 404 })),
     http.get('http://backend.test/store/sessions/trn-1/seats', () => {
@@ -180,7 +180,7 @@ describe('상점 콘솔 대회 상세 — 서버 장애(T97)', () => {
         new HttpResponse('', { status: 200 }),
       ),
       http.get('http://backend.test/store/sessions/trn-1/finish-preview', () =>
-        HttpResponse.json({ statusCode: 404, message: '세션을 찾을 수 없습니다.' }, { status: 404 }),
+        HttpResponse.json({ statusCode: 404, message: '대회를 찾을 수 없습니다.' }, { status: 404 }),
       ),
       http.get('http://backend.test/store/sessions/trn-1/sync', () => new HttpResponse(null, { status: 404 })),
       http.get('http://backend.test/store/sessions/trn-1/seats', () =>
