@@ -22,6 +22,7 @@ import { entryCountOf, payoutsForRaw } from './payout-table';
 import { awardPrize, prizeFor, prizePoolOf, splitBustedRanks } from './prize';
 import { SEAT_ROLE } from 'src/auth/seat-role';
 import { TURN_TIMEOUT_MS } from './turn-clock';
+import { event } from 'src/metrics/stage-timer';
 
 // 턴 시계는 `turn-clock.ts`가 든다. 복구(`RecoveryService`)가 정지 뒤에 같은
 // 시계를 다시 세우므로, 여기 상수를 두면 두 벌이 되어 한쪽만 바뀌는 날이 온다.
@@ -251,6 +252,12 @@ export class PlaysyncService {
     // `acted`가 필요한 이유는 낡은 TIME_OUT이 쓰지 않고 나가기 때문이다 —
     // 그 경로는 예전에도 emit하지 않았다.
     if (dto.action === ActionType.TIME_OUT && acted) {
+      event('timeout.fold', {
+        tournament: state!.tournamentId,
+        table: tableId,
+        user: userId,
+        lost: state!.players.find((p) => p?.id === userId)?.totalContributed ?? 0,
+      });
       this.eventEmitter.emit('game.state.updated', { tableId, state });
     }
 
@@ -749,6 +756,7 @@ export class PlaysyncService {
     const answer = await this.waitForRebuyResponse(
       userId, tableId, userPoints, entryFee, tournamentName, generation,
     );
+    if (answer === 'timeout') event('rebuy.timeout', { tournament: tournamentId, table: tableId, user: userId });
     if (answer !== 'accepted') return answer;
 
     // 1. 스냅샷에 칩 — 락 안에서 장애를 다시 본다.

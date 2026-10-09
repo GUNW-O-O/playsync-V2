@@ -32,7 +32,7 @@ import { RecoveryService } from 'src/recovery/recovery.service';
 import { RedisService } from 'src/redis/redis.service';
 import { markAlive, socketPingMs, sweep } from './keepalive';
 import { RequiredTable, syncProgress, TablePresence } from './sync-progress';
-import { observe, timed } from 'src/metrics/stage-timer';
+import { event, observe, timed } from 'src/metrics/stage-timer';
 import { SyncQueue, syncRecountHoldMs } from './sync-queue';
 import { WsIdentity, WsTicketService } from './ws-ticket.service';
 
@@ -139,7 +139,11 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     }
     // `terminate()`는 `ws`가 `close`를 내게 해 `handleDisconnect`가 따로 불리지만,
     // 여기서 먼저 빼 둔다 — 두 번 불려도 같다(Set.delete).
-    for (const socket of dead) this.handleDisconnect(socket as unknown as WebSocket);
+    for (const socket of dead) {
+      // 응답이 없어 서버가 끊은 것과 상대가 닫은 것을 측정이 가른다(T121).
+      (socket as any).swept = true;
+      this.handleDisconnect(socket as unknown as WebSocket);
+    }
   }
 
   private addToMap(map: Map<string, Set<WebSocket>>, id: string, client: WebSocket) {
@@ -309,6 +313,11 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
         if (wire) client.send(JSON.stringify({ event: 'renderGame', data: wire }));
         // 여기까지가 단말이 「붙었다」고 느끼는 시간이다 — 뒤의 재집계는 뺀다.
         observe(payload.role === Role.DEALER ? 'ws.connect.dealer' : 'ws.connect.seat', performance.now() - connectStart);
+        event('ws.back', {
+          role: payload.role === Role.DEALER ? 'dealer' : 'seat',
+          tournament: payload.tournamentId ?? state?.tournamentId,
+          table: tableId,
+        });
 
         // 복구 중에 붙었다(T97). 서버가 새 이벤트를 보장할 수 없는 자리라 붙는
         // 쪽이 매번 확인한다 — T96 `recount`의 joiner와 같은 이유다.
@@ -372,6 +381,14 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     const marker = client as unknown as { disconnectHandled?: boolean };
     if (marker.disconnectHandled) return;
     marker.disconnectHandled = true;
+    if (tableId) {
+      event('ws.gone', {
+        role: role === Role.DEALER ? 'dealer' : 'seat',
+        tournament: tournamentId ?? (client as any).syncTournamentId,
+        table: tableId,
+        swept: (client as any).swept === true,
+      });
+    }
 
     if (tableId && this.tableSessions.has(tableId)) {
       const sessions = this.tableSessions.get(tableId);
@@ -653,6 +670,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
 
     try {
       const updatedState = await this.runDealerAction(tournamentId, tableId, action);
+      event('dealer.cmd', { action: action.action, tournament: tournamentId, table: tableId });
       this.broadcastRenderGame(tableId, updatedState);
     } catch (e) {
       return { event: 'error', data: e.message };
