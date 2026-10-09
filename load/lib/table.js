@@ -145,6 +145,14 @@ const DEAL_MS = Number(__ENV.LOAD_DEAL_MS || 25000);
  * 한 번 둘러보고 누른다.
  */
 const RESUME_MS = Number(__ENV.LOAD_RESUME_MS || 5000);
+/**
+ * 재개를 흩는 폭(T120). 딜러마다 `RESUME_MS` + [0, 이 값) 뒤에 누른다 — 기본 5~15초.
+ *
+ * 고정 5초이던 동안 667명이 같은 순간에 눌러, `SYNCING`이 풀린 직후 전 테이블이 한꺼번에
+ * 판을 돌렸다(리바인 일시 실패 300건쯤). 사람은 띠가 걷힌 것을 알아채고 자리를 본 뒤
+ * 누른다. 0이면 예전처럼 전원이 같은 순간이다(대조군).
+ */
+const RESUME_SPREAD_MS = spreadEnv(__ENV.LOAD_RESUME_SPREAD_MS, 10000);
 
 /**
  * 아예 누르지 않는 액션의 비율. **타임아웃 경로를 실제로 돌리려는 것이다.**
@@ -674,7 +682,7 @@ export function runHands({
     const isDeal = entry.role === 'dealer' && payload.data.action === 'START_PRE_FLOP';
     // 재개는 재지 않는다 — 경합으로 거절되면 브로드캐스트가 없어 창이 고아가 된다.
     if (entry.role === 'dealer' && payload.data.action === 'RESUME_TABLE') {
-      setTimeout(fire(false), RESUME_MS);
+      setTimeout(fire(false), RESUME_MS + Math.random() * RESUME_SPREAD_MS);
       return;
     }
     const wait = isDeal ? (burning() ? BURN_DEAL_MS : DEAL_MS) : thinkMs();
