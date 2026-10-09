@@ -438,7 +438,7 @@ describe('SeatGameClient', () => {
       socket.emitServerEvent('renderGame', { ...BASE_STATE, resumePending: { downMs: 30_000 } });
 
       await waitFor(() => expect(screen.getByRole('button', { name: '리바인' })).toBeDisabled());
-      expect(screen.getByText(/딜러가 판을 다시 열면 다시 묻습니다/)).toBeInTheDocument();
+      expect(screen.getByText(/딜러가 게임을 재개하면 다시 묻습니다/)).toBeInTheDocument();
     });
 
     it('둘 다 없으면 누를 수 있다 (반대 입력)', async () => {
@@ -712,18 +712,19 @@ describe('SeatGameClient', () => {
    * 자기 차례가 멈춘 이유를 모른 채 버튼을 누르고 서버가 거절한다.
    */
   describe('정지 안내', () => {
-    it('정지 표시가 오면 멈춘 길이와 기다릴 대상을 적는다', async () => {
+    it('정지 표시가 오면 멈췄다 복구됐다고 알리고 기다릴 대상을 적는다', async () => {
       const { socket } = await renderWithSocket();
 
       socket.emitServerEvent('renderGame', { ...BASE_STATE, resumePending: { downMs: 192_000 } });
 
       const banner = screen.getByTestId('seat-resume-wait');
-      expect(banner).toHaveTextContent('3분 12초');
+      expect(banner).toHaveTextContent('서버가 멈췄다가 복구됐습니다');
+      expect(banner).not.toHaveTextContent('3분');
       expect(banner).toHaveTextContent('딜러');
     });
 
     /** T118. 서버가 멈춘 것이 아니면 「0초 멈췄다」가 아니라 일시 오류라고 적는다. */
-    it('일시 오류로 선 테이블은 멈춘 길이 대신 일시 오류라고 적는다', async () => {
+    it('일시 오류로 선 테이블은 서버가 멈췄다는 말 대신 일시 오류라고 적는다', async () => {
       const { socket } = await renderWithSocket();
 
       socket.emitServerEvent('renderGame', {

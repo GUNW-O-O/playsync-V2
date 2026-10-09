@@ -628,7 +628,7 @@ export default function ConsoleClient({
                   checked={rotateOtp}
                   onChange={(e) => setRotateOtp(e.target.checked)}
                 />
-                탈취 의심 — 참가 OTP도 새로 발급
+                탈취 의심 (참가 OTP도 새로 발급)
               </label>
               <button
                 type="button"
@@ -729,7 +729,7 @@ export default function ConsoleClient({
             <div className="h-px bg-[var(--hairline)]" />
             <div>
               <p className="mb-2.5 text-[11px] tracking-[0.06em] text-[var(--ink-subtle)]">
-                대회 마무리 — 되돌릴 수 없습니다
+                대회 마무리 (되돌릴 수 없습니다)
               </p>
               <div className="flex flex-col border border-[var(--hairline)]">
                 <FinishRow
@@ -761,7 +761,7 @@ export default function ConsoleClient({
                 />
                 <FinishRow
                   title="중단"
-                  what="대회를 열 수 없게 됐을 때. 진행 중인 사람은 낸 돈 전부, 탈락한 사람은 절반을 돌려받습니다."
+                  what="대회를 더 진행할 수 없을 때 씁니다. 진행 중인 사람은 낸 돈 전부, 탈락한 사람은 절반을 돌려받습니다."
                   gate={live.abort}
                   pending={pending}
                   label="중단"

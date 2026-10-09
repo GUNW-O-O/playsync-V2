@@ -3,8 +3,8 @@
 import { useRef, useState } from 'react';
 import { PlayerAction, SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
 import Felt from '@/component/felt/Felt';
-import { formatDuration } from '@/lib/format-duration';
 import { useTableSocket } from '@/lib/use-table-socket';
+import ReconnectOverlay from '../../ReconnectOverlay';
 import { TableState, TournamentClosedSchema, type ClosedTournamentStatus } from '@playsync/contract';
 import SeatActionPanel from './SeatActionPanel';
 import RebuyOverlay, { type RebuyPrompt } from './RebuyOverlay';
@@ -31,7 +31,7 @@ const DEFAULT_ACTION_ERROR = '요청이 거절되었습니다.';
 const NOT_SENT_ERROR = '연결이 끊어져 전달되지 못했습니다. 잠시 후 다시 눌러 주세요.';
 
 /** 복구 뒤 딜러의 재개를 기다리는 동안 리바인 팝업에 적는다(T100). */
-const REBUY_WAIT_DEALER = '딜러가 판을 다시 열면 다시 묻습니다.';
+const REBUY_WAIT_DEALER = '딜러가 게임을 재개하면 다시 묻습니다.';
 
 /**
  * 서버에 이 응답을 받을 대기자가 없을 때 리바인 팝업에 적는다(T100 검수
@@ -143,7 +143,7 @@ export default function SeatGameClient({
    * 좌석은 딜러보다 **먼저** 붙는다(`reconnect-policy.ts`) — 딜러가 판을
    * 재개할지 정할 때 이미 가라앉은 그림을 보게 하려는 것이다.
    */
-  const { socketRef, connectionError, reconnecting, outage, revoked, retryNow } = useTableSocket({
+  const { socketRef, connectionError, reconnecting, stalled, outage, revoked, retryNow } = useTableSocket({
     tableId,
     role: 'seat',
     defaultError: DEFAULT_CONNECTION_ERROR,
@@ -269,7 +269,9 @@ export default function SeatGameClient({
 
   return (
     <div className="relative flex h-screen w-screen flex-col overflow-hidden bg-tb-bg text-tb-ink">
-      {connectionError && (
+      {/* 재시도를 다 쓰고 멈췄으면 줄이 아니라 모달이다 — 눌러야만 돌아온다. */}
+      {stalled && <ReconnectOverlay onRetry={retryNow} />}
+      {connectionError && !stalled && (
         <div className="absolute inset-x-0 top-0 z-50 bg-err px-4 py-2 text-center text-sm font-medium text-white">
           {/*
             **다시 붙는 중인지를 함께 적는다.** 문구만 있으면 읽는 사람은 자기가
@@ -323,8 +325,8 @@ export default function SeatGameClient({
         >
           {resumePending.reason === 'transientError'
             ? '일시적인 서버 오류입니다.'
-            : `서버가 ${formatDuration(resumePending.downMs)} 멈췄다 돌아왔습니다.`}
-          {' '}딜러가 판을 다시 열기를 기다리는 중입니다.
+            : '서버가 멈췄다가 복구됐습니다.'}
+          {' '}딜러가 게임을 재개하기를 기다리는 중입니다.
         </div>
       )}
 
@@ -346,7 +348,7 @@ export default function SeatGameClient({
           data-testid="rebuy-pending"
           className="absolute inset-x-0 top-0 z-40 bg-tb-panel px-4 py-2 text-center text-sm text-tb-act"
         >
-          리바인을 기다립니다 — 답이 오거나 시간이 지나면 다음 핸드로 갑니다.
+          리바인 응답을 기다리는 중입니다. 응답이 오거나 시간이 지나면 다음 핸드로 넘어갑니다.
         </div>
       )}
 

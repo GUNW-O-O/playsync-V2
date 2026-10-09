@@ -194,7 +194,7 @@ export class PlaysyncService {
       // 정지 중에는 타임아웃 잡도 없으므로(`RecoveryService`가 세대를 올리고
       // 새 잡을 안 건다) 여기 닿는 것은 사람이 누른 액션뿐이다.
       if (state.resumePending) {
-        throw new Error('서버가 멈췄다 돌아왔습니다. 딜러가 판을 다시 열 때까지 기다려 주세요.');
+        throw new Error('서버가 멈췄다가 복구됐습니다. 딜러가 게임을 재개할 때까지 기다려 주세요.');
       }
 
       // 판정 기준은 요청 도착 순서가 아니라 마감 시각이다.

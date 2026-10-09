@@ -719,7 +719,7 @@ export class DealerService {
     const state = await this.redis.getSnapShot(tableId);
     if (!state) throw new Error('테이블을 찾을 수 없습니다.');
     if (state.phase !== GamePhase.HAND_END) {
-      throw new Error('재시도할 체크포인트가 없습니다.');
+      throw new Error('다시 저장할 내용이 없습니다.');
     }
     // 리바인 고리가 도는 동안은 받지 않는다(T100). `finishHand`가 판을 넘기면
     // 재개 뒤의 리바인 칩과 탈락 확정이 다음 핸드 위에서 돈다.

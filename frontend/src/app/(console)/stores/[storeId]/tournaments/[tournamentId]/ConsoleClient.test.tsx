@@ -336,7 +336,7 @@ describe('ConsoleClient — 서버 복구 중', () => {
     });
 
     expect(screen.getByText('복구 중')).toBeInTheDocument();
-    expect(screen.getByText('대회 마무리 — 되돌릴 수 없습니다')).toBeInTheDocument();
+    expect(screen.getByText('대회 마무리 (되돌릴 수 없습니다)')).toBeInTheDocument();
   });
 });
 

@@ -1283,7 +1283,7 @@ describe('PaymentService.joinSession — 참가하는 사이에 대회가 닫히
   it('409로 막는다 — 닫힌 뒤에 부른 것과 같은 문구다', async () => {
     await expect(
       service.joinSession({ tournamentId: TOURNAMENT }, USER),
-    ).rejects.toThrow('이미 닫힌 세션입니다.');
+    ).rejects.toThrow('이미 끝난 대회입니다.');
   });
 
   it('참가비가 빠지지 않는다 — 같은 트랜잭션이라 함께 되돌아간다', async () => {

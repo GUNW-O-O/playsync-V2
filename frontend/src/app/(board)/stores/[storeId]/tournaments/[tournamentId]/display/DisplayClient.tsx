@@ -166,7 +166,7 @@ export default function DisplayClient({ tournamentId }: { tournamentId: string }
           {formatClock(blindField.nextLevelAt - blindField.pausedAt)}
         </div>
         <div className="mt-5 font-cond text-[clamp(17px,2.4vw,26px)] tracking-[0.14em] text-sb-dim">
-          테이블이 돌아오면 이어서 진행합니다
+          태블릿이 모두 다시 연결되면 이어서 진행합니다
         </div>
       </div>
     );

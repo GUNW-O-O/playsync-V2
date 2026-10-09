@@ -17,7 +17,7 @@ export class DealerController {
   @Get('/:id')
   async getTournamentWithTables(@Param('id') tournamentId: string) {
     const data = await this.sessionService.getGameSessionWithTables(tournamentId);
-    if (!data) throw new NotFoundException('세션을 찾을 수 없습니다.');
+    if (!data) throw new NotFoundException('대회를 찾을 수 없습니다.');
     return data;
   }
 

@@ -392,16 +392,16 @@ describe('useTableSocket 지금 다시 연결 (T119)', () => {
     const calls = countTickets(1000);
     const { result } = mount();
     // 걸음은 최대 60초다. 한 걸음씩 넘기면 상한까지 전부 실패하고 포기한다.
-    for (let i = 0; i < 20 && !/새로고침/.test(result.current.connectionError ?? ''); i++) {
+    for (let i = 0; i < 20 && !result.current.stalled; i++) {
       await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
     }
-    expect(result.current.connectionError).toMatch(/새로고침/);
+    expect(result.current.stalled).toBe(true);
     const before = calls();
 
     act(() => result.current.retryNow());
     await flush();
 
-    expect(`더한 요청 ${calls() - before} 기다림 ${result.current.reconnecting}`).toBe('더한 요청 1 기다림 true');
+    expect(`더한 요청 ${calls() - before} 기다림 ${result.current.reconnecting} 멈춤 ${result.current.stalled}`).toBe('더한 요청 1 기다림 true 멈춤 false');
     // 5초 걸음이면 6초 뒤에 한 번 더 두드린다. 첫 지터(20초)로 돌아갔으면 아직이다.
     await act(async () => { await vi.advanceTimersByTimeAsync(6_000); });
     expect(calls() - before).toBe(2);

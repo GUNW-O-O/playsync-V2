@@ -246,7 +246,7 @@ export class SessionService {
       });
       return updatedSession;
     });
-    if (!sessionInfo) throw new InternalServerErrorException('세션을 만들지 못했습니다.');
+    if (!sessionInfo) throw new InternalServerErrorException('대회를 만들지 못했습니다.');
     await this.redis.setSeatBitmap(sessionInfo.id, sessionInfo.tables[0].id);
     // **스냅샷의 수명을 테이블의 수명에 맞춘다.** T38이 `createTable`에서
     // 세운 불변식("테이블이 있으면 스냅샷이 있다")은 대회 생성 경로에도
@@ -282,7 +282,7 @@ export class SessionService {
       where: { id: tournamentId },
       include: { dealerSession: true },
     });
-    if (!tournament) throw new NotFoundException('세션을 찾을 수 없습니다.');
+    if (!tournament) throw new NotFoundException('대회를 찾을 수 없습니다.');
     // completeSession·cancelSession이 대회를 닫으며 테이블과 딜러 세션을 함께
     // 지운다. 여기서 만들면 죽은 대회에 테이블이 되살아난다.
     if (isClosedTournament(tournament.status)) {
@@ -573,7 +573,7 @@ export class SessionService {
     });
 
     const startedAt = new Date();
-    if (!game) throw new NotFoundException('세션을 찾을 수 없습니다.');
+    if (!game) throw new NotFoundException('대회를 찾을 수 없습니다.');
 
     // **상태 검사가 여기 있어야 한다**(재리뷰 M5). 아래 `mutateSnapshot`은
     // 살아 있는 모든 테이블 스냅샷의 `buttonUser`를 다시 추첨해 덮고,
@@ -731,9 +731,9 @@ export class SessionService {
     const tournament = await this.prismaService.tournament.findUnique({
       where: { id },
     });
-    if (!tournament) throw new NotFoundException('세션을 찾을 수 없습니다.');
+    if (!tournament) throw new NotFoundException('대회를 찾을 수 없습니다.');
     if (isClosedTournament(tournament.status)) {
-      throw new ConflictException('이미 닫힌 세션입니다.');
+      throw new ConflictException('이미 끝난 대회입니다.');
     }
 
     const participations = await this.prismaService.tournamentParticipation.findMany({
@@ -827,7 +827,7 @@ export class SessionService {
 
     // **두 번째 호출은 아무것도 안 했다.** Redis는 이미 첫 번째가 비웠다.
     if (!closed) {
-      throw new ConflictException('이미 닫힌 세션입니다.');
+      throw new ConflictException('이미 끝난 대회입니다.');
     }
     await this.finishClose(id, tableIds, TournamentStatus.FINISHED);
   }
@@ -997,7 +997,7 @@ export class SessionService {
     const tournament = await this.prismaService.tournament.findUnique({
       where: { id: tournamentId },
     });
-    if (!tournament) throw new NotFoundException('세션을 찾을 수 없습니다.');
+    if (!tournament) throw new NotFoundException('대회를 찾을 수 없습니다.');
 
     const participations = await this.prismaService.tournamentParticipation.findMany({
       where: { tournamentId },
@@ -1149,9 +1149,9 @@ export class SessionService {
     const tournament = await this.prismaService.tournament.findUnique({
       where: { id: tournamentId },
     });
-    if (!tournament) throw new NotFoundException('세션을 찾을 수 없습니다.');
+    if (!tournament) throw new NotFoundException('대회를 찾을 수 없습니다.');
     if (isClosedTournament(tournament.status)) {
-      throw new ConflictException('이미 닫힌 세션입니다.');
+      throw new ConflictException('이미 끝난 대회입니다.');
     }
     const blocked = await this.chopBlocker(tournament);
     if (blocked) throw new ConflictException(blocked);
@@ -1224,9 +1224,9 @@ export class SessionService {
       where: { id: tournamentId },
       include: { store: { select: { ownerId: true } } },
     });
-    if (!tournament) throw new NotFoundException('세션을 찾을 수 없습니다.');
+    if (!tournament) throw new NotFoundException('대회를 찾을 수 없습니다.');
     if (isClosedTournament(tournament.status)) {
-      throw new ConflictException('이미 닫힌 세션입니다.');
+      throw new ConflictException('이미 끝난 대회입니다.');
     }
     // **시작 여부의 정본은 `startedAt`이다**(`cancelSession`과 같은 판정).
     if (tournament.startedAt === null) {
@@ -1333,7 +1333,7 @@ export class SessionService {
 
     // **두 번째 호출은 아무것도 안 했다.** Redis는 이미 첫 번째가 비웠다.
     if (settled === null) {
-      throw new ConflictException('이미 닫힌 세션입니다.');
+      throw new ConflictException('이미 끝난 대회입니다.');
     }
 
     await this.finishClose(tournamentId, tables.map((t) => t.id), TournamentStatus.CANCELLED);
@@ -1346,9 +1346,9 @@ export class SessionService {
     const tournament = await this.prismaService.tournament.findUnique({
       where: { id: tournamentId },
     });
-    if (!tournament) throw new NotFoundException('세션을 찾을 수 없습니다.');
+    if (!tournament) throw new NotFoundException('대회를 찾을 수 없습니다.');
     if (isClosedTournament(tournament.status)) {
-      throw new ConflictException('이미 닫힌 세션입니다.');
+      throw new ConflictException('이미 끝난 대회입니다.');
     }
     if (tournament.startedAt !== null) {
       throw new ConflictException('이미 시작한 대회는 취소할 수 없습니다.');
@@ -1450,7 +1450,7 @@ export class SessionService {
       where: { id: tournamentId },
       select: { store: { select: { ownerId: true } } },
     });
-    if (!tournament) throw new NotFoundException('세션을 찾을 수 없습니다.');
+    if (!tournament) throw new NotFoundException('대회를 찾을 수 없습니다.');
     if (tournament.store.ownerId !== ownerId) {
       throw new ForbiddenException('본인의 매장이 아닙니다.');
     }
@@ -1627,7 +1627,7 @@ export class SessionService {
 
     const session = await this.getGameSession(id);
     if (session && isClosedTournament(session.status)) {
-      throw new ConflictException('닫힌 세션은 수정할 수 없습니다.');
+      throw new ConflictException('끝난 대회는 수정할 수 없습니다.');
     }
 
     // 이미 걷은 돈이 있으면 참가비와 시작 스택을 잠근다. 한 번 바꾸면 그

@@ -2958,7 +2958,7 @@ describe('SessionService.abortSession', () => {
     });
 
     await expect(sessionService.abortSession(tournamentId, ownerId))
-      .rejects.toThrow('이미 닫힌 세션입니다.');
+      .rejects.toThrow('이미 끝난 대회입니다.');
   });
 
   it('남의 대회는 중단할 수 없다', async () => {

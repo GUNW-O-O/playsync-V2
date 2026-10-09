@@ -156,7 +156,7 @@ export class PaymentService {
         blindStructure: true,
       },
     });
-    if (!tournament) throw new ConflictException('잘못된 세션 ID 입니다.');
+    if (!tournament) throw new ConflictException('대회를 찾을 수 없습니다.');
 
     // **등록 마감은 파생값이다**(registration-gate.ts). 컬럼은 상점이 손으로
     // 닫은 것만 담고, 레벨이 `rebuyUntil`을 지나 자동으로 닫힌 마감은 담지
@@ -267,9 +267,9 @@ export class PaymentService {
     const session = await this.prismaService.tournament.findUnique({
       where: { id: dto.tournamentId },
     });
-    if (!session) throw new ConflictException('잘못된 세션 ID 입니다.');
+    if (!session) throw new ConflictException('대회를 찾을 수 없습니다.');
     if (isClosedTournament(session.status)) {
-      throw new ConflictException('이미 닫힌 세션입니다.');
+      throw new ConflictException('이미 끝난 대회입니다.');
     }
     await this.assertRegistrationOpen(session);
     if (user.points < session.entryFee) {
@@ -362,7 +362,7 @@ export class PaymentService {
         // P2025가 500이 되어 화면에 원인 없는 실패로 보인다 — 위에서 이미
         // 닫힌 대회를 거절할 때 쓰는 문구와 같은 문구를 준다.
         if (err.code === 'P2025') {
-          throw new ConflictException('이미 닫힌 세션입니다.');
+          throw new ConflictException('이미 끝난 대회입니다.');
         }
 
         throw e;
