@@ -5,7 +5,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { WsAdapter } from '@nestjs/platform-ws';
 import { bcryptRounds, isWeakenedBcrypt } from './auth/bcrypt-cost';
 import { observe } from './metrics/stage-timer';
-import { createServer } from 'net';
+import { createServer, Server } from 'net';
 
 async function bootstrap() {
   // 부하 무대 전용 노브가 제품 기동에 남으면 비밀번호가 약하게 구워진다.
@@ -48,9 +48,22 @@ async function bootstrap() {
   if (listeners > 1) {
     await app.init();
     const http = app.getHttpServer();
-    for (let i = 0; i < listeners; i++) {
+    // **Nest의 서버가 직접 듣는다.** 그래야 `listening`이 떠서 Node가 헤더 · 요청
+    // 시간초과 감시를 걸고, `app.close()`가 이 서버를 닫는다. 나머지 K−1개는 받은
+    // 소켓을 넘기기만 하고, 이 서버가 닫힐 때 같이 닫힌다. 바인드가 실패하면(포트
+    // 충돌, `reusePort`를 모르는 Node 22.12 미만) 조용히 멎지 않고 부팅이 실패한다.
+    const listen = (server: Server) => new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen({ port, reusePort: true }, () => {
+        server.off('error', reject);
+        resolve();
+      });
+    });
+    await listen(http);
+    for (let i = 1; i < listeners; i++) {
       const acceptor = createServer((socket) => http.emit('connection', socket));
-      await new Promise<void>((resolve) => acceptor.listen({ port, reusePort: true }, resolve));
+      await listen(acceptor);
+      http.once('close', () => acceptor.close());
     }
   } else {
     await app.listen(port);

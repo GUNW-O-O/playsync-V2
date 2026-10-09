@@ -386,8 +386,9 @@ describe('useTableSocket 지금 다시 연결 (T119)', () => {
     expect(`요청 ${calls()} 소켓 ${FakeSocket.instances.length}`).toBe('요청 1 소켓 1');
   });
 
-  it('포기한 뒤에 누르면 처음부터 다시 센다', async () => {
+  it('포기한 뒤에 누르면 다시 세고, 그 시도가 실패하면 첫 지터가 아니라 5초 걸음이다', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.spyOn(Math, 'random').mockReturnValue(0.5); // 첫 지터 20초 · 첫 걸음 5초
     const calls = countTickets(1000);
     const { result } = mount();
     // 걸음은 최대 60초다. 한 걸음씩 넘기면 상한까지 전부 실패하고 포기한다.
@@ -400,6 +401,9 @@ describe('useTableSocket 지금 다시 연결 (T119)', () => {
     act(() => result.current.retryNow());
     await flush();
 
-    expect(`더한 요청 ${calls() - before > 0} 기다림 ${result.current.reconnecting}`).toBe('더한 요청 true 기다림 true');
+    expect(`더한 요청 ${calls() - before} 기다림 ${result.current.reconnecting}`).toBe('더한 요청 1 기다림 true');
+    // 5초 걸음이면 6초 뒤에 한 번 더 두드린다. 첫 지터(20초)로 돌아갔으면 아직이다.
+    await act(async () => { await vi.advanceTimersByTimeAsync(6_000); });
+    expect(calls() - before).toBe(2);
   });
 });

@@ -249,7 +249,9 @@ export function useTableSocket({
      * 다시 걸지 않는다.
      *
      * **기다리는 중이거나 포기한 뒤에만 듣는다.** 붙어 있거나 이미 시도 중일 때
-     * 받으면 같은 자리에 소켓이 둘 열린다. 포기한 뒤라면 횟수를 처음부터 센다.
+     * 받으면 같은 자리에 소켓이 둘 열린다. 포기한 뒤라면 횟수를 다시 센다 — **1부터다.**
+     * 0으로 돌리면 이 시도가 실패했을 때 다음 대기가 첫 지터(좌석 최대 40초, 딜러
+     * 40~50초)가 된다. 방금 기다리기 싫어 누른 사람에게 그 대기를 다시 준다.
      */
     retryNowRef.current = () => {
       if (cancelled || (timer === null && !gaveUp)) return;
@@ -257,7 +259,7 @@ export function useTableSocket({
       timer = null;
       if (gaveUp) {
         gaveUp = false;
-        attempt = 0;
+        attempt = 1;
       }
       setReconnecting(true);
       void connect();
