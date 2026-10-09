@@ -570,7 +570,7 @@ describe('SessionService.startSession', () => {
    * 5초 대기가 시작 경로에 들어왔다.
    *
    * 도달 경로가 실재한다 — `releaseSeats`는 `SELECT ... FOR UPDATE` 대기 때문에
-   * 5초를 넘길 수 있다고 `domain.md`가 명시적으로 감수한 자리라, 좌석 해제 중에
+   * 5초를 넘길 수 있다고 `domain/concurrency.md`가 명시적으로 감수한 자리라, 좌석 해제 중에
    * 상점이 시작을 누르면 이 갈래다. 그대로 두면 500에 "락 획득 실패"가 나가는데,
    * **상점 콘솔에 "락"은 없는 말이다**(`domain.md`의 「상점도 손님이다」).
    */

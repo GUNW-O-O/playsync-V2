@@ -405,7 +405,7 @@ export class SessionService {
       // 404 · 409로 거절되는 경로에서 **살아남은 테이블의** 비트맵과 스냅샷을
       // 날린 것이 된다.
       //
-      // 왕복이 각각 하나로 정해져 있어 `docs/domain.md`의 "기다림이 무한정인
+      // 왕복이 각각 하나로 정해져 있어 `docs/domain/concurrency.md`의 "기다림이 무한정인
       // 일 금지"를 어기지 않는다.
       await this.redis.removeSeatBitmap(tournamentId, tableId);
       // 스냅샷도 함께 지운다. 남겨두면 24시간 동안 사라진 테이블의 게임 상태가
@@ -654,7 +654,7 @@ export class SessionService {
       // 이 실패는 이 티켓이 새로 연 경로다. 준비가 테이블 락을 잡게 되면서
       // `withTableLock`의 5초 대기가 시작 경로에 들어왔다. 실제로 닿는다 —
       // `releaseSeats`는 `FOR UPDATE` 대기 때문에 5초를 넘길 수 있다고
-      // `domain.md`가 명시적으로 감수한 자리라, 좌석 해제 중에 상점이 시작을
+      // `domain/concurrency.md`가 명시적으로 감수한 자리라, 좌석 해제 중에 상점이 시작을
       // 누르면 이 갈래다.
       //
       // 그대로 두면 500에 "락 획득 실패"가 나간다. 상점이 할 수 있는 일로

@@ -748,7 +748,7 @@ export class RedisService {
     //
     // **`deleteTableState`(테이블 하나 닫기)에는 같은 락을 두지 않는다.** 그쪽은
     // Prisma 트랜잭션 **안**이라, 최대 5초 기다리는 락을 넣으면 DB 트랜잭션을
-    // Redis 락 위에서 붙잡는 것이 된다(`domain.md`의 「기다림이 무한정인 일
+    // Redis 락 위에서 붙잡는 것이 된다(`domain/concurrency.md`의 「기다림이 무한정인 일
     // 금지」). 대신 부르는 쪽 `deleteTable`이 `FOR UPDATE`와 `occupied === 0`으로
     // 그 창을 이미 닫는다 — 빈 테이블에는 스냅샷을 고칠 경로가 없다.
     await Promise.all(tables.map(tableId =>
