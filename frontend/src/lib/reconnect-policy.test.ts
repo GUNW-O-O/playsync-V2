@@ -52,7 +52,7 @@ describe('reconnectDelayMs', () => {
   /** 이 검사가 없으면 상한 없는 구현도 위 검사를 통과한다. */
   it('걸음은 40초에서 멈춘다', () => {
     expect(reconnectDelayMs(5, 'seat', fixed(0.5))).toBe(40_000);
-    expect(reconnectDelayMs(20, 'seat', fixed(0.5))).toBe(40_000);
+    expect(reconnectDelayMs(MAX_ATTEMPTS - 1, 'seat', fixed(0.5))).toBe(40_000);
   });
 
   /**

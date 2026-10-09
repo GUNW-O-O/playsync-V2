@@ -6,7 +6,7 @@
  *
  * **제품의 재접속 정책을 따른다.** k6는 프론트를 import할 수 없어 숫자를
  * 복사했다. 원본은 `frontend/src/lib/reconnect-policy.ts`의 `reconnectDelayMs`와
- * `SEAT_SPREAD_MS`(40,000) · `DEALER_SPREAD_MS`(10,000) · `MAX_ATTEMPTS`(30) ·
+ * `SEAT_SPREAD_MS`(40,000) · `DEALER_SPREAD_MS`(10,000) · `MAX_ATTEMPTS`(10) ·
  * `RETRY_BASE_MS`(5,000) · `RETRY_MAX_MS`(40,000)이고,
  * 딜러는 `DEALER_OFFSET_MS`(= `SEAT_SPREAD_MS`)만큼 늦게 시작한다 — 딜러가
  * 정착한 테이블을 보게 하려는 것이다. 원본이 바뀌면 여기도 바꾼다. 어긋나도
@@ -15,7 +15,7 @@
 export const BURST_DEFAULTS = { seatSpreadMs: 40000, dealerSpreadMs: 10000 };
 
 /** 몇 번까지 다시 붙나. 넘으면 제품은 사람에게 새로고침을 맡긴다. */
-export const MAX_ATTEMPTS = 30;
+export const MAX_ATTEMPTS = 10;
 
 /**
  * 다음 시도까지 기다릴 ms. **더 시도하지 않을 때는 `null`.**

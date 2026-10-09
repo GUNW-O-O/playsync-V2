@@ -52,7 +52,7 @@ describe('reconnectDelayMs', () => {
 
   it('기본값은 제품 상수(reconnect-policy.ts)와 같다', () => {
     assert.deepEqual(BURST_DEFAULTS, SPREAD);
-    assert.equal(MAX_ATTEMPTS, 30);
+    assert.equal(MAX_ATTEMPTS, 10);
     assert.equal(reconnectDelayMs(0, 'seat', 0.5), 20000);
   });
 });

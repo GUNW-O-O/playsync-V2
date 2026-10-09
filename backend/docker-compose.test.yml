@@ -106,6 +106,8 @@ services:
       LISTEN_SOCKETS: ${LOAD_LISTEN_SOCKETS:-16}
       # 부팅부터 이 초만큼 CPU 프로파일을 뜬다. 0이면 안 뜬다(`stage-timer.ts`).
       LOAD_CPU_PROFILE_S: ${LOAD_CPU_PROFILE_S:-0}
+      # pg 풀 크기. 기본은 제품 기본값과 같다(`prisma.service.ts`).
+      PG_POOL_MAX: ${LOAD_PG_POOL_MAX:-10}
       # 요청율 상한을 무대에 맞춘다(T53). k6는 컨테이너 하나라 **모든 가상
       # 사용자가 한 주소에서 온다** — 운영 기본값(분당 600 / 인증 120)이면
       # 램프가 자기 자신에게 막힌다. 끄는 스위치를 두지 않고 값만 올린 이유는,

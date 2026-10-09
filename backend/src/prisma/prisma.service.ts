@@ -32,7 +32,8 @@ export class PrismaService
       throw new Error('❌ DATABASE_URL 환경 변수가 설정되지 않았습니다.');
     }
     // 2. pg Pool을 명시적으로 생성하여 어댑터에 전달 (권장 방식)
-    const pool = new Pool({ connectionString });
+    // 풀 크기(`PG_POOL_MAX`). 기본 10은 pg의 기본값 그대로다 — 적정값을 재는 중이다(T119).
+    const pool = new Pool({ connectionString, max: Number(process.env.PG_POOL_MAX ?? 10) });
     const adapter = new PrismaPg(pool);
     // const adapter = new PrismaPg({ url: process.env.DATABASE_URL });
     super({
