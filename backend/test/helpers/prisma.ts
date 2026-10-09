@@ -2,6 +2,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
 import { Pool } from 'pg';
 import { applyTestEnv } from './test-env';
+import { txMaxWaitMs } from '../../src/prisma/prisma.service';
 
 /**
  * 테스트용 Prisma 클라이언트. 접속 대상은 5433 포트의 테스트 전용 컨테이너다.
@@ -35,6 +36,7 @@ export function createTestPrisma(): PrismaClient {
   // `omit: { ...: false }`로 켠다.
   const prisma = new PrismaClient({
     adapter: new PrismaPg(pool),
+    transactionOptions: { maxWait: txMaxWaitMs() },
     omit: {
       tournamentParticipation: { playerOtp: true },
       tournament: { dealerOtpHash: true },

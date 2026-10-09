@@ -615,8 +615,9 @@ lag으로, 각각 **연속 2회**에 `exec.test.abort()`. **k6 `thresholds`로�
 한다. 서버가 끊은 소켓의 첫 닫힘이 그 테이블의 시계를 켜고, 같은 `reconnect_ms`로
 잰다. 재기동 뒤의 판은 봇 딜러가 연다 — 대회가 `SYNCING`이면 기다렸다가
 `tournamentSyncing`이 띠를 걷으면 다시 판단하고, `resumePending`이면
-`LOAD_RESUME_MS`(5초)에 `LOAD_RESUME_SPREAD_MS`(10초) 안의 무작위를 더한 뒤 `RESUME_TABLE`을
-누른다(5~15초, T120 — 고정 5초이던 동안 전원이 같은 순간에 눌러 해제 직후를 몰았다). **좌석이 다 돌아왔는지는 보지
+딜러마다 `LOAD_RESUME_SPREAD_MS`(10초) 안의 무작위 뒤에 화면을 다시 보고(T120 — 띠가 걷히는
+순간 전원이 같이 움직이면 해제 직후가 몰린다), `resumePending`이면 `LOAD_RESUME_MS`(5초) 뒤
+`RESUME_TABLE`을 누른다. **좌석이 다 돌아왔는지는 보지
 않는다** — 사람 딜러의 화면에도 그 정보가 없다(T117). kill 실행은 소켓 오류
 문턱(`socket_errors`)에 걸려 k6가 99로 끝나는 것이 정상이다.
 
