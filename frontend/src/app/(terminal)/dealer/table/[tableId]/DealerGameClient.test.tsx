@@ -502,6 +502,20 @@ describe('DealerGameClient', () => {
       expect(screen.getByTestId('dealer-resume')).toHaveTextContent('3분 12초');
     });
 
+    /** T118. 서버가 멈춘 것이 아니면 「0초 멈췄다」가 아니라 일시 오류라고 적는다. */
+    it('일시 오류로 선 테이블은 멈춘 길이 대신 일시 오류라고 적는다', async () => {
+      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.FLOP }));
+
+      socket.emitServerEvent(
+        'renderGame',
+        baseState({ phase: GamePhase.FLOP, resumePending: { downMs: 0, reason: 'transientError' } }),
+      );
+
+      const banner = screen.getByTestId('dealer-resume');
+      expect(banner).toHaveTextContent('일시적인 서버 오류입니다');
+      expect(banner).not.toHaveTextContent('멈췄다');
+    });
+
     it('버튼을 누르면 재개 명령이 나간다', async () => {
       const { socket } = await renderWithSocket(baseState({ phase: GamePhase.FLOP }));
       socket.emitServerEvent(

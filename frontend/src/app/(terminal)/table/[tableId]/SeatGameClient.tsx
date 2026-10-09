@@ -309,8 +309,10 @@ export default function SeatGameClient({
           data-testid="seat-resume-wait"
           className="absolute inset-x-0 top-0 z-40 bg-tb-act px-4 py-2 text-center text-sm font-medium text-[#06201a]"
         >
-          서버가 {formatDuration(resumePending.downMs)} 멈췄다 돌아왔습니다. 딜러가 판을 다시
-          열기를 기다리는 중입니다.
+          {resumePending.reason === 'transientError'
+            ? '일시적인 서버 오류입니다.'
+            : `서버가 ${formatDuration(resumePending.downMs)} 멈췄다 돌아왔습니다.`}
+          {' '}딜러가 판을 다시 열기를 기다리는 중입니다.
         </div>
       )}
 

@@ -293,8 +293,10 @@ export default function DealerGameClient({
           className="absolute inset-x-0 top-0 z-50 flex items-center justify-between gap-3 bg-err px-4 py-3 text-left text-sm text-white"
         >
           <span>
-            서버가 {formatDuration(resumePending.downMs)} 멈췄다 돌아왔습니다. 자리가 다 찼는지
-            보고 이어서 진행하세요.
+            {/* 서버가 멈춘 것이 아니면 잴 시간이 없다 — 리바인을 DB가 못 받았다(T118). */}
+            {resumePending.reason === 'transientError'
+              ? '일시적인 서버 오류입니다. 이어서 진행하면 리바인을 다시 묻습니다.'
+              : `서버가 ${formatDuration(resumePending.downMs)} 멈췄다 돌아왔습니다. 자리가 다 찼는지 보고 이어서 진행하세요.`}
             {/*
               **서버가 아직 끝내지 못한 재개는 거절된다.** `present === required`만
               보고 버튼을 열면 그 자리 하나만 다르다 — `syncing: false`가

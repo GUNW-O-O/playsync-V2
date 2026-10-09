@@ -123,6 +123,12 @@ export const TableStateSchema = z.object({
        * 값이다. 하트비트 주기가 오차 상한이라 실제보다 그만큼 길게 나온다.
        */
       downMs: z.int().min(0),
+      /**
+       * 서버가 멈춘 것이 아니라 **일시적인 오류로 선 테이블**(T118). 리바인을
+       * 수락했는데 DB가 끝내 못 받으면 탈락시키지 않고 여기로 온다. 화면은
+       * 「N초 멈췄다」 대신 일시 오류라고 적는다 — 멈춘 시간이 없기 때문이다.
+       */
+      reason: z.literal("transientError").optional(),
     })
     .optional(),
   /**
