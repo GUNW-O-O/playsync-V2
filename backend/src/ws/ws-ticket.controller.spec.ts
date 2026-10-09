@@ -35,13 +35,13 @@ describe('WsTicketController', () => {
 
   let tickets: { issue: jest.Mock };
   let dealer: { assertDealerSessionValid: jest.Mock };
-  let prisma: { tournamentParticipation: { findUnique: jest.Mock } };
+  let prisma: { tournamentParticipation: { findMany: jest.Mock } };
   let controller: WsTicketController;
 
   beforeEach(() => {
     tickets = { issue: jest.fn().mockResolvedValue('tkt-1') };
     dealer = { assertDealerSessionValid: jest.fn().mockResolvedValue({}) };
-    prisma = { tournamentParticipation: { findUnique: jest.fn().mockResolvedValue({ seatTokenVersion: 3 }) } };
+    prisma = { tournamentParticipation: { findMany: jest.fn().mockResolvedValue([{ userId: 'alice', seatTokenVersion: 3 }]) } };
     controller = new WsTicketController(
       tickets as unknown as WsTicketService,
       dealer as unknown as DealerService,
@@ -77,7 +77,7 @@ describe('WsTicketController', () => {
     });
 
     it('참가 행이 없으면 403이다', async () => {
-      prisma.tournamentParticipation.findUnique.mockResolvedValue(null);
+      prisma.tournamentParticipation.findMany.mockResolvedValue([]);
       await expect(controller.issue(seatUser(3))).rejects.toMatchObject({ status: 403 });
     });
   });

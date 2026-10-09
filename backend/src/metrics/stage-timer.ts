@@ -1,4 +1,6 @@
 import { monitorEventLoopDelay } from 'perf_hooks';
+import { Session } from 'inspector';
+import { writeFileSync } from 'fs';
 
 /**
  * 구간 계측(T119). **`LOAD_METRICS=1`일 때만 돈다** — 아니면 전부 통과만 한다.
@@ -65,4 +67,21 @@ if (ON) {
     // eslint-disable-next-line no-console
     console.log(`[stage] ${JSON.stringify(out)}`);
   }, WINDOW_MS).unref();
+}
+
+/**
+ * 부팅부터 `LOAD_CPU_PROFILE_S`초 동안 CPU 프로파일을 떠서 `/tmp/boot.cpuprofile`에 쓴다(T119).
+ * 재기동 직후의 재접속 몰림에서 코어를 무엇이 쓰는지 본다. 크롬 개발자 도구가 여는 형식이다.
+ */
+const PROFILE_S = Number(process.env.LOAD_CPU_PROFILE_S ?? 0);
+if (ON && PROFILE_S > 0) {
+  const session = new Session();
+  session.connect();
+  session.post('Profiler.enable', () => session.post('Profiler.start', () => {
+    setTimeout(() => session.post('Profiler.stop', (_error, result) => {
+      writeFileSync('/tmp/boot.cpuprofile', JSON.stringify(result.profile));
+      // eslint-disable-next-line no-console
+      console.log('[stage] cpuprofile written');
+    }), PROFILE_S * 1000).unref();
+  }));
 }

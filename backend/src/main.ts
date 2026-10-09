@@ -40,9 +40,11 @@ async function bootstrap() {
   // 같은 포트에 `SO_REUSEPORT` 리스너 K개를 두면 한 바퀴에 K개를 받는다. 받은 소켓은
   // Nest의 HTTP 서버에 그대로 넘긴다 — 라우팅도 WS 업그레이드도 그 서버가 한다.
   //
-  // 기본값 1은 지금까지와 같은 `app.listen`이다. `reusePort`는 리눅스에서만 된다.
+  // `reusePort`는 리눅스에서만 된다. 그래서 기본값이 리눅스 16, 그 밖은 1이다 — 1은
+  // 지금까지와 같은 `app.listen`이다. 16은 실측이다: 667테이블 kill의 `SYNCING` 해제가
+  // 198초 → 95초, 대기열 넘침이 67,174 → 0.
   const port = Number(process.env.PORT ?? 3001);
-  const listeners = Number(process.env.LISTEN_SOCKETS ?? 1);
+  const listeners = Number(process.env.LISTEN_SOCKETS ?? (process.platform === 'linux' ? 16 : 1));
   if (listeners > 1) {
     await app.init();
     const http = app.getHttpServer();
