@@ -46,9 +46,14 @@ export function gauge(label: string, read: () => Record<string, number>) {
 if (ON) {
   const lag = monitorEventLoopDelay({ resolution: 10 });
   lag.enable();
+  let cpuAt = process.cpuUsage();
   setInterval(() => {
+    // 창 동안 이 프로세스가 쓴 CPU(%). 100이면 코어 하나를 다 썼다.
+    const cpu = process.cpuUsage(cpuAt);
+    cpuAt = process.cpuUsage();
     const out: Record<string, unknown> = {
       t: new Date().toISOString(),
+      cpu: Math.round((cpu.user + cpu.system) / (WINDOW_MS * 10)),
       lag: { p50: Math.round(lag.percentile(50) / 1e6), p99: Math.round(lag.percentile(99) / 1e6), max: Math.round(lag.max / 1e6) },
     };
     lag.reset();

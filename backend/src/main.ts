@@ -5,6 +5,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { WsAdapter } from '@nestjs/platform-ws';
 import { bcryptRounds, isWeakenedBcrypt } from './auth/bcrypt-cost';
 import { observe } from './metrics/stage-timer';
+import { createServer } from 'net';
 
 async function bootstrap() {
   // 부하 무대 전용 노브가 제품 기동에 남으면 비밀번호가 약하게 구워진다.
@@ -33,14 +34,24 @@ async function bootstrap() {
       next();
     });
   }
-  // **접속 대기열을 넓힌다**(T119). Node의 기본값은 511이다. 서버가 죽었다 뜨면
-  // 태블릿 전원이 소켓마다 새 TCP 연결을 여는데, 이벤트 루프가 수백 ms만 밀려도 그
-  // 사이 도착분이 511을 넘어 커널이 연결을 버린다 — 667테이블 kill에서 부팅 45초
-  // 동안 33,095건이 넘쳤고(`ListenOverflows`), 버려진 쪽은 수 초~30초 뒤에야 다시
-  // 닿아 티켓(수명 30초)이 그 사이 낡았다. 커널 상한(`net.core.somaxconn`)이 이 값을
-  // 다시 자른다.
-  const backlog = Number(process.env.LISTEN_BACKLOG ?? 4096);
-  // Nest의 타입에는 backlog 자리가 없지만 인자는 `http.Server.listen`으로 그대로 간다.
-  await app.listen(process.env.PORT ?? 3001, backlog as never);
+  // **리스너를 여럿 둔다**(T119, `LISTEN_SOCKETS`). Node는 이벤트 루프 한 바퀴에 리스너
+  // 하나당 접속을 **하나만** 받는다(libuv 1.51에서 실측) — 루프가 바쁠수록 받는 속도가
+  // 떨어져, 667테이블 kill에서 티켓은 초당 200장 나가는데 접속은 초당 57대만 받았다.
+  // 같은 포트에 `SO_REUSEPORT` 리스너 K개를 두면 한 바퀴에 K개를 받는다. 받은 소켓은
+  // Nest의 HTTP 서버에 그대로 넘긴다 — 라우팅도 WS 업그레이드도 그 서버가 한다.
+  //
+  // 기본값 1은 지금까지와 같은 `app.listen`이다. `reusePort`는 리눅스에서만 된다.
+  const port = Number(process.env.PORT ?? 3001);
+  const listeners = Number(process.env.LISTEN_SOCKETS ?? 1);
+  if (listeners > 1) {
+    await app.init();
+    const http = app.getHttpServer();
+    for (let i = 0; i < listeners; i++) {
+      const acceptor = createServer((socket) => http.emit('connection', socket));
+      await new Promise<void>((resolve) => acceptor.listen({ port, reusePort: true }, resolve));
+    }
+  } else {
+    await app.listen(port);
+  }
 }
 bootstrap();
