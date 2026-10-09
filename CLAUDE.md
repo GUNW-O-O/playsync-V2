@@ -112,14 +112,14 @@ npm run assets:settlement  # 정산 촬영을 자른다 (셋이 다 있어야 �
 
 ```
 contract       89  (9 suites)
-백엔드 단위   485  (48 suites)
-프론트 단위   376  (44 files)
+백엔드 단위   489  (49 suites)
+프론트 단위   382  (44 files)
 통합          781  (50 suites)
 e2e            13  (4 files, regression 프로젝트)
 데모 촬영       1  (`npm run demo`)
 정산 촬영       1  (`npm run demo:settlement`, 마무리마다 한 번씩 셋)
 부하 하네스    47  (4 files, `cd load && npm test`)
-실제 kill      26  (2 suites, `npm run test:outage`, jest 128초)
+실제 kill      26  (2 suites, `npm run test:outage`, jest 125초)
 타입 에러       0
 ```
 
