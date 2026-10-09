@@ -339,3 +339,71 @@ describe('useTableSocket 세션 폐기(T110)', () => {
     expect(result.current.revoked).toBeNull();
   });
 });
+
+/**
+ * T119. **기다리는 사람이 걸음을 건너뛸 수 있다.** 옆 태블릿은 붙었는데 내 화면은
+ * 다음 걸음(최대 60초)을 기다리고 있으면 사람은 새로고침을 누른다 — 화면을 통째로
+ * 다시 받는 무거운 길이다. 같은 일을 재시도 한 번으로 한다.
+ */
+describe('useTableSocket 지금 다시 연결 (T119)', () => {
+  /** 티켓 요청을 세고, 처음 `failures`번은 서버 무응답으로 답한다. */
+  function countTickets(failures: number) {
+    let calls = 0;
+    server.use(http.post('*/api/ws-ticket', () => {
+      calls += 1;
+      return calls <= failures
+        ? HttpResponse.json({ message: SERVER_RECOVERING_MESSAGE }, { status: 503 })
+        : HttpResponse.json({ ticket: 't' });
+    }));
+    return () => calls;
+  }
+  const flush = () => act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+  it('기다리는 중에 누르면 걸음을 건너뛰고 바로 시도한다', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.spyOn(Math, 'random').mockReturnValue(0.5); // 다음 걸음까지 20초
+    const calls = countTickets(1);
+    const { result } = mount();
+    await flush();
+    expect(`요청 ${calls()} 기다림 ${result.current.reconnecting}`).toBe('요청 1 기다림 true');
+
+    act(() => result.current.retryNow());
+    await waitForInstances(1);
+
+    expect(calls()).toBe(2);
+  });
+
+  /** 반대 입력. 이게 없으면 「언제나 새로 접속」도 위를 통과하고 소켓이 둘 열린다. */
+  it('붙어 있을 때 누르면 아무 일도 없다', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const calls = countTickets(0);
+    const { result } = mount();
+    await waitForInstances(1);
+
+    act(() => result.current.retryNow());
+    await flush();
+
+    expect(`요청 ${calls()} 소켓 ${FakeSocket.instances.length}`).toBe('요청 1 소켓 1');
+  });
+
+  it('포기한 뒤에 누르면 다시 세고, 그 시도가 실패하면 첫 지터가 아니라 5초 걸음이다', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.spyOn(Math, 'random').mockReturnValue(0.5); // 첫 지터 20초 · 첫 걸음 5초
+    const calls = countTickets(1000);
+    const { result } = mount();
+    // 걸음은 최대 60초다. 한 걸음씩 넘기면 상한까지 전부 실패하고 포기한다.
+    for (let i = 0; i < 20 && !/새로고침/.test(result.current.connectionError ?? ''); i++) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    }
+    expect(result.current.connectionError).toMatch(/새로고침/);
+    const before = calls();
+
+    act(() => result.current.retryNow());
+    await flush();
+
+    expect(`더한 요청 ${calls() - before} 기다림 ${result.current.reconnecting}`).toBe('더한 요청 1 기다림 true');
+    // 5초 걸음이면 6초 뒤에 한 번 더 두드린다. 첫 지터(20초)로 돌아갔으면 아직이다.
+    await act(async () => { await vi.advanceTimersByTimeAsync(6_000); });
+    expect(calls() - before).toBe(2);
+  });
+});

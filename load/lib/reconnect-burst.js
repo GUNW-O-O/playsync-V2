@@ -6,7 +6,8 @@
  *
  * **제품의 재접속 정책을 따른다.** k6는 프론트를 import할 수 없어 숫자를
  * 복사했다. 원본은 `frontend/src/lib/reconnect-policy.ts`의 `reconnectDelayMs`와
- * `SEAT_SPREAD_MS`(40,000) · `DEALER_SPREAD_MS`(10,000) · `MAX_ATTEMPTS`(8)이고,
+ * `SEAT_SPREAD_MS`(40,000) · `DEALER_SPREAD_MS`(10,000) · `MAX_ATTEMPTS`(10) ·
+ * `RETRY_BASE_MS`(5,000) · `RETRY_MAX_MS`(40,000)이고,
  * 딜러는 `DEALER_OFFSET_MS`(= `SEAT_SPREAD_MS`)만큼 늦게 시작한다 — 딜러가
  * 정착한 테이블을 보게 하려는 것이다. 원본이 바뀌면 여기도 바꾼다. 어긋나도
  * 잡아 주는 장치는 없다.
@@ -14,7 +15,7 @@
 export const BURST_DEFAULTS = { seatSpreadMs: 40000, dealerSpreadMs: 10000 };
 
 /** 몇 번까지 다시 붙나. 넘으면 제품은 사람에게 새로고침을 맡긴다. */
-export const MAX_ATTEMPTS = 8;
+export const MAX_ATTEMPTS = 10;
 
 /**
  * 다음 시도까지 기다릴 ms. **더 시도하지 않을 때는 `null`.**
@@ -33,10 +34,11 @@ export const MAX_ATTEMPTS = 8;
  */
 export function reconnectDelayMs(attempt, role, rand, { seatSpreadMs, dealerSpreadMs } = BURST_DEFAULTS) {
   if (attempt >= MAX_ATTEMPTS) return null;
+  // 실패한 뒤에는 폭이 아니라 걸음이다 — 5초에서 두 배씩, 40초에서 멈춤, ±50%(T119).
+  if (attempt > 0) return Math.floor(Math.min(5000 * 2 ** (attempt - 1), 40000) * (0.5 + rand));
   const spread = role === 'dealer' ? dealerSpreadMs : seatSpreadMs;
   const offset = role === 'dealer' ? seatSpreadMs : 0;
-  // 폭만 늘리고 오프셋은 안 늘린다 — 제품과 같다.
-  return offset + Math.floor(rand * spread) * 2 ** Math.min(attempt, 3);
+  return offset + Math.floor(rand * spread);
 }
 
 /**

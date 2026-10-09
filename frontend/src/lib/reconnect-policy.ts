@@ -36,8 +36,26 @@ export const DEALER_OFFSET_MS = SEAT_SPREAD_MS;
 /** 딜러끼리도 흩는다 — 테이블 수만큼의 딜러 단말이 있다. */
 export const DEALER_SPREAD_MS = 10_000;
 
-/** 몇 번까지 다시 붙나. 넘으면 사람에게 새로고침을 맡긴다. */
-export const MAX_ATTEMPTS = 8;
+/**
+ * 실패한 뒤의 걸음(T119). 5초에서 두 배씩 가다 40초에 멈춘다.
+ *
+ * **폭을 다시 벌리지 않는다.** 첫 시도의 지터가 기기마다 다른 출발 시각을 이미
+ * 줬으므로, 그 뒤를 같은 걸음으로 가도 무리는 흩어진 채다. 예전에는 실패마다
+ * 폭이 두 배(80 · 160 · 320초)였는데, `SYNCING`은 가장 늦은 한 대가 풀어서
+ * (T117) 그 꼬리가 곧 대회 전체의 대기였다 — 667테이블 kill에서 서버는 2분째부터
+ * 한가한데 해제가 407초였다(`docs/results/`).
+ */
+export const RETRY_BASE_MS = 5_000;
+export const RETRY_MAX_MS = 40_000;
+
+/**
+ * 몇 번까지 다시 붙나. 넘으면 사람에게 새로고침을 맡긴다.
+ *
+ * **10번이면 약 5분이다** — 복구의 합격선(재기동 뒤 5분)과 같다. 그보다 오래
+ * 혼자 두드리게 두지 않는다: 자리에 사람이 있으면 옆 태블릿이 붙은 것을 보고
+ * 먼저 새로고침하고, 5분 넘게 죽은 서버는 자동 재접속으로 풀 일이 아니다.
+ */
+export const MAX_ATTEMPTS = 10;
 
 export type SocketRole = 'seat' | 'dealer';
 
@@ -58,19 +76,22 @@ export function reconnectDelayMs(
 ): number | null {
   if (attempt >= MAX_ATTEMPTS) return null;
 
+  // 실패한 뒤 — 짧은 걸음. 걸음마다 ±50%로 흩어, 서버가 같은 순간에 거절한
+  // 기기들이 같은 순간에 돌아오지 않게 한다. 상한에 걸린 경우(429)는 서버가
+  // 말한 `Retry-After`가 바닥으로 깔린다(`waitFor`). 딜러를 좌석 뒤로 미는
+  // 것은 첫 시도뿐이다 — 재시도마다 깔면 딜러가 꼬리가 된다.
+  if (attempt > 0) {
+    const step = Math.min(RETRY_BASE_MS * 2 ** (attempt - 1), RETRY_MAX_MS);
+    return Math.floor(step * (0.5 + rand()));
+  }
+
   const spread = role === 'dealer' ? DEALER_SPREAD_MS : SEAT_SPREAD_MS;
   const offset = role === 'dealer' ? DEALER_OFFSET_MS : 0;
 
   // **전폭 지터다.** `폭/2 ± 조금`처럼 가운데로 모으면 무리가 흩어지는 것이
-  // 아니라 통째로 늦춰졌다가 다시 뭉친다.
-  const jitter = Math.floor(rand() * spread);
-
-  // 거듭 실패하면 폭을 늘린다. 상한이 30초 블록을 걸고 있으면 같은 폭으로
-  // 계속 두드려 봐야 전부 429다 — 두 배씩 벌려 블록이 풀린 뒤에 닿게 한다.
-  // 다만 폭만 늘리고 **바닥은 안 만든다**: 일찍 열린 문을 못 쓰게 된다.
-  const widened = jitter * 2 ** Math.min(attempt, 3);
-
-  return offset + widened;
+  // 아니라 통째로 늦춰졌다가 다시 뭉친다. **바닥은 안 만든다**: 일찍 열린 문을
+  // 못 쓰게 된다.
+  return offset + Math.floor(rand() * spread);
 }
 
 /**

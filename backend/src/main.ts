@@ -4,6 +4,8 @@ import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 import { WsAdapter } from '@nestjs/platform-ws';
 import { bcryptRounds, isWeakenedBcrypt } from './auth/bcrypt-cost';
+import { observe } from './metrics/stage-timer';
+import { createServer, Server } from 'net';
 
 async function bootstrap() {
   // 부하 무대 전용 노브가 제품 기동에 남으면 비밀번호가 약하게 구워진다.
@@ -23,6 +25,48 @@ async function bootstrap() {
   });
   app.useGlobalPipes(new ValidationPipe({ whitelist : true, forbidNonWhitelisted : true}));
   app.useWebSocketAdapter(new WsAdapter(app));
-  await app.listen(process.env.PORT ?? 3001);
+  // T119 계측. 가드까지 포함한 요청 전체 시간을 경로별로 쌓는다 — 풀을 누가 쓰는지 본다.
+  if (process.env.LOAD_METRICS === '1') {
+    app.use((req: { method: string; path: string }, res: { on: (e: string, f: () => void) => void; statusCode: number }, next: () => void) => {
+      const start = performance.now();
+      const route = req.path.replace(/[0-9a-f]{8}-[0-9a-f-]{27}/g, ':id');
+      res.on('finish', () => observe(`http.${req.method} ${route}.${res.statusCode}`, performance.now() - start));
+      next();
+    });
+  }
+  // **리스너를 여럿 둔다**(T119, `LISTEN_SOCKETS`). Node는 이벤트 루프 한 바퀴에 리스너
+  // 하나당 접속을 **하나만** 받는다(libuv 1.51에서 실측) — 루프가 바쁠수록 받는 속도가
+  // 떨어져, 667테이블 kill에서 티켓은 초당 200장 나가는데 접속은 초당 57대만 받았다.
+  // 같은 포트에 `SO_REUSEPORT` 리스너 K개를 두면 한 바퀴에 K개를 받는다. 받은 소켓은
+  // Nest의 HTTP 서버에 그대로 넘긴다 — 라우팅도 WS 업그레이드도 그 서버가 한다.
+  //
+  // `reusePort`는 리눅스에서만 된다. 그래서 기본값이 리눅스 16, 그 밖은 1이다 — 1은
+  // 지금까지와 같은 `app.listen`이다. 16은 실측이다: 667테이블 kill의 `SYNCING` 해제가
+  // 198초 → 95초, 대기열 넘침이 67,174 → 0.
+  const port = Number(process.env.PORT ?? 3001);
+  const listeners = Number(process.env.LISTEN_SOCKETS ?? (process.platform === 'linux' ? 16 : 1));
+  if (listeners > 1) {
+    await app.init();
+    const http = app.getHttpServer();
+    // **Nest의 서버가 직접 듣는다.** 그래야 `listening`이 떠서 Node가 헤더 · 요청
+    // 시간초과 감시를 걸고, `app.close()`가 이 서버를 닫는다. 나머지 K−1개는 받은
+    // 소켓을 넘기기만 하고, 이 서버가 닫힐 때 같이 닫힌다. 바인드가 실패하면(포트
+    // 충돌, `reusePort`를 모르는 Node 22.12 미만) 조용히 멎지 않고 부팅이 실패한다.
+    const listen = (server: Server) => new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen({ port, reusePort: true }, () => {
+        server.off('error', reject);
+        resolve();
+      });
+    });
+    await listen(http);
+    for (let i = 1; i < listeners; i++) {
+      const acceptor = createServer((socket) => http.emit('connection', socket));
+      await listen(acceptor);
+      http.once('close', () => acceptor.close());
+    }
+  } else {
+    await app.listen(port);
+  }
 }
 bootstrap();

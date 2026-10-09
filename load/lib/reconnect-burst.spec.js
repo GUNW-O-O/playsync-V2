@@ -30,18 +30,21 @@ describe('reconnectDelayMs', () => {
   });
 
   /**
-   * **폭만 늘리고 오프셋은 안 늘린다**(T113). 하네스가 T93 공식(16.7분 폭)을
-   * 쓰던 동안 서버 무응답 14건이 5분 초과 2 · 미복구 6이 됐다. 제품은 40초에서
-   * 두 배씩, 셋째부터 ×8에 멈춘다.
+   * **실패한 뒤에는 폭이 아니라 걸음이다**(T119). 제품은 5초에서 두 배씩 가다
+   * 40초에 멈추고, 걸음마다 ±50%로 흩는다. 폭(두 배씩 320초까지)이던 동안
+   * 667테이블 kill의 `SYNCING` 해제가 407초였다.
    */
-  it('거듭 실패하면 지터 폭이 두 배씩 늘고 ×8에서 멈춘다', () => {
+  it('거듭 실패하면 5초에서 두 배씩 가다 40초에 멈춘다', () => {
     const seat = (attempt) => reconnectDelayMs(attempt, 'seat', 0.5, SPREAD);
-    assert.equal(`${seat(1)} ${seat(2)} ${seat(3)} ${seat(5)}`, '40000 80000 160000 160000');
-    // 딜러의 오프셋(40초)은 그대로이고 딜러 폭만 는다.
-    assert.equal(reconnectDelayMs(2, 'dealer', 0.5, SPREAD), 40000 + 5000 * 4);
+    assert.equal(`${seat(1)} ${seat(2)} ${seat(3)} ${seat(4)} ${seat(9)}`, '5000 10000 20000 40000 40000');
+    assert.equal(reconnectDelayMs(1, 'seat', 0, SPREAD), 2500);
+    // 딜러의 오프셋은 첫 시도뿐이다.
+    assert.equal(reconnectDelayMs(2, 'dealer', 0.5, SPREAD), 10000);
+    // 걸음은 폭 설정과 무관하다 — 대조군(폭 0)에서도 재시도는 같은 걸음이다.
+    assert.equal(reconnectDelayMs(1, 'seat', 0.5, { seatSpreadMs: 0, dealerSpreadMs: 0 }), 5000);
   });
 
-  it('여덟 번을 넘기면 null — 더 시도하지 않는다', () => {
+  it('상한을 넘기면 null — 더 시도하지 않는다', () => {
     assert.equal(typeof reconnectDelayMs(MAX_ATTEMPTS - 1, 'seat', 0.5, SPREAD), 'number');
     assert.equal(reconnectDelayMs(MAX_ATTEMPTS, 'seat', 0.5, SPREAD), null);
     assert.equal(reconnectDelayMs(MAX_ATTEMPTS, 'dealer', 0.5, SPREAD), null);
@@ -49,7 +52,7 @@ describe('reconnectDelayMs', () => {
 
   it('기본값은 제품 상수(reconnect-policy.ts)와 같다', () => {
     assert.deepEqual(BURST_DEFAULTS, SPREAD);
-    assert.equal(MAX_ATTEMPTS, 8);
+    assert.equal(MAX_ATTEMPTS, 10);
     assert.equal(reconnectDelayMs(0, 'seat', 0.5), 20000);
   });
 });

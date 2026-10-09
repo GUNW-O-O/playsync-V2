@@ -75,6 +75,7 @@ export function useTableSocket({
 
   // 콜백은 매 렌더 새 함수다. 의존성에 넣으면 렌더마다 소켓을 다시 연다.
   const onMessageRef = useRef(onMessage);
+  const retryNowRef = useRef<() => void>(() => {});
   onMessageRef.current = onMessage;
 
   useEffect(() => {
@@ -82,6 +83,7 @@ export function useTableSocket({
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let attempt = 0;
+    let gaveUp = false;
     let watchdog: ReturnType<typeof setTimeout> | null = null;
 
     /**
@@ -115,6 +117,7 @@ export function useTableSocket({
       attempt += 1;
 
       if (wait === null) {
+        gaveUp = true;
         setReconnecting(false);
         setConnectionError('연결이 계속 실패합니다. 화면을 새로고침해 주세요.');
         return;
@@ -122,6 +125,7 @@ export function useTableSocket({
 
       setReconnecting(true);
       timer = setTimeout(() => {
+        timer = null;
         void connect();
       }, wait);
     }
@@ -221,7 +225,7 @@ export function useTableSocket({
         // 그것이라, 다시 붙으면 끝난 대회에 계속 매달린다.
         if (event.code === 1000) return;
         // T110. 세대가 올라 서버가 이 신원을 끊었다. 다시 붙어 봐야 티켓이
-        // 403이라 재시도 8회를 태우고 「새로고침」에 멈춘다 — 멈추고 이유를 그린다.
+        // 403이라 재시도를 다 태우고 「새로고침」에 멈춘다 — 멈추고 이유를 그린다.
         if (event.code === SESSION_REVOKED_CLOSE_CODE) {
           setRevoked(event.reason || REVOKED_FALLBACK);
           setReconnecting(false);
@@ -238,10 +242,34 @@ export function useTableSocket({
       };
     }
 
+    /**
+     * **기다리는 걸음을 건너뛴다**(T119, 띠의 「지금 다시 연결」). 옆 태블릿은 붙었는데
+     * 내 화면이 다음 걸음(최대 60초)을 기다리면 사람은 새로고침을 누른다 — 화면을
+     * 통째로 다시 받는 무거운 길이다. 사람이 누르는 시각은 저절로 흩어지므로 지터를
+     * 다시 걸지 않는다.
+     *
+     * **기다리는 중이거나 포기한 뒤에만 듣는다.** 붙어 있거나 이미 시도 중일 때
+     * 받으면 같은 자리에 소켓이 둘 열린다. 포기한 뒤라면 횟수를 다시 센다 — **1부터다.**
+     * 0으로 돌리면 이 시도가 실패했을 때 다음 대기가 첫 지터(좌석 최대 40초, 딜러
+     * 40~50초)가 된다. 방금 기다리기 싫어 누른 사람에게 그 대기를 다시 준다.
+     */
+    retryNowRef.current = () => {
+      if (cancelled || (timer === null && !gaveUp)) return;
+      if (timer) clearTimeout(timer);
+      timer = null;
+      if (gaveUp) {
+        gaveUp = false;
+        attempt = 1;
+      }
+      setReconnecting(true);
+      void connect();
+    };
+
     void connect();
 
     return () => {
       cancelled = true;
+      retryNowRef.current = () => {};
       if (timer) clearTimeout(timer);
       if (watchdog) clearTimeout(watchdog);
       socket?.close();
@@ -250,5 +278,5 @@ export function useTableSocket({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tableId, role, defaultError]);
 
-  return { socketRef, connectionError, reconnecting, outage, revoked };
+  return { socketRef, connectionError, reconnecting, outage, revoked, retryNow: () => retryNowRef.current() };
 }

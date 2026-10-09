@@ -1980,7 +1980,7 @@ describe('WsGateway 인바운드 경계', () => {
       // 첫 대조는 이미 지났다. 접근 판정이 끝나는 순간 DB가 죽는다.
       jest.spyOn(playsync, 'assertTableAccess').mockImplementationOnce(async (...args) => {
         await real(...args);
-        jest.spyOn(prisma.tournamentParticipation, 'findUnique').mockRejectedValueOnce(new Error('db down'));
+        jest.spyOn(prisma.tournamentParticipation, 'findMany').mockRejectedValueOnce(new Error('db down'));
       });
       const t = await tickets.issue({
         sub: 'alice', role: SEAT_ROLE, tournamentId: TOURNAMENT, seatTokenVersion: 3,

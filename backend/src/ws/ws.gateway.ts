@@ -32,6 +32,7 @@ import { RecoveryService } from 'src/recovery/recovery.service';
 import { RedisService } from 'src/redis/redis.service';
 import { markAlive, socketPingMs, sweep } from './keepalive';
 import { RequiredTable, syncProgress, TablePresence } from './sync-progress';
+import { observe, timed } from 'src/metrics/stage-timer';
 import { SyncQueue, syncRecountHoldMs } from './sync-queue';
 import { WsIdentity, WsTicketService } from './ws-ticket.service';
 
@@ -230,6 +231,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
 
   // 1. 연결 시 토큰 검증 및 테이블 입장
   async handleConnection(client: WebSocket, request: any) {
+    const connectStart = performance.now();
     try {
       const url = new URL(request.url, `http://${request.headers['host']}`);
       const tableId = url.searchParams.get('tableId');
@@ -242,14 +244,14 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
 
       // 신뢰의 출처가 티켓 소비다. 게이트웨이는 JWT를 보지 않는다 — 액세스
       // 토큰은 애초에 여기까지 오지 않는다.
-      const payload = await this.tickets.consume(ticket);
+      const payload = await timed('ws.consume', () => this.tickets.consume(ticket));
       if (!payload) throw new Error('유효하지 않은 티켓입니다.');
 
       // T110. 티켓은 30초 산다. 그 사이 세대가 오르면 발급 때 맞던 것이 지금은
       // 틀리다 — 세대를 올리는 쪽이 소켓을 닫는 것은 「이미 붙은」 것뿐이라
       // 여기서 한 번 더 본다.
       try {
-        await this.assertIdentityCurrent(payload);
+        await timed('ws.identity', () => this.assertIdentityCurrent(payload));
       } catch (e) {
         // 낡은 토큰은 4001 — 클라가 재연결을 멈춘다. 그 밖의 오류는 아래 1008.
         if (!(e instanceof ForbiddenException)) throw e;
@@ -282,15 +284,15 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
 
       // 2. 테이블 진입 시 (게임 시작 후)
       if (tableId) {
-        await this.assertTableAccess(payload, tableId);
+        await timed('ws.tableAccess', () => this.assertTableAccess(payload, tableId));
 
         (client as any).tableId = tableId;
         this.addToMap(this.tableSessions, tableId, client);
-        if (await this.closeIfStale(client, payload)) return;
+        if (await timed('ws.closeIfStale', () => this.closeIfStale(client, payload))) return;
 
         // 접속자 본인에게만 보낸다. 남이 접속했다고 테이블 전원이 같은 상태를
         // 다시 받을 이유가 없다.
-        const state = await this.redis.getSnapShot(tableId);
+        const state = await timed('ws.snapshot', () => this.redis.getSnapShot(tableId));
         // T117. 좌석 소켓은 자기 자리 번호를 들고 다닌다 — 재집계가 스냅샷을
         // 다시 읽지 않고 이 값으로 「그 자리가 돌아왔나」를 센다(`tablePresence`).
         // 열린 소켓의 자리는 바뀌지 않는다 — 자리 해제는 좌석 토큰을 폐기하고
@@ -305,6 +307,8 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
         }
         const wire = this.toWireState(state);
         if (wire) client.send(JSON.stringify({ event: 'renderGame', data: wire }));
+        // 여기까지가 단말이 「붙었다」고 느끼는 시간이다 — 뒤의 재집계는 뺀다.
+        observe(payload.role === Role.DEALER ? 'ws.connect.dealer' : 'ws.connect.seat', performance.now() - connectStart);
 
         // 복구 중에 붙었다(T97). 서버가 새 이벤트를 보장할 수 없는 자리라 붙는
         // 쪽이 매번 확인한다 — T96 `recount`의 joiner와 같은 이유다.
@@ -345,6 +349,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
       // 거부된 접속은 보안 신호다. 잘못된 토큰과 허용되지 않은 출처가
       // 여기로 모인다.
       this.logger.warn(`연결 거부: ${err.message}`);
+      observe('ws.connect.rejected', performance.now() - connectStart);
       client.close(1008, '인증 실패');
     }
   }
@@ -702,7 +707,9 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     // `serverOutage {down:true}`를 받아 화면이 막혀 있으므로, 여기서
     // SYNCING 띠를 못 받아도 화면상 문제가 없다.
     if (!this.redis.outage.isUp()) return;
-    const t = await this.prisma.tournament.findUnique({ where: { id: tournamentId }, select: { status: true } });
+    const recountStart = performance.now();
+    observe('sync.joiners', joiners.length);
+    const t = await timed('sync.status', () => this.prisma.tournament.findUnique({ where: { id: tournamentId }, select: { status: true } }));
     if (t?.status !== TournamentStatus.SYNCING) {
       for (const joiner of joiners) {
         if (joiner.readyState !== WebSocket.OPEN) continue;
@@ -712,14 +719,18 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
       return;
     }
 
-    const { seatMaps, progress } = await this.measureSync(tournamentId);
+    const { seatMaps, progress } = await timed('sync.measure', () => this.measureSync(tournamentId));
     let syncing = true;
     if (progress.done) {
       // 진 쪽(동시 n/n)은 false다. 이긴 쪽이 알린다.
       if (!(await this.recovery.completeSync(tournamentId))) return;
       syncing = false;
     }
+    const sendStart = performance.now();
     this.sendSyncing(seatMaps, { syncing, present: progress.present, required: progress.required });
+    observe('sync.send', performance.now() - sendStart);
+    observe('sync.recount', performance.now() - recountStart);
+    observe(`sync.progress.${progress.present}/${progress.required}`);
   }
 
   /**

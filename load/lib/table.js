@@ -591,8 +591,12 @@ export function runHands({
       if (!closing) step(entry, parsed.data);
     };
 
-    ws.onerror = () => {
+    // **사유를 남긴다**(T119). 핸드셰이크가 실패한 소켓은 코드 없이 닫혀 위 `onclose`의
+    // 로그에 안 잡힌다 — 667테이블 kill에서 티켓 4,000장이 접속으로 이어지지 않았는데
+    // 콘솔에는 아무것도 없었다.
+    ws.onerror = (e) => {
       socketErrors.add(1);
+      console.error(`소켓 오류 ${role} ${Date.now() - entry.bornAt}ms: ${(e && e.error) || ''}`);
     };
 
     // 정상 종료(1000)와 우리가 닫은 것은 세지 않는다. 그 외의 코드는 서버가
