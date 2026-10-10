@@ -913,6 +913,13 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     // 끝내면 원인도 지워진다(`completeSync`) — 끝났다는 알림에는 싣지 않는다.
     let reason = this.syncReason(tournamentId);
     if (progress.done) {
+      // **0/0이 유실일 수 있다**(T126). 테이블이 있는 대회는 빈 테이블도 좌석 해시에
+      // 자리가 있다. 해시가 통째로 비었는데 DB에 테이블이 있으면 Redis가 데이터를
+      // 잃은 것이라, 「다 돌아왔다」로 읽어 풀지 않는다 — 상점의 `forceSync`는 남는다.
+      if (seatMaps.length === 0 && (await this.prisma.table.count({ where: { tournamentId } })) > 0) {
+        this.logger.warn(`좌석 비트맵이 없어 SYNCING을 스스로 풀지 않는다 (tournament=${tournamentId})`);
+        return;
+      }
       // 진 쪽(동시 n/n)은 false다. 이긴 쪽이 알린다.
       if (!(await this.recovery.completeSync(tournamentId))) return;
       syncing = false;

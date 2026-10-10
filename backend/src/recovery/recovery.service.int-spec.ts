@@ -581,6 +581,30 @@ describe('RecoveryService', () => {
      * **타이밍으로 재지 않는다.** 테이블 목록을 읽는 자리가 곧 「곧 멈추러
      * 간다」라, 거기서 세대를 올려 「그 사이에 또 끊겼다」를 만든다.
      */
+    /**
+     * T126 ③. 회선 탓으로 멈춘 테이블 위에 Redis 장애가 겹쳤다. 대회의 원인은
+     * 「서버 장애」로 바뀌는데(`onRedisDown`이 회선 표시를 지운다) 테이블의 정지 사유는
+     * `lineDown`으로 남아, 딜러 띠와 재개 모달이 서로 다른 말을 했다.
+     * 세대는 다시 올리지 않는다 — 이미 멈춘 테이블이다.
+     */
+    it('회선으로 멈춘 테이블은 Redis 복귀 스윕이 사유를 서버 장애로 고친다', async () => {
+      const { tournamentId, tableId } = await seedLiveTurn({ epoch: 3 });
+      await prisma.tournament.update({
+        where: { id: tournamentId },
+        data: { status: TournamentStatus.SYNCING, pausedAt: new Date() },
+      });
+      const paused = (await redisService.getSnapShot(tableId))!;
+      await redis.set(`table:state:${tableId}`, JSON.stringify({
+        ...paused, timerEpoch: 4, actionDeadline: undefined, resumePending: { downMs: 1000, reason: 'lineDown' },
+      }));
+
+      await recovery.recoverFromOutage();
+
+      const after = await redisService.getSnapShot(tableId);
+      expect(`세대 ${after!.timerEpoch} 정지 ${after!.resumePending !== undefined} 사유 ${after!.resumePending?.reason}`)
+        .toBe('세대 4 정지 true 사유 undefined');
+    });
+
     it('스윕 도중 다시 끊기면 그 스윕은 아무것도 멈추지 않는다', async () => {
       const { tournamentId, tableId } = await seedLiveTurn({ epoch: 3 });
       await prisma.tournament.update({

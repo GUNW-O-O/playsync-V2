@@ -1289,6 +1289,23 @@ describe('WsGateway 인바운드 경계', () => {
     });
 
     /**
+     * T126 ②. 좌석 비트맵 해시를 **통째로** 잃으면(Redis 데이터 유실) 필요한 기기가
+     * 0으로 읽혀 0/0이 「다 돌아왔다」가 됐다 — 어느 테이블도 못 도는데 대회가 풀리고
+     * 블라인드 시계가 흘렀다. 테이블이 있는 대회는 빈 테이블도 해시에 자리가 있으므로
+     * (위 검사가 반대 입력이다), 해시가 비었는데 DB에 테이블이 있으면 유실이다.
+     * 풀지 않고 둔다 — 상점의 「지금 진행」은 여전히 열려 있다.
+     */
+    it('좌석 비트맵을 통째로 잃었으면 0/0이어도 스스로 풀지 않는다', async () => {
+      await seedSyncingTournament();
+      const session = await prisma.dealerSession.create({ data: { tournamentId: TOURNAMENT } });
+      await prisma.table.create({ data: { id: TABLE, tableOrder: 1, tournamentId: TOURNAMENT, dealerId: session.id } });
+
+      await gateway.handleSeatListUpdated({ tournamentId: TOURNAMENT, state: [] });
+
+      expect(`completeSync ${recovery.completeSync.mock.calls.length}번`).toBe('completeSync 0번');
+    });
+
+    /**
      * 재리뷰 m3. `recount`의 송신 루프를 `required`(좌석이 찬 테이블만)로
      * 되돌려도 기존 테스트는 전부 초록이었다 — `required`에 없는 **빈**
      * 테이블에 붙은 딜러를 아무 테스트도 보지 않았기 때문이다. 그 딜러가
