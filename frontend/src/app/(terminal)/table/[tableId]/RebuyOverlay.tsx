@@ -21,11 +21,18 @@ export type RebuyPrompt = {
  */
 export default function RebuyOverlay({
   rebuyData,
+  serverNow,
   error,
   blockedReason = null,
   onRespond,
 }: {
   rebuyData: RebuyPrompt;
+  /**
+   * 직전 `renderGame`이 서버를 떠난 시각. 마감은 서버 시계의 시각이라 이것으로
+   * 태블릿 시계를 보정한다(`ActionTimer`). 프롬프트는 대기 표시를 실은 프레임
+   * 바로 뒤에 오므로 그 프레임의 시각이면 충분하다.
+   */
+  serverNow?: number;
   /**
    * 응답이 서버까지 가지 못했을 때의 문구(`SeatGameClient`의 `rebuyError`).
    * 팝업 **안에** 그린다 — 위에 모달을 얹으면 다시 눌러야 할 버튼을
@@ -70,7 +77,7 @@ export default function RebuyOverlay({
           </p>
         ) : (
           <div className="mt-3">
-            <ActionTimer key={rebuyData.deadline} deadline={rebuyData.deadline} />
+            <ActionTimer key={rebuyData.deadline} deadline={rebuyData.deadline} serverNow={serverNow} />
           </div>
         )}
 

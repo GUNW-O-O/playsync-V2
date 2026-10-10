@@ -239,7 +239,10 @@ export default function SeatGameClient({
   // 올인 여부만 그린다(리뷰 지적: 이걸 근거 없이 "중복"으로 보고 뺐었다).
   const betPlaced = myPlayer?.bet ?? 0;
   const toCall = gameState ? Math.max(0, gameState.currentBet - betPlaced) : 0;
-  const minRaise = gameState ? gameState.currentBet + gameState.smallBlind * 2 : 0;
+  // 액션 패널의 슬라이더 최소(`SeatActionPanel`의 `minRaiseTotal`)와 같은 식이다.
+  const minRaise = gameState
+    ? gameState.currentBet + (gameState.lastRaiseSize ?? gameState.smallBlind * 2)
+    : 0;
 
   const resumePending = gameState?.resumePending;
   /**
@@ -469,6 +472,7 @@ export default function SeatGameClient({
       {rebuyData && (
         <RebuyOverlay
           rebuyData={rebuyData}
+          serverNow={gameState?.serverTime}
           error={rebuyError}
           blockedReason={rebuyBlockedReason}
           onRespond={handleRebuyResponse}

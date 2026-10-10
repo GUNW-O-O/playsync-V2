@@ -534,6 +534,43 @@ describe('SeatGameClient', () => {
    * (`PlaysyncService.markRebuyPending`) — 최신 스냅샷에 내 자리가 없으면
    * 지금 눌러도 서버에 받을 대기자가 없다.
    */
+  /**
+   * 좌석 화면에 최소 레이즈가 두 번 나온다 — 옆 패널의 숫자와 액션 패널의
+   * 슬라이더 최소. 옆 패널만 `currentBet + BB`로 세면 큰 레이즈 뒤에 **불법
+   * 금액**을 적는다(엔진은 직전 레이즈 폭을 요구한다).
+   */
+  describe('옆 패널의 최소 레이즈', () => {
+    it('직전 레이즈 폭을 더한다', async () => {
+      const { socket } = await renderWithSocket();
+      // 100/200에서 200 → 1,000. 폭이 800이라 다음 최소는 1,800이다.
+      socket.emitServerEvent('renderGame', { ...BASE_STATE, currentBet: 1000, lastRaiseSize: 800 });
+      expect(await screen.findByText('1,800')).toBeInTheDocument();
+      expect(screen.queryByText('1,200')).not.toBeInTheDocument();
+    });
+
+    it('레이즈가 없던 라운드는 BB를 더한다 (반대 입력)', async () => {
+      const { socket } = await renderWithSocket();
+      socket.emitServerEvent('renderGame', { ...BASE_STATE, currentBet: 200 });
+      expect(await screen.findByText('400')).toBeInTheDocument();
+    });
+  });
+
+  /**
+   * 리바인 마감은 서버 시계의 시각이다. 태블릿 시계가 뒤처져 있으면 보정 없이는
+   * 게이지가 남은 채 서버 마감이 지난다 — 턴 타이머가 이미 고친 증상이다.
+   */
+  it('리바인 카운트다운은 태블릿 시계가 뒤처져도 서버 시각으로 센다', async () => {
+    const { socket } = await renderWithSocket({ seatIndex: 3 });
+    const serverNow = Date.now() + 20_000;
+    socket.emitServerEvent('renderGame', {
+      ...BASE_STATE,
+      serverTime: serverNow,
+      rebuyPending: { seatIndexes: [3], deadline: serverNow + 15_000 },
+    });
+    socket.emitServerEvent('REBUY_PROMPT', { deadline: serverNow + 15_000 });
+    expect(await screen.findByText('15초 남음')).toBeInTheDocument();
+  });
+
   describe('리바인 팝업 — 대기자 표시 없음 (검수 M-c)', () => {
     it('내 자리가 rebuyPending에 실려 있으면 답할 수 있다', async () => {
       const { socket } = await renderWithSocket({ seatIndex: 3 });
