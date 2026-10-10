@@ -3,7 +3,7 @@
 import { useRef, useState } from 'react';
 import { PlayerAction, SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
 import Felt from '@/component/felt/Felt';
-import { useTableSocket } from '@/lib/use-table-socket';
+import { useTableSocket, NOT_SENT_ERROR } from '@/lib/use-table-socket';
 import ReconnectOverlay from '../../ReconnectOverlay';
 import { TableState, TournamentClosedSchema, type ClosedTournamentStatus } from '@playsync/contract';
 import SeatActionPanel from './SeatActionPanel';
@@ -22,13 +22,6 @@ const DEFAULT_CONNECTION_ERROR = '연결이 끊어졌습니다.';
 
 /** 서버가 `error` 프레임에 문자열을 안 실어 줬을 때의 최후 안내. */
 const DEFAULT_ACTION_ERROR = '요청이 거절되었습니다.';
-
-/**
- * 보내려 했는데 소켓이 열려 있지 않았을 때. **서버가 거절한 것이 아니라
- * 애초에 닿지 않은 것**이라 문구가 다르다 — 거절은 이유가 있고, 이쪽은
- * 다시 눌러 보라는 것 말고 할 말이 없다.
- */
-const NOT_SENT_ERROR = '연결이 끊어져 전달되지 못했습니다. 잠시 후 다시 눌러 주세요.';
 
 /** 복구 뒤 딜러의 재개를 기다리는 동안 리바인 팝업에 적는다(T100). */
 const REBUY_WAIT_DEALER = '딜러가 게임을 재개하면 다시 묻습니다.';
@@ -55,18 +48,15 @@ const PHASE_LABEL: Record<number, string> = {
  * 좌석에 앉은 참가자가 앉아 있는 동안 보는 유일한 화면(와이어프레임
  * 724–845행). 딜러 분기가 없다 — 딜러 화면은 별도 컴포넌트(다음 태스크)다.
  *
- * 탈락은 서버가 알려주지 않는다. 받는 이벤트는 `renderGame`과
- * `REBUY_PROMPT` 둘뿐이라 두 신호로 유추한다.
+ * 탈락은 서버가 알려주지 않는다. `renderGame`과 `REBUY_PROMPT` 두 신호로
+ * 유추한다(그 밖에 `tournamentClosed`와 거절 ack인 `error`를 받는다).
  *   (a) 리바인 프롬프트에 거절을 보낸 직후
- *   (b) 프롬프트가 없는 상태에서 `renderGame`의 내 좌석이 `null`
- * (b)는 리바인 프롬프트가 떠 있는 동안에는 판정하지 않는다 — 실제로 그
- * 구간에 좌석이 비는 것은 아니다. 좌석을 `null`로 만드는 것은
+ *   (b) `renderGame`의 내 좌석이 `null`
+ * **(b)는 프롬프트가 떠 있어도 본다.** 좌석을 `null`로 만드는 것은
  * `table-engine.ts`의 `initTable` 하나뿐이고, 그건 리바인 대기·탈락 확정이
- * 끝난 **뒤**(`dealer.service.ts`)에 돈다. 그래도 가드를 두는 것은 값싼
- * 방어다 — 프롬프트가 떠 있는 동안은 애초에 탈락을 판정할 필요가 없는
- * 시점이라, 검사 하나로 그 창을 통째로 걸러 둔다. `rebuyDataRef`로 최신
- * 값을 보는 이유는: `onmessage`는 최초 연결 시 한 번만 만들어지는 클로저라,
- * 상태 변수를 직접 읽으면 그 시점의 값(대개 초기값)에 갇힌다.
+ * 끝난 **뒤**(`dealer.service.ts`)에 돈다 — 그러니 좌석이 비었으면 떠 있는
+ * 프롬프트는 마감을 넘긴 것이다. 서버는 시간 초과를 따로 알리지 않아, 여기서
+ * 안 걷으면 버튼이 잠긴 팝업이 새로고침 전까지 그 자리를 막는다.
  */
 export default function SeatGameClient({
   tableId,
@@ -87,23 +77,23 @@ export default function SeatGameClient({
   const [rebuyData, setRebuyData] = useState<RebuyPrompt | null>(null);
   const rebuyDataRef = useRef<RebuyPrompt | null>(null);
   /**
-   * **리바인 프롬프트를 한 번이라도 받았나.** `rebuyDataRef`와 달리 참이
-   * 되면 되돌리지 않는다.
+   * **답이 안 난 리바인 프롬프트를 받았나.** 프롬프트가 닫혀도 남고,
+   * 칩을 다시 든 프레임(리바인이 들어왔다)에서만 내린다.
    *
    * 이것이 좌석이 사라진 사유를 가르는 유일한 단서다. 프롬프트는 칩이
-   * 0이 됐을 때만 오므로, 본 적이 있으면 탈락이고 없으면 상점이 자리를
-   * 푼 것이다(T29 — 칩은 남고 자리만 잃는다).
+   * 0이 됐을 때만 오므로, 받은 뒤 칩을 못 든 채 자리가 비면 탈락이고
+   * 아니면 상점이 자리를 푼 것이다(T29 — 칩은 남고 자리만 잃는다).
    *
    * **서버가 준 사실이 아니라 화면이 본 것에서 세운 추론이다.** 프롬프트가
    * 소켓 문제로 안 왔는데 탈락한 경우, 화면은 「자리 이동」이라고 잘못
    * 말한다. 옳은 해법은 좌석을 지우는 경로가 사유를 실어 보내는 것이고
-   * (`releaseSeat` · 탈락 처리), 이건 그 전까지의 근사다.
+   * (`releaseSeats` · 탈락 처리), 이건 그 전까지의 근사다.
    */
   const sawRebuyPromptRef = useRef(false);
   const [exitReason, setExitReason] = useState<ExitReason | null>(null);
   /**
-   * 대회가 닫혔다는 사실. **한 번 서면 되돌리지 않는다** — 서버가 소켓을
-   * 끊지 않으므로 늦게 도착한 `renderGame`이 있을 수 있고, 그것이 이 값을
+   * 대회가 닫혔다는 사실. **한 번 서면 되돌리지 않는다** — 닫힘 알림과
+   * 소켓 종료 사이에 늦게 도착한 `renderGame`이 있을 수 있고, 그것이 이 값을
    * 지우면 끝난 대회의 펠트가 다시 나온다.
    *
    * `eliminated`와 따로 둔다. 탈락은 **이 사람**이 빠진 것이고 이쪽은
@@ -130,7 +120,7 @@ export default function SeatGameClient({
 
   function updateRebuyData(next: RebuyPrompt | null) {
     rebuyDataRef.current = next;
-    // 한 번 뜬 사실은 지우지 않는다. 프롬프트가 닫힌 **뒤에** 좌석이
+    // 닫힐 때는 지우지 않는다. 프롬프트가 닫힌 **뒤에** 좌석이
     // 사라지는 것이 탈락의 정상 순서라, 현재값만 보면 그때는 이미 늦다.
     if (next) sawRebuyPromptRef.current = true;
     setRebuyData(next);
@@ -154,10 +144,14 @@ export default function SeatGameClient({
         // 없는 키를 지우고 위반이면 아예 안 보낸다(T71).
         const state = data as TableState;
         setGameState(state);
-        // 판정 (b): 리바인 프롬프트가 떠 있는 동안에는 좌석 소멸을
-        // 나온 것으로 보지 않는다 — 리바인 구간에도 좌석이 잠깐 빈다.
-        if (!rebuyDataRef.current && mySeatIndex !== null && state.players[mySeatIndex] === null) {
+        const me = mySeatIndex !== null ? state.players[mySeatIndex] : undefined;
+        if (me === null) {
+          // 판정 (b). 떠 있던 프롬프트는 마감을 넘긴 것이라 함께 걷는다.
           setExitReason(sawRebuyPromptRef.current ? 'eliminated' : 'seat-released');
+          if (rebuyDataRef.current) updateRebuyData(null);
+        } else if (me && me.stack > 0 && !state.rebuyPending?.seatIndexes.includes(me.seatIndex)) {
+          // 칩을 들었고 더 묻지도 않는다 — 앞의 프롬프트는 리바인으로 끝났다.
+          sawRebuyPromptRef.current = false;
         }
       } else if (serverEvent === 'tournamentClosed') {
         // **계약을 읽는다.** 손으로 필드를 꺼내면 백엔드가 모양을 바꿔도
@@ -180,9 +174,9 @@ export default function SeatGameClient({
         // (`ws.gateway.ts`의 `handlePlayerAction`). 안 읽으면 참가자는
         // 눌렀는데 아무 변화도 없는 화면을 보고 먹은 줄 안다.
         //
-        // **`renderGame`으로 지우지 않는다.** 딜러 화면은 그렇게 하지만
-        // (`DealerGameClient`), 좌석 화면에서 `renderGame`은 남이 액션할
-        // 때마다 오는 브로드캐스트라 — 내 거절 사유가 1초도 못 버틴다.
+        // **`renderGame`으로 지우지 않는다.** `renderGame`은 남이 액션할
+        // 때마다 오는 브로드캐스트라 — 내 거절 사유가 1초도 못 버틴다
+        // (딜러 화면 `DealerGameClient`도 같다).
         setActionError(typeof data === 'string' && data ? data : DEFAULT_ACTION_ERROR);
       }
     },
@@ -238,7 +232,10 @@ export default function SeatGameClient({
   // 올인 여부만 그린다(리뷰 지적: 이걸 근거 없이 "중복"으로 보고 뺐었다).
   const betPlaced = myPlayer?.bet ?? 0;
   const toCall = gameState ? Math.max(0, gameState.currentBet - betPlaced) : 0;
-  const minRaise = gameState ? gameState.currentBet + gameState.smallBlind * 2 : 0;
+  // 액션 패널의 슬라이더 최소(`SeatActionPanel`의 `minRaiseTotal`)와 같은 식이다.
+  const minRaise = gameState
+    ? gameState.currentBet + (gameState.lastRaiseSize ?? gameState.smallBlind * 2)
+    : 0;
 
   const resumePending = gameState?.resumePending;
   /**
@@ -296,7 +293,8 @@ export default function SeatGameClient({
       {/*
         **서버 장애(T97).** Redis가 죽으면 게이트웨이가 테이블 소켓 전원에게
         `serverOutage`를 뿌린다 — 연결 자체는 살아 있어 `connectionError`
-        배너와 겹칠 일이 드물지만, 겹쳐도 서로 다른 자리라 가리지 않는다.
+        배너와 겹칠 일이 드물다. 겹치면 둘이 같은 자리(위쪽 끝, 같은 z)라
+        뒤에 그리는 이 배너가 연결 끊김 띠를 덮는다.
         정지 배너(`resumePending`)와도 별도로 그린다 — 둘 다 사람에게
         필요한 설명이다.
       */}
@@ -467,6 +465,7 @@ export default function SeatGameClient({
       {rebuyData && (
         <RebuyOverlay
           rebuyData={rebuyData}
+          serverNow={gameState?.serverTime}
           error={rebuyError}
           blockedReason={rebuyBlockedReason}
           onRespond={handleRebuyResponse}

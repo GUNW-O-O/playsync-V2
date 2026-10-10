@@ -182,8 +182,8 @@
 핸드"가 된다.
 
 **복구는 락을 잡지 않는다** — `saveSnapshotUnlocked(..., 'boot-recovery')`로
-그 사실을 코드에 적어 둔다(T42). 근거는 `recoverAll()`의 호출자가
-`OnApplicationBootstrap` 하나뿐이고 그것이 `app.listen()` 이전이라 경합 상대가
+그 사실을 코드에 적어 둔다(T42). 근거는 `recoverAll()`이 부팅에서 한 번만 돌고
+(`bootOnce`) 그것이 `app.listen()` 이전이며 타임아웃 워커도 그 뒤에 돌아 경합 상대가
 없다는 것 — **호출자를 늘리면 이 근거가 깨진다.** `RecoveryService`에 런타임
 호출자가 둘 생겼다. `completeSync`(게이트웨이가 부른다)는 스냅샷을 쓰지 않고 대회
 행과 블라인드만 만진다. `recoverFromOutage`(Redis 복귀)는 스냅샷을 쓰지만

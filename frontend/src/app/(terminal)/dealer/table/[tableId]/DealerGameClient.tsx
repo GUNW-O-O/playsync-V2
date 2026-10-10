@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { DealerAction, SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
 import Felt from '@/component/felt/Felt';
-import { useTableSocket } from '@/lib/use-table-socket';
+import { useTableSocket, NOT_SENT_ERROR } from '@/lib/use-table-socket';
 import ReconnectOverlay from '../../../ReconnectOverlay';
 import {
   GamePhase,
@@ -43,7 +43,9 @@ type KickTarget = { seatIndex: number; id: string; nickname: string };
  * 좌석 화면과 같은 테이블을 180° 돌려 그린다(`orientation="dealer"`) — 딜러는
  * 자기 자리가 화면 아래에 있어야 눈앞의 배치와 곧바로 겹친다.
  *
- * 받는 이벤트는 `renderGame`뿐이다 — `REBUY_PROMPT`는 좌석 단말에만 간다.
+ * 판을 그리는 이벤트는 `renderGame`뿐이다 — `REBUY_PROMPT`는 좌석 단말에만
+ * 간다. 그 밖에 `tournamentClosed`, 복구 진행(`TOURNAMENT_SYNCING_EVENT`),
+ * 거절 ack인 `error`를 받는다.
  * 보내는 것은 `DEALER_ACTION`이고 페이로드는 `@playsync/contract`의
  * `dealer-action.ts` 스키마를 따른다. 토큰과 tableId는 싣지 않는다 —
  * 핸드셰이크에서 이미 검증돼 소켓에 박혀 있고, 인바운드 스키마(.strict())가
@@ -75,9 +77,9 @@ export default function DealerGameClient({
   const [kickTarget, setKickTarget] = useState<KickTarget | null>(null);
   const [showWinnerOverlay, setShowWinnerOverlay] = useState(false);
   /**
-   * 대회가 닫혔다는 사실. **한 번 서면 되돌리지 않는다** — 서버가 소켓을
-   * 끊지 않으므로 늦게 도착한 `renderGame`이 있을 수 있고, 그것이 이 값을
-   * 지우면 딜러가 끝난 대회의 펠트를 다시 만지게 된다.
+   * 대회가 닫혔다는 사실. **한 번 서면 되돌리지 않는다** — 닫힘 알림과
+   * 소켓 종료(`WsGateway.closeTable`) 사이에 늦게 도착한 `renderGame`이 있을
+   * 수 있고, 그것이 이 값을 지우면 딜러가 끝난 대회의 펠트를 다시 만지게 된다.
    */
   const [closed, setClosed] = useState<ClosedTournamentStatus | null>(null);
   /**
@@ -104,9 +106,9 @@ export default function DealerGameClient({
         // 서버가 이미 태우기 때문이다** — `WsGateway.toWireState`가 계약에
         // 없는 키를 지우고 위반이면 아예 안 보낸다(T71).
         setGameState(data as TableState);
-        // 새 상태가 왔다는 것은 앞의 명령이 먹었다는 뜻이다. 지난 거절
-        // 사유를 남겨 두면 성공한 화면 위에 붙어 있게 된다.
-        setActionError(null);
+        // **거절 사유는 여기서 지우지 않는다.** `renderGame`은 참가자 누구든
+        // 액션하면 오는 브로드캐스트라, 지우면 딜러가 읽기 전에 사라진다.
+        // 「확인」으로만 닫는다(좌석 화면과 같다).
       } else if (serverEvent === 'tournamentClosed') {
         // **계약을 읽는다.** 손으로 필드를 꺼내면 백엔드가 모양을 바꿔도
         // 컴파일이 통과하고 화면만 조용히 어긋난다.
@@ -141,12 +143,19 @@ export default function DealerGameClient({
     },
   });
 
-  function sendDealerAction(action: DealerAction) {
-    if (socketRef.current?.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify({ event: 'DEALER_ACTION', data: action }));
-    } else {
+  /**
+   * 소켓이 열려 있으면 보내고 `true`. 아니면 거절 모달로 알리고 `false` —
+   * 딜러는 콘솔을 볼 수 없고, 못 보낸 명령을 먹은 줄 알면 판이 선다
+   * (좌석 화면의 `trySend`와 같은 이유).
+   */
+  function sendDealerAction(action: DealerAction): boolean {
+    if (socketRef.current?.readyState !== WebSocket.OPEN) {
       console.error('웹소켓 연결이 열려있지 않습니다.');
+      setActionError(NOT_SENT_ERROR);
+      return false;
     }
+    socketRef.current.send(JSON.stringify({ event: 'DEALER_ACTION', data: action }));
+    return true;
   }
 
   // 자리를 누르면 내보내기 확인이 뜬다. 빈 자리를 누르면 확인을 접는다.
@@ -161,13 +170,13 @@ export default function DealerGameClient({
 
   function confirmKick() {
     if (!kickTarget) return;
-    sendDealerAction({ action: 'DEALER_KICK', targetUserId: kickTarget.id });
+    if (!sendDealerAction({ action: 'DEALER_KICK', targetUserId: kickTarget.id })) return;
     setKickTarget(null);
   }
 
   function confirmFold() {
     if (!foldTarget) return;
-    sendDealerAction({ action: 'DEALER_FOLD', targetUserId: foldTarget.id });
+    if (!sendDealerAction({ action: 'DEALER_FOLD', targetUserId: foldTarget.id })) return;
     setKickTarget(null);
   }
 
@@ -184,7 +193,8 @@ export default function DealerGameClient({
   }
 
   function submitWinners(winnerGroups: string[][]) {
-    sendDealerAction({ action: 'RESOLVE_WINNERS', winnerGroups });
+    // 못 보냈으면 찍은 순위를 든 채로 둔다 — 닫으면 다시 찍어야 한다.
+    if (!sendDealerAction({ action: 'RESOLVE_WINNERS', winnerGroups })) return;
     setShowWinnerOverlay(false);
   }
 

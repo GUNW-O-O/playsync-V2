@@ -171,7 +171,7 @@ const ABSENT_RATIO = Number(__ENV.LOAD_ABSENT_RATIO || 0.03);
  * 마감 직후에 도착하는 액션의 비율.
  *
  * 30초를 아주 살짝 넘겨 누르는 사람이다. 타임아웃 잡이 이미 폴드시킨 뒤에
- * 도착하므로 **제품의 마감 시각 판정**(`playsync.service.ts:86` — "판정 기준은
+ * 도착하므로 **제품의 마감 시각 판정**(`PlaysyncService.handleAction` — "판정 기준은
  * 요청 도착 순서가 아니라 마감 시각이다")이 그때 처음 돈다. 봇이 이 경로를
  * 밟지 않으면 그 코드는 부하 중에 한 번도 실행되지 않는다.
  */
@@ -259,7 +259,7 @@ export const poolMisses = new Counter('pool_misses');
  * | | 왜 이 액션이 필요한가 |
  * |---|---|
  * | 체크·콜 | 기본. 핸드가 끝까지 가야 플랍·턴·리버·쇼다운이 전부 돈다 |
- * | 레이즈 | `resetChecked()`가 돌아 라운드가 한 바퀴 더 간다(`table-engine.ts:333`). 액션 수가 늘고 fan-out이 그만큼 곱해진다 |
+ * | 레이즈 | `resetChecked()`가 돌아 라운드가 한 바퀴 더 간다(`TableEngine.handleRaise`). 액션 수가 늘고 fan-out이 그만큼 곱해진다 |
  * | 폴드 | 없으면 사이드팟이 안 생기고 팟이 늘 전원 분배다 |
  */
 const RAISE_RATIO = Number(__ENV.LOAD_RAISE_RATIO || 0.2);
@@ -296,7 +296,7 @@ export const folds = new Counter('folds');
  * 이 상태에서 이 좌석이 낼 액션 하나.
  *
  * **합법인 것 중에서만 고른다.** 불법 액션은 엔진이 던지지만
- * (`table-engine.ts:55`의 "콜이 필요합니다"), 그 거절이 부하에 섞이면 재는
+ * (`TableEngine.act`의 "콜이 필요합니다"), 그 거절이 부하에 섞이면 재는
  * 것이 게임이 아니라 에러 경로가 된다.
  *
  * @param bigBlind 레이즈 단위. 시드 매니페스트의 값이다.
@@ -401,7 +401,7 @@ export function seatPlayers({
  *
  * 봇은 **게임 규칙을 지킨다.** 자기 차례일 때만 액션을 보내고, 딜러가 핸드를
  * 시작·종료시킨다. 마구 던지면 대부분 "차례 아님"으로 무시되는데
- * (`table-engine.ts:31`이 조용히 돌아간다), 그러면 올인·사이드팟 같은 비싼
+ * (`TableEngine.act`의 턴 검사가 조용히 `false`를 돌려준다), 그러면 올인·사이드팟 같은 비싼
  * 경로가 한 번도 안 돌아 최악 장부 경로를 못 본다.
  *
  * @returns 실행이 끝나면 resolve되는 Promise
@@ -477,7 +477,7 @@ export function runHands({
    * **티켓은 여기서 받는다.** 열 개를 미리 받아 두고 순차로 붙었더니, 부하가
    * 커지면서 마지막 소켓이 붙을 때 첫 티켓이 이미 만료돼 있었다 — 티켓 TTL이
    * 30초다(T24). 서버는 1008로 끊고, 그 테이블은 소켓 아홉으로 계속 도는데
-   * 지표만 조용히 망가진다(아래 `liveSockets` 주석).
+   * 지표만 조용히 망가진다(아래 「살아 있는 소켓으로 센다」 주석).
    */
   function open(token, role, seat, attempt = 0) {
     // **티켓이 막히면 여기서 자지 않는다.** `sleep`은 VU를 통째로 멈춰 아직
@@ -497,7 +497,7 @@ export function runHands({
     const idx = sockets.length;
     // `scheduled`가 없으면 같은 소켓이 액션을 중복 예약한다. 자기 차례인
     // 동안에는 브로드캐스트가 올 때마다 `step`이 다시 불리기 때문이다.
-    // 중복 액션은 서버가 "차례 아님"으로 무시하지만(`table-engine.ts:31`)
+    // 중복 액션은 서버가 "차례 아님"으로 무시하지만(`TableEngine.act`의 턴 검사)
     // 브로드캐스트는 그대로 나가고, 그러면 창과 수신이 하나씩 어긋나
     // **생각 시간이 지연으로 잡힌다** — 실측에서 정확히 THINK_MS만큼 나왔다.
     const entry = {
@@ -529,7 +529,7 @@ export function runHands({
         return;
       }
       entry.attempt = 0;
-      // 리바인 팝업(`ws.gateway.ts:316`)은 좌석 하나에게만 간다. 즉시
+      // 리바인 팝업(`WsGateway.handleRebuyRequest`)은 좌석 하나에게만 간다. 즉시
       // 수락해 좌석이 비지 않게 한다 — 램프의 규모 축이 인원 감소로
       // 흔들리면 안 된다.
       //
@@ -751,7 +751,7 @@ export function runHands({
         //
         // 예전에는 폴드 안 한 전원을 한 그룹으로 넣었다(보드 하이). 그러면
         // 팟이 낸 만큼 되돌아와 **아무도 터지지 않고**, 리바인 분기
-        // (`dealer.service.ts:309`)가 한 번도 실행되지 않는다.
+        // (`DealerService.resolveWinners`의 리바인 단계)가 한 번도 실행되지 않는다.
         const alive = state.players.filter((p) => p && !p.hasFolded).map((p) => p.id);
         if (alive.length > 0) {
           const winner = alive[Math.floor(Math.random() * alive.length)];

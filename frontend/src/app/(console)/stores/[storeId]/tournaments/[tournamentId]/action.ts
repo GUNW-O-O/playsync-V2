@@ -28,8 +28,8 @@ function failureMessage(body: unknown): string {
  * 화면들과 달리 상점 콘솔은 관리자가 로그인한 세션이고, 로그인이 심는
  * 쿠키 이름이 좌석·딜러 토큰과 같은 `accessToken`이다(`session.ts`).
  *
- * 토큰은 이 함수 밖으로 나가지 않는다 — 반환값에도 없다. 다섯 액션이 이
- * 경로 하나로 모이는 이유는, 그래야 "토큰을 반환값에 담지 않는다"는 규칙을
+ * 토큰은 이 함수 밖으로 나가지 않는다 — 반환값에도 없다. 이 파일의 액션이
+ * 전부 이 경로 하나로 모이는 이유는, 그래야 "토큰을 반환값에 담지 않는다"는 규칙을
  * 한 곳에서만 지키면 되기 때문이다.
  */
 async function callConsoleApi(
@@ -157,7 +157,8 @@ export async function chopTournament(tournamentId: string): Promise<ActionResult
  * `POST /store/sessions/:id/abort`. 대회를 중단하고 환불한다. **되돌릴 수 없다.**
  *
  * 응답의 `{ refunded, storeAmount, scaled }`는 버린다 — 성공 뒤 화면은
- * 대회 목록으로 떠나고, 그 숫자를 다시 그릴 자리가 없다. 남은 기록은
+ * 그 자리에서 다시 그려져 마무리 영역이 사라지고(`ConsoleClient`의
+ * `finish`), 그 숫자를 다시 그릴 자리가 없다. 남은 기록은
  * `PointTransaction`이다.
  */
 export async function abortTournament(tournamentId: string): Promise<ActionResult> {

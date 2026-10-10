@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { TournamentStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { isClosedTournament } from 'src/store/session/tournament-status';
@@ -33,10 +33,13 @@ export class UserService {
   async paymentPoint(tx: any, userId: string, tournamentId: string, sessionName: string, amount: number) {
     await this.findByUUID(userId);
 
-    await tx.user.update({
-      where: { id: userId },
+    // **잔액 조건을 차감과 한 문장에 싣는다.** 호출자의 잔액 검사는 트랜잭션 밖의
+    // 낡은 읽기라, 그 사이 다른 대회의 참가비가 빠지면 포인트가 음수가 된다.
+    const paid = await tx.user.updateMany({
+      where: { id: userId, points: { gte: amount } },
       data: { points: { decrement: amount } }
     });
+    if (paid.count !== 1) throw new ConflictException('포인트가 부족합니다.');
     await tx.pointTransaction.create({
       data: {
         userId,
@@ -85,7 +88,8 @@ export class UserService {
    * 이 값을 실으려면 같은 한 줄을 명시해야 하고, 그 순간 리뷰에 걸린다.
    *
    * 끝난 대회의 OTP는 쓸 데가 없다. 목록에 남겨 두면 유출 표면만 넓어지므로
-   * 응답에서 뺀다. `FINISHED`만 제외하고 나머지는 전부 보여준다 — 상태를
+   * 응답에서 뺀다(행은 남기고 OTP만 `null`). 닫힌 대회(`isClosedTournament` —
+   * `FINISHED` · `CANCELLED`)만 가리고 나머지는 전부 보여준다 — 상태를
    * 나열해서 살아있는 것만 고르면, 나중에 상태가 하나 늘 때 조용히
    * 빠진다(`SYNCING`이 실제로 그런 경우였다: 테이블 이동 중인 참가자가
    * 새 테이블에 재입장하려면 바로 이 OTP가 필요하다).

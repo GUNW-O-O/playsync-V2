@@ -50,7 +50,7 @@ export async function setSeatBitmap(redis: Redis, tournamentId: string, tableId:
 
 /**
  * 빈 테이블의 스냅샷. `createEmptyTableState`(`src/game-engine/types.ts`)와
- * 같은 모양이고 `RedisService.saveSnapShot`과 같은 키·TTL이다.
+ * 같은 모양이고 `RedisService.writeSnapshot`과 같은 키·TTL이다.
  *
  * **T38이 세운 불변식을 시드도 지켜야 한다** — "테이블이 있으면 스냅샷이
  * 있다". 제품 경로에서는 `createTable`이 세우지만, 시드는 무대를 빨리 세우려고

@@ -73,7 +73,7 @@ export default function (data) {
   });
 
   // 대회를 시작해야 Redis에 블라인드 메타가 서고, 그래야 `startPreFlop`이
-  // 통과한다(`dealer.service.ts:193`).
+  // 통과한다(`DealerService.startPreFlop`의 블라인드 메타 검사).
   startTournament(data.ownerToken, tournament.id);
 
   return runHands({

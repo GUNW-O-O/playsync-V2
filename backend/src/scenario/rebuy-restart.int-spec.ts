@@ -23,7 +23,7 @@ import { checkInvariants, Harness, SCENARIO, setupTournament } from './harness';
  * **장애가 아니어도 같다.** 여기서 Redis를 죽이지 않는 이유가 그것이다. T100의
  * 장애는 대기를 15초에서 「장애 + 딜러 재개」로 늘렸을 뿐, 그 창 안의 재시작은
  * 전부터 같은 자리로 온다. 장애까지 겹친 판은 실제 kill 무대가 든다
- * (`backend/test/outage/rebuy-kill.outage-spec.ts`).
+ * (`backend/test/outage/backend-kill.outage-spec.ts`의 10~14단계).
  *
  * **재시작은 `DealerService`를 새로 지어서 흉내 낸다.** 하네스가 서비스를 손으로
  * 배선하므로 새 인스턴스의 메모리는 실제로 비어 있다 — 죽은 프로세스의 호출

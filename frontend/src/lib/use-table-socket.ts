@@ -21,6 +21,14 @@ import { type SocketRole, retryAfterMs, waitFor } from '@/lib/reconnect-policy';
  * ping을 볼 수 없고 태블릿은 사람이 누를 때만 보내므로 `onclose`가 안 뜬다 —
  * 그러면 아래 재접속이 영영 시작되지 않는다.
  */
+/**
+ * 보내려 했는데 소켓이 열려 있지 않았을 때. **서버가 거절한 것이 아니라
+ * 애초에 닿지 않은 것**이라 문구가 다르다 — 거절은 이유가 있고, 이쪽은
+ * 다시 눌러 보라는 것 말고 할 말이 없다.
+ * 좌석과 딜러 화면이 같이 쓴다.
+ */
+export const NOT_SENT_ERROR = '연결이 끊어져 전달되지 못했습니다. 잠시 후 다시 눌러 주세요.';
+
 export const SOCKET_SILENCE_MS = 25_000;
 
 /** 닫기 이유나 403 본문에 문장이 없을 때 덮개가 그릴 말(T110). */

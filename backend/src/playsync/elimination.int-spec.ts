@@ -424,7 +424,7 @@ describe('탈락 처리 멱등성', () => {
      * **컬럼이 마감을 늦게 안다.**
      *
      * `isRegistrationOpen` 컬럼은 마감 시각에 스스로 닫히지 않는다.
-     * `PaymentService.closeRegistrationInDb`가 **마감 뒤 누군가 참가를
+     * `registration-gate.ts`의 `closeRegistration`이 **마감 뒤 누군가 참가를
      * 시도했을 때만** 게으르게 flip하고, 그 외에는 상점의 수동 스위치다.
      * 그래서 마감 레벨을 지났는데도 그 뒤 아무도 참가를 시도하지 않은 대회는
      * 컬럼이 `true`로 남는다 — 헤즈업에 도달해도 게이트가 안 걸린다.

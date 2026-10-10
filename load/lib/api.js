@@ -13,7 +13,7 @@ import { nextAttempt } from './reconnect-backoff.js';
  *
  * 프론트(Next)는 타지 않는다. `POST /ws/ticket`은 원래 Next의 route handler가
  * 쿠키를 읽어 중계하지만, 인증이 `Authorization: Bearer`라 봇이 직접 부를 수
- * 있다(`jwt.strategy.ts:27`). 측정 대상을 게임 서버로 좁히려는 것이다.
+ * 있다(`JwtStrategy`의 `jwtFromRequest`). 측정 대상을 게임 서버로 좁히려는 것이다.
  */
 
 const BASE = __ENV.BASE_URL || 'http://127.0.0.1:3001';
@@ -280,7 +280,7 @@ export function createTable(ownerToken, tournamentId) {
  * 테이블을 열되 409를 재시도한다.
  *
  * `insertTable`이 트랜잭션 **안에서** `tableOrder` 최댓값을 뽑고 최종 방어가
- * `@@unique([tournamentId, tableOrder])`다(`session.service.ts:195-197`).
+ * `@@unique([tournamentId, tableOrder])`다(`SessionService.insertTable`).
  * 램프에서는 여러 VU가 같은 순간에 같은 대회의 테이블을 열므로 진 쪽이
  * 409를 받는다. 상점 콘솔에서는 사람이 다시 누르면 되지만 봇은 스스로
  * 다시 눌러야 한다.

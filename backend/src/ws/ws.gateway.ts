@@ -191,7 +191,8 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
       this.logger.warn(`응답 없는 소켓 ${dead.length}개를 끊었다`);
     }
     // `terminate()`는 `ws`가 `close`를 내게 해 `handleDisconnect`가 따로 불리지만,
-    // 여기서 먼저 빼 둔다 — 두 번 불려도 같다(Set.delete).
+    // 여기서 먼저 빼 둔다 — 뒤이은 호출은 `handleDisconnect`의 `disconnectHandled`
+    // 표시가 걸러, 정리는 한 번만 돈다.
     for (const socket of dead) {
       // 응답이 없어 서버가 끊은 것과 상대가 닫은 것을 측정이 가른다(T121).
       (socket as any).swept = true;
@@ -770,7 +771,9 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
   /**
    * 그 대회의 딜러가 마지막으로 응답한 시각(T121). 딜러 소켓이 끊길 때마다 최댓값으로
    * 적는다 — 응답이 없어 서버가 끊은 소켓은 마지막 pong, 상대가 닫은 소켓은 닫힌 지금이다.
-   * 마지막 딜러가 사라지면 이 값이 `pausedAt`이 된다. 대회가 닫히면 지운다.
+   * 마지막 딜러가 사라지면 이 값이 `pausedAt`이 된다. 대회가 닫히면 지우지만
+   * (`handleTournamentClosed`), 그 종료가 닫은 딜러 소켓의 `handleDisconnect`가 뒤이어
+   * 다시 적는다 — 닫힌 대회의 항목은 프로세스가 내려갈 때까지 남는다.
    */
   private readonly lastDealerSeenAt = new Map<string, number>();
   /** 줄에서 아직 시작 안 한 「딜러 0」 확인. 한꺼번에 끊긴 딜러들이 하나로 합쳐진다. */

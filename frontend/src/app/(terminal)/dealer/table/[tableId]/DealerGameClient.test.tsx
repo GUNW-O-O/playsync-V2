@@ -277,13 +277,34 @@ describe('DealerGameClient', () => {
       expect(screen.queryByTestId('dealer-action-error')).toBeNull();
     });
 
-    it('다음 renderGame이 오면 사유를 걷는다', async () => {
-      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.SHOWDOWN }));
+    /**
+     * 소켓이 닫힌 채 누른 명령은 서버에 가지 않는다. 예전에는 `console.error`
+     * 한 줄뿐이라 딜러는 먹은 줄 알았다 — 좌석 화면이 `NOT_SENT_ERROR`로 고친
+     * 것과 같은 결함이다.
+     */
+    it('소켓이 닫혀 있으면 명령이 전달되지 않았다고 알린다', async () => {
+      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.WAITING }));
+      socket.readyState = 3;
 
-      socket.emitServerEvent('error', '지명되지 않은 팟이 있습니다.');
-      socket.emitServerEvent('renderGame', baseState({ phase: GamePhase.WAITING }));
+      await userEvent.click(screen.getByRole('button', { name: /핸드 시작/ }));
 
-      expect(screen.queryByTestId('dealer-action-error')).toBeNull();
+      expect(socket.sent).toEqual([]);
+      expect(screen.getByTestId('dealer-action-error')).toHaveTextContent('전달되지 못했습니다');
+    });
+
+    /**
+     * `renderGame`은 딜러의 명령이 먹었을 때만 오는 것이 아니다 — 참가자 누구든
+     * 액션하면 테이블 전원에게 온다. 그것으로 지우면 베팅 라운드 중의 거절
+     * (딜러 폴드 · 내보내기)이 읽기도 전에 사라져, 딜러는 먹은 줄 안다.
+     * 좌석 화면이 같은 이유로 지우지 않는다.
+     */
+    it('남의 액션으로 renderGame이 와도 사유가 지워지지 않는다', async () => {
+      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.PRE_FLOP }));
+
+      socket.emitServerEvent('error', '내보낼 수 없습니다.');
+      socket.emitServerEvent('renderGame', baseState({ phase: GamePhase.PRE_FLOP, pot: 400 }));
+
+      expect(screen.getByTestId('dealer-action-error')).toHaveTextContent('내보낼 수 없습니다.');
     });
   });
 

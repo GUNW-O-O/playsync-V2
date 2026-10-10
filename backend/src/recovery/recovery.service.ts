@@ -41,7 +41,7 @@ export class RecoveryService implements OnApplicationBootstrap, OnModuleDestroy 
   private readonly onOutageUp = () => { void this.recoverFromOutage(); };
 
   /**
-   * 부팅 복구(`recoverAll`)가 도는 중인가(T97). `onApplicationBootstrap`이 켜고
+   * 부팅 복구(`recoverAll`)가 도는 중인가(T97). `bootOnce`가 켜고
    * 끝나면 끈다. **`new`로 세운 곳(테스트 · 시나리오 하네스)은 부팅이 없으므로
    * 끝난 것으로 본다** — 그래서 기본값이 비어 있다.
    */
@@ -51,7 +51,7 @@ export class RecoveryService implements OnApplicationBootstrap, OnModuleDestroy 
    * **부팅 전에** 장애가 있었나 — 프로세스가 뜬 뒤 한 번도 붙기 전에 끊겼다. 부팅
    * 복구가 하트비트로 **부팅 전 구간 전체**를 계상하므로, 이것이 켜져 있는 동안의
    * 장애 감지 · 복귀는 대회를 켜지 않는다. 그 사이 다시 끊겨도(`previous`가
-   * `recovering`) 마찬가지다. **부팅 복구가 끝나야만 내린다**(`onApplicationBootstrap`)
+   * `recovering`) 마찬가지다. **부팅 복구가 끝나야만 내린다**(`bootOnce`)
    * — 스윕이 끝났다고 내리면 부팅 전의 두 번째 장애가 이른 `pausedAt`을 쓴다.
    */
   private outageFromBoot = false;
@@ -187,7 +187,8 @@ export class RecoveryService implements OnApplicationBootstrap, OnModuleDestroy 
    * 게이트웨이가 재집계와 같은 줄 안에서 부른다(`WsGateway.pauseIfNoDealer`).
    *
    * @param pausedAt 마지막 딜러가 마지막으로 응답한 시각. 서버가 끊김을 아는 데
-   *   10~20초가 걸리므로 지금보다 과거다.
+   *   시간이 걸리므로 지금보다 과거다 — 딜러 빠른 확인(`DEALER_PROBE_MS`, 연달아 두 번
+   *   침묵)이면 4~6초, 청소(`WsGateway.sweepSockets`)가 끊은 소켓이면 10~20초다.
    * @returns 이 호출이 멈췄으면 true
    */
   async pauseForLineOutage(tournamentId: string, pausedAt: Date): Promise<boolean> {
@@ -236,7 +237,7 @@ export class RecoveryService implements OnApplicationBootstrap, OnModuleDestroy 
       // 있다는 사실은 "이 구간은 이미 다운타임에 계상됐다"는 사실을 바꾸지
       // 않는다. 그래서 여기서는 조건 없이 찍는다.
       //
-      // 이 줄이 없으면: 하트비트 주기(30초) 안에 프로세스가 다시 뜰 때마다
+      // 이 줄이 없으면: 하트비트 주기(5초, `heartbeat.service.ts`의 `DEFAULT_INTERVAL_MS`) 안에 프로세스가 다시 뜰 때마다
       // (컨테이너 재시작 루프, dev watch 재시작, 장애 중 운영자의 연속
       // 재시작) 같은 구간을 몇 번이고 또 더한다 — `pausedMs`가 재시작
       // 횟수에 비례해 불어나고, 되돌릴 API도 화면도 없다.
@@ -388,7 +389,7 @@ export class RecoveryService implements OnApplicationBootstrap, OnModuleDestroy 
 
   /**
    * 대회 하나의 시계를 멈춰 세운다 — 블라인드 기준점을 DB에서 대입하고, 차례가
-   * 있던 테이블의 턴 시계를 멈춘다. **부팅과 Redis 복귀가 같이 쓴다**(T97).
+   * 있던 테이블의 턴 시계를 멈춘다. **부팅 · Redis 복귀(T97) · 회선 끊김(`pauseForLineOutage`, T121)이 같이 쓴다.**
    * 스냅샷이 없는 테이블은 건드리지 않는다 — 재구성은 부팅 전용이다.
    *
    * @returns 그 대회의 테이블. 부팅이 이어서 비트맵 · 재구성을 본다.
@@ -476,8 +477,10 @@ export class RecoveryService implements OnApplicationBootstrap, OnModuleDestroy 
   }
 
   /**
-   * 그 대회의 딜러 태블릿이 전부 돌아왔다 — `SYNCING`을 끝내고 멈춘 시간만큼
-   * 블라인드를 한 번 민다(T96). 게이트웨이가 n/n을 본 순간 부른다.
+   * `SYNCING`을 끝내고 멈춘 시간만큼 블라인드를 한 번 민다(T96). 부르는 곳은 셋이다 —
+   * 필요한 기기(딜러 + 앉은 자리)가 전부 돌아와 게이트웨이가 n/n을 본 순간
+   * (`WsGateway.recount`), 상점의 「지금 진행」(`WsGateway.forceSync`), 앉은 테이블이
+   * 하나도 없는 대회의 부팅 복구(`recoverTournament`).
    *
    * **조건부 update가 문지기다.** 두 딜러가 동시에 n/n을 봐도 한 행만 바뀌고,
    * 진 쪽은 0행이라 아무것도 밀지 않는다. `pausedAt`까지 조건에 거는 이유는

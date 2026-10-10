@@ -49,7 +49,9 @@ enum TournamentStatus {
   SYNCING
   FINISHED // 최종 종료 (영구 데이터 보존 상태)
 
-  /// 취소 — 시작 전에 닫고 참가비를 전액 환불했다.
+  /// 취소 · 중단. 두 길이 이 값으로 끝난다 — 시작 전에 닫고 참가비를 전액
+  /// 환불한 것(`cancelSession`)과, 시작한 뒤 중단해 규칙대로 일부를 환불하고
+  /// 나머지를 상점 몫으로 넘긴 것(`abortSession`).
   ///
   /// `FINISHED`와 섞지 않는다. `FINISHED`는 "걷은 참가비 == 나간 상금"이
   /// 맞아떨어져야 달리는 값이고(`completeSession`의 게이트), 취소는 그
@@ -318,11 +320,15 @@ model TournamentParticipation {
 }
 
 model DealerSession {
-  // 토너먼트id 로 otp 인증후 맞으면 반환 로컬스토리지에 저장.
+  // 토너먼트id 로 otp 인증후 맞으면 딜러 토큰의 `sub`로 나간다. 토큰은
+  // 프론트가 httpOnly 쿠키(`dealerToken`)에 심는다.
   id String @id @default(uuid())
 
-  // 상점이 딜러를 내보내면 올라간다. 갱신이 이 값을 대조하므로 기존 토큰은
-  // 남은 만료 시간(최대 1시간) 안에 소멸한다.
+  // 상점이 딜러를 내보내면 올라간다(`SessionService.revokeDealerSession`).
+  // 갱신 · WS 티켓 발급 · WS 접속이 이 값을 대조하고
+  // (`DealerService.assertDealerSessionValid`), 열려 있는 딜러 소켓은
+  // `DEALER_SESSION_REVOKED`로 닫힌다. 토큰의 서명 수명 자체는 12시간이다
+  // (`tokenTtl(Role.DEALER)`) — 폐기는 수명이 아니라 이 세대가 한다.
   tokenVersion Int @default(0)
 
   tournamentId String     @unique

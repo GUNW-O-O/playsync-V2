@@ -5,9 +5,10 @@ import { RecoveryService } from './recovery.service';
 
 // RedisModule과 PrismaModule이 둘 다 @Global이라 imports가 필요 없다.
 //
-// 큐는 예외다. 복구가 정지 뒤에 턴 타이머를 다시 걸어야 하고(T94), 그 잡은
-// `PlaysyncService`가 거는 것과 **같은 큐**여야 한다 — 이름이 갈리면 살아남은
-// 잡과 새 잡이 서로 다른 큐에 앉아 세대 검사가 무의미해진다.
+// 아래 큐 등록은 지금 이 모듈에서 쓰이지 않는다 — `RecoveryService`도
+// `HeartbeatService`도 큐를 주입받지 않는다. 복구는 턴 타이머를 다시 걸지 않고
+// 멈춘 채로 세운다(`RecoveryService.pauseTable`). 잡을 거는 쪽은
+// `PlaysyncService`와 `DealerService`다.
 @Module({
   imports: [BullModule.registerQueue({ name: 'player-timeout' })],
   providers: [HeartbeatService, RecoveryService],

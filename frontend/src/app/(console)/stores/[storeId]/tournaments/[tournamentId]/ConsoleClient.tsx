@@ -83,8 +83,8 @@ const STATUS_LABEL: Record<TournamentStatus, string> = {
  * `--ink` `--ink-subtle` `--hairline` `--blue` 토큰만 쓰고 태블릿 토큰
  * (`--tb-*`)은 쓰지 않는다.
  *
- * 조작 다섯(대회 시작·테이블 열기/닫기·좌석 해제·딜러 OTP 재발급) 모두
- * 서버 액션으로 위임한다. 서버가 돌려준 실패 문구를 그대로 배너에 띄울 뿐,
+ * 조작은 대회 시작부터 마무리까지 모두 서버 액션(`action.ts`)으로
+ * 위임한다. 서버가 돌려준 실패 문구를 그대로 배너에 띄울 뿐,
  * 역할에 따라 버튼을 숨기는 분기는 만들지 않는다 — 권한의 진실은 백엔드
  * 한 곳이다(브리프·보고서 참고).
  */
@@ -229,7 +229,7 @@ export default function ConsoleClient({
 
   /**
    * 조작 성공 뒤 화면을 새로 고친다. `router.refresh()`는 서버 컴포넌트
-   * (`page.tsx`)의 네 조회를 다시 돌려 이 컴포넌트를 최신 props로
+   * (`page.tsx`)의 조회들을 다시 돌려 이 컴포넌트를 최신 props로
    * 다시 그린다 — 조작마다 각자 낙관적으로 상태를 흉내 내지 않는다.
    *
    * **던지는 것과 실패 응답은 다른 길이다.** 서버 액션들은 백엔드가 준
@@ -258,13 +258,6 @@ export default function ConsoleClient({
     });
   }
 
-  /**
-   * `run`을 거치지 않는 유일한 조작이다 — 성공 결과에서 `dealerOtp`를 꺼내
-   * 화면과 `sessionStorage`에 실어야 해서 `ActionResult`만 받는 `run`의
-   * 모양에 안 맞는다. 그래서 **던졌을 때의 처리도 여기 따로 필요하다**
-   * (`run`의 주석과 같은 이유). 한 파일에 같은 결함이 두 벌 있으면 한쪽만
-   * 고쳐지는 날이 온다.
-   */
   /**
    * 확인 대화를 연다. 미리보기를 먼저 받고, 받은 뒤에만 연다.
    */
@@ -301,6 +294,13 @@ export default function ConsoleClient({
     run(action);
   }
 
+  /**
+   * `run`을 거치지 않는다 — 성공 결과에서 `dealerOtp`를 꺼내
+   * 화면과 `sessionStorage`에 실어야 해서 `ActionResult`만 받는 `run`의
+   * 모양에 안 맞는다. 그래서 **던졌을 때의 처리도 여기 따로 필요하다**
+   * (`run`의 주석과 같은 이유). 한 파일에 같은 결함이 두 벌 있으면 한쪽만
+   * 고쳐지는 날이 온다.
+   */
   function handleReissue() {
     startTransition(async () => {
       try {

@@ -13,7 +13,9 @@ const BREAK_LEVEL = 99;
  * 마감에는 두 가지가 겹쳐 있다.
  *
  * - **상점이 손으로 닫은 것** — `Tournament.isRegistrationOpen` 컬럼. 상점이
- *   대회를 만들 때 정하고, 그 뒤로 바뀌지 않는다.
+ *   대회를 만들 때 정한다. 그 뒤로 이 컬럼을 쓰는 것은 `closeRegistration`
+ *   (`registration-gate.ts`) 하나다 — 레벨 마감을 본 호출자가 `false`로
+ *   내리고, 다시 열리지는 않는다.
  * - **레벨이 지나가서 닫힌 것** — 블라인드가 `rebuyUntil`에 닿으면 자동이다.
  *
  * T47 전에는 이 둘이 **각자 다른 곳에 살았다.** 자동 마감은 Redis 해시에만

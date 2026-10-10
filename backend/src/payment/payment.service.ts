@@ -231,9 +231,6 @@ export class PaymentService {
     throw new ConflictException('등록이 마감된 대회입니다.');
   }
 
-  // 참가비 결제. **좌석은 여기서 정하지 않는다**(T28) — 오프라인에서 돈은
-  // 미리 내고 의자는 현장에서 정해진다. 좌석 확정은 EntryService가 참가
-  // OTP를 받는 순간에 한다.
   /**
    * 포인트 충전. **승인 판정과 반영을 갈라 둔다.**
    *
@@ -262,6 +259,9 @@ export class PaymentService {
     return { charged: amount };
   }
 
+  // 참가비 결제. **좌석은 여기서 정하지 않는다**(T28) — 오프라인에서 돈은
+  // 미리 내고 의자는 현장에서 정해진다. 좌석 확정은 EntryService가 참가
+  // OTP를 받는 순간에 한다.
   async joinSession(dto: PayMentDto, userId: string) {
     const user = await this.user.findByUUID(userId);
     const session = await this.prismaService.tournament.findUnique({
@@ -372,7 +372,8 @@ export class PaymentService {
       throw new ConflictException('참가 OTP를 만들지 못했습니다. 다시 시도해 주세요.');
     }
 
-    // 대회 카운터의 Redis 미러다. 방금 DB에 올린 세 필드와 같은 값이라
+    // 대회 카운터의 Redis 미러다. 방금 DB에 올린 두 필드(`totalPlayers` ·
+    // `totalBuyinAmount`)와 같은 값이라
     // 좌석과 무관하고, 그래서 여기 남는다.
     //
     // **여기서 던지면 안 된다**(T105). 참가비는 위 트랜잭션이 이미 가져갔다 —

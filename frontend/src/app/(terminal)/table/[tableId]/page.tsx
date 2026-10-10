@@ -62,7 +62,7 @@ async function getInitialGameData(tableId: string): Promise<GameDataResult> {
  *
  * `GET /playsync/:tableId`(위 `getInitialGameData`) 응답에는 storeId가
  * 없다 — 테이블 상태는 매장을 모른다. `TableState.tournamentId`(Redis
- * 스냅샷에 실제로 실려 온다 — `entry.service.ts`의 `emptyTableState`,
+ * 스냅샷에 실제로 실려 온다 — `entry.service.ts`의 `createEmptyTableState`,
  * `recovery.service.ts`가 세울 때부터 채운다)로 대회 정보를 한 번 더
  * 불러 얻는다.
  *

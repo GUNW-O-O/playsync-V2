@@ -37,7 +37,7 @@ export const TURN_TIMEOUT_MS = 30000;
 type TurnView = Pick<TableState, 'phase' | 'currentTurnSeatIndex' | 'players' | 'timerEpoch'>;
 
 /**
- * 차례가 살아 있나. `scheduleTimeout`의 판정과 **같은 모양이어야 한다** —
+ * 차례가 살아 있나. `PlaysyncService.scheduleTurnTimeout`의 판정과 **같은 모양이어야 한다** —
  * 한쪽만 고치면 복구가 평소 경로에 없는 타이머를 만들거나 있는 타이머를
  * 빠뜨린다.
  */

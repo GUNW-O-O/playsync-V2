@@ -30,7 +30,10 @@ export const LIVE_PLAYER_STATUSES = [
   PlayerStatus.RELEASED,
 ] as const;
 
-/** 아직 끝나지 않은 참가인가. 재입장·상금 지급이 이 판정을 쓴다. */
+/**
+ * 끝난 참가인가(`ELIMINATED` · `AWARDED`). 중단 정산이 이 판정을 쓴다 —
+ * `calculateAbortSettlement`의 환불 비율과 `groupAbortRefunds`의 무리 나누기.
+ */
 export function isFinishedParticipant(status: PlayerStatus): boolean {
   return (FINISHED_PLAYER_STATUSES as readonly PlayerStatus[]).includes(status);
 }
