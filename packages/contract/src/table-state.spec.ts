@@ -181,6 +181,11 @@ describe("RenderGameEventSchema", () => {
       ).toBe(false);
     });
 
+    it("회선 끊김 사유는 통과한다 (T121)", () => {
+      const pending = { downMs: 12_000, reason: "lineDown" };
+      expect(TableStateSchema.parse(snapshot({ resumePending: pending })).resumePending).toEqual(pending);
+    });
+
     it("음수 정지는 거절한다", () => {
       expect(
         TableStateSchema.safeParse(snapshot({ resumePending: { downMs: -1 } })).success,

@@ -21,6 +21,8 @@ import { DEALER_REVOKED_REASON, SERVER_OUTAGE_EVENT, SERVER_RECOVERING_MESSAGE, 
 // 재집계 보류 창(T117)은 SyncQueue 단위 검사가 맡는다. 통합 검사는 `connect` 직후 결과를
 // 읽으므로 게이트웨이를 보류 0으로 세운다 — `new WsGateway`보다 먼저 정해져야 한다.
 process.env.SYNC_RECOUNT_HOLD_MS = '0';
+// 스스로 닫은 마지막 딜러의 유예(T121)도 0으로 세운다 — 유예 자체는 그 describe가 값을 바꿔 잰다.
+process.env.DEALER_GONE_GRACE_MS = '0';
 
 /**
  * 게이트웨이의 인바운드 경계.
@@ -36,7 +38,7 @@ describe('WsGateway 인바운드 경계', () => {
   let gateway: WsGateway;
   let tickets: WsTicketService;
   let playsync: PlaysyncService;
-  let recovery: { completeSync: jest.Mock };
+  let recovery: { completeSync: jest.Mock; pauseForLineOutage: jest.Mock };
   let dealer: {
     startPreFlop: jest.Mock;
     resolveWinners: jest.Mock;
@@ -216,7 +218,12 @@ describe('WsGateway 인바운드 경계', () => {
     // SYNCING 판정 자체는 게이트웨이가 메모리 소켓 수로 하고, `completeSync`는
     // "n/n이면 끝낸다"는 위임일 뿐이라 목이다 — 그 서비스의 원자성은
     // `recovery.service.int-spec.ts`가 따로 잰다.
-    recovery = { completeSync: jest.fn().mockResolvedValue(true) };
+    // `pauseForLineOutage`(T121)는 기본이 「못 멈췄다」다 — 앞선 테스트들이 ONGOING 대회의
+    // 마지막 딜러를 끊어도 아무 일도 일어나지 않는다.
+    recovery = {
+      completeSync: jest.fn().mockResolvedValue(true),
+      pauseForLineOutage: jest.fn().mockResolvedValue(false),
+    };
 
     gateway = new WsGateway(
       dealer as unknown as DealerService,
@@ -1621,6 +1628,318 @@ describe('WsGateway 인바운드 경계', () => {
       } finally {
         outage.phase = 'up';
       }
+    });
+
+    /**
+     * 대회장의 회선이 끊겼다(T121). 서버가 볼 수 있는 것은 「그 대회의 딜러 소켓이
+     * 하나도 안 남았다」뿐이다 — 그때 그 대회를 멈춘다. 멈추는 일 자체는
+     * `recovery.service.int-spec.ts`가 재고, 여기서는 **언제 부르는가**를 본다.
+     */
+    describe('회선 끊김 (T121)', () => {
+      const linePause = () => (gateway as any).redis.linePause as import('src/redis/line-pause').LinePause;
+      // 게이트웨이는 파일 전체가 하나다. 앞선 테스트가 끊은 딜러의 시각이 남아 있으면
+      // 「마지막으로 응답한 시각」이 그쪽으로 잡힌다(최댓값이다).
+      const GRACE_MS = 40;
+      beforeEach(() => {
+        (gateway as any).lastDealerSeenAt.clear();
+        (gateway as any).dealerGoneGraceMs = GRACE_MS;
+      });
+      afterEach(() => {
+        linePause().clearAll();
+        (gateway as any).dealerGoneGraceMs = 0;
+      });
+      /** 회선이 말없이 끊겼다 — 서버가 응답 없는 소켓을 끊은 모양(`sweepSockets`). */
+      const lineDrop = (client: any) => { client.swept = true; return gateway.handleDisconnect(client); };
+      const pauses = () => recovery.pauseForLineOutage.mock.calls.length;
+
+      it('마지막 딜러가 끊기면 그 대회를 멈춘다 — 한 대라도 남으면 안 멈춘다', async () => {
+        await seedSyncingTournament(TournamentStatus.ONGOING);
+        await seedSeats();
+        const tableDealer = await connect(await dealerTicket(TABLE), TABLE);
+        const otherDealer = await connect(await dealerTicket(OTHER_TABLE), OTHER_TABLE);
+
+        await lineDrop(otherDealer);
+        expect(`한 대 남음 ${recovery.pauseForLineOutage.mock.calls.length}`).toBe('한 대 남음 0');
+
+        await lineDrop(tableDealer);
+        expect(`전부 끊김 ${recovery.pauseForLineOutage.mock.calls.length}`).toBe('전부 끊김 1');
+        expect(recovery.pauseForLineOutage).toHaveBeenCalledWith(TOURNAMENT, expect.any(Date));
+      });
+
+      /** 빈 테이블은 n/n에는 안 들지만, 그 딜러가 붙어 있다는 것은 회선이 살아 있다는 증거다. */
+      it('빈 테이블의 딜러 한 대도 남은 것이다', async () => {
+        await seedSyncingTournament(TournamentStatus.ONGOING);
+        await new RedisService(redis).rebuildSeatBitmap(TOURNAMENT, TABLE, [0]);
+        const tableDealer = await connect(await dealerTicket(TABLE), TABLE);
+        await connect(await dealerTicket(OTHER_TABLE), OTHER_TABLE);
+
+        await lineDrop(tableDealer);
+
+        expect(recovery.pauseForLineOutage).not.toHaveBeenCalled();
+      });
+
+      it('좌석만 전부 끊겨도 안 멈춘다', async () => {
+        await seedSyncingTournament(TournamentStatus.ONGOING);
+        await seedSeats();
+        await connect(await dealerTicket(TABLE), TABLE);
+        const seats = await connectSeats();
+
+        for (const seat of seats) await gateway.handleDisconnect(seat);
+
+        expect(recovery.pauseForLineOutage).not.toHaveBeenCalled();
+      });
+
+      /**
+       * 줄을 기다리는 사이 딜러가 돌아왔으면 끊긴 것이 아니다(새로고침). 타이밍에
+       * 맡기지 않고 줄을 붙잡아 순서를 강제한다.
+       */
+      it('줄을 기다리는 사이 딜러가 붙으면 안 멈춘다', async () => {
+        await seedSyncingTournament(TournamentStatus.ONGOING);
+        await seedSeats();
+        const dealerClient = await connect(await dealerTicket(TABLE), TABLE);
+        let release!: () => void;
+        const held = (gateway as any).syncQueue.enqueue(TOURNAMENT, () => new Promise<void>((r) => { release = r; }));
+
+        const gone = lineDrop(dealerClient);
+        const back = connect(await dealerTicket(TABLE), TABLE);
+        await waitUntil(() => [...((gateway as any).tableSessions.get(TABLE) ?? [])].some((s: any) => s.role === Role.DEALER));
+        release();
+        await Promise.all([held, gone, back]);
+
+        expect(recovery.pauseForLineOutage).not.toHaveBeenCalled();
+      });
+
+      /** Redis 장애는 `onRedisDown`이 이미 전 대회를 켰다 — 이 길이 `pausedAt`을 다투지 않는다. */
+      it('Redis 장애 중의 딜러 끊김은 이 길로 멈추지 않는다', async () => {
+        await seedSyncingTournament(TournamentStatus.ONGOING);
+        await seedSeats();
+        const dealerClient = await connect(await dealerTicket(TABLE), TABLE);
+        const outage = (gateway as any).redis.outage;
+        try {
+          outage.phase = 'down';
+          await lineDrop(dealerClient);
+          expect(recovery.pauseForLineOutage).not.toHaveBeenCalled();
+        } finally {
+          outage.phase = 'up';
+        }
+      });
+
+      it('응답이 없어 끊은 딜러는 마지막으로 응답한 시각부터, 스스로 닫은 딜러는 지금부터 멈춘 것이다', async () => {
+        await seedSyncingTournament(TournamentStatus.ONGOING);
+        await seedSeats();
+        const lastPong = Date.now() - 15_000;
+
+        const swept = await connect(await dealerTicket(TABLE), TABLE);
+        swept.aliveAt = lastPong;
+        swept.swept = true;
+        await gateway.handleDisconnect(swept);
+
+        const closed = await connect(await dealerTicket(TABLE), TABLE);
+        closed.aliveAt = lastPong;
+        await gateway.handleDisconnect(closed);
+        await waitUntil(() => pauses() === 2);
+
+        const [[, first], [, second]] = recovery.pauseForLineOutage.mock.calls as [string, Date][];
+        expect(`끊음 ${first.getTime() === lastPong} 닫음 ${second.getTime() > lastPong + 10_000}`)
+          .toBe('끊음 true 닫음 true');
+      });
+
+      /**
+       * **새로고침으로 대회가 멈추면 안 된다.** 테이블이 하나인 대회와 파이널 테이블에서는
+       * 딜러가 한 대라, 화면을 다시 여는 것만으로 「딜러 0」이 된다. 스스로 닫은 소켓은
+       * 유예(`DEALER_GONE_GRACE_MS`) 뒤에 여전히 딜러가 없을 때만 멈춘다.
+       */
+      it('스스로 닫은 마지막 딜러가 유예 안에 돌아오면 안 멈춘다', async () => {
+        await seedSyncingTournament(TournamentStatus.ONGOING);
+        await seedSeats();
+        const dealerClient = await connect(await dealerTicket(TABLE), TABLE);
+
+        await gateway.handleDisconnect(dealerClient);
+        await connect(await dealerTicket(TABLE), TABLE);
+        await new Promise((r) => setTimeout(r, GRACE_MS * 4));
+
+        expect(`새로고침 ${pauses()}`).toBe('새로고침 0');
+      });
+
+      /** 반대 입력 — 「스스로 닫으면 절대 안 멈춘다」가 위를 통과한다. 닫고 안 돌아오면 멈춘다. */
+      it('스스로 닫고 유예가 지나도록 안 돌아오면 멈춘다 — 유예 전에는 아니다', async () => {
+        await seedSyncingTournament(TournamentStatus.ONGOING);
+        await seedSeats();
+        const dealerClient = await connect(await dealerTicket(TABLE), TABLE);
+
+        await gateway.handleDisconnect(dealerClient);
+        expect(`닫은 직후 ${pauses()}`).toBe('닫은 직후 0');
+
+        await waitUntil(() => pauses() === 1);
+      });
+
+      /** 서버가 내보낸 딜러(딜러 OTP 재발급 · 기기 해제)는 돌아올 새로고침이 아니다. */
+      it('서버가 내보낸 마지막 딜러는 유예 없이 멈춘다', async () => {
+        await seedSyncingTournament(TournamentStatus.ONGOING);
+        await seedSeats();
+        (gateway as any).dealerGoneGraceMs = 60_000;
+        const dealerClient = await connect(await dealerTicket(TABLE), TABLE);
+
+        gateway.handleDealerSessionRevoked({ tournamentId: TOURNAMENT });
+        await gateway.handleDisconnect(dealerClient);
+
+        expect(`내보냄 ${pauses()}`).toBe('내보냄 1');
+      });
+
+      /**
+       * 접속에서 거절된 딜러 소켓은 딜러였던 적이 없다. 딜러가 아직 아무도 안 붙은 진행 중
+       * 대회에서 낡은 토큰 하나가 거절됐다고 대회가 멈추면 안 된다.
+       */
+      it('접속에서 거절된 딜러 소켓은 대회를 멈추지 않는다', async () => {
+        await seedSyncingTournament(TournamentStatus.ONGOING);
+        await seedSeats();
+        (gateway as any).dealerGoneGraceMs = 0;
+        // 첫 대조는 통과하고 방에 넣은 뒤의 대조에서 거절된다 — 이때는 소켓에 역할과
+        // 대회가 이미 적혀 있어, 「딜러였나」를 따로 안 보면 이 끊김이 판정을 부른다.
+        dealer.assertDealerSessionValid
+          .mockResolvedValueOnce(undefined)
+          .mockRejectedValueOnce(new ForbiddenException('내보내진 딜러'));
+
+        const rejected = await connect(await dealerTicket(TABLE), TABLE);
+
+        expect(`거절 ${rejected.close.mock.calls.length} 멈춤 ${pauses()}`).toBe('거절 1 멈춤 0');
+      });
+
+      /**
+       * **딜러만 빠르게 확인한다.** 10초 주기의 청소로는 회선이 끊긴 것을 10~20초 뒤에
+       * 알고, 그 사이 마감이 온 사람이 접힌다. 딜러 소켓은 2초마다 따로 확인해 그 대회의
+       * 딜러가 전부 침묵이면 **소켓이 아직 열려 있어도** 멈춘다.
+       */
+      describe('딜러 빠른 확인', () => {
+        /** 그 소켓이 pong을 보냈다 — `handleConnection`이 건 핸들러를 부른다. */
+        const pong = (client: any) => client.on.mock.calls.find(([name]: [string]) => name === 'pong')[1]();
+        /** 확인 한 번. 줄에 선 판정까지 기다린다. */
+        const probeOnce = async () => { gateway.probeDealers(); await (gateway as any).syncQueue.enqueue(TOURNAMENT, async () => {}); };
+        const longAgo = () => Date.now() - 60_000;
+
+        it('그 대회의 딜러가 연달아 두 번 답이 없으면 멈춘다 — 한 번으로는 아니고, 소켓은 끊지 않는다', async () => {
+          await seedSyncingTournament(TournamentStatus.ONGOING);
+          await seedSeats();
+          const dealerClient = await connect(await dealerTicket(TABLE), TABLE);
+          const lastSeen = longAgo();
+          dealerClient.aliveAt = lastSeen;
+          dealerClient.terminate = jest.fn();
+          dealerClient.ping = jest.fn();
+
+          await probeOnce();              // 첫 확인을 보낸다
+          await probeOnce();              // 답이 없었다 (1)
+          expect(`한 번 ${pauses()}`).toBe('한 번 0');
+          await probeOnce();              // 또 없었다 (2)
+
+          expect(`두 번 ${pauses()} 끊음 ${dealerClient.terminate.mock.calls.length} 방에 ${(gateway as any).tableSessions.get(TABLE)?.has(dealerClient)}`)
+            .toBe('두 번 1 끊음 0 방에 true');
+          const [[, pausedAt]] = recovery.pauseForLineOutage.mock.calls as [string, Date][];
+          expect(`마지막 응답부터 ${pausedAt.getTime() === lastSeen}`).toBe('마지막 응답부터 true');
+        });
+
+        /** 반대 입력 — 한 대라도 답하면 회선은 살아 있다. */
+        it('한 대라도 답하고 있으면 안 멈춘다', async () => {
+          await seedSyncingTournament(TournamentStatus.ONGOING);
+          await seedSeats();
+          const quiet = await connect(await dealerTicket(TABLE), TABLE);
+          const alive = await connect(await dealerTicket(OTHER_TABLE), OTHER_TABLE);
+          for (const c of [quiet, alive]) { c.aliveAt = longAgo(); c.ping = jest.fn(); }
+
+          for (let i = 0; i < 4; i++) { await probeOnce(); pong(alive); }
+
+          expect(pauses()).toBe(0);
+        });
+
+        /**
+         * 침묵한 딜러를 붙어 있는 것으로 세면, 멈추자마자 n/n이 차서 회선이 죽은 채로
+         * 대회가 다시 풀린다. 답이 돌아오면 그때 다시 센다.
+         */
+        it('침묵한 딜러는 n/n에 안 세고, 답이 돌아오면 다시 세어 푼다', async () => {
+          await seedSyncingTournament();
+          await seedSeats();
+          await connectSeats();
+          const quiet = await connect(await dealerTicket(TABLE), TABLE);
+          quiet.aliveAt = longAgo();
+          quiet.ping = jest.fn();
+          for (let i = 0; i < 3; i++) await probeOnce();
+
+          const other = await connect(await dealerTicket(OTHER_TABLE), OTHER_TABLE);
+          expect(lastSyncingPayload(other)).toEqual({ syncing: true, present: 3, required: 4 });
+          expect(`침묵 중 ${recovery.completeSync.mock.calls.length}`).toBe('침묵 중 0');
+
+          pong(quiet);
+          await waitUntil(() => recovery.completeSync.mock.calls.length === 1);
+          expect(lastSyncingPayload(other)).toEqual({ syncing: false, present: 4, required: 4 });
+        });
+      });
+
+      it('멈춘 원인을 딜러 띠와 상점 상태에 싣는다', async () => {
+        await seedSyncingTournament();
+        await seedSeats();
+        linePause().markDown(TOURNAMENT);
+
+        const dealerClient = await connect(await dealerTicket(TABLE), TABLE);
+
+        expect(lastSyncingPayload(dealerClient)).toEqual({ syncing: true, present: 1, required: 4, reason: 'lineDown' });
+        expect((await gateway.syncStatus(TOURNAMENT)).reason).toBe('lineDown');
+      });
+
+      it('대회가 닫히면 원인을 지운다', async () => {
+        linePause().markDown(TOURNAMENT);
+
+        gateway.handleTournamentClosed({ tournamentId: TOURNAMENT, tableIds: [TABLE], status: 'COMPLETED' });
+
+        expect(linePause().isDown(TOURNAMENT)).toBe(false);
+      });
+
+      /**
+       * 진짜 `RecoveryService`로 이음매를 본다. **일부러 끊긴 경우**(딜러 OTP 재발급 등)에는
+       * 좌석이 붙어 있다 — 멈춘 스냅샷을 방송하지 않으면 좌석은 낡은 마감 게이지를 계속 그린다.
+       */
+      it('진짜 RecoveryService로: 멈추면 붙어 있는 좌석이 정지 표시를 받고, 딜러가 돌아오면 풀리며 원인이 지워진다', async () => {
+        await seedSyncingTournament(TournamentStatus.ONGOING);
+        const session = await prisma.dealerSession.create({ data: { tournamentId: TOURNAMENT } });
+        await prisma.table.create({ data: { id: TABLE, tableOrder: 1, tournamentId: TOURNAMENT, dealerId: session.id } });
+        const ticket = await seatTicket('alice');
+        await prisma.tablePlayer.create({
+          data: { tournamentId: TOURNAMENT, tableId: TABLE, userId: 'alice', nickname: 'alice', seatPosition: 0 },
+        });
+        await new RedisService(redis).rebuildSeatBitmap(TOURNAMENT, TABLE, [0]);
+        await redis.set(`table:state:${TABLE}`, JSON.stringify({ ...makeState(), timerEpoch: 3, actionDeadline: Date.now() + 30_000 }));
+
+        const realRecovery = new RecoveryService(prisma as unknown as PrismaService, new RedisService(redis));
+        const realGateway = new WsGateway(
+          dealer as unknown as DealerService, playsync, new RedisService(redis), tickets,
+          new EventEmitter2(), prisma as unknown as PrismaService, realRecovery,
+        );
+        const open = async (t: string) => {
+          const client = makeClient();
+          await realGateway.handleConnection(client, makeRequest(`tableId=${TABLE}&ticket=${t}`, ORIGIN));
+          return client;
+        };
+        try {
+          const seat = await open(ticket);
+          const dealerClient = await open(await dealerTicket(TABLE));
+          seat.send.mockClear();
+
+          dealerClient.swept = true;
+          await realGateway.handleDisconnect(dealerClient);
+
+          const paused = await prisma.tournament.findUniqueOrThrow({ where: { id: TOURNAMENT } });
+          const frames = seat.send.mock.calls.map(([raw]: [string]) => JSON.parse(raw)).filter((m: any) => m.event === 'renderGame');
+          expect(`1. 상태 ${paused.status} 좌석이 받은 사유 ${frames.at(-1)?.data.resumePending?.reason} 마감 ${frames.at(-1)?.data.actionDeadline}`)
+            .toBe('1. 상태 SYNCING 좌석이 받은 사유 lineDown 마감 undefined');
+
+          await open(await dealerTicket(TABLE));
+
+          const resumed = await prisma.tournament.findUniqueOrThrow({ where: { id: TOURNAMENT } });
+          expect(`2. 상태 ${resumed.status} ${resumed.pausedAt} 원인 ${linePause().isDown(TOURNAMENT)}`)
+            .toBe('2. 상태 ONGOING null 원인 false');
+        } finally {
+          realGateway.onModuleDestroy();
+          realRecovery.onModuleDestroy();
+        }
+      });
     });
   });
 

@@ -571,13 +571,18 @@ export class DealerService {
       let asked = brokePlayerIds;
       while (asked.length > 0) {
         const generation = outage.generation;
-        const outcomes = await this.askRebuyRound(tournamentId, tableId, asked, tournamentInfo, generation);
+        const lineGeneration = this.redis.linePause.generationOf(tournamentId);
+        const outcomes = await this.askRebuyRound(tournamentId, tableId, asked, tournamentInfo, generation, lineGeneration);
         // `deferred`(DB의 일시 실패, T118)도 같은 길을 탄다 — 확정하지 않고
         // 딜러의 재개 뒤에 다시 묻는다.
         const interrupted = asked.filter((_, i) => outcomes[i] === 'interrupted' || outcomes[i] === 'deferred');
         if (interrupted.length === 0) break;
-        // 서버가 멈춘 것이 아니면 화면이 「N초 멈췄다」 대신 일시 오류라고 적는다.
-        const reason = outcomes.includes('interrupted') ? undefined : 'transientError' as const;
+        // 서버가 멈춘 것이 아니면 화면이 「N초 멈췄다」 대신 그 원인을 적는다 — 회선이
+        // 끊겼거나(T121, 이 판 사이에 회선 세대가 올랐다) 일시 오류다. `isDown`이 아니라
+        // 세대로 가른다 — 그새 대회가 풀렸어도 이 판을 끊은 것은 회선이다.
+        const reason = this.redis.linePause.generationOf(tournamentId) !== lineGeneration
+          ? 'lineDown' as const
+          : outcomes.includes('interrupted') ? undefined : 'transientError' as const;
 
         // **지금이 아니라 장애가 시작된 시각이다**(T100 리뷰 M-f). 이 줄
         // 바로 위 `Promise.all`(`askRebuyRound` 안)이 I1의 `whenUp` 경로를
@@ -651,6 +656,7 @@ export class DealerService {
     asked: string[],
     tournamentInfo: Dashboard,
     generation: number,
+    lineGeneration: number,
   ): Promise<RebuyOutcome[]> {
     try {
       await this.playsync.markRebuyPending(tableId, asked);
@@ -663,7 +669,7 @@ export class DealerService {
         this.playsync.processRebuy(
           tournamentId, tableId, playerId,
           tournamentInfo.entryFee, tournamentInfo.startStack, tournamentInfo.tournamentName,
-          generation,
+          generation, lineGeneration,
         ),
       ),
     );
@@ -677,7 +683,7 @@ export class DealerService {
    * 끝낸다 — 이 재시도 루프 밖에서 따로 `getSnapShot`을 다시 읽으면 그 왕복
    * 사이의 재장애가 이 함수의 방어를 안 타는 새 던짐 자리가 된다.
    */
-  private async holdForDealer(tableId: string, stoppedAt: number, reason?: 'transientError'): Promise<boolean> {
+  private async holdForDealer(tableId: string, stoppedAt: number, reason?: 'transientError' | 'lineDown'): Promise<boolean> {
     for (;;) {
       await this.redis.outage.whenUp();
       try {

@@ -69,6 +69,12 @@ const START_GROW_S = Number(__ENV.LOAD_START_GROW_S || GROW_S);
 const STEADY_S = Number(__ENV.LOAD_STEADY_S || 180);
 /** 0이면 램프 B(전부 한 대회). 6이면 램프 A. */
 const TABLES_PER_STORE = Number(__ENV.LOAD_TABLES_PER_STORE || 0);
+/**
+ * 실행 둘이 한 무대를 나눠 쓸 때의 출발 자리(T121 — 대회 하나만 끊는 측정).
+ * 대회는 `LOAD_STORE_OFFSET`번째부터, 계정 풀은 `LOAD_TABLE_OFFSET`테이블 뒤부터 쓴다.
+ */
+const STORE_OFFSET = Number(__ENV.LOAD_STORE_OFFSET || 0);
+const TABLE_OFFSET = Number(__ENV.LOAD_TABLE_OFFSET || 0);
 const NAME = __ENV.LOAD_RAMP_NAME || (TABLES_PER_STORE > 0 ? 'ramp-a' : 'ramp-b');
 
 /** 사용자가 "이거 왜 이래"라고 말하는 지점. HCI 응답 한계의 1초다. */
@@ -189,9 +195,9 @@ export function table(data) {
   // 램프 B는 전부 첫 대회다(perStore = Infinity → storeIdx = 0).
   // 램프 A는 6테이블마다 다음 대회로 넘어간다.
   const perStore = TABLES_PER_STORE > 0 ? TABLES_PER_STORE : Infinity;
-  const storeIdx = Math.min(Math.floor(index / perStore), manifest.tournaments.length - 1);
-  const tournament = manifest.tournaments[storeIdx];
-  const localIdx = index - storeIdx * (TABLES_PER_STORE > 0 ? TABLES_PER_STORE : 0);
+  const storeStep = Math.min(Math.floor(index / perStore), manifest.tournaments.length - 1 - STORE_OFFSET);
+  const tournament = manifest.tournaments[STORE_OFFSET + storeStep];
+  const localIdx = index - storeStep * (TABLES_PER_STORE > 0 ? TABLES_PER_STORE : 0);
 
   const setupStart = Date.now();
   // 상점 토큰을 이 자리에서 받는다. JWT가 1시간이라 `setup()`의 것을 물려
@@ -213,9 +219,9 @@ export function table(data) {
     password: manifest.password,
     seatCount: SEAT_COUNT,
     // 접두사 4 + 순번(base36) + 좌석(1). 순번 66까지는 base36으로 두 글자다.
-    prefix: `${data.runId}${index.toString(36)}`,
+    prefix: `${data.runId}${(TABLE_OFFSET + index).toString(36)}`,
     // 테이블끼리 겹치면 `@@unique([tournamentId, userId])`가 409로 막는다.
-    poolBase: index * SEAT_COUNT,
+    poolBase: (TABLE_OFFSET + index) * SEAT_COUNT,
     accountPrefix: manifest.accountPrefix,
     accountPool: manifest.accountPool,
     entryFee: manifest.entryFee,

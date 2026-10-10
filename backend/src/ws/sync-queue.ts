@@ -7,6 +7,19 @@ export function syncRecountHoldMs(env: Record<string, string | undefined> = proc
   return /^[0-9]+$/.test(raw) ? Number(raw) : DEFAULT_HOLD_MS;
 }
 
+const DEFAULT_DEALER_GONE_GRACE_MS = 10_000;
+
+/**
+ * `DEALER_GONE_GRACE_MS` — 마지막 딜러가 **스스로 닫았을 때** 대회를 멈추기까지 기다리는
+ * 시간(T121). 새로고침과 화면 이동은 몇 초 안에 다시 붙는다 — 그것으로 대회가 멈추면
+ * 안 된다. 응답이 없어 끊은 소켓과 서버가 내보낸 소켓에는 쓰지 않는다. 0 이상의 정수.
+ */
+export function dealerGoneGraceMs(env: Record<string, string | undefined> = process.env): number {
+  const raw = env.DEALER_GONE_GRACE_MS;
+  if (raw === undefined || raw === '') return DEFAULT_DEALER_GONE_GRACE_MS;
+  return /^[0-9]+$/.test(raw) ? Number(raw) : DEFAULT_DEALER_GONE_GRACE_MS;
+}
+
 /**
  * 대회별 재집계 줄(T96 리뷰 I1 · T117). 순수하다 — 소켓도 Redis도 모른다.
  *
@@ -29,7 +42,7 @@ export function syncRecountHoldMs(env: Record<string, string | undefined> = proc
  */
 export class SyncQueue<W> {
   private readonly chains = new Map<string, Promise<void>>();
-  private readonly waiting = new Map<string, { joiners: W[]; done: Promise<void> }>();
+  private readonly waiting = new Map<string, { joiners: W[]; done: Promise<void>; skipHold?: () => void }>();
 
   constructor(
     private readonly recount: (key: string, joiners: W[]) => Promise<void>,
@@ -50,15 +63,32 @@ export class SyncQueue<W> {
       this.waiting.delete(key);
       return this.recount(key, joiners);
     };
+    // 보류는 끊을 수 있다(`enqueue`). 아직 보류에 들어가기 전에 끊겼으면 들어가지 않는다.
+    let skipped = false;
+    let wake: (() => void) | undefined;
+    const hold = () => new Promise<void>((resolve) => {
+      if (skipped) return resolve();
+      const timer = setTimeout(resolve, this.holdMs);
+      wake = () => { clearTimeout(timer); resolve(); };
+    });
     // 0이면 기다리지 않는다 — 타이머 틱 하나가 순서를 바꾸지 않게.
-    const done = this.enqueue(key, this.holdMs > 0
-      ? () => new Promise<void>((r) => setTimeout(r, this.holdMs)).then(start)
-      : start).catch((e) => this.onError(e));
-    this.waiting.set(key, { joiners, done });
+    const done = this.chain(key, this.holdMs > 0 ? () => hold().then(start) : start)
+      .catch((e) => this.onError(e));
+    this.waiting.set(key, { joiners, done, skipHold: () => { skipped = true; wake?.(); } });
     return done;
   }
 
+  /**
+   * 그 대회 줄에 일 하나를 세운다. **보류 중인 재집계가 있으면 보류를 끝낸다**(T121) —
+   * 보류는 재접속 몰림을 합치려는 것이지 급한 일(상점의 강제 해제, 회선 끊김으로 대회
+   * 멈추기)을 세워 두려는 것이 아니다. 순서는 그대로다: 그 재집계가 먼저 돌고 이 일이 돈다.
+   */
   enqueue<T>(key: string, task: () => Promise<T>): Promise<T> {
+    this.waiting.get(key)?.skipHold?.();
+    return this.chain(key, task);
+  }
+
+  private chain<T>(key: string, task: () => Promise<T>): Promise<T> {
     const prior = this.chains.get(key) ?? Promise.resolve();
     const next = prior.then(task);
     const settled = next.then(() => undefined, () => undefined);

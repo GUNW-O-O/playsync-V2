@@ -85,7 +85,7 @@ export default function DealerGameClient({
    * 오고, 대회 단위 정렬은 서버가 보장한다(`TournamentSyncingSchema` 주석) —
    * 마지막으로 받은 값이 곧 지금 값이다.
    */
-  const [sync, setSync] = useState<{ present: number; required: number } | null>(null);
+  const [sync, setSync] = useState<{ present: number; required: number; reason?: 'lineDown' } | null>(null);
 
   /**
    * 소켓 배선은 `useTableSocket`이 든다(T93). 좌석 화면과 두 벌로 들고 있던
@@ -125,7 +125,7 @@ export default function DealerGameClient({
         if (parsed.success) {
           setSync(
             parsed.data.syncing
-              ? { present: parsed.data.present, required: parsed.data.required }
+              ? { present: parsed.data.present, required: parsed.data.required, reason: parsed.data.reason }
               : null,
           );
         } else {
@@ -315,10 +315,15 @@ export default function DealerGameClient({
         >
           <div className="w-full max-w-[460px] border border-tb-line bg-tb-panel p-6 text-center">
             <div className="text-2xl font-light leading-snug text-tb-ink">
-              {/* 서버가 멈춘 것이 아니면 리바인을 DB가 못 받은 것이다(T118). */}
+              {/*
+                서버가 멈춘 것이 아니면 리바인을 DB가 못 받았거나(T118), 대회장의 회선이
+                끊겨 이 대회의 딜러가 전부 사라졌던 것이다(T121).
+              */}
               {resumePending.reason === 'transientError'
                 ? '일시적인 서버 오류입니다'
-                : '서버가 멈췄다가 복구됐습니다'}
+                : resumePending.reason === 'lineDown'
+                  ? '인터넷 연결이 끊겼다가 돌아왔습니다'
+                  : '서버가 멈췄다가 복구됐습니다'}
             </div>
             <p className="mt-3 text-sm leading-relaxed text-tb-muted">
               {/*
@@ -350,13 +355,16 @@ export default function DealerGameClient({
         (`canStartHand`·`canResolveWinners`의 `sync === null`). 배너가 없으면
         「핸드 시작」이 그냥 꺼진 것처럼 보여 딜러가 이유를 모른다 — 이 띠가 그
         이유를 적는다.
+
+        회선 때문에 멈춘 대회면 그 원인을 앞에 적는다(T121) — 이 테이블에는 정지
+        배너가 없어 여기가 원인을 적는 유일한 자리다.
       */}
       {sync && !resumePending && (
         <div
           data-testid="dealer-sync-strip"
           className="absolute inset-x-0 top-0 z-50 bg-err px-4 py-3 text-center text-sm text-white"
         >
-          태블릿 {sync.present}/{sync.required}대 연결됨. 딜러와 좌석 태블릿이 모두 연결되면 이어서 진행할 수 있습니다.
+          {sync.reason === 'lineDown' && '인터넷 연결이 끊겼습니다. '}태블릿 {sync.present}/{sync.required}대 연결됨. 딜러와 좌석 태블릿이 모두 연결되면 이어서 진행할 수 있습니다.
         </div>
       )}
 

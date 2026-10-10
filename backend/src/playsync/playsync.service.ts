@@ -22,6 +22,7 @@ import { entryCountOf, payoutsForRaw } from './payout-table';
 import { awardPrize, prizeFor, prizePoolOf, splitBustedRanks } from './prize';
 import { SEAT_ROLE } from 'src/auth/seat-role';
 import { TURN_TIMEOUT_MS } from './turn-clock';
+import { event } from 'src/metrics/stage-timer';
 
 // 턴 시계는 `turn-clock.ts`가 든다. 복구(`RecoveryService`)가 정지 뒤에 같은
 // 시계를 다시 세우므로, 여기 상수를 두면 두 벌이 되어 한쪽만 바뀌는 날이 온다.
@@ -184,6 +185,12 @@ export class PlaysyncService {
         // `mutateSnapshot`은 그 경우 **읽은 상태**를 호출자에게 돌려준다 —
         // 게이트웨이가 브로드캐스트할 것이 그것이다.
         if (isStaleTurn || isStaleEpoch) return null;
+
+        // **회선이 끊겨 멈춘 대회의 타임아웃은 접지 않는다**(T121). 대회는 한 문장으로
+        // 멈추지만 테이블은 하나씩 멈춰 세운다(`RecoveryService.freezeTournament`) —
+        // 그 사이에 발화한 잡이 여기 닿는다. 곧 `pauseTable`이 세대를 올리고 마감을
+        // 지우므로 잡을 다시 걸 것도 없다.
+        if (this.redis.linePause.isDown(state.tournamentId)) return null;
       }
 
       // **멈춰 있는 테이블에서는 아무도 액션할 수 없다**(T95). 서버가 돌아왔지만
@@ -251,6 +258,12 @@ export class PlaysyncService {
     // `acted`가 필요한 이유는 낡은 TIME_OUT이 쓰지 않고 나가기 때문이다 —
     // 그 경로는 예전에도 emit하지 않았다.
     if (dto.action === ActionType.TIME_OUT && acted) {
+      event('timeout.fold', {
+        tournament: state!.tournamentId,
+        table: tableId,
+        user: userId,
+        lost: state!.players.find((p) => p?.id === userId)?.totalContributed ?? 0,
+      });
       this.eventEmitter.emit('game.state.updated', { tableId, state });
     }
 
@@ -486,7 +499,7 @@ export class PlaysyncService {
    * `holdForDealer`의 재시도 밖에 생긴다.
    */
   public async markRebuyInterrupted(
-    tableId: string, downMs: number, reason?: 'transientError',
+    tableId: string, downMs: number, reason?: 'transientError' | 'lineDown',
   ): Promise<boolean> {
     const state = await this.redis.mutateSnapshot(tableId, async (snapshot) => {
       if (!snapshot) return null;
@@ -722,6 +735,9 @@ export class PlaysyncService {
    *
    * @param generation 이 리바인 판을 시작할 때의 장애 세대. 락 안에서 달라졌으면
    *   그 사이에 끊겼다는 뜻이라 쓰지 않는다(`handleAction`의 세대 가드와 같다).
+   * @param lineGeneration 이 판을 시작할 때의 회선 세대(T121, `LinePause`). 달라졌으면
+   *   그 대회의 회선이 끊긴 것이라 **묻던 대기만** 접는다. 수락은 막지 않는다 —
+   *   멈춘 뒤에 도착했어도 그 사람의 의사다.
    */
   public async processRebuy(
     tournamentId: string,
@@ -731,6 +747,7 @@ export class PlaysyncService {
     startStack: number,
     tournamentName: string,
     generation: number = this.redis.outage.generation,
+    lineGeneration: number = this.redis.linePause.generationOf(tournamentId),
   ): Promise<RebuyOutcome> {
     // 이 조회가 던지면 `resolveWinners`가 통째로 실패하고, 딜러가 체크포인트
     // 재시도로 빠져나올 때 묻지도 않은 파산자가 탈락한다(T118).
@@ -747,8 +764,9 @@ export class PlaysyncService {
     if (userPoints.points < entryFee) return 'skipped';
 
     const answer = await this.waitForRebuyResponse(
-      userId, tableId, userPoints, entryFee, tournamentName, generation,
+      userId, tableId, userPoints, entryFee, tournamentName, generation, tournamentId, lineGeneration,
     );
+    if (answer === 'timeout') event('rebuy.timeout', { tournament: tournamentId, table: tableId, user: userId });
     if (answer !== 'accepted') return answer;
 
     // 1. 스냅샷에 칩 — 락 안에서 장애를 다시 본다.
@@ -899,11 +917,15 @@ export class PlaysyncService {
     entryFee: number,
     tournamentName: string,
     generation: number,
+    tournamentId: string,
+    lineGeneration: number,
   ): Promise<'accepted' | 'declined' | 'timeout' | 'interrupted'> {
     const outage = this.redis.outage;
+    const line = this.redis.linePause;
     // 이미 끊겼거나 이 판을 시작한 뒤 한 번 끊겼다 — 묻지 않는다. 물으면 답을
     // 받아도 반영할 수 없고, 사람은 눌렀는데 아무 일도 없는 화면을 본다.
-    if (!outage.isUp() || outage.generation !== generation) {
+    // 회선도 같다(T121) — 그 대회의 태블릿이 깜깜한데 물으면 마감만 흐른다.
+    if (!outage.isUp() || outage.generation !== generation || line.generationOf(tournamentId) !== lineGeneration) {
       return Promise.resolve('interrupted');
     }
 
@@ -917,6 +939,7 @@ export class PlaysyncService {
         settled = true;
         clearTimeout(timer);
         offDown();
+        offLine();
         // 핵심. `once`는 "실행되면 제거"라, 시간 초과로 끝난 경우 리스너가
         // 그대로 남는다. 리바인이 일어날 때마다 하나씩 영구 누적됐다.
         this.eventEmitter.removeListener(eventName, handler);
@@ -934,6 +957,8 @@ export class PlaysyncService {
       // 메모리라 장애와 무관하게 흐르고, 그대로 두면 화면이 「기다리라」고 하는
       // 동안 거절로 세어 탈락시킨다.
       const offDown = outage.onceDown(() => settle('interrupted'));
+      // 대회장의 회선이 끊겨도 같다(T121). Redis가 살아 있어 위 신호는 안 온다.
+      const offLine = line.onceDown(tournamentId, () => settle('interrupted'));
 
       // 리스너를 먼저 등록한 뒤 팝업을 띄운다. 순서가 반대면 응답이 아주 빨리
       // 돌아온 경우 받을 사람이 없다.

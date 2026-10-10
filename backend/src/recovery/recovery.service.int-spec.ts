@@ -644,6 +644,96 @@ describe('RecoveryService', () => {
     });
   });
 
+  /**
+   * 대회장의 회선이 끊겼다(T121). 서버도 Redis도 멀쩡한데 그 대회의 딜러가 전부
+   * 사라진 경우다 — Redis 장애와 같은 길로 **그 대회만** 멈춘다.
+   */
+  describe('회선 끊김 (T121)', () => {
+    afterEach(() => { redisService.linePause.clearAll(); });
+
+    it('그 대회를 SYNCING으로 켜고 차례 있던 테이블을 사유와 함께 멈춘다', async () => {
+      const { tournamentId, tableId } = await seedLiveTurn({ epoch: 3 });
+      const pausedAt = new Date(Date.now() - 12_000);
+
+      const paused = await recovery.pauseForLineOutage(tournamentId, pausedAt);
+
+      const t = await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } });
+      const after = await redisService.getSnapShot(tableId);
+      expect(`${paused} ${t.status} ${t.pausedAt?.getTime() === pausedAt.getTime()}`).toBe('true SYNCING true');
+      expect(`세대 ${after!.timerEpoch} 마감 ${after!.actionDeadline} 사유 ${after!.resumePending?.reason} 정지 ${after!.resumePending!.downMs >= 12_000}`)
+        .toBe('세대 4 마감 undefined 사유 lineDown 정지 true');
+    });
+
+    it('리바인 대기를 끊는 신호를 그 대회에만 낸다', async () => {
+      const { tournamentId } = await seedLiveTurn();
+      const { tournamentId: other } = await seedOngoingTournament();
+      const line = redisService.linePause;
+      const waiter = jest.fn();
+      const otherWaiter = jest.fn();
+      line.onceDown(tournamentId, waiter);
+      line.onceDown(other, otherWaiter);
+
+      await recovery.pauseForLineOutage(tournamentId, new Date());
+
+      expect(`대기 ${waiter.mock.calls.length} 원인 ${line.isDown(tournamentId)} 남 ${otherWaiter.mock.calls.length} ${line.isDown(other)}`)
+        .toBe('대기 1 원인 true 남 0 false');
+    });
+
+    /** 반대 입력 — 「언제나 전부 켠다」(`markSyncing`)가 위 둘을 통과한다. */
+    it('다른 대회는 ONGOING 그대로다', async () => {
+      const { tournamentId } = await seedLiveTurn();
+      const { tournamentId: other } = await seedOngoingTournament();
+
+      await recovery.pauseForLineOutage(tournamentId, new Date());
+
+      const t = await prisma.tournament.findUniqueOrThrow({ where: { id: other } });
+      expect(`${t.status} ${t.pausedAt}`).toBe('ONGOING null');
+    });
+
+    /**
+     * 이미 멈춘 대회는 첫 정지가 진짜다(`recoverTournament` 1단계와 같은 조건).
+     * 신호도 내지 않는다 — 서버 장애로 멈춘 대회를 회선 탓으로 적으면 거짓이다.
+     */
+    it('이미 SYNCING이면 pausedAt을 덮지 않고 원인도 세우지 않는다', async () => {
+      const { tournamentId, tableId } = await seedLiveTurn({ epoch: 3 });
+      const first = new Date(Date.now() - 60_000);
+      await prisma.tournament.update({
+        where: { id: tournamentId },
+        data: { status: TournamentStatus.SYNCING, pausedAt: first },
+      });
+
+      const paused = await recovery.pauseForLineOutage(tournamentId, new Date());
+
+      const t = await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } });
+      const after = await redisService.getSnapShot(tableId);
+      expect(`${paused} ${t.pausedAt?.getTime() === first.getTime()} 원인 ${redisService.linePause.isDown(tournamentId)} 세대 ${after!.timerEpoch}`)
+        .toBe('false true 원인 false 세대 3');
+    });
+
+    /**
+     * `pausedAt`은 과거다(서버가 끊김을 아는 데 10~20초). 그 사이 레벨 경계를 지났으면
+     * 얼린 레벨이 한 칸 돌아가는데, **닫힌 등록 마감이 그 때문에 다시 열리면 안 된다.**
+     */
+    it('얼린 레벨이 한 칸 돌아가도 닫힌 등록 마감은 다시 열리지 않는다', async () => {
+      const { tournamentId, structure } = await seedOngoingTournament({ startedAtMsAgo: 70_000 });
+      await prisma.tournament.update({
+        where: { id: tournamentId }, data: { rebuyUntil: 1, isRegistrationOpen: false },
+      });
+      const startedAt = Date.now() - 70_000;
+      await redisService.setTournamentBlind(tournamentId, {
+        isBreak: false, startedAt, currentBlindLv: 1,
+        nextLevelAt: startedAt + 120_000, serverTime: Date.now(), blindStructure: structure,
+      });
+
+      // 20초 전 = 경과 50초 = 레벨 인덱스 0.
+      await recovery.pauseForLineOutage(tournamentId, new Date(Date.now() - 20_000));
+
+      const blind = await redisService.getTournamentBlind(tournamentId);
+      const t = await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } });
+      expect(`레벨 ${blind!.currentBlindLv} 등록 ${t.isRegistrationOpen}`).toBe('레벨 0 등록 false');
+    });
+  });
+
   describe('테이블 단위 재구성', () => {
     it('스냅샷 없는 테이블만 재구성한다 — 한 대회에 둘이 섞여 있어도', async () => {
       const { tournamentId, tableIds } = await seedOngoingTournament({ tableCount: 2 });

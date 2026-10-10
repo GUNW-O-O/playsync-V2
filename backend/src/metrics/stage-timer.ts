@@ -40,6 +40,15 @@ export function observe(label: string, ms = 0) {
   if (ON) record(label, ms);
 }
 
+/**
+ * 일어난 일 하나를 한 줄로 남긴다(T121). 창으로 뭉치면 안 되는 것들이다 — 어느 대회의
+ * 누가 언제 시간 초과로 폴드됐는지는 건수가 아니라 시각과 대회로 읽는다. `[event]`로 거른다.
+ */
+export function event(name: string, fields: Record<string, unknown>) {
+  // eslint-disable-next-line no-console
+  if (ON) console.log(`[event] ${JSON.stringify({ t: Date.now(), name, ...fields })}`);
+}
+
 /** 창마다 한 번 읽는 현재값(pg 풀 대기 수 같은 것). */
 export function gauge(label: string, read: () => Record<string, number>) {
   if (ON) gauges.set(label, read);

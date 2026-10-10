@@ -517,6 +517,20 @@ describe('DealerGameClient', () => {
       expect(banner).not.toHaveTextContent('멈췄다');
     });
 
+    /** T121. 대회장의 회선이 끊겨 멈춘 테이블은 서버 탓으로 적지 않는다. */
+    it('회선이 끊겨 선 테이블은 인터넷 연결이라고 적는다', async () => {
+      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.FLOP }));
+
+      socket.emitServerEvent(
+        'renderGame',
+        baseState({ phase: GamePhase.FLOP, resumePending: { downMs: 15_000, reason: 'lineDown' } }),
+      );
+
+      const banner = screen.getByTestId('dealer-resume');
+      expect(banner).toHaveTextContent('인터넷 연결이 끊겼다가 돌아왔습니다');
+      expect(banner).not.toHaveTextContent('서버');
+    });
+
     it('버튼을 누르면 재개 명령이 나간다', async () => {
       const { socket } = await renderWithSocket(baseState({ phase: GamePhase.FLOP }));
       socket.emitServerEvent(
@@ -587,6 +601,17 @@ describe('DealerGameClient', () => {
 
       expect(screen.getByRole('button', { name: '핸드 시작' })).not.toBeDisabled();
       expect(screen.queryByTestId('dealer-sync-strip')).toBeNull();
+    });
+
+    /** T121. 정지 배너가 없는 테이블은 이 띠가 원인을 적는 유일한 자리다. */
+    it('회선 때문에 멈춘 대회면 띠가 그 원인을 적고, 서버 장애면 적지 않는다', async () => {
+      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.WAITING }));
+
+      socket.emitServerEvent(TOURNAMENT_SYNCING_EVENT, { syncing: true, present: 7, required: 9, reason: 'lineDown' });
+      expect(screen.getByTestId('dealer-sync-strip')).toHaveTextContent('인터넷 연결이 끊겼습니다. 태블릿 7/9대 연결됨');
+
+      socket.emitServerEvent(TOURNAMENT_SYNCING_EVENT, { syncing: true, present: 7, required: 9 });
+      expect(screen.getByTestId('dealer-sync-strip')).not.toHaveTextContent('인터넷');
     });
 
     /**

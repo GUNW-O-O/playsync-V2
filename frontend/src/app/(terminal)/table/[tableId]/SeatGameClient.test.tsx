@@ -737,6 +737,20 @@ describe('SeatGameClient', () => {
       expect(banner).not.toHaveTextContent('멈췄다');
     });
 
+    /** T121. 대회장의 회선이 끊겨 멈춘 테이블은 서버 탓으로 적지 않는다. */
+    it('회선이 끊겨 선 테이블은 인터넷 연결이라고 적는다', async () => {
+      const { socket } = await renderWithSocket();
+
+      socket.emitServerEvent('renderGame', {
+        ...BASE_STATE, resumePending: { downMs: 15_000, reason: 'lineDown' },
+      });
+
+      const banner = screen.getByTestId('seat-resume-wait');
+      expect(banner).toHaveTextContent('인터넷 연결이 끊겼다가 돌아왔습니다');
+      expect(banner).toHaveTextContent('딜러');
+      expect(banner).not.toHaveTextContent('서버');
+    });
+
     /** **반대 입력.** 멈추지 않은 판에 이 안내가 뜨면 참가자가 손을 멈춘다. */
     it('멈추지 않았으면 뜨지 않는다', async () => {
       const { socket } = await renderWithSocket();
