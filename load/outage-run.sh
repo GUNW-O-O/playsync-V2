@@ -28,6 +28,14 @@ ms() { date +%s%3N; }
 : > "$OUT.log"
 SINCE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
+# 중간에 끝나도(Ctrl+C, 아래의 exit) 무대를 되돌린다(T128). 안 그러면 백엔드가 착석용
+# 6코어로 남아 다음 램프가 「1코어」라고 믿는 무대가 달라지고, k6 컨테이너가 계속 돈다.
+cleanup() {
+  docker update --cpus 1 $BE >/dev/null 2>&1
+  docker rm -f $(docker ps -aq --filter name=k6) >/dev/null 2>&1
+}
+trap cleanup EXIT
+
 say "정리"
 docker rm -f $(docker ps -aq --filter name=k6) >/dev/null 2>&1
 if [ -n "$BUILD" ]; then
@@ -46,7 +54,11 @@ LOAD_STORES=4 LOAD_MAX_TABLES=$TOTAL npm run seed:load >>"$OUT.log" 2>&1 || { sa
 say "백엔드 재시작 (6코어로 착석)"
 docker restart $BE >/dev/null
 docker update --cpus 6 $BE >/dev/null
-until curl -sf http://127.0.0.1:3001/internal/metrics >/dev/null; do sleep 1; done
+for i in $(seq 1 120); do
+  curl -sf http://127.0.0.1:3001/internal/metrics >/dev/null && break
+  [ "$i" = 120 ] && { say "백엔드가 2분 안에 안 떴다"; exit 1; }
+  sleep 1
+done
 
 GROW=$(( N * 9 / ${RATE:-8} + 30 ))
 # 자리 비움과 지각을 끈다 — 켜 두면 평소의 시간 초과 폴드가 끊김이 만든 것과 섞인다.
@@ -85,7 +97,14 @@ docker stats --no-stream --format '{{.Name}} cpu={{.CPUPerc}} mem={{.MemUsage}}'
 # 끊는 대회는 시드의 첫 대회다(끊는 쪽 k6가 `LOAD_STORE_OFFSET` 없이 붙는 곳).
 VID=$(node -e "console.log(require('./load/.load-seed.json').tournaments[0].id)")
 REPORTS=
+LAST_T1=
 for DOWN in $DOWNS; do
+  # 표의 「직전 같은 길이」 창은 끊기 전 (DOWN + 180)초다(`outage-report.mjs`). 그 창이 앞
+  # 끊김과 그 뒤 180초(앞 끊김의 표가 읽는 구간)에 걸치면 복구 중의 폴드를 「평소」로
+  # 센다(T128). 앞 끊김을 이은 뒤 그만큼 지날 때까지 기다린다.
+  if [ -n "$LAST_T1" ]; then
+    until [ $(( ($(ms) - LAST_T1) / 1000 )) -ge $(( 360 + DOWN )) ]; do sleep 5; done
+  fi
   T0=$(ms)
   docker pause $VICTIM >/dev/null
   say "끊음 (대회 $VID, ${DOWN}초)"
@@ -105,6 +124,7 @@ for DOWN in $DOWNS; do
   say "이은 뒤 $(( ($(ms) - T1) / 1000 ))초, 대회 상태 $(sql "SELECT status FROM \"Tournament\" WHERE id='$VID'")"
   sleep 70
   REPORTS="$REPORTS $DOWN:$T0:$T1"
+  LAST_T1=$T1
 done
 
 say "대회별 $(sql 'SELECT t.id, t.status, t."pausedMs", (SELECT count(*) FROM "Table" x WHERE x."tournamentId"=t.id) FROM "Tournament" t' | tr '\n' ' ')"

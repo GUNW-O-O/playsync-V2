@@ -204,6 +204,22 @@ function burning() {
  *
  * @returns `null`이면 보내지 않는다 — 서버 타임아웃에 맡긴다.
  */
+/**
+ * 딜러의 승자 입력에 쓰는 생각 시간. **자리 비움도 지각도 없다**(T128).
+ *
+ * 좌석은 안 눌러도 서버의 턴 타임아웃이 대신 접어 주지만, 쇼다운에는 차례도
+ * 타이머도 없다 — 딜러가 승자를 안 넣으면 그 테이블은 새 프레임이 올 때까지
+ * 멈춘다. 좌석과 같은 `thinkMs()`를 타던 동안 핸드마다 3%씩 테이블이 조용히
+ * 빠져 고원의 부하가 실제보다 가벼웠다.
+ */
+function dealerThinkMs() {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const wait = thinkMs();
+    if (wait !== null && wait < LATE_MS) return wait;
+  }
+  return THINK_FAST_MS;
+}
+
 function thinkMs() {
   if (THINK_FAST_MS <= 0 && THINK_SLOW_MS <= 0) return 0;
   if (Math.random() < ABSENT_RATIO) return null;
@@ -694,7 +710,9 @@ export function runHands({
       setTimeout(fire(false), RESUME_MS);
       return;
     }
-    const wait = isDeal ? (burning() ? BURN_DEAL_MS : DEAL_MS) : thinkMs();
+    const wait = isDeal
+      ? (burning() ? BURN_DEAL_MS : DEAL_MS)
+      : entry.role === 'dealer' ? dealerThinkMs() : thinkMs();
 
     // `null`은 "자리에 없다" — 아예 보내지 않고 서버 타임아웃에 맡긴다.
     // 예약 플래그는 풀어 둬야 다음 핸드에서 이 좌석이 다시 움직인다.

@@ -273,9 +273,7 @@ export async function checkInvariants(
 
   // 1. 칩은 만들어지지도 사라지지도 않는다. 카드가 실물이라 부기가 틀리면
   //    되돌릴 근거가 테이블 위에 남지 않는다.
-  const onTable =
-    state.players.reduce((sum, p) => sum + (p?.stack ?? 0), 0) + state.pot;
-  expect(`${label}: 칩 ${onTable}`).toBe(`${label}: 칩 ${expectedChips}`);
+  expect(`${label}: 칩 ${chipsOnTable(state)}`).toBe(`${label}: 칩 ${expectedChips}`);
 
   // 2. 사이드팟 총액은 팟과 일치한다.
   if (state.sidePots.length > 0) {
@@ -318,13 +316,14 @@ export async function checkInvariants(
       .toBe(`${label}: 쇼다운 차례 -1`);
   }
 
-  // 6. 좌석 비트맵과 스냅샷의 착석자가 일치한다.
+  // 6. 좌석 비트맵과 스냅샷의 착석자가 **자리까지** 일치한다(T128). 개수만 보면
+  //    3번 비트가 켜졌는데 스냅샷에는 5번에 앉아 있어도 통과하고, 필드가 통째로
+  //    없어도 착석 0이면 통과한다.
   const bitmap = await h.redis.hget(
     `tournament:${h.tournamentId}:seat`, `table:${tableId}`,
   );
-  const seatedInBitmap = (bitmap ?? '').split('').filter(c => c === '1').length;
-  const seatedInState = state.players.filter(p => p !== null).length;
-  expect(`${label}: 비트맵 ${seatedInBitmap}`).toBe(`${label}: 비트맵 ${seatedInState}`);
+  const seatsInState = state.players.map(p => (p !== null ? '1' : '0')).join('');
+  expect(`${label}: 비트맵 ${bitmap ?? '없음'}`).toBe(`${label}: 비트맵 ${seatsInState}`);
 
   return state;
 }
