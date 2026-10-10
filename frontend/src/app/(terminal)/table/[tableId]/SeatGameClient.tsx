@@ -11,6 +11,7 @@ import RebuyOverlay, { type RebuyPrompt } from './RebuyOverlay';
 import EliminatedOverlay, { type ExitReason } from './EliminatedOverlay';
 import SessionRevokedOverlay from '../../SessionRevokedOverlay';
 import TournamentClosedOverlay from '@/component/TournamentClosedOverlay';
+import { PHASE_LABEL } from '@/lib/labels';
 
 // 서버·소켓이 문구를 안 줄 때의 최후 안내. WS 배선(티켓 요청·정리·배너)은
 // 옛 GameClient에서 그대로 옮겨 왔다 — T24가 세운 규칙이고, 액세스 토큰이
@@ -32,17 +33,6 @@ const REBUY_WAIT_DEALER = '딜러가 게임을 재개하면 다시 묻습니다.
  * 자리가 없다는 것만 안다.
  */
 const REBUY_NO_WAITER = '리바인 응답을 받을 수 없는 상태입니다. 잠시 기다려 주세요.';
-
-/** 좌석 화면 상단 바 · 사이드 패널에 쓰는 페이즈 한글 이름. */
-const PHASE_LABEL: Record<number, string> = {
-  0: '대기',
-  1: '프리플랍',
-  2: '플랍',
-  3: '턴',
-  4: '리버',
-  5: '쇼다운',
-  6: '핸드 종료',
-};
 
 /**
  * 좌석에 앉은 참가자가 앉아 있는 동안 보는 유일한 화면(와이어프레임

@@ -10,6 +10,7 @@ import {
   type TournamentStatus,
 } from '@playsync/contract';
 import SyncPanel from './SyncPanel';
+import { STATUS_LABEL } from '@/lib/labels';
 
 /**
  * 대회 메타. `GET /tournaments/:id`가 주는 `{ tournament, seatStatus }`
@@ -67,16 +68,6 @@ function dealerOtpKey(tournamentId: string) {
  * 해 보라는 것 말고 할 말이 없다.
  */
 const NETWORK_ERROR = '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.';
-
-// `Record`라 계약에 상태가 늘면 여기서 컴파일 에러가 난다(T96, `me/page.tsx`의
-// `STATUS_LABEL`과 같은 이유).
-const STATUS_LABEL: Record<TournamentStatus, string> = {
-  PENDING: '시작 전',
-  ONGOING: '진행 중',
-  SYNCING: '복구 중',
-  FINISHED: '종료',
-  CANCELLED: '취소',
-};
 
 /**
  * 상점 콘솔의 대회 상세. 이 면은 Carbon 그대로다 — `--canvas` `--surface`
