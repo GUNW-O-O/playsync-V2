@@ -196,6 +196,25 @@ describe('DealerService 동시성', () => {
     expect(chipTotal(state)).toBe(30000);
   });
 
+  /**
+   * T124 ②. 멈춘 테이블은 딜러가 재개하기 전까지 마감도 타임아웃 잡도 없다
+   * (`resumePending`의 약속). 딜러 폴드 · 킥이 그것을 안 보고 `scheduleTurnTimeout`을
+   * 불러, 정지 중인 테이블에 카운트다운이 흘렀다.
+   */
+  it('멈춘 테이블에서는 딜러 폴드를 거절하고 타이머를 걸지 않는다', async () => {
+    await redis.set(stateKey, JSON.stringify(makeState({
+      currentTurnSeatIndex: 0, resumePending: { downMs: 1000 }, actionDeadline: undefined,
+    })));
+
+    await expect(dealer.handleDealerAction(TOURNAMENT, TABLE, 'alice', 'FOLD'))
+      .rejects.toThrow('재개');
+
+    const state: TableState = JSON.parse((await redis.get(stateKey))!);
+    const jobs = await queue.getJobCounts('delayed', 'waiting');
+    expect(`폴드 ${state.players[0]!.hasFolded} 마감 ${state.actionDeadline} 잡 ${jobs.delayed + jobs.waiting}`)
+      .toBe('폴드 false 마감 undefined 잡 0');
+  });
+
   it('쇼다운 전에는 정산을 거부한다', async () => {
     // 페이즈 게이팅이 딜러 콘솔 UI에만 있었다. 같은 망의 단말이 WS를 직접
     // 열면 플랍에서도 승자를 확정할 수 있다.
@@ -376,6 +395,23 @@ describe('DealerService 동시성', () => {
 
       expect(playsync.processRebuy).toHaveBeenCalledTimes(1);
       expect(lockDuringRebuy).toBe(0);
+    });
+
+    /**
+     * T124 ②. 킥된 사람은 자리에 남아 무엇을 눌러도 폴드다(`handleAction`의
+     * `isKicked`). 블라인드로 0이 됐을 때 리바인을 물으면, 수락한 사람은 참가비를
+     * 내고 칩을 받지만 그 칩은 녹기만 한다 — 참가 행은 이미 `ELIMINATED`다.
+     * 바로 위 검사가 반대 입력이다(킥되지 않은 파산자에게는 묻는다).
+     */
+    it('킥된 파산자에게는 리바인을 묻지 않는다', async () => {
+      await seedMeta(true);
+      await redis.set(stateKey, JSON.stringify(showdownState()));
+      await redisService.setUserContext(TOURNAMENT, 'carol', TABLE, 2, 'KICKED');
+      jest.spyOn(playsync, 'processRebuy').mockResolvedValue('declined');
+
+      await dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
+
+      expect(playsync.processRebuy).toHaveBeenCalledTimes(0);
     });
 
     it('리바인 대기 중에는 다음 핸드가 시작되지 않는다', async () => {

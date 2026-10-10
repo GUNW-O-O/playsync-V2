@@ -401,6 +401,11 @@ export class DealerService {
 
     const state = await this.redis.mutateSnapshot(tableId, async (state) => {
       if (!state) throw new Error(SNAPSHOT_MISSING);
+      // **멈춘 테이블은 재개가 먼저다**(T124). 아래 `scheduleTurnTimeout`이 마감과
+      // 타임아웃 잡을 새로 걸어, 정지 중에는 둘 다 없다는 약속(`resumePending`)을 깬다.
+      if (state.resumePending) {
+        throw new Error('멈춘 테이블입니다. 먼저 「이어서 진행」으로 게임을 재개해 주세요.');
+      }
       const engine = new TableEngine(state);
       const targetIdx = state.players.findIndex(p => p?.id === targetUserId);
 
@@ -510,9 +515,17 @@ export class DealerService {
     // 파산자 추리기는 **락 밖**이다. 다시 읽는 것이 아니라 방금 저장한 그
     // 객체를 순회하는 순수 계산이라 새 레이스가 아니다 — `mutateSnapshot`이
     // 상태를 돌려주는 이유가 이것이다.
-    const brokePlayerIds = settled.players
+    //
+    // **킥된 사람에게는 묻지 않는다**(T124). 자리에 남아 무엇을 눌러도 폴드라
+    // (`PlaysyncService.handleAction`의 `isKicked`), 수락하면 참가비만 내고 칩은
+    // 녹는다 — 참가 행은 킥 때 이미 끝났다.
+    const broke = settled.players
       .filter((p): p is TablePlayer => p != null && p.stack <= 0)
       .map(p => p.id);
+    const kicked = await Promise.all(
+      broke.map(async (id) => (await this.redis.getUserContext(tournamentId, id))?.status === 'KICKED'),
+    );
+    const brokePlayerIds = broke.filter((_, i) => !kicked[i]);
 
     // 2. 리바인 — 락 밖. 전원에게 동시에 묻고 같은 마감을 준다.
     //    수락한 사람은 남을 기다리지 않고 그 즉시 반영·전파된다.
