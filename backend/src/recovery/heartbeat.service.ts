@@ -37,6 +37,12 @@ const DEFAULT_INTERVAL_MS = 5_000;
  * 하나를 위해 얻는 것이 `setInterval` 대비 없다. `PrismaService.onModuleInit`이 이미
  * 같은 라이프사이클 패턴을 쓴다.
  */
+/** `HEARTBEAT_INTERVAL_MS` — 양의 정수만. 그 밖은 기본값(`dealerProbeMs`와 같은 모양). */
+export function heartbeatIntervalMs(raw: string | undefined = process.env.HEARTBEAT_INTERVAL_MS): number {
+  const n = Number(raw);
+  return raw !== undefined && raw !== '' && Number.isInteger(n) && n > 0 ? n : DEFAULT_INTERVAL_MS;
+}
+
 @Injectable()
 export class HeartbeatService implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly logger = new Logger(HeartbeatService.name);
@@ -48,7 +54,7 @@ export class HeartbeatService implements OnApplicationBootstrap, OnModuleDestroy
   ) {}
 
   onApplicationBootstrap() {
-    const ms = Number(process.env.HEARTBEAT_INTERVAL_MS ?? DEFAULT_INTERVAL_MS);
+    const ms = heartbeatIntervalMs();
     this.timer = setInterval(() => {
       void this.beatOnce().catch(e =>
         // 실패를 삼키지 않는다. 다음 주기가 재시도이므로 프로세스는 유지한다.
