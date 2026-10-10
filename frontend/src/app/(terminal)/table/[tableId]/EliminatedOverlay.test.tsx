@@ -8,7 +8,7 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ push }),
 }));
 
-/** `EliminatedOverlay`의 `COUNTDOWN_SECONDS`와 같은 값. */
+/** `ReturnToWaiting`의 `COUNTDOWN_SECONDS`와 같은 값. */
 const COUNTDOWN_SECONDS = 7;
 
 describe('EliminatedOverlay', () => {

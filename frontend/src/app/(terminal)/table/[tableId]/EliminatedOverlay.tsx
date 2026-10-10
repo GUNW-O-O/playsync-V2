@@ -1,10 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
-
-/** 와이어프레임 904–905행 "7초 뒤 대기 화면으로 돌아갑니다". */
-const COUNTDOWN_SECONDS = 7;
+import ReturnToWaiting from '@/component/ReturnToWaiting';
 
 /**
  * 이 좌석에서 이 사람이 빠진 **사유**.
@@ -67,8 +63,6 @@ export default function EliminatedOverlay({
   storeId?: string;
   reason: ExitReason;
 }) {
-  const router = useRouter();
-  const [secondsLeft, setSecondsLeft] = useState(COUNTDOWN_SECONDS);
   /*
     **갈 곳을 모르면 가지 않는다.**
 
@@ -82,17 +76,6 @@ export default function EliminatedOverlay({
     참가자는 할 일을 알고, 태블릿은 직원이 새로고침하면 낫는다.
   */
   const waitingUrl = storeId ? `/table?store=${storeId}` : null;
-
-  useEffect(() => {
-    if (!waitingUrl) return;
-    if (secondsLeft <= 0) {
-      router.push(waitingUrl);
-      return;
-    }
-    const timer = setTimeout(() => setSecondsLeft((s) => s - 1), 1000);
-    return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [secondsLeft, waitingUrl]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-tb-bg/90 p-6">
@@ -111,25 +94,7 @@ export default function EliminatedOverlay({
         <p className="text-sm leading-relaxed text-tb-muted">{COPY[reason].body}</p>
 
         {waitingUrl ? (
-          <>
-            <div className="mt-4 h-1 bg-tb-line">
-              <div
-                className="h-full bg-tb-act transition-[width] duration-1000 ease-linear"
-                style={{ width: `${(secondsLeft / COUNTDOWN_SECONDS) * 100}%` }}
-              />
-            </div>
-            <div className="mt-2 text-xs text-tb-sub">
-              {secondsLeft}초 뒤 대기 화면으로 돌아갑니다
-            </div>
-
-            <button
-              type="button"
-              onClick={() => router.push(waitingUrl)}
-              className="mt-5 w-full border border-tb-line py-2.5 text-sm text-tb-muted"
-            >
-              지금 돌아가기
-            </button>
-          </>
+          <ReturnToWaiting waitingUrl={waitingUrl} />
         ) : (
           // 돌아갈 주소를 못 구했다. 참가자에게 "기다리면 넘어간다"고 적을
           // 수 없고, 이 화면을 치우는 것은 이제 사람의 일이다.
