@@ -97,7 +97,7 @@ export default function SeatGameClient({
    * **서버가 준 사실이 아니라 화면이 본 것에서 세운 추론이다.** 프롬프트가
    * 소켓 문제로 안 왔는데 탈락한 경우, 화면은 「자리 이동」이라고 잘못
    * 말한다. 옳은 해법은 좌석을 지우는 경로가 사유를 실어 보내는 것이고
-   * (`releaseSeat` · 탈락 처리), 이건 그 전까지의 근사다.
+   * (`releaseSeats` · 탈락 처리), 이건 그 전까지의 근사다.
    */
   const sawRebuyPromptRef = useRef(false);
   const [exitReason, setExitReason] = useState<ExitReason | null>(null);

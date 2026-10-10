@@ -1327,7 +1327,7 @@ describe('WsGateway 인바운드 경계', () => {
      * `completeSync`에 들어간 사이, 다른 딜러가 끊겨 새 재집계가 `SYNCING`을
      * (아직 커밋 전이라) 그대로 읽으면, 그 재집계가 나중에 `{syncing:false}`
      * 뒤에 낡은 `{syncing:true}`를 보낼 수 있다. 대회마다 `reportSync`를
-     * 줄 세우면(`syncChains`) 뒤에 선 재집계는 앞선 것이 실제로 상태를
+     * 줄 세우면(`SyncQueue`) 뒤에 선 재집계는 앞선 것이 실제로 상태를
      * 커밋한 뒤에야 다시 읽으므로 `ONGOING`을 보고 조용히 돌아간다.
      *
      * **실제 Redis·Postgres 왕복 시간에 기대지 않는다.** 처음 이 테스트를

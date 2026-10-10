@@ -280,7 +280,7 @@ describe('EntryService.enterSeat', () => {
 
   /**
    * T31 결정 5: 대회가 ONGOING이고 이 테이블에 이미 좌석 행(사람)이 있는데
-   * 스냅샷이 없으면 `emptyTableState` fallback 대신 던진다. 이 상태는 부팅
+   * 스냅샷이 없으면 `createEmptyTableState` fallback 대신 던진다. 이 상태는 부팅
    * 복구(`RecoveryService`)가 아직 그 테이블을 세우지 못한 순간이다 — 여기서
    * 빈 스냅샷을 만들면 그 테이블의 나머지 전원이 스냅샷에서 사라지고, 나중에
    * 도는 재구성이 오염된 위에서 돈다.
@@ -347,7 +347,7 @@ describe('EntryService.enterSeat', () => {
    * 구멍이 남는다 — PENDING 대회에서 u2가 착석해 스냅샷이 살아 있다가
    * Redis가 죽거나(FLUSHDB) 24시간 TTL로 스냅샷만 사라지면, u1의 착석이
    * `_count.tablePlayers > 0`인데도 status가 PENDING이라 가드를 피해
-   * `emptyTableState`로 u1 혼자만 있는 스냅샷을 만든다. 그 위에서 대회가
+   * `createEmptyTableState`로 u1 혼자만 있는 스냅샷을 만든다. 그 위에서 대회가
    * 시작되면 u2는 영원히 빠진 채 대회가 돈다. `!== FINISHED`로 넓혀야 막힌다.
    */
   it('PENDING이어도 이미 사람이 있는 테이블에 스냅샷이 없으면 던진다', async () => {
