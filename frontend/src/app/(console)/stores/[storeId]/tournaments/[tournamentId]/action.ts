@@ -2,22 +2,11 @@
 
 import { cookies } from 'next/headers';
 import { FinishPreviewSchema, type FinishPreview } from '@playsync/contract';
+import { failureMessage } from '@/lib/failure-message';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
 const DEFAULT_ERROR = '요청을 처리하지 못했습니다.';
 const NO_TOKEN_ERROR = '로그인이 필요합니다.';
-
-/**
- * 실패 응답에서 안내 문구를 꺼낸다. `table/action.ts`·`dealer/action.ts`와
- * 같은 모양이다 — NestJS 예외 필터의 본문은 `{ statusCode, message, error }`고
- * `message`는 문자열이거나 ValidationPipe가 만든 문자열 배열이다.
- */
-function failureMessage(body: unknown): string {
-  const message = (body as { message?: unknown } | null)?.message;
-  if (typeof message === 'string' && message.length > 0) return message;
-  if (Array.isArray(message) && message.length > 0) return message.join(' ');
-  return DEFAULT_ERROR;
-}
 
 /**
  * 가드가 있는 상점 콘솔 엔드포인트를 부를 공통 경로.
@@ -50,7 +39,7 @@ async function callConsoleApi(
   });
 
   const body = await res.json().catch(() => null);
-  if (!res.ok) return { error: failureMessage(body) };
+  if (!res.ok) return { error: failureMessage(body, DEFAULT_ERROR) };
   return { ok: true, body };
 }
 

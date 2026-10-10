@@ -21,16 +21,9 @@ import {
   fetchFinishPreview,
   forceSync,
 } from './action';
+import { failureMessage } from '@/lib/failure-message';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
-
-/** `table/action.ts`·`dealer/action.ts`의 `failureMessage`와 같은 모양이다. */
-function failureMessage(body: unknown): string {
-  const message = (body as { message?: unknown } | null)?.message;
-  if (typeof message === 'string' && message.length > 0) return message;
-  if (Array.isArray(message) && message.length > 0) return message.join(' ');
-  return '요청을 처리하지 못했습니다.';
-}
 
 /**
  * 이 페이지가 백엔드에서 받는 원본 모양. `payment.service.ts`의
@@ -169,7 +162,7 @@ async function fetchSeatOccupants(
   if (res.ok) return { seatOccupants: (await res.json()) as TableSeatInfo[], seatError: null };
 
   const body = await res.json().catch(() => null);
-  return { seatOccupants: [], seatError: failureMessage(body) };
+  return { seatOccupants: [], seatError: failureMessage(body, '요청을 처리하지 못했습니다.') };
 }
 
 /**

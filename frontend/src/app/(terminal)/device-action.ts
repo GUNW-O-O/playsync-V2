@@ -3,16 +3,13 @@
 import { cookies } from 'next/headers';
 import { DEVICE_TOKEN_COOKIE } from '@playsync/contract';
 import { cookieMaxAgeFromToken } from '@/lib/token-cookie';
+import { failureMessage as messageOf } from '@/lib/failure-message';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
 const DEFAULT_ERROR = '태블릿을 등록하지 못했습니다.';
 
-function failureMessage(body: unknown): string {
-  const message = (body as { message?: unknown } | null)?.message;
-  if (typeof message === 'string' && message.length > 0) return message;
-  if (Array.isArray(message) && message.length > 0) return message.join(' ');
-  return DEFAULT_ERROR;
-}
+/** 이 파일의 기본 문구로 묶은 것. 꺼내는 규칙은 `lib/failure-message.ts`에 있다. */
+const failureMessage = (body: unknown) => messageOf(body, DEFAULT_ERROR);
 
 /**
  * 이 태블릿을 매장 태블릿으로 등록한다(T112).

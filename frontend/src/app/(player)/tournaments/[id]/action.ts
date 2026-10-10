@@ -1,18 +1,14 @@
 'use server';
 
 import { cookies } from 'next/headers';
+import { failureMessage as messageOf } from '@/lib/failure-message';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
 const DEFAULT_ERROR = '참가하지 못했습니다.';
 const NO_TOKEN_ERROR = '로그인이 필요합니다.';
 
-/** `table/action.ts`·`dealer/action.ts`·콘솔 `action.ts`와 같은 모양이다. */
-function failureMessage(body: unknown): string {
-  const message = (body as { message?: unknown } | null)?.message;
-  if (typeof message === 'string' && message.length > 0) return message;
-  if (Array.isArray(message) && message.length > 0) return message.join(' ');
-  return DEFAULT_ERROR;
-}
+/** 이 파일의 기본 문구로 묶은 것. 꺼내는 규칙은 `lib/failure-message.ts`에 있다. */
+const failureMessage = (body: unknown) => messageOf(body, DEFAULT_ERROR);
 
 /**
  * 참가비 결제. 몸통은 `{ tournamentId }` **하나뿐이다** — T28이 좌석 확정을
