@@ -574,7 +574,16 @@ export class RecoveryService implements OnApplicationBootstrap, OnModuleDestroy 
           }
           return null;
         }
-        if (state.resumePending && !opts.overwrite) return null;
+        if (state.resumePending && !opts.overwrite) {
+          // **서버 장애가 회선 사유를 이긴다**(T126). 회선 탓으로 멈춘 테이블 위에 Redis
+          // 장애가 겹치면 대회의 원인은 서버 장애가 되는데(`onRedisDown`), 사유를 그대로
+          // 두면 딜러 띠와 재개 모달이 다른 말을 한다. 세대는 건드리지 않는다.
+          if (state.resumePending.reason === 'lineDown' && opts.reason !== 'lineDown') {
+            state.resumePending = { downMs: state.resumePending.downMs };
+            return state;
+          }
+          return null;
+        }
 
         // **낡은 스윕은 멈추지 않는다**(T97 잔여). 스윕 중에 다시 끊기면
         // 스윕이 둘이 된다. 늦은 쪽(옛 세대)이 테이블 목록을 마저 도는 동안

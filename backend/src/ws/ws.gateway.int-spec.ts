@@ -1289,6 +1289,23 @@ describe('WsGateway 인바운드 경계', () => {
     });
 
     /**
+     * T126 ②. 좌석 비트맵 해시를 **통째로** 잃으면(Redis 데이터 유실) 필요한 기기가
+     * 0으로 읽혀 0/0이 「다 돌아왔다」가 됐다 — 어느 테이블도 못 도는데 대회가 풀리고
+     * 블라인드 시계가 흘렀다. 테이블이 있는 대회는 빈 테이블도 해시에 자리가 있으므로
+     * (위 검사가 반대 입력이다), 해시가 비었는데 DB에 테이블이 있으면 유실이다.
+     * 풀지 않고 둔다 — 상점의 「지금 진행」은 여전히 열려 있다.
+     */
+    it('좌석 비트맵을 통째로 잃었으면 0/0이어도 스스로 풀지 않는다', async () => {
+      await seedSyncingTournament();
+      const session = await prisma.dealerSession.create({ data: { tournamentId: TOURNAMENT } });
+      await prisma.table.create({ data: { id: TABLE, tableOrder: 1, tournamentId: TOURNAMENT, dealerId: session.id } });
+
+      await gateway.handleSeatListUpdated({ tournamentId: TOURNAMENT, state: [] });
+
+      expect(`completeSync ${recovery.completeSync.mock.calls.length}번`).toBe('completeSync 0번');
+    });
+
+    /**
      * 재리뷰 m3. `recount`의 송신 루프를 `required`(좌석이 찬 테이블만)로
      * 되돌려도 기존 테스트는 전부 초록이었다 — `required`에 없는 **빈**
      * 테이블에 붙은 딜러를 아무 테스트도 보지 않았기 때문이다. 그 딜러가
@@ -1642,6 +1659,8 @@ describe('WsGateway 인바운드 경계', () => {
       const GRACE_MS = 40;
       beforeEach(() => {
         (gateway as any).lastDealerSeenAt.clear();
+        // 앞선 `forceSync` 검사가 남긴 시각도 같은 이유로 지운다(T126).
+        (gateway as any).forcedAt.clear();
         (gateway as any).dealerGoneGraceMs = GRACE_MS;
       });
       afterEach(() => {
@@ -1835,6 +1854,57 @@ describe('WsGateway 인바운드 경계', () => {
             .toBe('두 번 1 끊음 0 방에 true');
           const [[, pausedAt]] = recovery.pauseForLineOutage.mock.calls as [string, Date][];
           expect(`마지막 응답부터 ${pausedAt.getTime() === lastSeen}`).toBe('마지막 응답부터 true');
+        });
+
+        /**
+         * T126 ①. 회선이 죽은 채 상점이 「지금 진행」을 눌렀다. 딜러 소켓은 청소 전이라
+         * 아직 열려 있고 침묵 중이다 — 다음 확인 틱이 같은 「마지막으로 응답한 시각」으로
+         * 대회를 다시 멈췄다. 상점의 결정이 몇 초 만에 무효가 되고, 그 구간이 정지
+         * 시간에 두 번 더해졌다. 푼 뒤로 답한 딜러가 없으면 다시 멈추지 않는다.
+         */
+        it('상점이 강제로 푼 뒤에는 같은 침묵으로 다시 멈추지 않는다', async () => {
+          await seedSyncingTournament(TournamentStatus.ONGOING);
+          await seedSeats();
+          const dealerClient = await connect(await dealerTicket(TABLE), TABLE);
+          dealerClient.aliveAt = longAgo();
+          dealerClient.ping = jest.fn();
+          for (let i = 0; i < 3; i++) await probeOnce();
+          expect(`멈춤 ${pauses()}`).toBe('멈춤 1');
+
+          await prisma.tournament.update({
+            where: { id: TOURNAMENT }, data: { status: TournamentStatus.SYNCING, pausedAt: new Date() },
+          });
+          expect(await gateway.forceSync(TOURNAMENT, 'owner-1')).toBe(true);
+          await prisma.tournament.update({
+            where: { id: TOURNAMENT }, data: { status: TournamentStatus.ONGOING, pausedAt: null },
+          });
+
+          for (let i = 0; i < 3; i++) await probeOnce();
+          expect(`푼 뒤 멈춤 ${pauses()}`).toBe('푼 뒤 멈춤 1');
+
+          // 반대쪽 — 딜러가 돌아왔다가 다시 사라지면 그때는 멈춘다.
+          pong(dealerClient);
+          dealerClient.aliveAt = Date.now();
+          await new Promise((r) => setTimeout(r, 5));
+          for (let i = 0; i < 3; i++) await probeOnce();
+          expect(`돌아왔다 다시 사라짐 ${pauses()}`).toBe('돌아왔다 다시 사라짐 2');
+        });
+
+        /**
+         * T126 ④. 대회가 닫히면 회선 기록을 버린다. 그런데 닫힘이 딜러 소켓을 닫고,
+         * 그 끊김이 기록을 다시 적고 유예 타이머까지 걸었다 — 닫힌 대회의 항목이
+         * 프로세스가 내려갈 때까지 남았다.
+         */
+        it('대회가 닫혀서 끊긴 딜러는 회선 기록을 다시 남기지 않는다', async () => {
+          await seedSyncingTournament(TournamentStatus.ONGOING);
+          await seedSeats();
+          const dealerClient = await connect(await dealerTicket(TABLE), TABLE);
+
+          gateway.handleTournamentClosed({ tournamentId: TOURNAMENT, tableIds: [TABLE], status: 'FINISHED' } as never);
+          await gateway.handleDisconnect(dealerClient);
+
+          expect(`기록 ${(gateway as any).lastDealerSeenAt.has(TOURNAMENT)} 유예 ${(gateway as any).graceTimers.size} 멈춤 ${pauses()}`)
+            .toBe('기록 false 유예 0 멈춤 0');
         });
 
         /** 반대 입력 — 한 대라도 답하면 회선은 살아 있다. */
