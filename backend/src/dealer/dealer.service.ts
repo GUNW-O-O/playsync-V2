@@ -55,6 +55,8 @@ export class DealerService {
    * `finally`에서 반드시 지워지고, 프로세스가 죽으면 고리도 함께 사라진다.
    */
   private readonly rebuyInFlight = new Set<string>();
+  /** 체크포인트 고리가 도는 테이블. 같은 테이블에 고리 둘이 겹치지 않게 한다(T124). */
+  private readonly checkpointInFlight = new Set<string>();
 
   /** 테이블별 「딜러가 다시 열었다」 대기(T100). `resumeTable`이 푼다. */
   private readonly resumeWaiters = new Map<string, () => void>();
@@ -393,9 +395,13 @@ export class DealerService {
     /**
      * 킥 트랜잭션이 돌려준 값. 전광판 카운터를 맞추는 데 쓴다(T60).
      *
-     * **`mutateSnapshot` 콜백 안에서 Redis에 쓰지 않는다.** 대입 자체는 락과
-     * 무관하지만, 콜백 안의 예외는 스냅샷 쓰기를 통째로 되돌린다 — 되돌아가지
-     * 않는 부수효과를 그 안에 섞으면 스냅샷만 과거로 돌아간 세계가 남는다.
+     * **전광판 대입은 `mutateSnapshot` 콜백 밖이다.** 콜백 안의 예외는 스냅샷
+     * 쓰기를 통째로 되돌리는데 대입은 되돌아가지 않는다.
+     *
+     * 킥의 DB 트랜잭션과 `KICKED` 표시는 콜백 **안**에 있다 — 닫힌 대회를 만나면
+     * 스냅샷도 함께 안 써져야 해서다. 그 대가로, 뒤따르는 타이머 등록이나 스냅샷
+     * 쓰기가 던지면(Redis 장애) DB만 앞서 간다. **딜러가 다시 누르면 맞는다** — 킥은
+     * 이미 끝난 참가를 0행으로 지나가고 폴드와 카운터를 다시 맞춘다.
      */
     let counter: { activePlayers: number; startStack: number; entryFee: number } | null = null;
 
@@ -548,7 +554,7 @@ export class DealerService {
     // 4. 체크포인트 — **락 밖.** 재시도가 백오프까지 포함하면 수 초가 되는데
     //    락 TTL은 5초다. 리바인 대기를 락 밖으로 뺀 것과 같은 이유다.
     //    HAND_END가 그동안 문지기 역할을 계속한다.
-    const synced = await this.playsync.checkpointTableToDb(tableId);
+    const synced = await this.checkpoint(tableId);
 
     // 5. 다음 핸드 준비 — 락 안.
     //
@@ -698,7 +704,10 @@ export class DealerService {
       if (this.redis.outage.isUp()) throw error;
       return asked.map(() => 'interrupted' as const);
     }
-    return Promise.all(
+    // **전원이 끝난 뒤에 올린다**(T124). `Promise.all`은 한 사람이 던지는 순간
+    // 올리므로, 나머지의 창이 열린 채로 대기 표시가 걷히고 그 사람들은 답할 기회
+    // 없이 탈락했다.
+    const settled = await Promise.allSettled(
       asked.map(playerId =>
         this.playsync.processRebuy(
           tournamentId, tableId, playerId,
@@ -707,6 +716,19 @@ export class DealerService {
         ),
       ),
     );
+    const failed = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+    if (failed) throw failed.reason;
+    return settled.map((r) => (r as PromiseFulfilledResult<RebuyOutcome>).value);
+  }
+
+  /** 체크포인트를 돌린다. 도는 동안 표시를 세워 `retryCheckpoint`와 겹치지 않게 한다. */
+  private async checkpoint(tableId: string): Promise<boolean> {
+    this.checkpointInFlight.add(tableId);
+    try {
+      return await this.playsync.checkpointTableToDb(tableId);
+    } finally {
+      this.checkpointInFlight.delete(tableId);
+    }
   }
 
   /**
@@ -766,8 +788,13 @@ export class DealerService {
     if (this.rebuyInFlight.has(tableId)) {
       throw new Error('리바인을 기다리는 중입니다.');
     }
+    // 체크포인트 고리가 이미 돌고 있으면 받지 않는다(T124). 이쪽이 먼저 성공해 판을
+    // 넘기면, 백오프에서 깨어난 그 고리가 다음 핸드의 스냅샷을 읽어 DB에 찍는다.
+    if (this.checkpointInFlight.has(tableId)) {
+      throw new Error('저장하는 중입니다. 잠시 후 다시 시도해 주세요.');
+    }
 
-    const synced = await this.playsync.checkpointTableToDb(tableId);
+    const synced = await this.checkpoint(tableId);
     if (!synced) {
       const failed = await this.redis.getSnapShot(tableId);
       if (!failed) throw new Error(SNAPSHOT_MISSING);

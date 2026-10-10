@@ -539,6 +539,59 @@ describe('DealerService 동시성', () => {
       expect(broadcasts.some(s => s.dbSyncStatus === 'RETRYING')).toBe(true);
     });
 
+    /**
+     * T124 ③. 체크포인트 고리는 락 밖에서 백오프까지 수 초를 돈다. 그 사이 딜러의
+     * 「저장 재시도」가 성공해 판이 넘어가면, 원래 고리가 **다음 핸드의 스냅샷**을
+     * 읽어 핸드 중 스택을 DB에 찍거나 넘어간 판에 실패 표시를 남겼다.
+     * 고리가 도는 동안은 재시도를 받지 않는다.
+     */
+    it('정산의 체크포인트가 도는 동안 저장 재시도는 거절한다', async () => {
+      await redis.set(stateKey, JSON.stringify(showdownState()));
+      let release!: (ok: boolean) => void;
+      const held = new Promise<boolean>((resolve) => { release = resolve; });
+      const sync = jest.spyOn(playsync, 'syncTableInventoryToDb').mockReturnValueOnce(held);
+
+      const settling = dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
+      // 정산이 체크포인트에 들어설 때까지 기다린다.
+      while (sync.mock.calls.length === 0) await new Promise((r) => setTimeout(r, 10));
+
+      await expect(dealer.retryCheckpoint(TABLE)).rejects.toThrow('저장하는 중');
+      expect(`체크포인트 ${sync.mock.calls.length}번`).toBe('체크포인트 1번');
+
+      release(true);
+      await settling;
+    });
+
+    /**
+     * T124 ③. 리바인은 전원에게 동시에 묻는다. 한 사람의 처리가 던지면 `Promise.all`이
+     * 곧바로 올려, **나머지의 열린 창을 버린 채** 대기 표시가 걷혔다 — 딜러의 저장
+     * 재시도가 그 사람들을 답할 기회 없이 탈락시켰다. 전원이 끝난 뒤에 올린다.
+     */
+    it('리바인 한 사람이 던져도 나머지의 창이 닫힌 뒤에 올린다', async () => {
+      await seedMeta(true);
+      await redis.set(stateKey, JSON.stringify(makeState({
+        phase: GamePhase.SHOWDOWN,
+        pot: 1500,
+        currentTurnSeatIndex: -1,
+        players: [
+          makePlayer('alice', 0, { totalContributed: 500 }),
+          makePlayer('bob', 1, { stack: 0, isAllIn: true, totalContributed: 500 }),
+          makePlayer('carol', 2, { stack: 0, isAllIn: true, totalContributed: 500 }),
+        ],
+      })));
+      let carolAnswered = false;
+      jest.spyOn(playsync, 'processRebuy').mockImplementation(async (_t, _table, playerId) => {
+        if (playerId === 'bob') throw new Error('플레이어 정보 오류');
+        await new Promise((r) => setTimeout(r, 300));
+        carolAnswered = true;
+        return 'declined' as const;
+      });
+
+      await expect(dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']])).rejects.toThrow('플레이어 정보 오류');
+
+      expect(`carol의 창이 닫혔다 ${carolAnswered}`).toBe('carol의 창이 닫혔다 true');
+    });
+
     it('체크포인트 재시도는 락 밖에서 한다', async () => {
       // 재시도는 백오프 때문에 수 초가 될 수 있고 락 TTL은 5초다. 락 안에 두면
       // TTL이 먼저 만료돼 남이 잡은 락을 해제하게 된다.
