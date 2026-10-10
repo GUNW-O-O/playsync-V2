@@ -1111,7 +1111,9 @@ export class SessionService {
       select: { id: true },
     });
     const state = await this.redis.getSnapShot(table.id);
-    if (!state || (state.phase !== GamePhase.WAITING && state.phase !== GamePhase.HAND_END)) {
+    // `HAND_END`도 안 받는다(T123). 팟은 나뉘었지만 체크포인트 **전**이라
+    // `currentStack`이 직전 핸드 값이다 — 체크포인트가 실패해 멈춘 테이블이 여기 선다.
+    if (!state || state.phase !== GamePhase.WAITING) {
       return FINISH_BLOCKERS.chopHandRunning;
     }
 

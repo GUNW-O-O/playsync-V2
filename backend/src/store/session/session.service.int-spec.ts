@@ -3692,6 +3692,22 @@ describe('SessionService.chopSession', () => {
   });
 
   /** 한 명이면 딜이 아니라 우승이다. 그 길은 최후 1인 판정이 이미 들고 있다. */
+  /**
+   * T123 ④. `HAND_END`는 팟은 나뉘었는데 **체크포인트가 아직 DB에 안 내려간**
+   * 구간이다(`DealerService.resolveWinners`의 1단계 뒤 · 4단계 앞). 체크포인트가
+   * 실패해 그 자리에 멈춘 테이블에서 딜을 받으면, 방금 끝난 핸드가 빠진 직전
+   * 핸드의 스택으로 남은 상금을 나눈다.
+   */
+  it('핸드가 끝났어도 체크포인트 전(HAND_END)이면 거절한다', async () => {
+    await seatPlayer('a', 30000);
+    await seatPlayer('b', 10000);
+    await makeFinalTable();
+    await saveSnapshot(GamePhase.HAND_END);
+
+    await expect(sessionService.chopSession(tournamentId, ownerId))
+      .rejects.toThrow('핸드');
+  });
+
   it('남은 사람이 하나면 거절한다', async () => {
     await seatPlayer('a', 30000);
     await makeFinalTable();
