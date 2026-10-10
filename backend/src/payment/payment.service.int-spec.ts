@@ -1325,6 +1325,26 @@ describe('PaymentService.joinSession — 참가하는 사이에 대회가 닫히
     expect(`지갑 ${user.points} / 참가 ${rows}행`).toBe(`지갑 ${ENTRY_FEE - 1} / 참가 0행`);
   });
 
+  /**
+   * T123 ②. 등록 판정은 트랜잭션 밖의 읽기다. 그 뒤에 등록이 닫히면(우승 상금이
+   * 나갔다 · 마감 레벨을 지났다) 참가비가 닫힌 등록에 들어갔다. 대회 장부를
+   * 고치는 문장이 「등록이 열려 있다」를 같이 든다.
+   */
+  it('참가하는 사이에 등록이 닫히면 409이고 참가비가 빠지지 않는다', async () => {
+    jest.restoreAllMocks();
+    const real = userService.paymentPoint.bind(userService);
+    jest.spyOn(userService, 'paymentPoint').mockImplementation(async (...args) => {
+      await prisma.tournament.update({ where: { id: TOURNAMENT }, data: { isRegistrationOpen: false } });
+      return real(...args);
+    });
+
+    await expect(service.joinSession({ tournamentId: TOURNAMENT }, USER)).rejects.toThrow('등록이 마감된 대회입니다.');
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: USER } });
+    const rows = await prisma.tournamentParticipation.count({ where: { tournamentId: TOURNAMENT } });
+    expect(`지갑 ${user.points} / 참가 ${rows}행`).toBe(`지갑 ${POINTS} / 참가 0행`);
+  });
+
   /** 재시도 루프가 이것을 OTP 충돌로 오해하면 다섯 번을 헛돈다. */
   it('재시도하지 않는다 — 마감은 단조라 결과가 같다', async () => {
     await expect(service.joinSession({ tournamentId: TOURNAMENT }, USER)).rejects.toThrow();

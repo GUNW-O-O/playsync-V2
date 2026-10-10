@@ -230,6 +230,24 @@ describe('상금 지급', () => {
     expect(alice.status).toBe('AWARDED');
   });
 
+  /**
+   * T123 ②. 우승 상금이 나간 대회는 상점이 「종료」를 누를 때까지 `ONGOING`이다.
+   * 마감 레벨 전에 끝났으면 그 사이 참가비를 받았고, 그 돈은 상금 계산이 끝난
+   * 장부에 얹혀 종료를 409로 막았다. 우승 처리가 등록을 같이 닫는다.
+   */
+  it('우승 상금이 나가면 등록도 닫힌다', async () => {
+    await prisma.tournament.update({ where: { id: TOURNAMENT }, data: { isRegistrationOpen: true } });
+    await prisma.tournamentParticipation.updateMany({
+      where: { tournamentId: TOURNAMENT, userId: { in: ['bob', 'carol', 'dave'] } },
+      data: { status: 'ELIMINATED' },
+    });
+
+    await playsync.tournamentFinished(TOURNAMENT);
+
+    const t = await prisma.tournament.findUniqueOrThrow({ where: { id: TOURNAMENT } });
+    expect(`등록 ${t.isRegistrationOpen}`).toBe('등록 false');
+  });
+
   it('리바인으로 커진 풀이 상금에 반영된다', async () => {
     // 리바인은 참가비를 다시 받는다. 그 돈이 풀에 안 들어가면 어디로 갔는지
     // 설명할 수 없다 — 걷은 돈과 나간 돈이 어긋나는 것 자체가 버그다.
