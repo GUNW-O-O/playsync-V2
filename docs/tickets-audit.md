@@ -79,6 +79,9 @@
 
 | 자리 | 무엇 | 상태 |
 |---|---|---|
+| 딜러 · 좌석 단말의 페이지 로더와 대기 화면 | `(terminal)/dealer`와 `(terminal)/table`의 `page.tsx` · `[tableId]/page.tsx`가 같은 조회와 분기를 따로 든다. 대기 화면 둘의 `selectTournament`도 같다(T127이 같은 결함을 양쪽에서 고쳤다). 딜러 쪽은 행을 좁히지 않고 넘긴다. T129가 범위가 커서 남겼다 | 대기 |
+| 상점 소유권 판정 셋 | `SessionService.assertStoreOwnership` · `DeviceService.ownedStore`는 없는 상점과 남의 상점을 같은 403으로 내리는데 `StoreService.getStoreDetail`은 404와 403을 가른다 — 상점 id를 열거할 수 있다. 맞추면 응답 코드가 바뀌어 T129에서 뺐다 | 대기 |
+| 손으로 든 사본들 | 프론트의 `OTP_LENGTH`(8 · 6)와 `GamePhase` 미러, 백엔드 응답을 손으로 적은 화면 타입(`Participation` · `TournamentDetail` 등), `.env.test` 파서 둘, `demo.mjs` · `demo-settlement.mjs`의 `run`, `kill-run.sh` · `outage-run.sh`의 앞부분 | 대기 |
 | 통합 첫 실행의 jest 워커 죽음 | T91 작업 중 **한 번** 관측됐다 — 컨테이너를 막 띄운 첫 `test:int`에서 워커가 `0xC0000409`(STATUS_STACK_BUFFER_OVERRUN)로 죽었고, 죽은 자리는 `playsync`의 리바인 체크포인트와 `recovery` 시나리오였다. 어서션 실패가 아니라 프로세스의 죽음이다. 같은 컨테이너로 재실행하니 초록이었고 그 뒤 세 번 더 돌려도 재현되지 않았다. **적어 두는 이유는 다음 발생이 첫 관측이 아니게 하려는 것**이다 | 대기 (재현) |
 | `SessionService.startSession`의 동시 시작 | 두 시작이 **동시에** `initializeGame`의 PENDING 사전 검사를 통과하면, 진 쪽은 DB 조건부 update에서 409가 나지만 그 전에 쓴 Redis(버튼 추첨 · blindField)가 남는다. 순차 호출은 T96이 막았고(사전 검사가 Redis 앞), 남은 것은 원래 있던 쓰기 경합이다. 상점 화면은 PENDING에서만 시작 버튼을 그린다 | 대기 |
 | `SessionService.completeSession`의 테이블 목록 | 정리할 `tableIds`를 트랜잭션 **밖**에서 읽는다. 그 사이 테이블이 생기면 DB에서는 지워지는데 Redis 정리 목록에서 빠져 그 테이블의 키가 남는다. 닫는 중에 상점이 테이블을 여는 경우라 드물고 돈과 무관하다(2026-09-17 인계) | 대기 |
