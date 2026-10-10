@@ -5,7 +5,7 @@ import { entryCountOf, PayoutTier, payoutsFor } from "src/playsync/payout-table"
 import { calculatePrizes, PrizePayout, prizePoolOf } from "src/playsync/prize";
 import { UserInfo } from "shared/types/userInfo";
 import { getCurrentBlindLevel, toWireBlindStructure } from "shared/util/util";
-import { TableState } from "src/game-engine/types";
+import { SEAT_COUNT, TableState } from "src/game-engine/types";
 import {
   currentRegistrationLevel,
   isRegistrationOpenAtLevel,
@@ -102,7 +102,7 @@ export class RedisService {
     await this.redis.eval(script, 1, lockKey, token);
   }
   /** 한 테이블의 좌석 수. 비트맵 길이가 곧 이 값이다. */
-  private static readonly SEAT_COUNT = 9;
+  private static readonly SEAT_COUNT = SEAT_COUNT;
 
   /**
    * 좌석 한 칸만 원자적으로 바꾸고 바뀐 비트맵을 돌려준다.
