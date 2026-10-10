@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { DealerAction, SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
 import Felt from '@/component/felt/Felt';
-import { useTableSocket } from '@/lib/use-table-socket';
+import { useTableSocket, NOT_SENT_ERROR } from '@/lib/use-table-socket';
 import ReconnectOverlay from '../../../ReconnectOverlay';
 import {
   GamePhase,
@@ -143,12 +143,19 @@ export default function DealerGameClient({
     },
   });
 
-  function sendDealerAction(action: DealerAction) {
-    if (socketRef.current?.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify({ event: 'DEALER_ACTION', data: action }));
-    } else {
+  /**
+   * 소켓이 열려 있으면 보내고 `true`. 아니면 거절 모달로 알리고 `false` —
+   * 딜러는 콘솔을 볼 수 없고, 못 보낸 명령을 먹은 줄 알면 판이 선다
+   * (좌석 화면의 `trySend`와 같은 이유).
+   */
+  function sendDealerAction(action: DealerAction): boolean {
+    if (socketRef.current?.readyState !== WebSocket.OPEN) {
       console.error('웹소켓 연결이 열려있지 않습니다.');
+      setActionError(NOT_SENT_ERROR);
+      return false;
     }
+    socketRef.current.send(JSON.stringify({ event: 'DEALER_ACTION', data: action }));
+    return true;
   }
 
   // 자리를 누르면 내보내기 확인이 뜬다. 빈 자리를 누르면 확인을 접는다.
@@ -163,13 +170,13 @@ export default function DealerGameClient({
 
   function confirmKick() {
     if (!kickTarget) return;
-    sendDealerAction({ action: 'DEALER_KICK', targetUserId: kickTarget.id });
+    if (!sendDealerAction({ action: 'DEALER_KICK', targetUserId: kickTarget.id })) return;
     setKickTarget(null);
   }
 
   function confirmFold() {
     if (!foldTarget) return;
-    sendDealerAction({ action: 'DEALER_FOLD', targetUserId: foldTarget.id });
+    if (!sendDealerAction({ action: 'DEALER_FOLD', targetUserId: foldTarget.id })) return;
     setKickTarget(null);
   }
 
@@ -186,7 +193,8 @@ export default function DealerGameClient({
   }
 
   function submitWinners(winnerGroups: string[][]) {
-    sendDealerAction({ action: 'RESOLVE_WINNERS', winnerGroups });
+    // 못 보냈으면 찍은 순위를 든 채로 둔다 — 닫으면 다시 찍어야 한다.
+    if (!sendDealerAction({ action: 'RESOLVE_WINNERS', winnerGroups })) return;
     setShowWinnerOverlay(false);
   }
 

@@ -277,6 +277,21 @@ describe('DealerGameClient', () => {
       expect(screen.queryByTestId('dealer-action-error')).toBeNull();
     });
 
+    /**
+     * 소켓이 닫힌 채 누른 명령은 서버에 가지 않는다. 예전에는 `console.error`
+     * 한 줄뿐이라 딜러는 먹은 줄 알았다 — 좌석 화면이 `NOT_SENT_ERROR`로 고친
+     * 것과 같은 결함이다.
+     */
+    it('소켓이 닫혀 있으면 명령이 전달되지 않았다고 알린다', async () => {
+      const { socket } = await renderWithSocket(baseState({ phase: GamePhase.WAITING }));
+      socket.readyState = 3;
+
+      await userEvent.click(screen.getByRole('button', { name: /핸드 시작/ }));
+
+      expect(socket.sent).toEqual([]);
+      expect(screen.getByTestId('dealer-action-error')).toHaveTextContent('전달되지 못했습니다');
+    });
+
     it('다음 renderGame이 오면 사유를 걷는다', async () => {
       const { socket } = await renderWithSocket(baseState({ phase: GamePhase.SHOWDOWN }));
 

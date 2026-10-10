@@ -3,7 +3,7 @@
 import { useRef, useState } from 'react';
 import { PlayerAction, SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
 import Felt from '@/component/felt/Felt';
-import { useTableSocket } from '@/lib/use-table-socket';
+import { useTableSocket, NOT_SENT_ERROR } from '@/lib/use-table-socket';
 import ReconnectOverlay from '../../ReconnectOverlay';
 import { TableState, TournamentClosedSchema, type ClosedTournamentStatus } from '@playsync/contract';
 import SeatActionPanel from './SeatActionPanel';
@@ -22,13 +22,6 @@ const DEFAULT_CONNECTION_ERROR = '연결이 끊어졌습니다.';
 
 /** 서버가 `error` 프레임에 문자열을 안 실어 줬을 때의 최후 안내. */
 const DEFAULT_ACTION_ERROR = '요청이 거절되었습니다.';
-
-/**
- * 보내려 했는데 소켓이 열려 있지 않았을 때. **서버가 거절한 것이 아니라
- * 애초에 닿지 않은 것**이라 문구가 다르다 — 거절은 이유가 있고, 이쪽은
- * 다시 눌러 보라는 것 말고 할 말이 없다.
- */
-const NOT_SENT_ERROR = '연결이 끊어져 전달되지 못했습니다. 잠시 후 다시 눌러 주세요.';
 
 /** 복구 뒤 딜러의 재개를 기다리는 동안 리바인 팝업에 적는다(T100). */
 const REBUY_WAIT_DEALER = '딜러가 게임을 재개하면 다시 묻습니다.';
