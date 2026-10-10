@@ -45,10 +45,11 @@ const START_TABLES = Number(__ENV.LOAD_START_TABLES || 6);
 /**
  * 한 단계에 몇 개씩 붙이나.
  *
- * 2였는데 6으로 올렸다. 근거 둘. **실행이 JWT 수명(1시간)보다 길면 안 된다** —
- * 2씩 66까지 가면 112분이라 토큰이 중간에 죽는다. 그리고 한 번에 여섯을
- * 세우는 것이 **더 험한 몰림**이라, 재려는 것(피크 내성)에 오히려 가깝다.
- * 6이면 11단계 38분이다.
+ * 2였는데 6으로 올렸다. 한 번에 여섯을 세우는 것이 **더 험한 몰림**이라,
+ * 재려는 것(피크 내성)에 오히려 가깝다. 2씩이면 66까지 112분, 6씩이면
+ * 11단계 38분이다. 토큰 수명은 이제 제약이 아니다 — 실행 내내 드는
+ * 상점 · 딜러 · 좌석 토큰은 12시간이고(`tokenTtl`), 1시간짜리는 착석 직전에만
+ * 쓰는 플레이어 로그인 토큰뿐이다.
  */
 const STEP_TABLES = Number(__ENV.LOAD_STEP_TABLES || 6);
 const MAX_TABLES = Number(__ENV.LOAD_MAX_TABLES || 66);
@@ -139,10 +140,10 @@ export const options = {
 };
 
 export function setup() {
-  // **여기서 받은 토큰을 VU에 물려주지 않는다.** JWT가 1시간짜리인데
-  // (`auth.module.ts:25`) 램프는 그보다 오래 돈다 — 실측에서 64분째부터
-  // 새 테이블이 전부 401로 죽었고, 그 뒤 구간이 통째로 무의미해졌다.
-  // 각 VU가 자기가 붙는 시점에 새로 받는다(`table()`).
+  // **여기서 받은 토큰을 VU에 물려주지 않는다.** 각 VU가 자기가 붙는 시점에
+  // 새로 받는다(`table()`). 상점 토큰은 12시간이라(`tokenTtl`의
+  // `Role.STORE_ADMIN`) 수명 때문은 아니다 — 전역 1시간(`AuthModule`의 기본
+  // `expiresIn`)이던 때는 실측 64분째부터 새 테이블이 전부 401로 죽었다.
   //
   // **대회는 여기서 시작시키지 않는다.** `startSession`이 최소 인원을 세고
   // (`MIN_PLAYERS_TO_START`, 컨테이너에서 2) 아무도 앉기 전에는 0명이라
@@ -200,8 +201,8 @@ export function table(data) {
   const localIdx = index - storeStep * (TABLES_PER_STORE > 0 ? TABLES_PER_STORE : 0);
 
   const setupStart = Date.now();
-  // 상점 토큰을 이 자리에서 받는다. JWT가 1시간이라 `setup()`의 것을 물려
-  // 쓰면 한 시간 뒤에 붙는 테이블이 전부 401이다. 로그인 한 번이 더 도는
+  // 상점 토큰을 이 자리에서 받는다. 상점 토큰은 12시간이라(`tokenTtl`)
+  // `setup()`의 것을 물려 써도 만료되지는 않는다. 로그인 한 번이 더 도는
   // 것은 부하로도 정직하다 — 실제로도 상점 콘솔이 다시 인증한다.
   const ownerToken = login(manifest.ownerNickname, manifest.password);
 
@@ -230,8 +231,8 @@ export function table(data) {
   tableSetupMs.add(Date.now() - setupStart);
 
   // 그 대회의 첫 VU만 시작시킨다. 시작해야 Redis에 블라인드 메타가 서고
-  // `startPreFlop`이 통과한다(`dealer.service.ts:193`). 두 번 부르면
-  // `initializeGame`이 다시 돌아 이미 도는 테이블의 상태를 갈아엎으므로
+  // `startPreFlop`이 통과한다(`DealerService.startPreFlop`의 블라인드 메타
+  // 검사). 두 번 부르면 `initializeGame`이 다시 돌아 이미 도는 테이블의 상태를 갈아엎으므로
   // **한 번만** 부른다 — 실제로도 상점이 시작 버튼을 한 번 누른다.
   //
   // 뒤늦게 붙는 테이블은 시작할 필요가 없다. 블라인드 메타는 대회 단위라

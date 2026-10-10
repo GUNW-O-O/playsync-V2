@@ -161,7 +161,7 @@ const SEAT_COUNT = 9;
  * 어느 대회에 속하는지와 게임의 초기값이다.
  *
  * `smallBlind`는 자리 채움이다 — `startPreFlop`이 블라인드 구조에서 덮어쓴다
- * (`TableEngine.startPreFlop`).
+ * (`DealerService.startPreFlop`. 엔진의 `startPreFlop`은 그 값을 읽기만 한다).
  *
  * 이 함수가 생기기 전에는 같은 객체를 `EntryService`가 private으로 들고
  * 있었고, 그래서 **스냅샷을 만드는 지점이 착석 하나뿐**이었다. 상점이 연

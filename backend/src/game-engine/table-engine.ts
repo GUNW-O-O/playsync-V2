@@ -121,7 +121,8 @@ export class TableEngine {
     const currentIndex = phases.indexOf(this.state.phase);
     // WAITING/HAND_END은 베팅 라운드가 아니라 indexOf가 -1이다. 그대로 두면
     // -1 < 4가 참이라 phases[0]인 PRE_FLOP이 배정된다 — 블라인드도 안 걷고
-    // 핸드가 시작된 것처럼 보인다. 딜러 폴드가 이 상태에서도 불릴 수 있다.
+    // 핸드가 시작된 것처럼 보인다. `act`는 베팅 라운드가 아니면 먼저 던지므로
+    // 그 길로는 여기 닿지 않는다 — 이 메서드가 public이라 직접 불릴 때를 막는다.
     if (currentIndex === -1) return;
     this.calculateSidePots();
     if (currentIndex < phases.length - 1) {
