@@ -219,6 +219,17 @@
 `updateMany`, 리바인의 `executeRebuyTransaction`과 같은 모양). `joinSession`의 잔액 검사는
 트랜잭션 밖의 낡은 읽기라, 서로 다른 대회에 동시에 내면 그것만으로는 음수가 된다.
 
+**닫는 문은 돈을 세기 전에 대회 행을 잠근다**(`SessionService.lockTournament`, T123).
+참가비와 리바인의 트랜잭션은 끝에서 그 행을 조건부로 고치므로(`joinSession` ·
+`executeRebuyTransaction`), 먼저 잠그면 그쪽이 기다렸다가 닫힌 대회를 보고 통째로
+되돌아간다. 읽은 뒤에 잠그면 그 사이 커밋된 돈이 환불 계산에 없는 채로 닫힌다. 종료는
+장부 대조가 트랜잭션 밖이라 문지기가 「걷은 금액이 대조한 값 그대로」를 같이 든다.
+
+**우승 상금이 나가면 등록도 닫힌다**(`tournamentFinished`, 같은 트랜잭션). 대회는 상점이
+「종료」를 누를 때까지 `ONGOING`이라, 안 닫으면 마감 레벨 전에 끝난 대회가 참가비를 받고
+그 돈이 종료를 막는다. 참가의 장부 갱신은 `isRegistrationOpen: true`를 조건으로 든다 —
+등록 판정(`assertRegistrationOpen`)이 트랜잭션 밖의 읽기라서다.
+
 ### 중단은 정지가 아니다
 
 홀덤에 **사람이 거는 대회 전체 일시정지는 없다.** 테이블 하나가 못 도는 것은 핸드
@@ -293,6 +304,10 @@
 찹은 각자의 칩(`TournamentParticipation.currentStack`).
 
 ### 딜(ICM 찹)
+
+**딜은 `GamePhase.WAITING`에서만 받는다**(`chopBlocker`). `HAND_END`는 팟은 나뉘었지만
+체크포인트 전이라 `currentStack`이 직전 핸드 값이다 — 체크포인트가 실패해 멈춘 테이블이
+그 자리에 선다(T123).
 
 **파이널 테이블에서 지쳤을 때 하는 것이다.** 최후 1인까지 안 가고 남은 상금을
 칩 비율로 나눈다. 오프라인 대회의 흔한 마무리라, 그 경로가 없으면 딜로 끝난
