@@ -28,7 +28,7 @@ function renderConsole(
   overrides: { tournament?: TournamentMeta; dashboard?: unknown; preview?: unknown; sync?: unknown; forceSync?: () => Promise<unknown> } = {},
 ) {
   const revoke = vi.fn(async () => ({ ok: true as const }));
-  render(
+  const ui = (preview: unknown) => (
     <ConsoleClient
       storeId="store-1"
       tournamentId="trn-1"
@@ -43,16 +43,19 @@ function renderConsole(
       releaseSeats={vi.fn(async () => ({ ok: true as const }))}
       reissueDealerOtp={reissue}
       revokeDevices={revoke}
-      preview={(overrides.preview ?? null) as never}
+      preview={preview as never}
       completeTournament={vi.fn(async () => ({ ok: true as const }))}
       chopTournament={vi.fn(async () => ({ ok: true as const }))}
       abortTournament={vi.fn(async () => ({ ok: true as const }))}
       fetchFinishPreview={vi.fn(async () => ({ error: '없음' }))}
       sync={(overrides.sync ?? null) as never}
       forceSync={(overrides.forceSync ?? vi.fn()) as never}
-    />,
+    />
   );
-  return { reissue, revoke };
+  const view = render(ui(overrides.preview ?? null));
+  /** 서버 컴포넌트가 다시 읽어 새 미리보기를 내려준 모양(`router.refresh()`). */
+  const refreshWith = (preview: unknown) => view.rerender(ui(preview));
+  return { reissue, revoke, refreshWith };
 }
 
 /**
@@ -344,6 +347,27 @@ describe('ConsoleClient — 서버 복구 중', () => {
  * 콘솔에는 폴링이 없다 — 조작이 성공할 때만 다시 읽는다(`run`). 남이 바꾼 값
  * (다른 테이블의 탈락, 딜러의 입력)을 보려면 상점이 직접 다시 읽을 길이 있어야 한다.
  */
+/**
+ * T127 ①. 미리보기를 `useState`의 초기값으로만 읽으면 `router.refresh()`가 내려준 새
+ * 값이 화면에 닿지 않는다. 대회 중간에 콘솔을 열어 두면, 상금이 다 나간 뒤 새로고침을
+ * 눌러도 「종료」가 옛 사유와 함께 꺼져 있었다 — 「종료」에는 확인 대화가 없어 다시
+ * 받는 길도 없다.
+ */
+describe('마무리 미리보기 — 다시 읽으면 따라온다', () => {
+  const started = { ...TOURNAMENT, status: 'ONGOING' as const };
+  const blocked = { ...PREVIEW, paidPrize: 0, complete: { canRun: false, reason: '상금 정산이 끝나지 않았습니다.' } };
+
+  it('상금이 다 나간 뒤 다시 읽으면 「종료」가 켜지고 나간 상금이 바뀐다', () => {
+    const { refreshWith } = renderConsole(undefined, { tournament: started, preview: blocked });
+    expect(screen.getByRole('button', { name: '종료' })).toBeDisabled();
+
+    refreshWith({ ...PREVIEW, paidPrize: 100000, complete: { canRun: true, reason: null } });
+
+    expect(screen.getByRole('button', { name: '종료' })).toBeEnabled();
+    expect(screen.queryByText('상금 정산이 끝나지 않았습니다.')).toBeNull();
+  });
+});
+
 describe('새로고침', () => {
   it('누르면 서버 컴포넌트를 다시 읽는다', async () => {
     router.refresh.mockClear();

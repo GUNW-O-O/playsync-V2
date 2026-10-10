@@ -196,7 +196,14 @@ export default function ConsoleClient({
     없이 「그래도 진행」을 내주면 확인 대화가 하는 일이 없어진다.
   */
   const [confirming, setConfirming] = useState<'chop' | 'abort' | null>(null);
-  const [live, setLive] = useState<FinishPreview | null>(preview);
+  /**
+   * 확인 대화가 방금 받은 미리보기(`openConfirm`). **그때의 `preview`와 짝으로 든다** —
+   * 서버 컴포넌트가 다시 읽어 새 `preview`를 내려주면 이쪽은 낡은 것이라 버린다.
+   * `preview`를 `useState`의 초기값으로만 읽으면 `router.refresh()`가 닿지 않아,
+   * 상금이 다 나간 뒤에도 「종료」가 옛 사유로 꺼져 있었다(T127).
+   */
+  const [fetched, setFetched] = useState<{ base: FinishPreview | null; value: FinishPreview } | null>(null);
+  const live = fetched && fetched.base === preview ? fetched.value : preview;
 
   const activeTable = tables.find((t) => t.id === activeTableId) ?? tables[0] ?? null;
   const occupants = seatOccupants.find((t) => t.tableId === activeTable?.id)?.players ?? [];
@@ -270,7 +277,7 @@ export default function ConsoleClient({
           return;
         }
         setMessage(null);
-        setLive(result.preview);
+        setFetched({ base: preview, value: result.preview });
         setConfirming(kind);
       } catch {
         setMessage(NETWORK_ERROR);
