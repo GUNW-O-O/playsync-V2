@@ -39,17 +39,14 @@ function rebuyTimeoutMs(): number {
 
 /**
  * 리바인 한 사람의 결과(T100). 금액이 아니라 **다시 물을지**를 가르는 값이다 —
- * `DealerService.resolveWinners`가 `interrupted`만 딜러의 재개 뒤에 다시 묻는다.
+ * `DealerService.askRebuys`가 `interrupted`와 `deferred`를 딜러의 재개 뒤에 다시 묻는다.
  *
  * - `applied`: 칩이 들어가고 돈이 빠졌다
  * - `declined`: 본인이 거절했다(게이트웨이는 up일 때만 응답을 받는다)
  * - `timeout`: 장애 없이 마감이 지났다
  * - `skipped`: 묻지 않았거나 반영할 수 없었다 — 포인트 부족, DB 거절(칩은 되돌렸다), 스냅샷·좌석 없음
- * - `interrupted`: Redis 장애가 끼었다. 아무것도 확정하지 않았다
- */
-/**
- * `interrupted`와 `deferred`는 둘 다 **확정하지 않고 딜러의 재개 뒤에 다시 묻는다.**
- * 앞은 Redis 장애가 창을 끊은 것(T100), 뒤는 DB가 일시적으로 못 받은 것(T118)이다.
+ * - `interrupted`: Redis 장애나 회선 끊김이 창을 끊었다(T100 · T121). 아무것도 확정하지 않았다
+ * - `deferred`: DB가 일시적으로 못 받았다(T118). 아무것도 확정하지 않았다
  */
 export type RebuyOutcome = 'applied' | 'declined' | 'timeout' | 'skipped' | 'interrupted' | 'deferred';
 
@@ -182,8 +179,8 @@ export class PlaysyncService {
           expectedTimerEpoch !== (state.timerEpoch ?? 0);
 
         // 상태를 건드리지 않고 나간다. `null`이 곧 "저장하지 마"이고,
-        // `mutateSnapshot`은 그 경우 **읽은 상태**를 호출자에게 돌려준다 —
-        // 게이트웨이가 브로드캐스트할 것이 그것이다.
+        // `mutateSnapshot`은 그 경우 **읽은 상태**를 돌려주지만 `acted`가
+        // 거짓으로 남아 `handleAction`은 `null`을 돌려준다 — 전파되는 것이 없다.
         if (isStaleTurn || isStaleEpoch) return null;
 
         // **회선이 끊겨 멈춘 대회의 타임아웃은 접지 않는다**(T121). 대회는 한 문장으로
@@ -198,8 +195,10 @@ export class PlaysyncService {
       // 테이블 위는 아무도 모르는 상태이고, 먼저 돌아온 사람이 눌러서 판이
       // 진행되면 딜러가 그것을 되돌릴 근거가 테이블 위에 없다.
       //
-      // 정지 중에는 타임아웃 잡도 없으므로(`RecoveryService`가 세대를 올리고
-      // 새 잡을 안 건다) 여기 닿는 것은 사람이 누른 액션뿐이다.
+      // 정지를 거는 쪽은 타임아웃 잡을 남기지 않는다(`RecoveryService`가 세대를
+      // 올리고 새 잡을 안 건다). 다만 딜러 경로(`DealerService.handleDealerAction` ·
+      // `DealerService.startPreFlop`)는 `resumePending`을 보지 않고
+      // `scheduleTurnTimeout`을 부르므로, 그 잡이 발화한 TIME_OUT도 여기 닿는다.
       if (state.resumePending) {
         throw new Error('서버가 멈췄다가 복구됐습니다. 딜러가 게임을 재개할 때까지 기다려 주세요.');
       }
@@ -1010,8 +1009,9 @@ export class PlaysyncService {
       // 사람에게 15초를 묻고 오는 길이라(`waitForRebuyResponse`) 묻는 동안
       // 대회가 닫히는 것이 드문 일이 아니다.
       //
-      // 막지 않으면 **돈만 사라진다.** 참가비는 위에서 이미 빠졌는데 칩을 넣는
-      // `mutateSnapshot`은 지워진 스냅샷을 못 찾아 아무 일도 안 한다. 장부
+      // 막지 않으면 **돈만 사라진다.** 칩은 이 트랜잭션보다 먼저 스냅샷에
+      // 들어갔는데(`processRebuy`의 1단계) 닫힌 대회의 스냅샷은 지워지고,
+      // 참가비는 위에서 이미 빠졌다. 장부
       // 검산(`걷은 참가비 == 나간 상금`)은 그보다 앞에서 통과한 뒤다.
       //
       // 조건을 여기 거는 이유는 **판정과 쓰기가 같은 문장이어야** 하기

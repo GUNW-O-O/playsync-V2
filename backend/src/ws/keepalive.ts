@@ -26,7 +26,7 @@ export interface KeepaliveSocket {
    * 끊는 것은 그보다 한두 틱 뒤다. `markAlive`만 쓴다.
    */
   aliveAt?: number;
-  /** 딜러 빠른 확인(T121)을 마지막으로 보낸 시각과, 그 뒤로 연달아 답이 없던 횟수. `probe`만 쓴다. */
+  /** 딜러 빠른 확인(T121)을 마지막으로 보낸 시각과, 그 뒤로 연달아 답이 없던 횟수. `probe`가 쓰고, 침묵하던 소켓이 답하면 `WsGateway.onPong`이 횟수를 0으로 되돌린다. */
   probeSentAt?: number;
   probeMisses?: number;
   ping(): void;

@@ -5,8 +5,8 @@ import { FullTournamentInfoSchema, SERVER_RECOVERING_MESSAGE, type FullTournamen
 import { apiFetch } from '@/lib/api';
 import { isServerRecovering } from '@/lib/server-outage';
 
-// 조회가 곧 블라인드 시계를 미는 일이다 — getFullTournamentInfo가 안에서
-// checkAndSyncBlindLevel을 부른다(redis.service.ts:282,285). 서버에 별도
+// 조회가 곧 블라인드 시계를 미는 일이다 — `RedisService.getFullTournamentInfo`가
+// 안에서 `checkAndSyncBlindLevel`을 부른다. 서버에 별도
 // 타이머를 두지 않는 이유는 상태를 미는 코드가 한 곳뿐이라야 레벨과 마감이
 // 두 갈래로 자라지 않기 때문이다. **그래서 전광판은 대회 내내 틀어 둔다.**
 //
@@ -42,7 +42,7 @@ export default function DisplayClient({ tournamentId }: { tournamentId: string }
   // 태블릿마다 다른 숫자가 뜬다 — 매 폴링마다 이 값을 다시 잰다.
   const clockOffsetRef = useRef(0);
 
-  // 요청마다 세대 번호를 매긴다. 3초 간격 폴링이라 응답이 느리면 다음
+  // 요청마다 세대 번호를 매긴다. `POLL_MS` 간격 폴링이라 응답이 느리면 다음
   // poll()이 이미 시작된 뒤 늦게 도착할 수 있고, 네트워크는 순서를 보장하지
   // 않는다 — 그 느린 응답이 나중에 최신 값을 덮으면 전광판 레벨이 되돌아가고
   // clockOffsetRef가 과거로 튄다. `WaitingClient.tsx`의 tournamentRequestRef와

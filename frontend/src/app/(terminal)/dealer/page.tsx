@@ -47,7 +47,7 @@ export default async function DealerWaitingPage({
       </main>
     );
 
-  // T112. 이 상점에 등록된 태블릿만 입장 OTP를 넣을 수 있다. 쿠키가 없거나
+  // T112. 이 상점에 등록된 태블릿만 딜러 OTP를 넣을 수 있다. 쿠키가 없거나
   // 다른 상점 것이면 설치하는 직원에게 등록 폼을 보여 준다.
   const deviceToken = (await cookies()).get(DEVICE_TOKEN_COOKIE)?.value;
   const deviceStore = deviceStoreId(deviceToken);

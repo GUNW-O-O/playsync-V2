@@ -4,9 +4,9 @@
  * 참가비를 걷는 쪽(`totalBuyinAmount`)은 이미 돌고 있었다. 내보내는 쪽이
  * 상수였다 — 우승 상금이 참가비와 무관하게 항상 `3000`이었다.
  *
- * 분배율은 **대회 생성 시 상점이 정한다.** 기본값을 두지 않는 이유는, 상금
- * 비율이 코드가 정할 수 있는 성질의 값이 아니기 때문이다. 안 정하면 대회를
- * 만들 수 없는 편이, 모르는 비율로 돈이 나가는 것보다 낫다.
+ * 분배율은 **대회 생성 시 정해진다.** 상점이 구간표를 주면 그것을 쓰고, 안
+ * 주면 기본표(`DEFAULT_PAYOUT_TABLE`)가 들어간다(`SessionService.createSession`).
+ * 어느 쪽이든 생성 시점에 검증을 지난다(`parsePayoutTable`).
  */
 
 import { BadRequestException } from '@nestjs/common';
@@ -103,14 +103,9 @@ export function calculatePrizes(
 }
 
 /**
- * DB에 Json으로 들어 있는 분배율에서 한 등수의 상금을 꺼낸다.
- *
- * 상금권 밖이면 0이다. `itmCount`와 따로 비교하지 않는 이유는, itmCount가
- * 분배율에서 파생된 값이라 "몫이 있는가"와 "인 더 머니인가"가 같은 질문이기
- * 때문이다. 두 군데서 판정하면 어긋날 수 있다.
- */
-/**
- * 상금을 지급한다. **돈이 대회 밖으로 나가는 유일한 지점이다.**
+ * 상금을 지급한다. **상금이 나가는 유일한 지점이다.** 환불과 상점 몫은 여기를
+ * 지나지 않는다 — `SessionService`의 `cancelSession` · `abortSession` ·
+ * `completeSession`이 유저 포인트를 직접 올린다.
  *
  * 세 가지가 한 트랜잭션에 묶여야 한다.
  *
@@ -177,6 +172,13 @@ export interface PrizeTx {
   pointTransaction: { create(args: unknown): Promise<unknown> };
 }
 
+/**
+ * DB에 Json으로 들어 있는 분배율에서 한 등수의 상금을 꺼낸다.
+ *
+ * 상금권 밖이면 0이다. 상금권 인원을 따로 비교하지 않는 이유는, 그 인원이
+ * 분배율에서 파생된 값이라 "몫이 있는가"와 "인 더 머니인가"가 같은 질문이기
+ * 때문이다. 두 군데서 판정하면 어긋날 수 있다.
+ */
 export function prizeFor(pool: number, payouts: unknown, place: number): number {
   if (!Array.isArray(payouts) || payouts.length === 0) return 0;
   return calculatePrizes(pool, payouts as PrizePayout[]).get(place) ?? 0;

@@ -297,7 +297,8 @@ export default function SeatGameClient({
       {/*
         **서버 장애(T97).** Redis가 죽으면 게이트웨이가 테이블 소켓 전원에게
         `serverOutage`를 뿌린다 — 연결 자체는 살아 있어 `connectionError`
-        배너와 겹칠 일이 드물지만, 겹쳐도 서로 다른 자리라 가리지 않는다.
+        배너와 겹칠 일이 드물다. 겹치면 둘이 같은 자리(위쪽 끝, 같은 z)라
+        뒤에 그리는 이 배너가 연결 끊김 띠를 덮는다.
         정지 배너(`resumePending`)와도 별도로 그린다 — 둘 다 사람에게
         필요한 설명이다.
       */}

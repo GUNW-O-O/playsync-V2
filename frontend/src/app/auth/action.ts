@@ -78,8 +78,9 @@ export async function handleLogin(formData: FormData) {
     body: JSON.stringify({ nickname, password }),
   });
 
-  // **`res.ok`를 먼저 본다.** 파싱은 그다음이다 — 순서가 뒤집혀 있으면
-  // JSON이 아닌 실패 응답에서 이 액션이 던진다(위 `failureMessage`).
+  // **파싱이 던지지 않게 한다.** 본문을 `res.ok`보다 먼저 읽지만
+  // `.catch(() => null)`이 받으므로, JSON이 아닌 실패 응답에서도 이 액션이
+  // 던지지 않고 기본 문구로 떨어진다(위 `failureMessage`).
   const data = await res.json().catch(() => null);
 
   if (!res.ok) {

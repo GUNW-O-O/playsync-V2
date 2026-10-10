@@ -265,7 +265,7 @@ export class RedisService {
     for (const i of seatIndexes) bitmap[i] = '1';
     await this.redis.hset(key, `table:${tableId}`, bitmap.join(''));
     // 이 키를 쓰는 나머지 전부(setSeatBitmap, UPDATE_SEAT_BIT,
-    // UPDATE_SEAT_BITS_MANY, setUserContext)가 24시간 TTL을 유지한다. 여기서
+    // UPDATE_SEAT_BITS_MANY)가 24시간 TTL을 유지한다. 여기서
     // 빠뜨리면 Redis를 통째로 잃은 뒤 재구성이 만드는 키만 영구 키가 되고,
     // 유령 테이블을 청소하는 그 장치(UPDATE_SEAT_BIT 주석 참고)에서 이
     // 필드만 빠진다.

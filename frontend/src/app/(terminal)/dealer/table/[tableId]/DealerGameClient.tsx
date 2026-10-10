@@ -43,7 +43,9 @@ type KickTarget = { seatIndex: number; id: string; nickname: string };
  * 좌석 화면과 같은 테이블을 180° 돌려 그린다(`orientation="dealer"`) — 딜러는
  * 자기 자리가 화면 아래에 있어야 눈앞의 배치와 곧바로 겹친다.
  *
- * 받는 이벤트는 `renderGame`뿐이다 — `REBUY_PROMPT`는 좌석 단말에만 간다.
+ * 판을 그리는 이벤트는 `renderGame`뿐이다 — `REBUY_PROMPT`는 좌석 단말에만
+ * 간다. 그 밖에 `tournamentClosed`, 복구 진행(`TOURNAMENT_SYNCING_EVENT`),
+ * 거절 ack인 `error`를 받는다.
  * 보내는 것은 `DEALER_ACTION`이고 페이로드는 `@playsync/contract`의
  * `dealer-action.ts` 스키마를 따른다. 토큰과 tableId는 싣지 않는다 —
  * 핸드셰이크에서 이미 검증돼 소켓에 박혀 있고, 인바운드 스키마(.strict())가
@@ -75,9 +77,9 @@ export default function DealerGameClient({
   const [kickTarget, setKickTarget] = useState<KickTarget | null>(null);
   const [showWinnerOverlay, setShowWinnerOverlay] = useState(false);
   /**
-   * 대회가 닫혔다는 사실. **한 번 서면 되돌리지 않는다** — 서버가 소켓을
-   * 끊지 않으므로 늦게 도착한 `renderGame`이 있을 수 있고, 그것이 이 값을
-   * 지우면 딜러가 끝난 대회의 펠트를 다시 만지게 된다.
+   * 대회가 닫혔다는 사실. **한 번 서면 되돌리지 않는다** — 닫힘 알림과
+   * 소켓 종료(`WsGateway.closeTable`) 사이에 늦게 도착한 `renderGame`이 있을
+   * 수 있고, 그것이 이 값을 지우면 딜러가 끝난 대회의 펠트를 다시 만지게 된다.
    */
   const [closed, setClosed] = useState<ClosedTournamentStatus | null>(null);
   /**

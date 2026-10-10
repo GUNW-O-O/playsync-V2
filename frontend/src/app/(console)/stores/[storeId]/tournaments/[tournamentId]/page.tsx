@@ -42,8 +42,9 @@ function failureMessage(body: unknown): string {
  */
 type RawTournament = TournamentMeta & Record<string, unknown>;
 
-/** `GET /dealer/:tournamentId`의 `tables` 원소 — 대회 시작 시각 등 관리용
- * 컬럼까지 그대로 붙어 있다. `RawTournament`와 같은 이유로 좁혀 넘긴다. */
+/** `GET /dealer/:tournamentId`의 `tables` 원소 — 백엔드
+ * (`SessionService.getGameSessionWithTables`)는 `id`·`tableOrder`만 select한다.
+ * 그쪽이 필드를 늘려도 새지 않게 `RawTournament`와 같은 이유로 좁혀 넘긴다. */
 type RawTable = TableInfo & Record<string, unknown>;
 
 function toTournamentMeta(row: RawTournament): TournamentMeta {
@@ -74,7 +75,7 @@ async function fetchTournament(tournamentId: string): Promise<TournamentMeta | n
   return envelope.tournament ? toTournamentMeta(envelope.tournament) : null;
 }
 
-/** `GET /dealer/:tournamentId` — 대회 필드 + `tables`(`tableOrder` 포함) 평평한 객체다. */
+/** `GET /dealer/:tournamentId` — 대회 `id` + `tables`(`id`·`tableOrder`) 평평한 객체다. */
 async function fetchTables(tournamentId: string): Promise<TableInfo[]> {
   const res = await fetch(`${BACKEND_URL}/dealer/${tournamentId}`, { cache: 'no-store' });
   if (!res.ok) return [];
@@ -172,8 +173,8 @@ async function fetchSeatOccupants(
 }
 
 /**
- * 상점 콘솔의 대회 상세. 서버 컴포넌트에서 직접 백엔드로 네 번 조회한다.
- * 조작 다섯 개는 전부 서버 액션(`./action.ts`)이 맡는다.
+ * 상점 콘솔의 대회 상세. 서버 컴포넌트에서 직접 백엔드를 조회한다(아래
+ * `Promise.all`). 조작은 전부 서버 액션(`./action.ts`)이 맡는다.
  *
  * `storeId`·`tournamentId`는 URL 파라미터라 그 조합이 로그인한 관리자의
  * 것인지 아무도 확인하지 않았다(T66). 미들웨어(`ROLE_RULES`)는 `/stores`에
@@ -184,7 +185,7 @@ async function fetchSeatOccupants(
  * 소유권을 서버에서 확인하는 유일한 경로는 `fetchSeatOccupants`가 부르는
  * `GET /store/sessions/:id/seats`다(`SessionService.assertTournamentOwnership`
  * 가 첫 문장). 그 결과를 좌석 패널 하나가 아니라 **페이지 전체**의 문지기로
- * 쓴다 — 다른 세 조회(`fetchTournament`·`fetchTables`·`fetchDashboard`)는
+ * 쓴다 — 나머지 가운데 `fetchTournament`·`fetchTables`·`fetchDashboard`는
  * 가드가 없어 소유권과 무관하게 성공하므로, 그쪽 결과를 그대로 내려보내면
  * 소유권 확인이 있으나 마나가 된다.
  *
