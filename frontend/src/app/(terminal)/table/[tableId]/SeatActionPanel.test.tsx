@@ -218,6 +218,32 @@ describe('SeatActionPanel', () => {
     expect(onAction).toHaveBeenCalledWith({ action: PlayerActionType.RAISE, amount: 110 });
   });
 
+  /**
+   * T124 ①. 미달 올인은 베팅을 다시 열지 않는다 — 이미 액션한 사람(`hasChecked`)에게
+   * 차례가 돌아오면 콜과 폴드만 남는다. 엔진이 레이즈를 거절하므로(올인도 레이즈다)
+   * 화면도 내지 않는다. 안 그러면 누른 뒤에야 거절을 본다.
+   */
+  it('이미 액션한 뒤 미달 올인으로 차례가 돌아오면 레이즈와 올인을 내지 않는다', () => {
+    const onAction = vi.fn();
+    render(
+      <SeatActionPanel
+        state={baseState({
+          currentBet: 800,
+          lastRaiseSize: 400,
+          smallBlind: 100,
+          players: seats({ stack: 9400, bet: 600, hasChecked: true }),
+        })}
+        mySeatIndex={0}
+        onAction={onAction}
+      />,
+    );
+
+    expect(screen.queryByRole('slider')).toBeNull();
+    expect(screen.queryByRole('button', { name: /^레이즈/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: '올인' })).toBeNull();
+    expect(screen.getByRole('button', { name: '콜 200' })).toBeInTheDocument();
+  });
+
   it('스냅샷이 아직 없어도 같은 세 자리다', () => {
     render(<SeatActionPanel state={null} mySeatIndex={0} onAction={vi.fn()} />);
 

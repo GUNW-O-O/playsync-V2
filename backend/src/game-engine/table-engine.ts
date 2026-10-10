@@ -349,6 +349,12 @@ export class TableEngine {
    */
   private handleRaise(player: TablePlayer, betAmount: number) {
     const previousBet = this.state.currentBet;
+    // **이미 액션한 사람에게는 베팅이 닫혀 있다**(위 2번). 풀 레이즈는 모두의 체크를
+    // 풀므로(`resetChecked`), 체크가 선 채로 차례가 돌아왔다면 그 사이에 온 것은
+    // 미달 올인뿐이다 — 콜 금액만 올랐고 다시 올릴 권리는 없다.
+    if (player.hasChecked) {
+      throw new Error('베팅이 다시 열리지 않았습니다. 콜 또는 폴드만 할 수 있습니다.');
+    }
     // 엔진은 호출자를 신뢰하지 않는다. WS 경계뿐 아니라 타임아웃 프로세서와
     // 딜러 경로에서도 호출되므로, 칩 총량 불변식은 여기서 지킨다.
     if (betAmount <= previousBet) {
