@@ -773,9 +773,9 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
   /**
    * 그 대회의 딜러가 마지막으로 응답한 시각(T121). 딜러 소켓이 끊길 때마다 최댓값으로
    * 적는다 — 응답이 없어 서버가 끊은 소켓은 마지막 pong, 상대가 닫은 소켓은 닫힌 지금이다.
-   * 마지막 딜러가 사라지면 이 값이 `pausedAt`이 된다. 대회가 닫히면 지우지만
-   * (`handleTournamentClosed`), 그 종료가 닫은 딜러 소켓의 `handleDisconnect`가 뒤이어
-   * 다시 적는다 — 닫힌 대회의 항목은 프로세스가 내려갈 때까지 남는다.
+   * 마지막 딜러가 사라지면 이 값이 `pausedAt`이 된다. 대회가 닫히면 지운다
+   * (`handleTournamentClosed`) — 그 닫힘이 끊은 딜러 소켓은 서버가 닫은 것이라
+   * 다시 적지 않는다(`closedByServer`).
    */
   private readonly lastDealerSeenAt = new Map<string, number>();
   /**
