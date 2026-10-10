@@ -7,6 +7,8 @@ import {
   DealerActionSchema,
   KEEPALIVE_EVENT,
   PlayerActionSchema,
+  RebuyPromptSchema,
+  RebuyPrompt,
   RebuyResponseSchema,
   ServerOutageSchema,
   TableStateSchema,
@@ -77,9 +79,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
   // 있을 수 있지만, 서버는 이미 그 대기를 인터럽트로 접었다 — 이 세대가
   // 그때의 것과 다르면(장애가 한 번 났다 갔으면 항상 다르다, `onLost`가 감지
   // 즉시 올리므로) 아무도 듣지 않는 낡은 프롬프트다.
-  private readonly pendingRebuyPrompts = new Map<string, {
-    deadline: number; userPoints: any; entryFee: number; tournamentName: string; generation: number;
-  }>();
+  private readonly pendingRebuyPrompts = new Map<string, RebuyPrompt & { generation: number }>();
 
   constructor(
     private readonly dealer: DealerService,
@@ -1250,12 +1250,14 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
 
   @OnEvent('rebuy.request.sent')
   handleRebuyRequest(payload: { userId: string, tableId: string, deadline: number, userPoints: any, entryFee: number, tournamentName: string }) {
-    const prompt = {
+    // 계약을 태운다 — `userPoints`는 부르는 쪽이 읽은 행이라, 스키마에 없는 필드가
+    // 딸려 와도 여기서 떨어진다(T129).
+    const prompt = RebuyPromptSchema.parse({
       deadline: payload.deadline,
       userPoints: payload.userPoints,
       entryFee: payload.entryFee,
       tournamentName: payload.tournamentName,
-    };
+    });
     // 재접속 대비 적어 둔다. 새 프롬프트는 같은 키(테이블·사람)를 덮는다.
     // 세대는 기록에만 싣는다 — 와이어로 나가는 `prompt`에는 넣지 않는다(M2).
     this.pendingRebuyPrompts.set(

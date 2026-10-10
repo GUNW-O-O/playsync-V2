@@ -2,15 +2,11 @@
 
 import ActionTimer from '@/component/ActionTimer';
 
-export type RebuyPrompt = {
-  deadline: number;
-  // 서버(`rebuy.request.sent`)는 넷 다 채워 보낸다. 옵셔널로 두는 이유는
-  // 방어일 뿐이다 — 여기서 죽으면 정작 필요한 "거절" 버튼까지 같이
-  // 사라진다. 못 받은 필드는 문구를 생략할지언정 오버레이 자체는 뜬다.
-  userPoints?: { points: number };
-  entryFee?: number;
-  tournamentName?: string;
-};
+// 계약에서 온다(`RebuyPromptSchema`). `deadline`만 필수라, 못 받은 필드는 문구를
+// 생략할지언정 오버레이 자체는 뜬다 — 「거절」 버튼이 사라지면 안 된다.
+import type { RebuyPrompt } from '@playsync/contract';
+
+export type { RebuyPrompt };
 
 /**
  * 칩이 0이 됐고 아직 리바인 구간일 때 화면을 덮는다(와이어프레임 846–881행).
