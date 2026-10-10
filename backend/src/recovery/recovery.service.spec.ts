@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events';
+import { LinePause } from 'src/redis/line-pause';
 import { RecoveryService } from './recovery.service';
 
 /**
@@ -18,7 +19,7 @@ function setup() {
   const findMany = jest.fn().mockResolvedValue([]);
   const recovery = new RecoveryService(
     { tournament: { updateMany, findMany } } as never,
-    { outage } as never,
+    { outage, linePause: new LinePause() } as never,
   );
   let finishBoot!: () => void;
   jest.spyOn(recovery, 'recoverAll').mockImplementationOnce(

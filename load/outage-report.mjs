@@ -38,7 +38,11 @@ const of = (name, extra = () => true) => v.filter((e) => e.name === name && extr
 // ── 2. 끊긴 동안
 const dealerGone = of('ws.gone', (e) => e.role === 'dealer' && e.t <= T1 + 30_000);
 const seatGone = of('ws.gone', (e) => e.role === 'seat' && e.t <= T1 + 30_000);
-const detected = max(dealerGone.map((e) => e.t)); // 마지막 딜러가 사라진 시각
+const lastDealerGone = max(dealerGone.map((e) => e.t)); // 마지막 딜러가 사라진 시각
+// 서버가 안 시각. 대회를 멈춘 기록이 있으면 그것이다 — 딜러 빠른 확인(T121)은 소켓을
+// 끊기 전에 침묵만으로 멈춘다. 없으면(수정 전 로그) 마지막 딜러가 사라진 시각이다.
+const paused = min(of('tournament.paused', (e) => e.t <= T1 + 30_000).map((e) => e.t));
+const detected = paused ?? lastDealerGone;
 const folds = of('timeout.fold');
 const rebuys = of('rebuy.timeout');
 // 셋으로 가른다: 서버가 알기 전 / 안 뒤부터 회선이 돌아올 때까지 / 돌아온 뒤(다시 붙는 중).
@@ -72,7 +76,8 @@ const rows = [
   ['서버가 끊은 딜러 소켓 / 좌석 소켓', `${dealerGone.length} / ${seatGone.length}`],
   ['그중 응답 없어 끊은 것(종료 신호 없이)', `${[...dealerGone, ...seatGone].filter((e) => e.swept).length}`],
   ['첫 딜러가 사라진 시각(끊은 뒤 초)', sec(min(dealerGone.map((e) => e.t)))],
-  ['마지막 딜러가 사라진 시각 = 서버가 안 시각', sec(detected)],
+  ['마지막 딜러가 사라진 시각', sec(lastDealerGone)],
+  ['서버가 안 시각(대회를 멈춘 시각. 기록이 없으면 위와 같다)', sec(detected)],
   ['시간 초과 폴드: 알기 전 / 안 뒤 / 이은 뒤', split(folds)],
   ['리바인 시간 초과 탈락: 알기 전 / 안 뒤 / 이은 뒤', split(rebuys)],
   ['끊기 직전 같은 길이의 폴드 / 리바인 시간 초과', `${victimBefore.filter((e) => e.name === 'timeout.fold').length} / ${victimBefore.filter((e) => e.name === 'rebuy.timeout').length}`],

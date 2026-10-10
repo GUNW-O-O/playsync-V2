@@ -161,6 +161,47 @@ describe('PlaysyncService.handleAction', () => {
     });
   });
 
+  /**
+   * 회선이 끊겨 대회를 멈추는 중(T121). 대회는 한 문장으로 멈추지만 테이블은 하나씩
+   * 멈춰 세운다 — 200테이블 실측에서 그 1초 사이에 발화한 타임아웃이 8명을 폴드시켰다.
+   * 멈춘 대회의 타임아웃은 아직 안 멈춰 세운 테이블에서도 접지 않는다.
+   */
+  describe('회선이 끊겨 멈춘 대회의 TIME_OUT (T121)', () => {
+    const linePause = () => (service as any).redis.linePause as import('src/redis/line-pause').LinePause;
+    afterEach(() => { linePause().clearAll(); });
+    const fire = () => service.handleAction('alice', TABLE, { action: ActionType.TIME_OUT }, 3);
+    const stored = async (): Promise<TableState> => JSON.parse((await redis.get(`table:state:${TABLE}`))!);
+
+    it('살아 있는 세대의 잡이어도 접지 않는다', async () => {
+      await redis.set(`table:state:${TABLE}`, JSON.stringify(makeState({ timerEpoch: 3 })));
+      linePause().markDown(TOURNAMENT);
+
+      const result = await fire();
+
+      const after = await stored();
+      expect(`반환 ${result} 폴드 ${after.players[0]!.hasFolded} 차례 ${after.currentTurnSeatIndex}`)
+        .toBe('반환 null 폴드 false 차례 0');
+    });
+
+    /** 반대 입력 — 「타임아웃을 언제나 버린다」가 위를 통과한다. */
+    it('멈추지 않은 대회에서는 그대로 접는다', async () => {
+      await redis.set(`table:state:${TABLE}`, JSON.stringify(makeState({ timerEpoch: 3 })));
+
+      await fire();
+
+      expect((await stored()).players[0]!.hasFolded).toBe(true);
+    });
+
+    it('다른 대회가 멈춘 것으로는 안 막는다', async () => {
+      await redis.set(`table:state:${TABLE}`, JSON.stringify(makeState({ timerEpoch: 3 })));
+      linePause().markDown('other-tournament');
+
+      await fire();
+
+      expect((await stored()).players[0]!.hasFolded).toBe(true);
+    });
+  });
+
   describe('비턴 액션', () => {
     it('현재 턴의 타임아웃 잡을 건드리지 않는다', async () => {
       // alice가 액션을 기다리는 중이고 큐에는 alice의 타이머가 1초 뒤로 걸려

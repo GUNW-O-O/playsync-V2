@@ -36,7 +36,9 @@ export default function SyncPanel({
   return (
     <div data-testid="sync-panel" className="border border-[var(--hairline)] bg-[var(--surface)] p-4 text-sm">
       <p className="font-semibold">
-        서버 복구 중. 태블릿 {sync.present}/{sync.required}대 연결됨
+        {/* 회선 때문에 멈춘 대회(T121). 임의로 멈추는 버튼은 없다 — 무슨 문제인지 알린다. */}
+        {sync.reason === 'lineDown' ? '대회장의 인터넷 연결이 불안정합니다.' : '서버 복구 중.'} 태블릿{' '}
+        {sync.present}/{sync.required}대 연결됨
       </p>
       <p className="mt-1 text-[var(--ink-subtle)]">
         딜러와 좌석 태블릿이 모두 다시 연결되면 대회가 자동으로 재개됩니다. 끝내 연결되지 않는 자리가 있으면 지금

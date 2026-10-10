@@ -11,10 +11,18 @@ import { z } from "zod";
  * `syncing: false`는 **서버가 `SYNCING`을 끝냈다**는 뜻이다 — `present === required`만
  * 보고 버튼을 열면, 서버가 아직 끝내지 못한 순간에 누른 재개가 거절된다.
  */
+/**
+ * 왜 멈췄나(T121). 없으면 서버 장애다. `lineDown`은 대회장의 회선이 끊겨 그 대회의
+ * 딜러가 전부 사라진 경우다. 차례가 없던 테이블은 스냅샷에 정지 표시
+ * (`resumePending`)가 없어, 대회 단위로도 실어야 그 테이블의 딜러와 상점이 원인을 본다.
+ */
+const SyncReasonSchema = z.literal("lineDown").optional();
+
 export const TournamentSyncingSchema = z.object({
   syncing: z.boolean(),
   present: z.int().min(0),
   required: z.int().min(0),
+  reason: SyncReasonSchema,
 });
 export type TournamentSyncing = z.infer<typeof TournamentSyncingSchema>;
 export const TOURNAMENT_SYNCING_EVENT = "tournamentSyncing" as const;
@@ -35,5 +43,6 @@ export const SyncStatusSchema = z.object({
       seatIndex: z.int().min(0).nullable(),
     }),
   ),
+  reason: SyncReasonSchema,
 });
 export type SyncStatus = z.infer<typeof SyncStatusSchema>;

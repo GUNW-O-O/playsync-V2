@@ -23,6 +23,20 @@ describe('SyncPanel', () => {
     expect(screen.getByText('테이블 2 · 딜러')).toBeInTheDocument();
   });
 
+  /** T121. 임의로 멈추는 버튼은 없다 — 멈췄으면 무슨 문제인지 알린다. */
+  it('회선 때문에 멈춘 대회는 서버 복구가 아니라 인터넷 연결이라고 적는다', () => {
+    const { rerender } = render(
+      <SyncPanel sync={{ syncing: true, present: 0, required: 2, missing: [], reason: 'lineDown' }} tables={tables} seatOccupants={[]} pending={false} onForce={() => {}} />,
+    );
+    expect(screen.getByTestId('sync-panel')).toHaveTextContent('대회장의 인터넷 연결이 불안정합니다. 태블릿 0/2대 연결됨');
+    expect(screen.getByTestId('sync-panel')).not.toHaveTextContent('서버 복구 중');
+
+    rerender(
+      <SyncPanel sync={{ syncing: true, present: 0, required: 2, missing: [] }} tables={tables} seatOccupants={[]} pending={false} onForce={() => {}} />,
+    );
+    expect(screen.getByTestId('sync-panel')).toHaveTextContent('서버 복구 중. 태블릿 0/2대 연결됨');
+  });
+
   /** 되돌릴 수 없는 조작이라 한 번 더 묻는다 — 첫 클릭은 확인만 연다. */
   it('지금 진행은 확인을 거쳐야 부른다', () => {
     const onForce = vi.fn();

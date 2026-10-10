@@ -88,8 +88,11 @@ export interface TableState {
   resumePending?: {
     /** 얼마나 멈췄나(ms). `RecoveryService`가 하트비트로 계산한 값이다. */
     downMs: number;
-    /** 서버 정지가 아니라 일시적인 오류로 섰다(T118). 화면 문구가 갈린다. */
-    reason?: 'transientError';
+    /**
+     * 서버 정지가 아니다. 화면 문구가 갈린다 — 일시적인 오류로 섰거나(T118),
+     * 대회장의 회선이 끊겨 그 대회의 딜러가 전부 사라졌다(T121).
+     */
+    reason?: 'transientError' | 'lineDown';
   };
   /**
    * 타이머 세대. 타임아웃 잡을 새로 등록할 때마다 1씩 오른다.

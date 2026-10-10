@@ -24,8 +24,9 @@ import {
  * - `generation` — **장애 스윕만 준다.** 쓰는 순간의 세대가 이 값과 다르면
  *   그 스윕은 낡은 것이라 아무것도 안 쓴다(`pauseTable`). 부팅에는 장애 세대
  *   개념이 없어 안 준다 — 안 주면 검사도 안 한다.
+ * - `reason` — **회선 끊김만 준다**(T121). 정지 표시에 실려 화면 문구를 가른다.
  */
-type FreezeOpts = { overwrite: boolean; generation?: number };
+type FreezeOpts = { overwrite: boolean; generation?: number; reason?: 'lineDown' };
 
 @Injectable()
 export class RecoveryService implements OnApplicationBootstrap, OnModuleDestroy {
@@ -106,6 +107,8 @@ export class RecoveryService implements OnApplicationBootstrap, OnModuleDestroy 
     // 않는 이유는 `new`로 세운 곳(시나리오 하네스)이 부팅을 부르지 않기 때문이다.
     // 한 번 부팅 전 장애로 표시되면 부팅 복구가 끝날 때까지 뒤이은 장애(`recovering`에서
     // 끊긴 것)도 같은 창에 속한다.
+    // 회선 때문에 멈춰 있던 대회도 이제부터는 서버 장애다(T121) — 서버 장애가 이긴다.
+    this.redis.linePause.clearAll();
     if (previous === 'booting') this.outageFromBoot = true;
     if (this.booting || this.outageFromBoot) return;
     try {
@@ -160,6 +163,40 @@ export class RecoveryService implements OnApplicationBootstrap, OnModuleDestroy 
     }
     // 스윕 중에 또 끊겼으면 끝내지 않는다 — 다음 `up`이 처음부터 다시 한다.
     if (outage.generation === generation) outage.markRecovered();
+  }
+
+  /**
+   * 대회장의 회선이 끊겼다(T121) — 그 대회의 딜러 소켓이 전부 사라졌다. 서버와
+   * Redis는 멀쩡하므로 **그 대회만** Redis 장애와 같은 길로 멈춘다. 푸는 길은 그대로다
+   * (n/n → `completeSync` → 딜러의 재개).
+   *
+   * 켜는 문장은 `recoverTournament` 1단계와 같다 — `markSyncing`은 전 대회를 켠다.
+   * 조건부라 이미 멈췄거나 닫힌 대회는 0행이고, 그때는 아무것도 하지 않는다.
+   *
+   * 게이트웨이가 재집계와 같은 줄 안에서 부른다(`WsGateway.pauseIfNoDealer`).
+   *
+   * @param pausedAt 마지막 딜러가 마지막으로 응답한 시각. 서버가 끊김을 아는 데
+   *   10~20초가 걸리므로 지금보다 과거다.
+   * @returns 이 호출이 멈췄으면 true
+   */
+  async pauseForLineOutage(tournamentId: string, pausedAt: Date): Promise<boolean> {
+    const { count } = await this.prisma.tournament.updateMany({
+      where: { id: tournamentId, status: TournamentStatus.ONGOING },
+      data: { status: TournamentStatus.SYNCING, pausedAt },
+    });
+    if (count !== 1) return false;
+    // 리바인을 묻던 자리부터 끊는다 — 아래 스윕이 도는 동안에도 마감은 흐른다.
+    this.redis.linePause.markDown(tournamentId);
+    try {
+      await this.freezeTournament(
+        tournamentId, Math.max(0, Date.now() - pausedAt.getTime()), { overwrite: false, reason: 'lineDown' },
+      );
+    } catch (e) {
+      // 대회는 이미 멈췄다. 테이블을 못 세운 것은 나쁘지만 딜러 명령은 `SYNCING`이 막는다.
+      this.logger.error(`회선 끊김 — 테이블을 멈춰 세우지 못했다 (tournament=${tournamentId})`, e as Error);
+    }
+    this.logger.warn(`회선 끊김 — 대회를 멈췄다 (tournament=${tournamentId})`);
+    return true;
   }
 
   /**
@@ -456,6 +493,8 @@ export class RecoveryService implements OnApplicationBootstrap, OnModuleDestroy 
       data: { status: TournamentStatus.ONGOING, pausedAt: null, pausedMs: { increment: delta } },
     });
     if (count !== 1) return false;
+    // 회선 때문에 멈췄던 대회면 그 원인도 여기서 끝난다(T121).
+    this.redis.linePause.clear(tournamentId);
 
     try {
       const blind = await this.redis.getTournamentBlind(tournamentId);
@@ -539,7 +578,7 @@ export class RecoveryService implements OnApplicationBootstrap, OnModuleDestroy 
         if (!plan) return null;
         state.timerEpoch = plan.epoch;
         state.actionDeadline = undefined;
-        state.resumePending = { downMs };
+        state.resumePending = { downMs, ...(opts.reason ? { reason: opts.reason } : {}) };
         epoch = plan.epoch;
         return state;
       });

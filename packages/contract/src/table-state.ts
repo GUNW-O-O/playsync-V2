@@ -128,7 +128,11 @@ export const TableStateSchema = z.object({
        * 수락했는데 DB가 끝내 못 받으면 탈락시키지 않고 여기로 온다. 화면은
        * 「N초 멈췄다」 대신 일시 오류라고 적는다 — 멈춘 시간이 없기 때문이다.
        */
-      reason: z.literal("transientError").optional(),
+      /**
+       * `lineDown`은 서버가 아니라 **대회장의 회선**이 끊긴 것이다(T121). 그 대회의
+       * 딜러 소켓이 전부 끊기면 서버가 대회를 멈춘다. 문구가 서버 장애와 갈린다.
+       */
+      reason: z.enum(["transientError", "lineDown"]).optional(),
     })
     .optional(),
   /**

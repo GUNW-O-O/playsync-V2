@@ -30,10 +30,10 @@ import { PlaysyncService } from 'src/playsync/playsync.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RecoveryService } from 'src/recovery/recovery.service';
 import { RedisService } from 'src/redis/redis.service';
-import { markAlive, socketPingMs, sweep } from './keepalive';
+import { dealerProbeMs, isSilent, markAlive, probe, socketPingMs, sweep } from './keepalive';
 import { RequiredTable, syncProgress, TablePresence } from './sync-progress';
 import { event, observe, timed } from 'src/metrics/stage-timer';
-import { SyncQueue, syncRecountHoldMs } from './sync-queue';
+import { dealerGoneGraceMs, SyncQueue, syncRecountHoldMs } from './sync-queue';
 import { WsIdentity, WsTicketService } from './ws-ticket.service';
 
 /**
@@ -97,6 +97,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
   }
 
   private pingTimer: ReturnType<typeof setInterval> | null = null;
+  private probeTimer: ReturnType<typeof setInterval> | null = null;
 
   /**
    * 좀비 소켓 청소를 시작한다(T96). 게이트웨이에 하트비트가 없던 동안 반만
@@ -113,15 +114,67 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     // `WsModule`을 `app.init()`하고 `close()`를 빠뜨린 스펙에서 jest가
     // 끝나지 않는다.
     this.pingTimer.unref();
+    // 딜러만 더 자주 확인한다(T121). 끊지는 않는다 — `probeDealers`.
+    this.probeTimer = setInterval(() => this.probeDealers(), dealerProbeMs());
+    this.probeTimer.unref();
   }
 
   onModuleDestroy() {
     if (this.pingTimer) clearInterval(this.pingTimer);
     this.pingTimer = null;
+    if (this.probeTimer) clearInterval(this.probeTimer);
+    this.probeTimer = null;
+    for (const timer of this.graceTimers.values()) clearTimeout(timer);
+    this.graceTimers.clear();
     // T97. 안 떼면 이 인스턴스가 공유 `RedisOutage`에 영원히 남는다 — 테스트가
     // 게이트웨이를 `new`로 여러 번 세우는 자리(M4)에서 리스너가 쌓인다.
     this.redis.outage.off('down', this.onOutageDown);
     this.redis.outage.off('recovered', this.onOutageRecovered);
+  }
+
+  /**
+   * pong을 받았다. 침묵하던 딜러가 답한 것이면(T121) 그 자리에서 다시 붙은 것으로 치고
+   * 그 대회를 다시 센다 — 소켓이 안 끊겼으니 접속 이벤트가 따로 오지 않는다.
+   */
+  private onPong(client: any) {
+    const wasSilent = isSilent(client);
+    markAlive(client);
+    if (!wasSilent) return;
+    client.probeMisses = 0;
+    if (client.role === Role.DEALER && client.tournamentId) {
+      void this.reportSync(client.tournamentId).catch(() => { /* reportSync가 이미 로그로 남긴다 */ });
+    }
+  }
+
+  /**
+   * 딜러 빠른 확인 한 틱(T121). 테이블 방의 딜러 소켓에만 ping을 보내고, **그 대회의
+   * 딜러가 전부 침묵이면** 대회를 멈춘다 — 10초 주기의 청소(`sweepSockets`)로는 회선이
+   * 끊긴 것을 10~20초 뒤에 알고, 그 사이 마감이 온 사람이 접힌다.
+   *
+   * **끊지 않는다.** 침묵한 소켓은 「없는 딜러」로만 센다(`hasDealer` · `tablePresence`).
+   * 와이파이가 몇 초 흔들린 것이면 답이 돌아오는 순간 그 소켓 그대로 이어 간다(`onPong`).
+   * 정말 죽은 소켓은 청소가 치운다.
+   */
+  probeDealers() {
+    const now = Date.now();
+    const seen = new Map<string, { anyAnswering: boolean; lastAliveAt: number }>();
+    for (const sessions of this.tableSessions.values()) {
+      for (const s of sessions) {
+        const socket = s as any;
+        if (socket.wasTableDealer !== true || socket.readyState !== WebSocket.OPEN) continue;
+        probe(socket, now);
+        const t = seen.get(socket.tournamentId) ?? { anyAnswering: false, lastAliveAt: 0 };
+        if (!isSilent(socket)) t.anyAnswering = true;
+        t.lastAliveAt = Math.max(t.lastAliveAt, socket.aliveAt ?? 0);
+        seen.set(socket.tournamentId, t);
+      }
+    }
+    for (const [tournamentId, t] of seen) {
+      // 판정은 `pauseIfNoDealer`가 다시 한다. 여기서 거르는 것은 틱마다 전 방을 또 훑지 않으려는 것뿐이다.
+      if (t.anyAnswering) continue;
+      this.lastDealerSeenAt.set(tournamentId, Math.max(this.lastDealerSeenAt.get(tournamentId) ?? 0, t.lastAliveAt));
+      void this.pauseIfNoDealer(tournamentId);
+    }
   }
 
   /** 한 틱. 두 방(대회 · 테이블)의 소켓 전부. */
@@ -273,7 +326,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
 
       // 좀비 판정의 근거(T96). 브라우저는 ping에 자동으로 pong한다.
       markAlive(client as any);
-      (client as any).on('pong', () => markAlive(client as any));
+      (client as any).on('pong', () => this.onPong(client));
 
       // 1. 대회 단위 접속 (테이블 지정 없음) — 좌석 현황(`SEAT_LIST_UPDATED`)
       //    브로드캐스트를 받는 용도다.
@@ -293,6 +346,9 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
         (client as any).tableId = tableId;
         this.addToMap(this.tableSessions, tableId, client);
         if (await timed('ws.closeIfStale', () => this.closeIfStale(client, payload))) return;
+        // 여기까지 온 딜러만 「그 대회의 딜러였다」(T121). 접속에서 거절된 소켓의 끊김이
+        // 대회를 멈추면 안 된다.
+        if (payload.role === Role.DEALER) (client as any).wasTableDealer = true;
 
         // 접속자 본인에게만 보낸다. 남이 접속했다고 테이블 전원이 같은 상태를
         // 다시 받을 이유가 없다.
@@ -410,7 +466,22 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     // 실패해도 여기서 삼키므로 처리되지 않은 거부로 새지 않는다. 로그는
     // `reportSync`의 체인이 이미 남긴다(M7) — 여기서 또 찍지 않는다.
     if (role === Role.DEALER && tournamentId) {
+      // 그 대회의 마지막 딜러였으면 회선이 끊긴 것이다(T121). 재집계보다 먼저 줄에
+      // 세운다 — 재집계는 보류 창(`SYNC_RECOUNT_HOLD_MS`)만큼 늦게 시작한다.
+      let paused: Promise<void> = Promise.resolve();
+      if ((client as any).wasTableDealer === true) {
+        const swept = (client as any).swept === true;
+        const seenAt = swept ? (client as any).aliveAt ?? Date.now() : Date.now();
+        this.lastDealerSeenAt.set(tournamentId, Math.max(this.lastDealerSeenAt.get(tournamentId) ?? 0, seenAt));
+        // **스스로 닫은 소켓만 유예를 준다.** 새로고침과 화면 이동은 몇 초 안에 다시
+        // 붙는다 — 딜러가 한 대뿐인 파이널 테이블에서 그것으로 대회가 멈추면 안 된다.
+        // 응답이 없어 끊은 소켓(회선)과 서버가 내보낸 소켓(OTP 재발급 · 기기 해제)은
+        // 돌아올 새로고침이 아니라 곧바로 본다.
+        const immediate = swept || (client as any).revokedByServer === true;
+        paused = this.pauseIfNoDealer(tournamentId, immediate ? 0 : this.dealerGoneGraceMs);
+      }
       await this.reportSync(tournamentId).catch(() => { /* reportSync가 이미 로그로 남긴다 */ });
+      await paused;
     }
 
     // 끊긴 소켓이 좌석이면 그 대회의 복귀 집계가 하나 줄었을 수 있다(T117).
@@ -697,6 +768,92 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
   }
 
   /**
+   * 그 대회의 딜러가 마지막으로 응답한 시각(T121). 딜러 소켓이 끊길 때마다 최댓값으로
+   * 적는다 — 응답이 없어 서버가 끊은 소켓은 마지막 pong, 상대가 닫은 소켓은 닫힌 지금이다.
+   * 마지막 딜러가 사라지면 이 값이 `pausedAt`이 된다. 대회가 닫히면 지운다.
+   */
+  private readonly lastDealerSeenAt = new Map<string, number>();
+  /** 줄에서 아직 시작 안 한 「딜러 0」 확인. 한꺼번에 끊긴 딜러들이 하나로 합쳐진다. */
+  private readonly pausePending = new Map<string, Promise<void>>();
+  /** 스스로 닫은 마지막 딜러를 기다리는 시간과 그 타이머(대회별 하나). */
+  private dealerGoneGraceMs = dealerGoneGraceMs();
+  private readonly graceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  /**
+   * 그 대회에 **답하고 있는** 딜러 소켓이 하나라도 있나. 빈 테이블의 딜러도 센다 — 회선이
+   * 살아 있다는 증거다. 열려 있어도 빠른 확인에 침묵한 소켓은 안 센다(`probeDealers`).
+   */
+  private hasDealer(tournamentId: string): boolean {
+    // ponytail: 전 테이블 방을 훑는다. 딜러 끊김마다 한 번이라 지금은 충분하다 —
+    // 대회가 수천이면 대회별 딜러 소켓 집합을 따로 든다.
+    for (const sessions of this.tableSessions.values()) {
+      for (const s of sessions) {
+        const socket = s as any;
+        if (
+          socket.role === Role.DEALER && socket.tournamentId === tournamentId &&
+          socket.readyState === WebSocket.OPEN && !isSilent(socket)
+        ) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * 그 대회의 딜러 소켓이 하나도 안 남았으면 대회를 멈춘다(T121). 대회장의 회선이
+   * 끊기면 서버는 소켓을 방에서 뺄 뿐이라, 차례인 사람이 30초마다 차례로 폴드됐다.
+   *
+   * **응답이 없어 끊은 소켓에는 유예가 없다.** 말없이 끊긴 소켓을 아는 데 이미 10~20초가
+   * 걸리고(`SOCKET_PING_MS`), 딜러는 끊기면 40~50초 뒤에 붙는다(`reconnect-policy.ts`).
+   * 서버가 내보낸 소켓도 같다. **스스로 닫은 소켓만 `graceMs`를 기다렸다 다시 본다** —
+   * 새로고침이면 그 안에 돌아와 있다. 유예는 줄 밖에서 센다(줄을 막으면 재집계가 선다).
+   *
+   * **재집계와 같은 줄에 서고 줄 안에서 다시 본다** — 기다리는 사이 딜러가 붙었으면
+   * 끊긴 것이 아니다. Redis 장애 중이면 그 길(`RecoveryService.onRedisDown`)이 이미 켰다.
+   * 일부러 끊긴 마지막 딜러(기기 해제 · OTP 재발급)도 같은 기준이다.
+   *
+   * 멈춘 뒤 스냅샷을 다시 방송한다 — 멈춰 세우기는 Redis에만 쓴다. 일부러 끊긴
+   * 경우에는 좌석이 붙어 있어, 안 보내면 낡은 마감 게이지를 계속 그린다.
+   */
+  private pauseIfNoDealer(tournamentId: string, graceMs = 0): Promise<void> {
+    if (this.hasDealer(tournamentId)) return Promise.resolve();
+    if (graceMs > 0) {
+      // 다시 닫히면 그때부터 다시 센다 — 연달은 새로고침의 틈에 걸리지 않게.
+      clearTimeout(this.graceTimers.get(tournamentId));
+      const timer = setTimeout(() => {
+        this.graceTimers.delete(tournamentId);
+        void this.pauseIfNoDealer(tournamentId);
+      }, graceMs);
+      timer.unref();
+      this.graceTimers.set(tournamentId, timer);
+      return Promise.resolve();
+    }
+    const pending = this.pausePending.get(tournamentId);
+    if (pending) return pending;
+    const done = this.syncQueue.enqueue(tournamentId, async () => {
+      // 시작하는 순간 합치기를 닫는다(`SyncQueue.recountLater`와 같다).
+      this.pausePending.delete(tournamentId);
+      if (!this.redis.outage.isUp() || this.hasDealer(tournamentId)) return;
+      const pausedAt = new Date(this.lastDealerSeenAt.get(tournamentId) ?? Date.now());
+      if (!(await this.recovery.pauseForLineOutage(tournamentId, pausedAt))) return;
+      event('tournament.paused', { tournament: tournamentId, pausedAt: pausedAt.getTime() });
+      const seatMaps = await this.redis.getTournamentTables(tournamentId);
+      for (const { tableId } of seatMaps) {
+        if (!this.tableSessions.has(tableId)) continue;
+        this.broadcastRenderGame(tableId, await this.redis.getSnapShot(tableId));
+      }
+    }).catch((e) => this.logger.error(`회선 끊김 판정 실패 (tournament=${tournamentId})`, e));
+    this.pausePending.set(tournamentId, done);
+    return done;
+  }
+
+  /** 회선 때문에 멈춘 대회면 그 원인(T121). 서버 장애면 키 자체를 싣지 않는다. */
+  private syncReason(tournamentId: string): { reason?: 'lineDown' } {
+    return this.redis.linePause.isDown(tournamentId) ? { reason: 'lineDown' } : {};
+  }
+
+  /**
    * 그 대회가 `SYNCING`이면 기기 복귀(딜러 + 앉은 자리)를 다시 세어 딜러들에게 알리고, n/n이면
    * 끝낸다(T96). **직접 부르지 않는다** — 항상 `reportSync`를 거쳐 대회별
    * 줄을 선다.
@@ -739,13 +896,16 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
 
     const { seatMaps, progress } = await timed('sync.measure', () => this.measureSync(tournamentId));
     let syncing = true;
+    // 끝내면 원인도 지워진다(`completeSync`) — 끝났다는 알림에는 싣지 않는다.
+    let reason = this.syncReason(tournamentId);
     if (progress.done) {
       // 진 쪽(동시 n/n)은 false다. 이긴 쪽이 알린다.
       if (!(await this.recovery.completeSync(tournamentId))) return;
       syncing = false;
+      reason = {};
     }
     const sendStart = performance.now();
-    this.sendSyncing(seatMaps, { syncing, present: progress.present, required: progress.required });
+    this.sendSyncing(seatMaps, { syncing, present: progress.present, required: progress.required, ...reason });
     observe('sync.send', performance.now() - sendStart);
     observe('sync.recount', performance.now() - recountStart);
     observe(`sync.progress.${progress.present}/${progress.required}`);
@@ -761,7 +921,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
       return SyncStatusSchema.parse({ syncing: false, present: 0, required: 0, missing: [] });
     }
     const { progress } = await this.measureSync(tournamentId);
-    return SyncStatusSchema.parse({ syncing: true, ...progress });
+    return SyncStatusSchema.parse({ syncing: true, ...progress, ...this.syncReason(tournamentId) });
   }
 
   /**
@@ -816,7 +976,8 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     for (const s of this.tableSessions.get(tableId) ?? []) {
       const socket = s as any;
       if (socket.readyState !== WebSocket.OPEN) continue;
-      if (socket.role === Role.DEALER) dealer = true;
+      // 침묵한 딜러는 돌아온 것으로 안 센다(T121) — 세면 회선이 죽은 채로 n/n이 찬다.
+      if (socket.role === Role.DEALER) dealer ||= !isSilent(socket);
       else if (typeof socket.seatIndex === 'number') seats.add(socket.seatIndex);
     }
     return { dealer, seats };
@@ -923,6 +1084,11 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
    */
   @OnEvent('TOURNAMENT_CLOSED')
   handleTournamentClosed(payload: { tournamentId: string; tableIds: string[]; status: string }) {
+    // 닫힌 대회의 회선 기록을 버린다(T121). 계약 검사보다 앞이다 — 알림이 못 나가도 지운다.
+    this.redis.linePause.clear(payload.tournamentId);
+    this.lastDealerSeenAt.delete(payload.tournamentId);
+    clearTimeout(this.graceTimers.get(payload.tournamentId));
+    this.graceTimers.delete(payload.tournamentId);
     // **계약을 태운다.** 여기 실리는 값이 그대로 화면의 문장을 고르므로,
     // 살아 있는 상태가 새어 나가면 대회가 도는 채로 「끝났습니다」가 뜬다.
     // `toWireState`와 같은 이유로 던지지 않는다 — `@OnEvent` 안의 거부는
@@ -952,6 +1118,8 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
       for (const sessions of map.values()) {
         for (const socket of sessions) {
           if (!match(socket)) continue;
+          // 서버가 내보냈다는 표시(T121) — 마지막 딜러면 유예 없이 대회를 멈춘다.
+          (socket as any).revokedByServer = true;
           try {
             socket.close(SESSION_REVOKED_CLOSE_CODE, reason);
           } catch {

@@ -11,6 +11,7 @@ import {
   isRegistrationOpenAtLevel,
 } from "src/store/session/registration";
 import { outageOf, RedisOutage } from "./outage";
+import { LinePause, linePauseOf } from "./line-pause";
 
 /**
  * pipeline을 돌리고 **하나라도 실패했으면 던진다**(T104 · T105).
@@ -34,9 +35,15 @@ async function execOrThrow(pipe: { exec(): Promise<[Error | null, unknown][] | n
 export class RedisService {
   /** Redis 장애 상태(T97). 생성자 시그니처를 늘리지 않으려고 필드로 든다. */
   readonly outage: RedisOutage;
+  /**
+   * 회선이 끊겨 멈춘 대회(T121). Redis의 성질은 아니지만 `outage`와 같은 자리에 둔다 —
+   * 서비스 생성자를 늘리지 않고, `RedisService`가 둘인 배선에서도 한 상태를 본다.
+   */
+  readonly linePause: LinePause;
 
   constructor(@Inject('REDIS_CLIENT') private readonly redis: Redis) {
     this.outage = outageOf(redis);
+    this.linePause = linePauseOf(redis);
   }
 
   private getInfoKey(id: string) {

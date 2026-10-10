@@ -325,7 +325,9 @@ export default function SeatGameClient({
         >
           {resumePending.reason === 'transientError'
             ? '일시적인 서버 오류입니다.'
-            : '서버가 멈췄다가 복구됐습니다.'}
+            : resumePending.reason === 'lineDown'
+              ? '인터넷 연결이 끊겼다가 돌아왔습니다.'
+              : '서버가 멈췄다가 복구됐습니다.'}
           {' '}딜러가 게임을 재개하기를 기다리는 중입니다.
         </div>
       )}

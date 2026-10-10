@@ -1,4 +1,4 @@
-import { SyncQueue, syncRecountHoldMs } from './sync-queue';
+import { SyncQueue, syncRecountHoldMs, dealerGoneGraceMs } from './sync-queue';
 
 /** 테스트가 직접 여는 문. 열기 전까지 그 일은 끝나지 않는다. */
 function gate() {
@@ -128,6 +128,38 @@ describe('SyncQueue 보류 창', () => {
     expect(calls).toEqual([['a'], ['b']]);
     expect(order).toEqual(['recount', 'enqueue', 'recount']);
   });
+
+  /**
+   * 보류는 재접속 몰림을 합치려는 것이지 급한 일을 세워 두려는 것이 아니다(T121). 회선이
+   * 끊겨 대회를 멈추는 일이 보류 뒤에 서면 그 1초 동안 타임아웃이 사람을 접는다 —
+   * 200테이블 실측에서 끊김마다 2~6명이었다. **순서는 그대로고 기다림만 없앤다.**
+   */
+  it('enqueue가 오면 보류를 끝내고 곧바로 재집계 → 그 일 순서로 돈다', async () => {
+    const order: string[] = [];
+    const q = new SyncQueue<string>(async () => { order.push('recount'); }, () => {}, HOLD);
+
+    const held = q.recountLater('t');
+    const urgent = q.enqueue('t', async () => { order.push('enqueue'); });
+    await jest.advanceTimersByTimeAsync(0); // 시간은 안 흘렀다
+    await Promise.all([held, urgent]);
+
+    expect(order).toEqual(['recount', 'enqueue']);
+  });
+
+  it('앞의 일이 아직 달리는 중에 온 enqueue도 그 뒤의 보류를 없앤다', async () => {
+    const order: string[] = [];
+    const g = gate();
+    const q = new SyncQueue<string>(async () => { order.push('recount'); }, () => {}, HOLD);
+
+    const head = q.enqueue('t', () => g.shut);
+    const held = q.recountLater('t');
+    const urgent = q.enqueue('t', async () => { order.push('enqueue'); });
+    g.open();
+    await jest.advanceTimersByTimeAsync(0);
+    await Promise.all([head, held, urgent]);
+
+    expect(order).toEqual(['recount', 'enqueue']);
+  });
 });
 
 describe('syncRecountHoldMs', () => {
@@ -142,5 +174,13 @@ describe('syncRecountHoldMs', () => {
   });
   it('그 밖은 기본값', () => {
     for (const v of ['abc', '-5', '1.5', ' ', '1e3', '0x10', ' 5 ']) expect(hold(v)).toBe(1000);
+  });
+});
+
+describe('dealerGoneGraceMs', () => {
+  const grace = (v: string | undefined) => dealerGoneGraceMs({ DEALER_GONE_GRACE_MS: v });
+  it('기본 10초, 음이 아닌 정수는 그대로, 그 밖은 기본값', () => {
+    expect(`${dealerGoneGraceMs({})} ${grace('')} ${grace('0')} ${grace('250')} ${grace('-5')} ${grace('abc')}`)
+      .toBe('10000 10000 0 250 10000 10000');
   });
 });
