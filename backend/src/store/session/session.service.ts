@@ -178,6 +178,21 @@ export class SessionService {
       await this.assertBlindBelongsToStore(dto.blindId, dto.storeId);
     }
 
+    // 구간표는 트랜잭션 밖에서 검증한다. 합이 100이 아닌 구간은 그 규모의
+    // 대회가 실제로 열리는 날에야 드러나는데, 그때는 이미 돈이 나간 뒤다.
+    //
+    // **안 주면 기본표다**(T81). 상금권 인원이 참가 규모를 따라가는 것이
+    // 기본 동작이어야 한다 — 고정하고 싶으면 구간 하나짜리 표를 주면 된다.
+    //
+    // **블라인드 구조보다 먼저 본다**(T125). 구조를 먼저 만들면 표가 틀려 400이
+    // 나갈 때 구조만 남고, 표를 고쳐 다시 보낸 요청이 이름 유니크에 걸려 409를 반복한다.
+    let table: PayoutTier[];
+    try {
+      table = parsePayoutTable(dto.payoutTable ?? DEFAULT_PAYOUT_TABLE);
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    }
+
     // dto.blindId(기존 구조 재사용)가 우선이고, 없을 때만 새로 만든다.
     // 이 시점 이후 blindId는 반드시 실재하는 BlindStructure를 가리킨다.
     let blindId = dto.blindId;
@@ -190,17 +205,6 @@ export class SessionService {
         }
       })
       blindId = newBlind.id;
-    }
-    // 구간표는 트랜잭션 밖에서 검증한다. 합이 100이 아닌 구간은 그 규모의
-    // 대회가 실제로 열리는 날에야 드러나는데, 그때는 이미 돈이 나간 뒤다.
-    //
-    // **안 주면 기본표다**(T81). 상금권 인원이 참가 규모를 따라가는 것이
-    // 기본 동작이어야 한다 — 고정하고 싶으면 구간 하나짜리 표를 주면 된다.
-    let table: PayoutTier[];
-    try {
-      table = parsePayoutTable(dto.payoutTable ?? DEFAULT_PAYOUT_TABLE);
-    } catch (e) {
-      throw new BadRequestException((e as Error).message);
     }
 
     // 트랜잭션 진입 전에 뽑아 둔다. bcrypt 해싱은 CPU 작업이라 트랜잭션 안에서
@@ -1692,6 +1696,16 @@ export class SessionService {
         || dto.rakePercent !== undefined
       ) {
         throw new ConflictException('이미 걷은 참가비가 있는 대회의 참가비와 시작 스택, 상점 몫은 바꿀 수 없습니다.');
+      }
+    }
+
+    // **시작한 대회의 판 규칙은 잠근다**(T125). 마감 레벨 · 블라인드 구조 · 구간표는
+    // 시작할 때 Redis 메타에 실려 돈다(`initializeGame`). 여기서 DB만 고치면 Redis를
+    // 먼저 보는 문과 DB로 다시 세는 길(복구)이 서로 다른 값을 보고, 구간표는 이미
+    // 나간 상금과 어긋난다. 시작 여부의 정본은 `startedAt`이다.
+    if (session && session.startedAt !== null) {
+      if (dto.rebuyUntil !== undefined || dto.blindId !== undefined || dto.payoutTable !== undefined) {
+        throw new ConflictException('시작한 대회의 등록 마감 레벨과 블라인드 구조, 상금 구간표는 바꿀 수 없습니다.');
       }
     }
 
