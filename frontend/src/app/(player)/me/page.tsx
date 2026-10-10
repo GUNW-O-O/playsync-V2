@@ -3,6 +3,7 @@ import { cookies } from 'next/headers';
 import { ClosedTournamentStatusSchema, SERVER_RECOVERING_MESSAGE, type TournamentStatus } from '@playsync/contract';
 import { isServerRecovering } from '@/lib/server-outage';
 import OtpReveal from './OtpReveal';
+import { STATUS_LABEL } from '@/lib/labels';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
 
@@ -59,16 +60,6 @@ async function fetchParticipations(): Promise<Participation[] | { kind: 'recover
 function yyyymmdd(iso: string): string {
   return iso.slice(0, 10);
 }
-
-// `Record`라 계약에 상태가 늘면 여기서 컴파일 에러가 난다. 함수로 가르던
-// 시절에는 새 상태(`SYNCING`)가 폴백 「종료」로 조용히 떨어졌다(T96).
-const STATUS_LABEL: Record<TournamentStatus, string> = {
-  PENDING: '시작 전',
-  ONGOING: '진행 중',
-  SYNCING: '복구 중',
-  FINISHED: '종료',
-  CANCELLED: '취소',
-};
 
 export default async function MyPage() {
   const result = await fetchParticipations();

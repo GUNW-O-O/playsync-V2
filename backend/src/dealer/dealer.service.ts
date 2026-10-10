@@ -11,6 +11,7 @@ import { verifyDealerOtp } from 'src/dealer/dealer-otp';
 import { OtpAttempts } from 'src/dealer/otp-attempts';
 import { TableEngine } from 'src/game-engine/table-engine';
 import { ActionType, GamePhase, TablePlayer, TableState } from 'src/game-engine/types';
+import { FINISHED_PLAYER_STATUSES } from 'src/store/session/player-status';
 import { Dashboard } from 'shared/types/tournamentMeta';
 import { PlaysyncService, RebuyOutcome } from 'src/playsync/playsync.service';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -438,7 +439,7 @@ export class DealerService {
             where: {
               tournamentId,
               userId: targetUserId,
-              status: { notIn: ['ELIMINATED', 'AWARDED'] },
+              status: { notIn: [...FINISHED_PLAYER_STATUSES] },
             },
             data: { status: 'ELIMINATED' }
           });

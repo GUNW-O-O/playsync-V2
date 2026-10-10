@@ -7,7 +7,7 @@ import { PrismaExceptionFilter } from './common/prisma-exception.filter';
 import { RedisOutageFilter } from './common/redis-outage.filter';
 import { DealerModule } from './dealer/dealer.module';
 import { PrismaModule } from './prisma/prisma.module';
-import { RedisModule } from './redis/redis.module';
+import { RedisModule, redisConnection } from './redis/redis.module';
 import { SessionModule } from './store/session/session.module';
 import { UserModule } from './user/user.module';
 import { PlaysyncModule } from './playsync/playsync.module';
@@ -34,13 +34,7 @@ const loadMetrics = process.env.LOAD_METRICS === '1' ? [MetricsModule] : [];
 @Module({
   imports:[
     ...loadMetrics,
-    BullModule.forRoot({
-      connection : {
-        host : process.env.REDIS_HOST,
-        port: Number(process.env.REDIS_PORT),
-        password: process.env.REDIS_PASSWORD,
-      }
-    }),
+    BullModule.forRoot({ connection: redisConnection() }),
     // 저장소를 따로 주지 않아 인메모리다. 대회 하나가 한 프로세스라는 이
     // 리포의 전제(B9 "하지 않는다")와 같은 자리다 — 서버를 늘리면 카운터도
     // 프로세스마다 갈라진다.

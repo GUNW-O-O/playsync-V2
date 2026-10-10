@@ -1,11 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import ReturnToWaiting from './ReturnToWaiting';
 import type { ClosedTournamentStatus } from '@playsync/contract';
-
-/** 좌석의 `EliminatedOverlay`와 같은 값을 쓴다. 같은 종류의 기다림이다. */
-const COUNTDOWN_SECONDS = 7;
 
 /**
  * 대회가 닫혔을 때 단말을 덮는다. **딜러 태블릿과 좌석 태블릿이 같이 쓴다.**
@@ -44,8 +40,6 @@ export default function TournamentClosedOverlay({
   storeId?: string;
   terminal: 'dealer' | 'seat';
 }) {
-  const router = useRouter();
-  const [secondsLeft, setSecondsLeft] = useState(COUNTDOWN_SECONDS);
 
   /*
     **갈 곳을 모르면 가지 않는다.** `EliminatedOverlay`와 같은 판단이다 —
@@ -59,17 +53,6 @@ export default function TournamentClosedOverlay({
   const waitingUrl = storeId
     ? `${terminal === 'dealer' ? '/dealer' : '/table'}?store=${storeId}`
     : null;
-
-  useEffect(() => {
-    if (!waitingUrl) return;
-    if (secondsLeft <= 0) {
-      router.push(waitingUrl);
-      return;
-    }
-    const timer = setTimeout(() => setSecondsLeft((s) => s - 1), 1000);
-    return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [secondsLeft, waitingUrl]);
 
   /*
     **종료와 중단은 다른 문장이다.**
@@ -120,25 +103,7 @@ export default function TournamentClosedOverlay({
         </p>
 
         {waitingUrl ? (
-          <>
-            <div className="mt-4 h-1 bg-tb-line">
-              <div
-                className="h-full bg-tb-act transition-[width] duration-1000 ease-linear"
-                style={{ width: `${(secondsLeft / COUNTDOWN_SECONDS) * 100}%` }}
-              />
-            </div>
-            <div className="mt-2 text-xs text-tb-sub">
-              {secondsLeft}초 뒤 대기 화면으로 돌아갑니다
-            </div>
-
-            <button
-              type="button"
-              onClick={() => router.push(waitingUrl)}
-              className="mt-5 w-full border border-tb-line py-2.5 text-sm text-tb-muted"
-            >
-              지금 돌아가기
-            </button>
-          </>
+          <ReturnToWaiting waitingUrl={waitingUrl} />
         ) : (
           // 돌아갈 주소를 못 구했다. 이 화면을 치우는 것은 이제 사람의 일이다.
           <div className="mt-4 text-xs text-tb-sub">

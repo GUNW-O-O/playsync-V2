@@ -151,7 +151,7 @@ export interface SidePot {
 }
 
 /** 좌석 수. 한 테이블 아홉 자리로 고정이다. */
-const SEAT_COUNT = 9;
+export const SEAT_COUNT = 9;
 
 /**
  * 아무도 앉지 않은 테이블의 상태.

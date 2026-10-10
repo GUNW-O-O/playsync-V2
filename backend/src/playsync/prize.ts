@@ -10,6 +10,7 @@
  */
 
 import { BadRequestException } from '@nestjs/common';
+import { FINISHED_PLAYER_STATUSES } from '../store/session/player-status';
 
 export interface PrizePayout {
   /** 등수. 1부터 연속해야 한다. */
@@ -137,7 +138,7 @@ export async function awardPrize(
       where: {
         tournamentId,
         userId,
-        status: { notIn: ['ELIMINATED', 'AWARDED'] },
+        status: { notIn: [...FINISHED_PLAYER_STATUSES] },
       },
       data: {
         finalPlace: place,

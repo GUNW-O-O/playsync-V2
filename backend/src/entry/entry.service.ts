@@ -17,6 +17,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
 import { mirrorAfterCommit } from 'src/redis/mirror';
 import { isClosedTournament } from 'src/store/session/tournament-status';
+import { isFinishedParticipant } from 'src/store/session/player-status';
 
 /** 좌석을 확정할 때 필요한 것만 추린 값. 조회 결과를 그대로 끌고 다니지 않는다. */
 type Claimant = {
@@ -66,10 +67,7 @@ export class EntryService {
     if (isClosedTournament(participation.tournament.status)) {
       throw new ForbiddenException('닫힌 대회입니다.');
     }
-    if (
-      participation.status === PlayerStatus.ELIMINATED ||
-      participation.status === PlayerStatus.AWARDED
-    ) {
+    if (isFinishedParticipant(participation.status)) {
       throw new ConflictException('이미 끝난 참가입니다.');
     }
 

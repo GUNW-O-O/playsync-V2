@@ -7,6 +7,7 @@ import { buildTournamentMeta } from 'src/store/session/tournament-meta';
 import { LIVE_TOURNAMENT_STATUSES } from 'src/store/session/tournament-status';
 import { deriveAnteAmount } from 'shared/util/util';
 import { planPause } from 'src/playsync/turn-clock';
+import { SEAT_COUNT } from 'src/game-engine/types';
 // 엔진의 좌석 타입과 Prisma 모델 이름이 둘 다 `TablePlayer`다. 이 파일은
 // 양쪽을 다 쓰므로 import에서 가른다.
 import {
@@ -655,7 +656,7 @@ export class RecoveryService implements OnApplicationBootstrap, OnModuleDestroy 
     if (!blind) throw new Error(`블라인드 정보가 없다 (tournament=${tournamentId})`);
     const level = blind.blindStructure[blind.currentBlindLv];
 
-    const players: (SeatPlayer | null)[] = Array(9).fill(null);
+    const players: (SeatPlayer | null)[] = Array(SEAT_COUNT).fill(null);
     const seated: number[] = [];
     for (const p of table.tablePlayers) {
       const stack = stackOf.get(p.userId);

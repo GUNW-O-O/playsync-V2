@@ -5,12 +5,13 @@ import { PlayerAction, SERVER_RECOVERING_MESSAGE } from '@playsync/contract';
 import Felt from '@/component/felt/Felt';
 import { useTableSocket, NOT_SENT_ERROR } from '@/lib/use-table-socket';
 import ReconnectOverlay from '../../ReconnectOverlay';
-import { TableState, TournamentClosedSchema, type ClosedTournamentStatus } from '@playsync/contract';
+import { RebuyPromptSchema, TableState, TournamentClosedSchema, type ClosedTournamentStatus } from '@playsync/contract';
 import SeatActionPanel from './SeatActionPanel';
 import RebuyOverlay, { type RebuyPrompt } from './RebuyOverlay';
 import EliminatedOverlay, { type ExitReason } from './EliminatedOverlay';
 import SessionRevokedOverlay from '../../SessionRevokedOverlay';
 import TournamentClosedOverlay from '@/component/TournamentClosedOverlay';
+import { PHASE_LABEL } from '@/lib/labels';
 
 // 서버·소켓이 문구를 안 줄 때의 최후 안내. WS 배선(티켓 요청·정리·배너)은
 // 옛 GameClient에서 그대로 옮겨 왔다 — T24가 세운 규칙이고, 액세스 토큰이
@@ -32,17 +33,6 @@ const REBUY_WAIT_DEALER = '딜러가 게임을 재개하면 다시 묻습니다.
  * 자리가 없다는 것만 안다.
  */
 const REBUY_NO_WAITER = '리바인 응답을 받을 수 없는 상태입니다. 잠시 기다려 주세요.';
-
-/** 좌석 화면 상단 바 · 사이드 패널에 쓰는 페이즈 한글 이름. */
-const PHASE_LABEL: Record<number, string> = {
-  0: '대기',
-  1: '프리플랍',
-  2: '플랍',
-  3: '턴',
-  4: '리버',
-  5: '쇼다운',
-  6: '핸드 종료',
-};
 
 /**
  * 좌석에 앉은 참가자가 앉아 있는 동안 보는 유일한 화면(와이어프레임
@@ -163,12 +153,18 @@ export default function SeatGameClient({
           console.error('tournamentClosed 계약 위반 — 무시한다.', parsed.error);
         }
       } else if (serverEvent === 'REBUY_PROMPT') {
+        // **계약을 읽는다.** 마감이 없는 프롬프트는 그릴 수 없다 — 버린다.
+        const prompt = RebuyPromptSchema.safeParse(data);
+        if (!prompt.success) {
+          console.error('REBUY_PROMPT 계약 위반 — 무시한다.', prompt.error);
+          return;
+        }
         setRebuyError(null);
         // **거절로 그린 탈락 화면을 걷는다**(T100). 장애 알림이 오기 직전에
         // 거절을 눌렀는데 서버가 이미 끊겨 받지 않았으면, 딜러가 판을 다시 열 때
         // 새 프롬프트가 온다. 좌석 소멸로 난 진짜 탈락 뒤에는 프롬프트가 오지 않는다.
         setExitReason((prev) => (prev === 'eliminated' ? null : prev));
-        updateRebuyData(data as RebuyPrompt);
+        updateRebuyData(prompt.data);
       } else if (serverEvent === 'error') {
         // 거절은 브로드캐스트가 아니라 **누른 사람에게만** 오는 ack다
         // (`ws.gateway.ts`의 `handlePlayerAction`). 안 읽으면 참가자는

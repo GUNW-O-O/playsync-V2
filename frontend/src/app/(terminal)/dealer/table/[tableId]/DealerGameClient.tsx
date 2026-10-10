@@ -16,6 +16,7 @@ import {
 import WinnerOverlay, { type WinnerCandidate } from './WinnerOverlay';
 import SessionRevokedOverlay from '../../../SessionRevokedOverlay';
 import TournamentClosedOverlay from '@/component/TournamentClosedOverlay';
+import { PHASE_LABEL } from '@/lib/labels';
 
 // 서버·소켓이 문구를 안 줄 때의 최후 안내. WS 배선(티켓 요청·정리·배너)은
 // `SeatGameClient`에서 그대로 옮겨 왔다 — T24가 세운 규칙이고, 액세스 토큰이
@@ -24,17 +25,6 @@ import TournamentClosedOverlay from '@/component/TournamentClosedOverlay';
 // 사람이 할 일을 먼저 적으면 가만히 두면 낫는 상황에 손을 대게 만든다. 끝내
 // 실패했을 때의 안내는 `useTableSocket`이 그 시점에 따로 내놓는다.
 const DEFAULT_CONNECTION_ERROR = '연결이 끊어졌습니다.';
-
-/** 딜러 화면 상단 바 · 상태 배지에 쓰는 페이즈 한글 이름. */
-const PHASE_LABEL: Record<number, string> = {
-  0: '대기',
-  1: '프리플랍',
-  2: '플랍',
-  3: '턴',
-  4: '리버',
-  5: '쇼다운',
-  6: '핸드 종료',
-};
 
 type KickTarget = { seatIndex: number; id: string; nickname: string };
 

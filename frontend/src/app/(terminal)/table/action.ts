@@ -4,21 +4,13 @@ import { cookies } from 'next/headers';
 import { DEVICE_TOKEN_COOKIE, DEVICE_UNREGISTERED_MESSAGE } from '@playsync/contract';
 import { deviceHeader } from '@/lib/device-token';
 import { cookieMaxAgeFromToken } from '@/lib/token-cookie';
+import { failureMessage as messageOf } from '@/lib/failure-message';
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
 const DEFAULT_ENTER_ERROR = 'OTP를 확인하세요.';
 
-/**
- * 실패 응답에서 안내 문구를 꺼낸다. `dealer/action.ts`의 `failureMessage`와
- * 같은 모양이다 — NestJS 예외 필터의 본문은 `{ statusCode, message, error }`이고
- * `message`는 예외에서 온 문자열이거나 ValidationPipe에서 온 문자열 배열이다.
- */
-function failureMessage(body: unknown): string {
-  const message = (body as { message?: unknown } | null)?.message;
-  if (typeof message === 'string' && message.length > 0) return message;
-  if (Array.isArray(message) && message.length > 0) return message.join(' ');
-  return DEFAULT_ENTER_ERROR;
-}
+/** 이 파일의 기본 문구로 묶은 것. 꺼내는 규칙은 `lib/failure-message.ts`에 있다. */
+const failureMessage = (body: unknown) => messageOf(body, DEFAULT_ENTER_ERROR);
 
 /**
  * 참가 OTP로 좌석을 확정하고 좌석 토큰을 httpOnly 쿠키로 심는다.
