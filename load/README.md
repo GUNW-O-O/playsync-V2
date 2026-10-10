@@ -27,11 +27,19 @@ results/           실행 결과 (git에 안 들어간다)
 
 ```bash
 npm run load:up        # 백엔드를 1코어 컨테이너로 (첫 실행은 빌드 몇 분)
-npm run seed:load      # 무대를 세운다 — 전부 지우고 다시 만든다
+npm run seed:load      # 무대를 세운다 — 전부 지우고 다시 만든다 (아래 env가 있어야 돈다)
 npm run load:smoke     # 스모크
 npm run load:ramp-b    # 성장 램프 — 대회 하나 안에서 테이블을 늘린다
 npm run load:ramp-a    # 성장 램프 — 6테이블마다 다음 대회로
 npm run load:down      # 정리
+```
+
+**시드는 부하 무대의 주소를 받아야 돈다.** DB 이름이 `playsync_test`가 아니거나
+`REDIS_PORT`가 없으면 아무것도 건드리기 전에 멈춘다 — 전부 지우는 스크립트라, 셸에 남은
+개발용 값으로 개발 DB를 비우지 않게 한다(`seed-load.ts`의 `main`).
+
+```bash
+export DATABASE_URL="postgresql://test:test@127.0.0.1:5433/playsync_test" REDIS_HOST=127.0.0.1 REDIS_PORT=6380 REDIS_PASSWORD=test
 ```
 
 **Git Bash에서 compose를 직접 부르면 `MSYS_NO_PATHCONV=1`이 필요하다.** 없으면
