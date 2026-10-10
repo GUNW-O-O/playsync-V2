@@ -2139,7 +2139,7 @@ describe('WsGateway 인바운드 경계', () => {
         userId: 'alice',
         tableId: TABLE,
         deadline,
-        userPoints: 500,
+        userPoints: { points: 500 },
         entryFee: 1000,
         tournamentName: '대회-1',
       });
@@ -2201,7 +2201,7 @@ describe('WsGateway 인바운드 경계', () => {
       expect(promptIdx).toBeGreaterThan(renderIdx);
       expect(events(seat, 'REBUY_PROMPT').at(-1)?.data).toEqual({
         deadline,
-        userPoints: 500,
+        userPoints: { points: 500 },
         entryFee: 1000,
         tournamentName: '대회-1',
       });

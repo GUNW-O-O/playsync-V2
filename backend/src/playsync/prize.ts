@@ -10,7 +10,7 @@
  */
 
 import { BadRequestException } from '@nestjs/common';
-import { FINISHED_PLAYER_STATUSES } from 'src/store/session/player-status';
+import { FINISHED_PLAYER_STATUSES } from '../store/session/player-status';
 
 export interface PrizePayout {
   /** 등수. 1부터 연속해야 한다. */
