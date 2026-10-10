@@ -331,6 +331,35 @@ describe('탈락 처리 멱등성', () => {
         .toBe('redis 2 / db 2');
     });
 
+    /**
+     * T123 ③. 킥은 등수도 상금도 주지 않고 인원만 줄인다. 상금권에서 그러면 다음
+     * 파산자가 한 등수를 건너뛰어 **그 등수의 상금이 영영 안 나가고**, 종료의
+     * 장부 대조가 안 맞아 대회를 중단으로만 닫을 수 있었다. 파이널 테이블 게이트는
+     * 테이블이 둘 이상이면 안 걸린다 — 상금권 자체를 본다.
+     *
+     * 위 검사들이 반대 입력이다: 같은 3명이 상금권 밖(엔트리 3 · 1자리)이면 킥이 된다.
+     */
+    it('남은 인원이 상금권이면 킥을 거절하고 아무것도 바꾸지 않는다', async () => {
+      // 3위까지 주는 표. 남은 셋이 전부 상금권이다(이 시드의 표는 비어 있다).
+      await prisma.tournament.update({
+        where: { id: TOURNAMENT },
+        data: {
+          totalBuyinAmount: 3_000,
+          payoutTable: [{ minEntries: 0, payouts: [
+            { place: 1, percent: 50 }, { place: 2, percent: 30 }, { place: 3, percent: 20 },
+          ] }],
+        },
+      });
+
+      await expect(dealer.handleDealerAction(TOURNAMENT, TABLE, 'carol', 'KICK'))
+        .rejects.toThrow('상금권에서는 내보낼 수 없습니다');
+
+      const row = await prisma.tournamentParticipation.findUniqueOrThrow({
+        where: { tournamentId_userId: { tournamentId: TOURNAMENT, userId: 'carol' } },
+      });
+      expect(`carol ${row.status} / 인원 ${await activePlayersInDb()}`).toBe('carol PLAYING / 인원 3');
+    });
+
     it('두 번 킥해도 Redis 인원은 한 번만 준다 — 그 사이 어긋났어도', async () => {
       await dealer.handleDealerAction(TOURNAMENT, TABLE, 'carol', 'KICK');
       await redis.hset(infoKey, 'activePlayer', 9); // 그 사이 누가 어긋뜨렸다

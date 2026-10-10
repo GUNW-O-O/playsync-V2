@@ -701,6 +701,15 @@ export class PlaysyncService {
       // 마지막 한 자리의 상금이 앞의 자리들과 어긋나지 않는다.
       const payouts = payoutsForRaw(entryCountOf(totalBuyinAmount, entryFee), payoutTable);
 
+      // **우승 상금과 함께 등록을 닫는다**(T123). 대회는 상점이 「종료」를 누를 때까지
+      // `ONGOING`이라, 마감 레벨 전에 끝났으면 그 사이 참가비를 받는다 — 상금 계산이
+      // 끝난 장부에 얹혀 종료가 409로 막힌다. 같은 트랜잭션이라 참가의 장부
+      // 갱신(`PaymentService.joinSession`)과 이 행에서 줄을 선다.
+      await tx.tournament.updateMany({
+        where: { id: tournamentId, isRegistrationOpen: true },
+        data: { isRegistrationOpen: false },
+      });
+
       await awardPrize(
         tx,
         tournamentId,

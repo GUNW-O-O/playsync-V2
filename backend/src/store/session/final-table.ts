@@ -59,3 +59,6 @@ export function isFinalTable({ isRegistrationOpen, tableCount }: FinalTableSourc
 export const FINAL_TABLE_DEALER_BLOCKED =
   '파이널 테이블에서는 딜러가 대신 폴드하거나 내보낼 수 없습니다. ' +
   '자리를 비운 사람은 제한시간이 지나면 자동으로 폴드됩니다.';
+
+/** 상금권에 든 뒤의 킥을 거절할 때(T123, `DealerService.handleDealerAction`). */
+export const PRIZE_ZONE_KICK_BLOCKED = '상금권에서는 내보낼 수 없습니다. 자리를 비운 사람은 시간 초과로 폴드됩니다.';

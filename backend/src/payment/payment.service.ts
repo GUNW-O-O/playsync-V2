@@ -305,8 +305,11 @@ export class PaymentService {
           // 트랜잭션 **밖**이라, 그 검사와 이 UPDATE 사이에 대회가 닫히면
           // 참가비와 참가 행이 죽은 대회에 들어간다. 조건이 걸리면 그 둘도
           // 함께 되돌아간다 — 같은 트랜잭션이다.
+          // **등록이 닫힌 대회에도 쓰지 않는다**(T123). 등록 판정
+          // (`assertRegistrationOpen`)도 트랜잭션 밖이고, 컬럼은 한 번 닫히면 다시
+          // 열리지 않는다 — 우승 상금이 나가며 닫힌 경우가 여기서 걸린다.
           await tx.tournament.update({
-            where: { id: dto.tournamentId, status: NOT_CLOSED_TOURNAMENT_FILTER },
+            where: { id: dto.tournamentId, status: NOT_CLOSED_TOURNAMENT_FILTER, isRegistrationOpen: true },
             data: {
               totalPlayers: { increment: 1 },
               // `activePlayers`는 **여기서 올리지 않는다**(T55). 결제는 "돈을
@@ -361,8 +364,14 @@ export class PaymentService {
         // 걸린 것이고, 재시도해도 같은 결과다(마감은 단조다). 그대로 올리면
         // P2025가 500이 되어 화면에 원인 없는 실패로 보인다 — 위에서 이미
         // 닫힌 대회를 거절할 때 쓰는 문구와 같은 문구를 준다.
+        // 등록만 닫힌 것이면 그쪽 문구를 준다 — 대회는 살아 있다.
         if (err.code === 'P2025') {
-          throw new ConflictException('이미 끝난 대회입니다.');
+          const now = await this.prismaService.tournament.findUnique({
+            where: { id: dto.tournamentId }, select: { status: true },
+          });
+          throw new ConflictException(
+            now && !isClosedTournament(now.status) ? '등록이 마감된 대회입니다.' : '이미 끝난 대회입니다.',
+          );
         }
 
         throw e;
