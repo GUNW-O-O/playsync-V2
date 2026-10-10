@@ -10,11 +10,15 @@ lib/windows.js     지연 측정 창 큐. **순수 모듈이라 테스트가 붙
 lib/windows.spec.js  `npm test -w`가 아니라 `cd load && npm test`
 lib/door.js        로그인 문 판정(통과·429·그 밖의 실패). **순수 모듈**
 lib/door.spec.js   위와 같은 자리에서 `cd load && npm test`
+lib/reconnect-backoff.js  재접속이 상한에 걸렸을 때 언제 다시 두드릴지. **순수 모듈**, 스펙이 옆에 있다
+lib/reconnect-burst.js    재접속 폭발에서 소켓이 언제 다시 열리나. **순수 모듈**, 스펙이 옆에 있다
 lib/monitor.js     서버 지표를 주기적으로 읽어 시계열로. 경고·붕괴 판정
 lib/summary.js     결과를 results/에 파일로
 scenarios/smoke.js 테이블 하나로 "봇이 규칙대로 도는가"만 본다
 scenarios/ramp.js  성장 램프. 테이블을 계속 붙이며 정원과 피크 내성을 본다
 scenarios/door.js  로그인 문. 인증 상한이 실제로 몇 개에서 닫히는가
+kill-run.sh        백엔드를 죽였다 살리는 재접속 측정
+outage-run.sh      대회 하나의 회선만 끊는 측정. 표는 outage-report.mjs
 results/           실행 결과 (git에 안 들어간다)
 .load-seed.json    시드가 떨어뜨리는 무대 좌표 (git에 안 들어간다)
 ```
@@ -43,7 +47,8 @@ npm run load:down      # 정리
 docker compose -f backend/docker-compose.test.yml --profile load --profile k6   run --rm k6 run -e LOAD_DECLINE_RATIO=0.1 /load/scenarios/ramp.js
 ```
 
-하네스에 붙은 유일한 자동 검증은 창 큐의 단위 테스트다. 인프라가 필요 없다.
+하네스에 붙은 자동 검증은 순수 모듈 넷(창 큐 · 문 판정 · 재접속 간격 · 재접속 폭발)의
+단위 테스트뿐이다. 인프라가 필요 없다.
 
 ```bash
 cd load && npm test    # node --test. 개수는 CLAUDE.md 기준선
@@ -395,7 +400,7 @@ POST /dealer/auth              bcrypt.compare — 테이블마다 한 번
 `signups` 카운터에 남는다.
 
 **신규 가입 봇도 참가비를 낼 수 있어야 한다.** 가입은 포인트를 주지 않고
-(`User.points @default(0)`) 충전 경로도 없어서, 그대로 두면
+(`User.points @default(0)`) 제품에는 충전 경로도 없어서(`MOCK_PAYMENT` 없이는), 그대로 두면
 `PaymentService.joinSession`의 `user.points < session.entryFee` 게이트가 신규
 가입 봇을 409로 막고 `lib/api.js`의 `must()`가 VU를 중단시킨다. 실 PG 연동
 계획이 없는 지금 일반 가입에 기본으로 포인트를 얹을 수는 없다 — 결제 없이
@@ -452,7 +457,7 @@ POST /dealer/auth              bcrypt.compare — 테이블마다 한 번
 **자리 비움과 지각은 없으면 안 되는 경로다.** 봇이 언제나 30초 안에 누르면
 `TIME_OUT` 잡이 한 번도 돌지 않는다 — 그 경로는 BullMQ 큐 → 락 → 스냅샷 쓰기 →
 브로드캐스트를 전부 쓰는 진짜 부하이고, 실제 대회에는 자리를 비운 사람이 늘
-있다. 지각은 **마감 시각 판정**(`playsync.service.ts:86` — "판정 기준은 요청
+있다. 지각은 **마감 시각 판정**(`PlaysyncService.handleAction`의 `isExpired` — "판정 기준은 요청
 도착 순서가 아니라 마감 시각이다")을 밟는 유일한 경로다.
 
 **핸드 사이에 팟을 미는 시간은 없다.** 칩이 디지털이라 정산과 지급을 서버가
@@ -485,7 +490,7 @@ POST /dealer/auth              bcrypt.compare — 테이블마다 한 번
 
 봇은 처음에 콜만 했고 딜러는 폴드 안 한 **전원**을 승자로 넣었다(보드 하이).
 그러면 팟이 낸 만큼 되돌아와 **탈락자가 한 명도 안 나오고**, `resolveWinners`의
-리바인 분기(`dealer.service.ts:309`)가 실행 내내 한 번도 돌지 않는다. 부하의
+리바인 분기(`DealerService.askRebuys`)가 실행 내내 한 번도 돌지 않는다. 부하의
 한 갈래(리바인 · 탈락 · 사이드팟)가 통째로 비어 있었다.
 
 | | 기본값 | 왜 필요한가 |
@@ -498,7 +503,7 @@ POST /dealer/auth              bcrypt.compare — 테이블마다 한 번
 
 **합법인 것 중에서만 고른다.** 불법 액션은 엔진이 거절하는데, 그 거절이 부하에
 섞이면 재는 것이 게임이 아니라 에러 경로가 된다. 레이즈의 `amount`는 목표
-**총** 베팅액이고 최소 레이즈 규칙이 없다 — 스택을 넘으면 `executeBet`이 잘라
+**총** 베팅액이고 최소 레이즈 폭(`lastRaiseSize`)을 지켜 고른다 — 스택을 넘으면 `executeBet`이 잘라
 올인이 되고, 그 자리가 사이드팟을 만든다.
 
 리바인 수락의 대가는 `processRebuy`가 락 **밖에서** 최대 15초 기다리는 동안
@@ -766,7 +771,7 @@ my_action_client_ms = 받은 시각   - serverTime         선과 측정기가 �
 단계 태그(`step`)가 붙으므로 원시 파일에서 "테이블 12개 구간의 lag"처럼 갈라
 볼 수 있다.
 
-## 실측이 잡은 것 셋
+## 실측이 잡은 것
 
 봇을 짜면서 나온 것들이고, 전부 처음에는 조용히 잘못된 수치를 냈다.
 
@@ -784,8 +789,8 @@ my_action_client_ms = 받은 시각   - serverTime         선과 측정기가 �
   끼면, 예약된 `setTimeout`이 닫힌 소켓에 `send`를 불러 `InvalidStateError`로
   VU가 통째로 죽는다. 버린 소켓에는 표시를 달아 예약 발사·수신·종료 판정을 전부
   건너뛴다 — 표시가 없으면 우리가 끊은 것이 `socket_errors`로 잡히기도 한다.
-- **`BlindStructure.name`이 전역 유니크다**(상점 범위가 아니다). 상점을 여럿
-  세우면서 드러났다.
+- **`BlindStructure.name`이 전역 유니크였다.** 상점을 여럿 세우면서 드러났고,
+  지금은 상점 범위다(`@@unique([storeId, name])`).
 - **죽은 소켓 하나가 지연 지표를 통째로 부풀린다.** 창 큐를 "소켓 열 개가 다
   본 창"에서 걷어내는데, 하나가 죽으면 그 창이 영영 안 채워져 큐 앞에
   눌러앉고 뒤에 오는 메시지가 점점 더 오래된 창에 붙는다. 램프 B 첫 실행이
@@ -815,11 +820,11 @@ my_action_client_ms = 받은 시각   - serverTime         선과 측정기가 �
   아무도 창을 열지 않은 채 renderGame이 나가고, 그것이 열려 있는 창에 붙으면
   그 창의 진짜 응답은 갈 곳을 잃는다. 봉투의 `serverTime`이 창을 연 시각보다
   앞서면 그 창의 응답일 수 없으므로 짝짓지 않는다(`stale_broadcasts`).
-- **JWT가 1시간이라 램프가 그보다 오래 돌면 토큰이 죽는다**(`auth.module.ts:25`).
-  `setup()`이 받은 상점 토큰을 VU에 물려주면 64분째부터 새 테이블이 전부 401로
-  거절된다 — 실제로 그렇게 한 실행의 위쪽 절반이 무의미해졌다. 상점 토큰은 VU가
-  자기가 붙는 시점에 새로 받는다. 좌석 토큰도 같은 수명이므로 **재접속 폭발을
-  실행 시작 뒤 1시간 넘는 지점에 두지 않는다.**
+- **토큰 수명보다 오래 도는 램프는 토큰이 죽는다.** 전부 1시간이던 때 `setup()`이
+  받은 상점 토큰을 VU에 물려줬더니 64분째부터 새 테이블이 전부 401로 거절됐다 —
+  그 실행의 위쪽 절반이 무의미해졌다. 그래서 상점 토큰은 VU가 자기가 붙는 시점에
+  새로 받는다. 지금 수명은 상점 · 딜러 · 좌석 12시간, 나머지 1시간이다
+  (`backend/src/auth/token-ttl.ts`의 `tokenTtl`).
 - **매니페스트는 `SharedArray`로 읽는다.** `JSON.parse(open(...))`은 init
   컨텍스트라 **VU마다** 돈다. 42KB × 660 VU에서 k6가 코어 19개를 먹었고,
   호스트가 포화되자 백엔드의 `cpus: 1`이 상한일 뿐 하한이 아니라서 서버가

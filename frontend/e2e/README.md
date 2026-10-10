@@ -17,9 +17,9 @@
 ```bash
 cd backend && docker compose up -d   # 무대를 깐다 (DB를 지우고 다시 만든다)
 npm run test:e2e                     # 화면 회귀. 개발 서버는 떠 있으면 재사용한다
-npm run demo                         # 데모 촬영. 시드 → 프론트 빌드 → 장면 다섯
+npm run demo                         # 데모 촬영. 시드 → 프론트 빌드 → 장면 여섯
 npm run demo:settlement              # 정산 촬영. 마무리마다 시드를 다시 깔고 다시 돈다
-npm run assets                       # 장면 1~5 촬영본을 자르고 합쳐 img/ 로
+npm run assets                       # 데모 촬영본을 자르고 합쳐 img/ 로
 npm run assets:settlement            # 정산 촬영을 자른다. 셋이 다 있어야 돈다
 ```
 
@@ -99,8 +99,8 @@ const board = await stage('scoreboard', '전광판');
 ## 카메라 밖의 손
 
 `fixtures/backstage.ts`에 있는 것은 **화면 없이 일어난다고 선언한 동작**이다.
-로그인(토큰 발급), 착석(`POST /tournaments/:id/enter`), 테이블 상태 조회, 칩
-총량 계산 넷이다.
+로그인(토큰 발급) · 기기 토큰, 착석(`POST /tournaments/:id/enter`), 테이블 상태와
+전광판 조회, 칩 총량 계산, 그리고 장면 6의 백엔드 죽이기 · 살리기다.
 
 칩 총량은 **스택의 합 + 팟**이고, 계산은 `backend/src/scenario/harness.ts`의
 같은 이름 함수와 맞춘다. 촬영이 보는 불변식과 시나리오 테스트가 보는 불변식이
@@ -128,9 +128,9 @@ const board = await stage('scoreboard', '전광판');
 
 빈 본문 200은 목으로는 확인할 수 없다 — 목은 항상 무언가를 돌려주기 때문이다.
 
-## 데모는 장면 다섯이 **테스트 하나**다
+## 데모는 장면 여섯이 **테스트 하나**다
 
-`demo/tournament.spec.ts` 하나가 결제부터 테이블 합치기까지 이어서 돈다.
+`demo/tournament.spec.ts` 하나가 결제부터 테이블 합치기, 서버 복구까지 이어서 돈다.
 나눌 수가 없어서다 — **좌석이 컨텍스트에 매여 있다.** 자리에 앉으면 좌석
 토큰이 그 태블릿의 쿠키로 심기고, 테스트가 끝나 컨텍스트가 닫히면 새 컨텍스트는
 그 자리를 다시 잡을 수 없다(이미 사람이 앉아 있어 대기 화면의 그 자리가 점선으로
@@ -143,6 +143,7 @@ const board = await stage('scoreboard', '전광판');
 | 3 | 올인 → 사이드팟 두 층 → **딜러가 1등만 찍으면 거부** | `allin-sidepot` |
 | 4 | 리바인 거절 → 탈락 → 폰에서 순위 | `elimination-rebuy` |
 | 5 | 좌석 해제 → 옮겨 앉기 → 빈 테이블 닫기 | `table-move` |
+| 6 | 판 도중 백엔드를 죽였다 살린다 → 태블릿이 다시 붙는다 → 상점이 안 돌아온 자리를 연다 → 딜러가 재개 | `server-recovery` · `pause-resume` |
 
 **휴식을 기다리지 않는다.** `releaseSeats`가 요구하는 것은 `GamePhase.WAITING`
 뿐이고(T29), 핸드가 정산되면 테이블이 자연히 그 상태로 돌아온다. 다음 핸드를
@@ -262,7 +263,7 @@ const board = await stage('scoreboard', '전광판');
 파이널 테이블 판정이 `!isRegistrationOpen && tableCount === 1`이라(T77),
 **마감 전에는 테이블을 하나로 합쳐도 ICM의 문이 안 열린다.** 반대로 리바인은
 등록이 열려 있는 동안에만 묻는다. 마감이 그 사이에 와야 하고, 그것을 정하는
-것이 레벨 1의 길이뿐이다(정산 무대는 12분).
+것이 레벨 1의 길이뿐이다(정산 무대는 5분, `seed.ts`의 `SETTLEMENT_BLIND_STRUCTURE`).
 
 마감에 발화하는 스케줄러는 없다 — 레벨이 시각에서 파생되고 누군가 그 대회를
 읽을 때 게으르게 닫힌다(`registration-gate.ts`). 그 일을 **전광판이 폴링하며**
@@ -270,7 +271,7 @@ const board = await stage('scoreboard', '전광판');
 
 **기다림을 화면으로 판정하지 않는다.** 「마감 전 · 예상」이 사라졌는지를
 `toBeHidden`으로 보면 **없는 요소에도 통과한다** — 전광판은 주기적으로 다시
-그리므로 그 틈이 실제로 열리고, 12분짜리 레벨이 3분 25초 만에 「마감됐다」로
+그리므로 그 틈이 실제로 열리고, 당시 12분이던 레벨이 3분 25초 만에 「마감됐다」로
 통과했다. 게이트가 읽는 값(`GET /playsync/dashboard/:id`)을 직접 본다.
 
 ### 파일 이름이 그 그림의 주장이다

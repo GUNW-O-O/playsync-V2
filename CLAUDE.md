@@ -92,9 +92,10 @@ npm run demo           # 데모 촬영 (시드 → 프론트 빌드 → 장면 �
 npm run demo:settlement  # 정산 촬영. 마무리 셋을 각각 시드부터 다시 돈다
 npm run assets         # 촬영본을 자르고 합쳐 img/ 로 (ffmpeg-static). README가 안 쓰는 그림도 만든다 — 지우고 커밋한다
 npm run assets:settlement  # 정산 촬영을 자른다 (셋이 다 있어야 돈다)
+npm run check:images   # README가 가리키는 그림 이름이 img/ 에 있는지 (CI에 없다)
 ```
 
-부하 명령(`load:up` · `load:ramp-a/b` · `load:metrics` · `load:logs` ·
+부하 명령(`load:up` · `load:smoke` · `load:ramp-a/b` · `load:metrics` · `load:logs` ·
 `seed:load` · `load:down`)과 그 무대 설명은 [`load/README.md`](./load/README.md).
 
 개발용 인프라는 `cd backend && docker compose up -d`. PostgreSQL + Redis를 띄우고
@@ -186,8 +187,8 @@ Playwright에는 소켓의 `open` 이벤트가 없다. 실측으로 화면 진�
 DB 이름이나 Redis 인덱스로 나누지 않은 이유는, 테스트가 데이터를 지우는 코드라
 설정 실수 하나로 개발 DB를 날릴 수 있기 때문이다. **방어 코드보다 구조로 막는다.**
 
-반복 실행은 `KEEP_TEST_CONTAINERS=1`로 기동을 건너뛰고
-`npm run test:int:down -w backend`로 내린다. e2e는 시드가 먼저다
+반복 실행은 `KEEP_TEST_CONTAINERS=1`로 컨테이너를 내리지 않고 남겨 두고
+(기동 · 마이그레이션은 매번 돈다) `npm run test:int:down -w backend`로 내린다. e2e는 시드가 먼저다
 (`npm run seed -w backend && npm run test:e2e`).
 
 Prisma는 드라이버 어댑터 구성이라 `$disconnect()`가 pg Pool을 닫지 않는다.
