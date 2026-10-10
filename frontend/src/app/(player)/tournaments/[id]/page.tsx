@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import {
+  BREAK_LEVEL,
   ClosedTournamentStatusSchema,
   SERVER_RECOVERING_MESSAGE,
   type ClosedTournamentStatus,
@@ -168,14 +169,21 @@ export default async function TournamentDetailPage({
         </h2>
         <table className="w-full text-[14px] tracking-[0.16px]">
           <tbody>
-            {levels.map((level) => (
-              <tr key={level.lv} className="border-t border-[var(--hairline)]">
-                <td className="py-2.5">레벨 {level.lv}</td>
-                {/* bb는 서버에 없다. sb * 2로 파생한다(contract/dashboard.ts). */}
-                <td className="py-2.5 text-right font-mono">
-                  {level.sb.toLocaleString()} / {(level.sb * 2).toLocaleString()}
-                </td>
-              </tr>
+            {levels.map((level, index) => (
+              // 휴식은 레벨이 아니다(`BREAK_LEVEL`). 키는 순번이다 — 휴식이 둘이면 `lv`가 겹친다.
+              level.lv === BREAK_LEVEL ? (
+                <tr key={index} className="border-t border-[var(--hairline)]">
+                  <td className="py-2.5 text-[var(--ink-subtle)]" colSpan={2}>휴식 {level.duration}분</td>
+                </tr>
+              ) : (
+                <tr key={index} className="border-t border-[var(--hairline)]">
+                  <td className="py-2.5">레벨 {level.lv}</td>
+                  {/* bb는 서버에 없다. sb * 2로 파생한다(contract/dashboard.ts). */}
+                  <td className="py-2.5 text-right font-mono">
+                    {level.sb.toLocaleString()} / {(level.sb * 2).toLocaleString()}
+                  </td>
+                </tr>
+              )
             ))}
           </tbody>
         </table>

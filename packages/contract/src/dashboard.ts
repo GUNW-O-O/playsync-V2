@@ -58,6 +58,9 @@ export type Dashboard = z.infer<typeof DashboardSchema>;
  * `lv`에 상한을 걸지 않는다 — **휴식 구간은 `lv === 99`인 원소다.** `.max()`를
  * 걸면 휴식 응답이 통째로 파싱에서 죽는다.
  */
+/** 휴식 구간의 `lv`. 레벨이 아니라 그 앞 레벨의 연장이라 화면도 레벨로 그리지 않는다. */
+export const BREAK_LEVEL = 99;
+
 export const BlindLevelSchema = z.object({
   lv: z.int().min(1),
   sb: chips,

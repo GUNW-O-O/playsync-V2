@@ -216,6 +216,35 @@ describe('WaitingClient — 대회 전환', () => {
    * `ConsoleClient.run`이 T70에서 같은 모양으로 고쳐졌다(`NETWORK_ERROR`
    * 상수 + try/catch). 그 처리 방식을 그대로 따른다.
    */
+  /**
+   * T127 ③. 전환이 실패하면 새 대회 이름 아래에 **앞 대회의 테이블**이 그대로 남아
+   * 눌렸고(대회와 테이블이 서로 다른 채로 OTP가 제출된다), 같은 대회를 다시 눌러도
+   * 「이미 고른 대회」라며 재조회하지 않았다.
+   */
+  it('전환이 실패하면 앞 대회의 테이블을 걷고, 같은 대회를 다시 누르면 다시 읽는다', async () => {
+    const fetchMock = vi.fn((): Promise<Response> => Promise.reject(new Error('offline')));
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <WaitingClient
+        storeId="s1"
+        tournaments={TOURNAMENTS_MULTI}
+        tables={TABLES}
+        seatMap={[{ tableId: 'tb1', seatStatus: Array(9).fill(false) }]}
+        enterSeat={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('pick-table-tb1')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('pick-tournament-t2'));
+    await screen.findByText('요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.');
+    expect(screen.queryByTestId('pick-table-tb1')).not.toBeInTheDocument();
+
+    const before = fetchMock.mock.calls.length;
+    await userEvent.click(screen.getByTestId('pick-tournament-t2'));
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(before);
+  });
+
   it('대회 전환이 네트워크 실패로 던져도 안내가 뜬다', async () => {
     vi.stubGlobal(
       'fetch',

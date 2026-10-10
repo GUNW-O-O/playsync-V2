@@ -110,6 +110,46 @@ describe('DisplayClient', () => {
     expect(screen.getByText('1:00')).toBeInTheDocument();
   });
 
+  /**
+   * T127 ②. 휴식은 레벨이 아니라 그 앞 레벨의 연장이고(`lv === 99`), 등록은 휴식이
+   * 아니라 **마감 레벨에 들어설 때** 닫힌다. 전광판은 휴식 화면에 「등록 마감」을
+   * 무조건 적었고, 다음 원소가 휴식이면 그 `sb`를 다음 블라인드처럼 그렸다.
+   */
+  describe('휴식 레벨', () => {
+    const structure = [
+      { lv: 1, sb: 100, ante: 0, duration: 10 },
+      { lv: 99, sb: 0, ante: 0, duration: 10 },
+      { lv: 2, sb: 200, ante: 0, duration: 10 },
+    ];
+    const onBreak = (rebuyUntil: number) => ({
+      dashboard: { ...VALID.dashboard, rebuyUntil },
+      blindField: { ...VALID.blindField, isBreak: true, currentBlindLv: 1, blindStructure: structure },
+    });
+
+    it('다음 레벨이 마감 레벨 전이면 휴식 화면에 「등록 마감」을 적지 않는다', async () => {
+      server.use(http.get('*/playsync/dashboard/:id', () => HttpResponse.json(onBreak(3))));
+      render(<DisplayClient tournamentId="t1" />);
+      expect(await screen.findByText(/LEVEL 2/)).toBeInTheDocument();
+      expect(screen.queryByText(/등록 마감/)).not.toBeInTheDocument();
+    });
+
+    it('다음 레벨이 마감 레벨이면 적는다 (반대 입력)', async () => {
+      server.use(http.get('*/playsync/dashboard/:id', () => HttpResponse.json(onBreak(2))));
+      render(<DisplayClient tournamentId="t1" />);
+      expect(await screen.findByText(/LEVEL 2.*등록 마감/)).toBeInTheDocument();
+    });
+
+    it('다음이 휴식이면 블라인드 금액 대신 「휴식」을 그린다', async () => {
+      server.use(http.get('*/playsync/dashboard/:id', () => HttpResponse.json({
+        dashboard: { ...VALID.dashboard, rebuyUntil: 3 },
+        blindField: { ...VALID.blindField, currentBlindLv: 0, blindStructure: structure },
+      })));
+      render(<DisplayClient tournamentId="t1" />);
+      expect(await screen.findByTestId('next-break')).toHaveTextContent('휴식');
+      expect(screen.queryByText('0 / 0')).not.toBeInTheDocument();
+    });
+  });
+
   it('isBreak면 화면을 통째로 휴식으로 바꾼다', async () => {
     server.use(http.get('*/playsync/dashboard/:id', () =>
       HttpResponse.json({ ...VALID, blindField: { ...VALID.blindField, isBreak: true } })));

@@ -64,9 +64,17 @@ export default function DealerWaitingClient({
 
   const tournamentRequestRef = useRef(0);
 
+  /** 고른 대회의 조회가 실패했나. 실패한 대회는 같은 버튼으로 다시 읽을 수 있어야 한다. */
+  const loadFailedRef = useRef(false);
+
   async function selectTournament(id: string) {
-    if (id === tournamentId) return;
+    if (id === tournamentId && !loadFailedRef.current) return;
+    loadFailedRef.current = false;
+    // **앞 대회의 것을 먼저 걷는다**(T127). 조회가 실패하면 새 대회 이름 아래에 앞
+    // 대회의 테이블이 남아 눌린다 — 대회와 테이블이 서로 다른 채로 OTP가 제출된다.
+    // 실패한 대회는 다시 누르면 다시 읽는다(`loadFailedRef`).
     setTournamentId(id);
+    setTables([]);
     setTableId('');
     setError(null);
 
@@ -80,7 +88,10 @@ export default function DealerWaitingClient({
     try {
       res = await apiFetch(`/api/dealer/${id}`, { cache: 'no-store' });
     } catch {
-      if (tournamentRequestRef.current === requestId) setError(NETWORK_ERROR);
+      if (tournamentRequestRef.current === requestId) {
+        loadFailedRef.current = true;
+        setError(NETWORK_ERROR);
+      }
       return;
     }
 
@@ -89,6 +100,7 @@ export default function DealerWaitingClient({
 
     // 서버 장애(T97). 기존 `!res.ok` 분기(조용히 빈 목록)보다 앞에 둔다.
     if (isServerRecovering(res)) {
+      loadFailedRef.current = true;
       setError(SERVER_RECOVERING_MESSAGE);
       return;
     }
