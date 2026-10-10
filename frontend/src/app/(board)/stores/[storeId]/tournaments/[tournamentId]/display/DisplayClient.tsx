@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { FullTournamentInfoSchema, SERVER_RECOVERING_MESSAGE, type FullTournamentInfo } from '@playsync/contract';
+import { BREAK_LEVEL, FullTournamentInfoSchema, SERVER_RECOVERING_MESSAGE, type FullTournamentInfo } from '@playsync/contract';
 import { apiFetch } from '@/lib/api';
 import { isServerRecovering } from '@/lib/server-outage';
 
@@ -184,7 +184,9 @@ export default function DisplayClient({ tournamentId }: { tournamentId: string }
         </div>
         {next && (
           <div className="mt-5 font-cond text-[clamp(17px,2.4vw,26px)] tracking-[0.14em] text-sb-dim">
-            다음 · LEVEL {next.lv} · {next.sb.toLocaleString()} / {(next.sb * 2).toLocaleString()} · 등록 마감
+            다음 · LEVEL {next.lv} · {next.sb.toLocaleString()} / {(next.sb * 2).toLocaleString()}
+            {/* 등록은 휴식이 아니라 마감 레벨에 들어설 때 닫힌다(`currentRegistrationLevel`). */}
+            {next.lv >= dashboard.rebuyUntil && ' · 등록 마감'}
           </div>
         )}
       </div>
@@ -234,10 +236,19 @@ export default function DisplayClient({ tournamentId }: { tournamentId: string }
         {next && (
           <div className="flex flex-col gap-1.5 pb-1.5">
             <span className="font-cond text-sm uppercase tracking-[0.18em] text-sb-dim">다음</span>
-            <span className="font-cond text-[clamp(26px,4.4vw,48px)] font-bold tabular-nums text-sb-dim">
-              {next.sb.toLocaleString()} / {(next.sb * 2).toLocaleString()}
-            </span>
-            {next.ante > 0 && <AnteLine testId="ante-next" amount={next.ante} dim />}
+            {/* 다음 원소가 휴식이면 그 `sb`는 블라인드가 아니다. */}
+            {next.lv === BREAK_LEVEL ? (
+              <span data-testid="next-break" className="font-cond text-[clamp(26px,4.4vw,48px)] font-bold text-sb-dim">
+                휴식
+              </span>
+            ) : (
+              <>
+                <span className="font-cond text-[clamp(26px,4.4vw,48px)] font-bold tabular-nums text-sb-dim">
+                  {next.sb.toLocaleString()} / {(next.sb * 2).toLocaleString()}
+                </span>
+                {next.ante > 0 && <AnteLine testId="ante-next" amount={next.ante} dim />}
+              </>
+            )}
           </div>
         )}
       </div>

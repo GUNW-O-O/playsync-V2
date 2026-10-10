@@ -99,9 +99,18 @@ export default function WaitingClient({
   // (와이어프레임 646–723행이 대회 이름을 상단에 보여준다). `page.tsx`는
   // 첫 번째 대회의 테이블·좌석만 미리 읽어 오므로, 다른 대회를 고르면
   // 그 대회의 테이블 목록과 좌석 현황을 여기서 새로 읽는다.
+  /** 고른 대회의 조회가 실패했나. 실패한 대회는 같은 버튼으로 다시 읽을 수 있어야 한다. */
+  const loadFailedRef = useRef(false);
+
   async function selectTournament(id: string) {
-    if (id === tournamentId) return;
+    if (id === tournamentId && !loadFailedRef.current) return;
+    loadFailedRef.current = false;
+    // **앞 대회의 것을 먼저 걷는다**(T127). 조회가 실패하면 새 대회 이름 아래에 앞
+    // 대회의 테이블이 남아 눌린다 — 대회와 테이블이 서로 다른 채로 OTP가 제출된다.
+    // 실패한 대회는 다시 누르면 다시 읽는다(`loadFailedRef`).
     setTournamentId(id);
+    setTables([]);
+    setSeatMap([]);
     setTableId('');
     setSeatIndex(null);
     setError(null);
@@ -121,7 +130,10 @@ export default function WaitingClient({
         apiFetch(`/api/tournaments/${id}/seats`, { cache: 'no-store' }),
       ]);
     } catch {
-      if (tournamentRequestRef.current === requestId) setError(NETWORK_ERROR);
+      if (tournamentRequestRef.current === requestId) {
+        loadFailedRef.current = true;
+        setError(NETWORK_ERROR);
+      }
       return;
     }
 
@@ -131,6 +143,7 @@ export default function WaitingClient({
     // 서버 장애(T97). 기존 `!res.ok` 분기(조용히 빈 목록)보다 앞에 둔다 —
     // 둘 중 하나라도 503이면 장애 문구를 띄운다.
     if (isServerRecovering(sessionRes) || isServerRecovering(seatsRes)) {
+      loadFailedRef.current = true;
       setError(SERVER_RECOVERING_MESSAGE);
       return;
     }

@@ -115,6 +115,37 @@ function renderPage(id: string) {
 }
 
 describe('대회 상세', () => {
+  /**
+   * T127 ②. 휴식은 구조에서 `lv === 99`인 원소다. 표가 그것을 「레벨 99 · 300 / 600」
+   * 한 줄로 그렸다.
+   */
+  it('블라인드 표는 휴식을 레벨이 아니라 휴식으로 그린다', async () => {
+    server.use(
+      http.get('http://backend.test/tournaments/t1', () =>
+        HttpResponse.json({
+          tournament: {
+            ...CANCELLED,
+            blindStructure: {
+              name: '구조',
+              structure: [
+                { lv: 1, sb: 100, ante: false, duration: 10 },
+                { lv: 99, sb: 300, ante: false, duration: 15 },
+                { lv: 2, sb: 200, ante: false, duration: 10 },
+              ],
+            },
+          },
+        }),
+      ),
+    );
+
+    render(await renderPage('t1'));
+
+    expect(screen.getByText('휴식 15분')).toBeInTheDocument();
+    expect(screen.queryByText('레벨 99')).not.toBeInTheDocument();
+    expect(screen.queryByText('300 / 600')).not.toBeInTheDocument();
+    expect(screen.getByText('레벨 2')).toBeInTheDocument();
+  });
+
   it('취소된 대회는 참가 버튼이 죽어 있다', async () => {
     server.use(
       http.get('http://backend.test/tournaments/t1', () =>

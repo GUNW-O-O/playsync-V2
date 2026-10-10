@@ -1,11 +1,12 @@
+import { BREAK_LEVEL } from '@playsync/contract';
 import { getCurrentBlindLevel, parseBlindStructure } from 'shared/util/util';
 
 /**
  * 휴식 구간의 센티널. `getCurrentBlindLevel`이 이 값으로 `isBreak`을 정한다.
  * 센티널과 레벨 번호가 같은 필드에 있는 것이 T63의 뿌리인데, 계약을 바꾸면
  * 프론트·시드·복구가 함께 움직인다 — 판정 쪽에서 건너뛰는 것으로 좁혔다.
+ * 값은 계약에 있다(`BREAK_LEVEL`) — 화면도 같은 값으로 휴식을 가린다.
  */
-const BREAK_LEVEL = 99;
 
 /**
  * 등록이 지금 열려 있는지 정하는 **유일한 규칙**.
