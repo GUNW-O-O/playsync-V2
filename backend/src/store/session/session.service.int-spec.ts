@@ -21,6 +21,7 @@ import { Client } from 'pg';
 import { closeTestPrisma, createTestPrisma, truncateAll } from '../../../test/helpers/prisma';
 import { createTestRedis, flushTestRedis } from '../../../test/helpers/redis';
 import { UserService } from 'src/user/user.service';
+import { PaymentService } from 'src/payment/payment.service';
 import { SEAT_RELEASED_REASON } from '@playsync/contract';
 import { SessionService } from './session.service';
 import { WsGateway } from 'src/ws/ws.gateway';
@@ -3822,5 +3823,134 @@ describe('SessionService.chopSession', () => {
     });
     expect(`포인트 ${await pointsOf(big)} / 내역 ${prizes}건`)
       .toBe(`포인트 ${START_POINTS - ENTRY_FEE + 15000} / 내역 1건`);
+  });
+});
+
+/**
+ * T123 ① — **닫는 문이 잠그기 전에 읽었다.**
+ *
+ * 취소 · 중단은 트랜잭션 안에서 참가 목록과 걷은 금액을 읽은 **뒤에야** 조건부
+ * update로 대회 행을 잠갔다. Read Committed의 읽기는 아무것도 잠그지 않으므로, 그
+ * 사이 커밋된 참가비는 환불 계산에 없는 채로 대회가 닫혔다. 종료는 장부 대조가
+ * 아예 트랜잭션 밖이었다.
+ *
+ * 순서는 조회를 붙잡아 강제한다 — 닫는 쪽이 읽은 직후에 진짜 결제
+ * (`PaymentService.joinSession`)를 끼워 넣는다. 고친 뒤에는 결제가 닫는 쪽의 행
+ * 잠금을 기다렸다 닫힌 대회를 보고 되돌아가므로, 끼워 넣은 결제를 기다리지 않고
+ * 흘려보낸다(기다리면 서로 물린다).
+ */
+describe('닫는 문과 참가의 경합 (T123)', () => {
+  let prisma: PrismaClient;
+  let redis: Redis;
+  let sessionService: SessionService;
+  let payment: PaymentService;
+  let tournamentId: string;
+  let ownerId: string;
+  let lateId: string;
+
+  const POINTS = 50000;
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  /** 닫는 쪽 트랜잭션 안에서 `model.method`가 돌려준 직후에 `hook`을 돈다. */
+  function afterReadInTx(model: string, method: string, hook: () => Promise<void>) {
+    const real = prisma.$transaction.bind(prisma) as (fn: unknown, opts?: unknown) => Promise<unknown>;
+    jest.spyOn(prisma, '$transaction').mockImplementationOnce(((fn: (tx: unknown) => unknown, opts: unknown) =>
+      real((tx: Record<string, Record<string, (a: unknown) => Promise<unknown>>>) => fn(new Proxy(tx, {
+        get(target, key: string) {
+          if (key !== model) return target[key];
+          return new Proxy(target[key], {
+            get(m, k: string) {
+              if (k !== method) return m[k];
+              return async (args: unknown) => {
+                const result = await m[k](args);
+                await hook();
+                return result;
+              };
+            },
+          });
+        },
+      })), opts)) as never);
+  }
+
+  async function late() {
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: lateId } });
+    const rows = await prisma.tournamentParticipation.count({ where: { tournamentId, userId: lateId } });
+    const t = await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } });
+    return `대회 ${t.status} / 늦은 참가자 지갑 ${user.points} · 참가 ${rows}행`;
+  }
+
+  beforeAll(() => {
+    prisma = createTestPrisma();
+    redis = createTestRedis();
+  });
+
+  afterAll(async () => {
+    await redis.quit();
+    await closeTestPrisma(prisma);
+  });
+
+  beforeEach(async () => {
+    await truncateAll(prisma);
+    await flushTestRedis(redis);
+    const redisService = new RedisService(redis);
+    sessionService = new SessionService(
+      prisma as unknown as PrismaService, redisService, new OtpAttempts(redis), new EventEmitter2(),
+    );
+    payment = new PaymentService(
+      new UserService(prisma as unknown as PrismaService), sessionService,
+      prisma as unknown as PrismaService, redisService,
+    );
+    ({ ownerId, tournamentId } = await seedTournamentWithTable(prisma));
+    lateId = (await prisma.user.create({ data: { nickname: 'late', password: 'x', points: POINTS } })).id;
+  });
+
+  afterEach(() => jest.restoreAllMocks());
+
+  it('취소 — 환불을 센 뒤에 들어온 참가비는 닫힌 대회에 갇히지 않는다', async () => {
+    let joining: Promise<unknown> = Promise.resolve();
+    afterReadInTx('tournament', 'findUniqueOrThrow', async () => {
+      joining = payment.joinSession({ tournamentId }, lateId).catch((e) => e);
+      await sleep(700);
+    });
+
+    await sessionService.cancelSession(tournamentId, ownerId);
+    await joining;
+
+    expect(await late()).toBe(`대회 CANCELLED / 늦은 참가자 지갑 ${POINTS} · 참가 0행`);
+  });
+
+  it('중단 — 정산을 센 뒤에 들어온 참가비는 닫힌 대회에 갇히지 않는다', async () => {
+    await prisma.tournament.update({
+      where: { id: tournamentId },
+      data: { status: TournamentStatus.ONGOING, startedAt: new Date() },
+    });
+    let joining: Promise<unknown> = Promise.resolve();
+    afterReadInTx('tournamentParticipation', 'findMany', async () => {
+      joining = payment.joinSession({ tournamentId }, lateId).catch((e) => e);
+      await sleep(700);
+    });
+
+    await sessionService.abortSession(tournamentId, ownerId);
+    await joining;
+
+    expect(await late()).toBe(`대회 CANCELLED / 늦은 참가자 지갑 ${POINTS} · 참가 0행`);
+  });
+
+  /**
+   * 종료의 장부 대조(「걷은 것 == 나간 상금 + 상점 몫」)는 트랜잭션 밖이다. 참가자가
+   * 없는 대회는 0 == 0으로 통과하므로, 그 뒤에 들어온 첫 참가비가 `FINISHED` 대회에
+   * 갇혔다. 대조와 문지기 사이의 테이블 조회에서 결제를 끝까지 태운다.
+   */
+  it('종료 — 장부를 맞춰 본 뒤에 참가비가 들어오면 닫지 않는다', async () => {
+    const findTables = prisma.table.findMany.bind(prisma.table);
+    jest.spyOn(prisma.table, 'findMany').mockImplementationOnce((async (args: never) => {
+      await payment.joinSession({ tournamentId }, lateId);
+      return findTables(args);
+    }) as never);
+
+    await expect(sessionService.completeSession(tournamentId, ownerId)).rejects.toThrow(ConflictException);
+
+    const t = await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } });
+    expect(`대회 ${t.status} / 걷은 ${t.totalBuyinAmount}`).toBe('대회 PENDING / 걷은 10000');
   });
 });

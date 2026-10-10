@@ -782,7 +782,9 @@ export class SessionService {
        * `abortSession`·`cancelSession`과 같은 모양이다.
        */
       const won = await tx.tournament.updateMany({
-        where: { id, status: NOT_CLOSED_TOURNAMENT_FILTER },
+        // 걷은 금액이 위에서 맞춰 본 값 그대로일 때만 닫는다 — 장부 대조는
+        // 트랜잭션 밖이라, 그 뒤에 참가비가 들어왔으면 대조가 이미 틀렸다.
+        where: { id, status: NOT_CLOSED_TOURNAMENT_FILTER, totalBuyinAmount: tournament.totalBuyinAmount },
         data: {
           status: TournamentStatus.FINISHED,
           finishedAt: new Date(),
@@ -825,11 +827,29 @@ export class SessionService {
       return true;
     });
 
-    // **두 번째 호출은 아무것도 안 했다.** Redis는 이미 첫 번째가 비웠다.
+    // **진 호출은 아무것도 안 했다.** 다른 닫힘에 졌으면 Redis는 그쪽이 비웠고,
+    // 그 사이 참가비가 들어온 것이면 대회는 살아 있다.
     if (!closed) {
-      throw new ConflictException('이미 끝난 대회입니다.');
+      const now = await this.prismaService.tournament.findUnique({ where: { id }, select: { status: true } });
+      throw new ConflictException(
+        now && !isClosedTournament(now.status)
+          ? '정산 중에 참가비가 들어왔습니다. 다시 확인해 주세요.'
+          : '이미 끝난 대회입니다.',
+      );
     }
     await this.finishClose(id, tableIds, TournamentStatus.FINISHED);
+  }
+
+  /**
+   * 대회 행을 잠근다. **닫는 문이 돈을 세기 전에 부른다**(T123).
+   *
+   * 참가비 · 리바인의 트랜잭션은 끝에서 이 행을 고친다(`joinSession` ·
+   * `executeRebuyTransaction`의 조건부 update). 먼저 잠가 두면 그쪽이 기다렸다가
+   * 닫힌 대회를 보고 통째로 되돌아가고, 이미 커밋된 것은 아래 읽기에 들어온다 —
+   * 「센 뒤에 들어온 돈」이 없어진다.
+   */
+  private async lockTournament(tx: Prisma.TransactionClient, tournamentId: string) {
+    await tx.$queryRaw`SELECT 1 FROM "Tournament" WHERE id = ${tournamentId} FOR UPDATE`;
   }
 
   /**
@@ -1213,9 +1233,10 @@ export class SessionService {
     const storeOwnerId = tournament.store.ownerId;
 
     const settled = await this.prismaService.$transaction(async (tx) => {
-      // **트랜잭션 안에서 다시 읽는다.** 밖에서 읽은 값은 이미 낡았을 수 있다 —
-      // 검사와 정산 사이에 참가가 하나 더 들어오면 그 사람 돈은 계산에 안 들어간
+      // **대회 행을 잠그고 다시 읽는다.** 밖에서 읽은 값은 이미 낡았을 수 있고,
+      // 잠그지 않으면 정산을 센 뒤에 들어온 참가비 · 리바인이 계산에 안 들어간
       // 채로 대회가 닫힌다(`cancelSession`의 장부 대조와 같은 이유).
+      await this.lockTournament(tx, tournamentId);
       const current = await tx.tournament.findUniqueOrThrow({
         where: { id: tournamentId },
         select: { entryFee: true, totalBuyinAmount: true, name: true },
@@ -1360,14 +1381,15 @@ export class SessionService {
     });
 
     const won = await this.prismaService.$transaction(async (tx) => {
+      await this.lockTournament(tx, tournamentId);
       const participations = await tx.tournamentParticipation.findMany({
         where: { tournamentId },
         select: { userId: true },
       });
 
-      // 장부 대조. 트랜잭션 **안에서** 다시 읽는 이유는, 밖에서 읽은
-      // `tournament`가 이미 낡았을 수 있어서다 — 검사와 환불 사이에 참가가
-      // 하나 더 들어오면 그 사람 돈은 돌려주지 않은 채로 대회가 닫힌다.
+      // 장부 대조. 트랜잭션 **안에서, 대회 행을 잠근 뒤에** 다시 읽는다 — 밖에서
+      // 읽은 `tournament`는 이미 낡았을 수 있고, 잠그지 않고 읽으면 읽기와 닫힘
+      // 사이에 들어온 참가비를 돌려주지 않은 채로 대회가 닫힌다.
       const current = await tx.tournament.findUniqueOrThrow({
         where: { id: tournamentId },
         select: { entryFee: true, totalBuyinAmount: true },
