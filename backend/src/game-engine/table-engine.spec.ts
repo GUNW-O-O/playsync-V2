@@ -888,6 +888,48 @@ describe('T8 - 딜러 강제 진행', () => {
 
     expect(totalChips(state)).toBe(before);
   });
+
+  /**
+   * **베팅한 사람을 접으면 남은 한 명은 콜할 상대가 없다.** 예전에는 남은
+   * 사람의 `bet`이 `currentBet`과 같기를 요구해서(접힌 사람이 올린 금액이다)
+   * 쇼다운으로 안 갔고, 그 사람이 폴드하거나 시간 초과로 접히면 **자격자가
+   * 없는 팟**이 됐다 — `resolveWinner`가 층 없이 `pot = 0`으로 지워 칩이 사라졌다.
+   */
+  it('레이즈한 사람을 딜러가 접어 한 명만 남으면 그 사람의 콜 없이 쇼다운으로 간다', async () => {
+    const state = makeState(
+      [
+        makePlayer('raiser', 0, 400, { bet: 600, totalContributed: 600, hasChecked: true }),
+        makePlayer('sb', 1, 900, { bet: 100, totalContributed: 100, hasFolded: true }),
+        makePlayer('bb', 2, 800, { bet: 200, totalContributed: 200 }),
+      ],
+      { phase: GamePhase.PRE_FLOP, currentTurnSeatIndex: 2, currentBet: 600, pot: 900 },
+    );
+    const before = totalChips(state);
+    const engine = new TableEngine(state);
+
+    await engine.act(0, ActionType.DEALER_FOLD);
+    expect(`페이즈 ${state.phase}`).toBe(`페이즈 ${GamePhase.SHOWDOWN}`);
+
+    await engine.resolveWinner([['bb']]);
+    expect(`칩 ${totalChips(state)} 팟 ${state.pot}`).toBe(`칩 ${before} 팟 0`);
+    // 접힌 사람의 안 받아진 400은 돌아가고, 나머지 500이 남은 사람에게 간다.
+    expect(`raiser ${state.players[0]!.stack} bb ${state.players[2]!.stack}`).toBe('raiser 800 bb 1300');
+  });
+
+  it('둘 이상 남으면 접힌 사람이 올린 금액을 그대로 콜해야 한다 (반대 입력)', async () => {
+    const state = makeState(
+      [
+        makePlayer('raiser', 0, 400, { bet: 600, totalContributed: 600, hasChecked: true }),
+        makePlayer('p2', 1, 800, { bet: 200, totalContributed: 200 }),
+        makePlayer('p3', 2, 800, { bet: 200, totalContributed: 200 }),
+      ],
+      { phase: GamePhase.PRE_FLOP, currentTurnSeatIndex: 1, currentBet: 600, pot: 1000 },
+    );
+
+    await new TableEngine(state).act(0, ActionType.DEALER_FOLD);
+
+    expect(`페이즈 ${state.phase} 차례 ${state.currentTurnSeatIndex}`).toBe(`페이즈 ${GamePhase.PRE_FLOP} 차례 1`);
+  });
 });
 
 describe('T8 - resolveWinner 페이즈 가드', () => {

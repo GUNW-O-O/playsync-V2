@@ -602,6 +602,9 @@ export class TableEngine {
 
   private shouldGoToShowdown(): boolean {
     const activePlayers = this.state.players.filter(p => p && !p.hasFolded);
+    // 한 명만 남았으면 콜할 상대가 없다. 접힌 사람이 올린 `currentBet`을 맞추라고
+    // 요구하면 그 사람마저 접혀 자격자가 없는 팟이 된다 — 칩이 사라진다.
+    if (activePlayers.length <= 1) return true;
     const activeNotAllIn = activePlayers.filter(p => !p!.isAllIn);
     if (activeNotAllIn.length <= 1) {
       const lastPlayer = activeNotAllIn[0];
