@@ -249,10 +249,28 @@ describe('SeatGameClient', () => {
       expect(await screen.findByRole('button', { name: /지금 돌아가기/ })).toBeInTheDocument();
     });
 
-    it('리바인 프롬프트 중에는 덮개가 뜨지 않는다', async () => {
+    /**
+     * **마감을 넘긴 프롬프트.** 서버는 시간 초과를 단말에 따로 알리지 않는다 —
+     * `rebuyPending`을 지우고 탈락을 확정한 뒤 좌석을 비울 뿐이다. 예전에는
+     * 프롬프트가 떠 있는 동안 좌석 소멸을 안 봤고, 그 프롬프트는 버튼이 잠겨
+     * 닫을 길이 없어서 **새로고침 전까지 그 자리가 다음 손님을 못 받았다.**
+     */
+    it('프롬프트가 떠 있어도 좌석이 사라지면 팝업을 걷고 탈락 덮개를 띄운다', async () => {
       const { socket } = await renderWithSocket({ seatIndex: 3 });
       socket.emitServerEvent('REBUY_PROMPT', { deadline: Date.now() + 30_000 });
+      emitRebuyWaiterFrame(socket, 3);
+      expect(await screen.findByRole('button', { name: '리바인' })).toBeInTheDocument();
+
       socket.emitServerEvent('renderGame', { ...BASE_STATE, players: Array(9).fill(null) });
+      expect(await screen.findByText(/칩이 0이 되어/)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: '리바인' })).not.toBeInTheDocument();
+    });
+
+    it('프롬프트가 떠 있고 좌석이 그대로면 덮개가 뜨지 않는다 (반대 입력)', async () => {
+      const { socket } = await renderWithSocket({ seatIndex: 3 });
+      socket.emitServerEvent('REBUY_PROMPT', { deadline: Date.now() + 30_000 });
+      emitRebuyWaiterFrame(socket, 3);
+      expect(await screen.findByRole('button', { name: '리바인' })).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: /지금 돌아가기/ })).not.toBeInTheDocument();
     });
   });
@@ -279,6 +297,34 @@ describe('SeatGameClient', () => {
       await userEvent.click(await screen.findByRole('button', { name: /거절/ }));
       expect(await screen.findByText(/칩이 0이 되어/)).toBeInTheDocument();
       expect(screen.queryByText(/자리를 이동해 주세요/)).not.toBeInTheDocument();
+    });
+
+    /**
+     * 리바인으로 살아난 사람은 칩을 들고 있다. 그 뒤 상점이 테이블을 합치며
+     * 자리를 풀면 탈락이 아니라 자리 이동이다 — 「본 적이 있다」를 영영 들고
+     * 있으면 칩을 든 사람에게 탈락이라고 적는다.
+     */
+    it('리바인을 수락해 칩을 받은 뒤 좌석이 사라지면 자리 이동으로 적는다', async () => {
+      const { socket } = await renderWithSocket({ seatIndex: 3 });
+      socket.emitServerEvent('REBUY_PROMPT', { deadline: Date.now() + 30_000 });
+      emitRebuyWaiterFrame(socket, 3);
+      await userEvent.click(await screen.findByRole('button', { name: '리바인' }));
+      // 칩이 들어온 프레임 — 대기 표시가 걷혔고 스택이 있다.
+      socket.emitServerEvent('renderGame', BASE_STATE);
+
+      socket.emitServerEvent('renderGame', { ...BASE_STATE, players: Array(9).fill(null) });
+      expect(await screen.findByText(/자리를 이동해 주세요/)).toBeInTheDocument();
+      expect(screen.queryByText(/칩이 0이 되어/)).not.toBeInTheDocument();
+    });
+
+    it('리바인을 눌렀지만 칩을 못 받고 좌석이 사라지면 탈락으로 적는다 (반대 입력)', async () => {
+      const { socket } = await renderWithSocket({ seatIndex: 3 });
+      socket.emitServerEvent('REBUY_PROMPT', { deadline: Date.now() + 30_000 });
+      emitRebuyWaiterFrame(socket, 3);
+      await userEvent.click(await screen.findByRole('button', { name: '리바인' }));
+
+      socket.emitServerEvent('renderGame', { ...BASE_STATE, players: Array(9).fill(null) });
+      expect(await screen.findByText(/칩이 0이 되어/)).toBeInTheDocument();
     });
 
     it('프롬프트 없이 좌석만 사라지면 자리 이동으로 적는다', async () => {

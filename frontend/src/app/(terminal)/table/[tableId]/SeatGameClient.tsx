@@ -55,18 +55,15 @@ const PHASE_LABEL: Record<number, string> = {
  * 좌석에 앉은 참가자가 앉아 있는 동안 보는 유일한 화면(와이어프레임
  * 724–845행). 딜러 분기가 없다 — 딜러 화면은 별도 컴포넌트(다음 태스크)다.
  *
- * 탈락은 서버가 알려주지 않는다. 받는 이벤트는 `renderGame`과
- * `REBUY_PROMPT` 둘뿐이라 두 신호로 유추한다.
+ * 탈락은 서버가 알려주지 않는다. `renderGame`과 `REBUY_PROMPT` 두 신호로
+ * 유추한다(그 밖에 `tournamentClosed`와 거절 ack인 `error`를 받는다).
  *   (a) 리바인 프롬프트에 거절을 보낸 직후
- *   (b) 프롬프트가 없는 상태에서 `renderGame`의 내 좌석이 `null`
- * (b)는 리바인 프롬프트가 떠 있는 동안에는 판정하지 않는다 — 실제로 그
- * 구간에 좌석이 비는 것은 아니다. 좌석을 `null`로 만드는 것은
+ *   (b) `renderGame`의 내 좌석이 `null`
+ * **(b)는 프롬프트가 떠 있어도 본다.** 좌석을 `null`로 만드는 것은
  * `table-engine.ts`의 `initTable` 하나뿐이고, 그건 리바인 대기·탈락 확정이
- * 끝난 **뒤**(`dealer.service.ts`)에 돈다. 그래도 가드를 두는 것은 값싼
- * 방어다 — 프롬프트가 떠 있는 동안은 애초에 탈락을 판정할 필요가 없는
- * 시점이라, 검사 하나로 그 창을 통째로 걸러 둔다. `rebuyDataRef`로 최신
- * 값을 보는 이유는: `onmessage`는 최초 연결 시 한 번만 만들어지는 클로저라,
- * 상태 변수를 직접 읽으면 그 시점의 값(대개 초기값)에 갇힌다.
+ * 끝난 **뒤**(`dealer.service.ts`)에 돈다 — 그러니 좌석이 비었으면 떠 있는
+ * 프롬프트는 마감을 넘긴 것이다. 서버는 시간 초과를 따로 알리지 않아, 여기서
+ * 안 걷으면 버튼이 잠긴 팝업이 새로고침 전까지 그 자리를 막는다.
  */
 export default function SeatGameClient({
   tableId,
@@ -87,12 +84,12 @@ export default function SeatGameClient({
   const [rebuyData, setRebuyData] = useState<RebuyPrompt | null>(null);
   const rebuyDataRef = useRef<RebuyPrompt | null>(null);
   /**
-   * **리바인 프롬프트를 한 번이라도 받았나.** `rebuyDataRef`와 달리 참이
-   * 되면 되돌리지 않는다.
+   * **답이 안 난 리바인 프롬프트를 받았나.** 프롬프트가 닫혀도 남고,
+   * 칩을 다시 든 프레임(리바인이 들어왔다)에서만 내린다.
    *
    * 이것이 좌석이 사라진 사유를 가르는 유일한 단서다. 프롬프트는 칩이
-   * 0이 됐을 때만 오므로, 본 적이 있으면 탈락이고 없으면 상점이 자리를
-   * 푼 것이다(T29 — 칩은 남고 자리만 잃는다).
+   * 0이 됐을 때만 오므로, 받은 뒤 칩을 못 든 채 자리가 비면 탈락이고
+   * 아니면 상점이 자리를 푼 것이다(T29 — 칩은 남고 자리만 잃는다).
    *
    * **서버가 준 사실이 아니라 화면이 본 것에서 세운 추론이다.** 프롬프트가
    * 소켓 문제로 안 왔는데 탈락한 경우, 화면은 「자리 이동」이라고 잘못
@@ -102,8 +99,8 @@ export default function SeatGameClient({
   const sawRebuyPromptRef = useRef(false);
   const [exitReason, setExitReason] = useState<ExitReason | null>(null);
   /**
-   * 대회가 닫혔다는 사실. **한 번 서면 되돌리지 않는다** — 서버가 소켓을
-   * 끊지 않으므로 늦게 도착한 `renderGame`이 있을 수 있고, 그것이 이 값을
+   * 대회가 닫혔다는 사실. **한 번 서면 되돌리지 않는다** — 닫힘 알림과
+   * 소켓 종료 사이에 늦게 도착한 `renderGame`이 있을 수 있고, 그것이 이 값을
    * 지우면 끝난 대회의 펠트가 다시 나온다.
    *
    * `eliminated`와 따로 둔다. 탈락은 **이 사람**이 빠진 것이고 이쪽은
@@ -130,7 +127,7 @@ export default function SeatGameClient({
 
   function updateRebuyData(next: RebuyPrompt | null) {
     rebuyDataRef.current = next;
-    // 한 번 뜬 사실은 지우지 않는다. 프롬프트가 닫힌 **뒤에** 좌석이
+    // 닫힐 때는 지우지 않는다. 프롬프트가 닫힌 **뒤에** 좌석이
     // 사라지는 것이 탈락의 정상 순서라, 현재값만 보면 그때는 이미 늦다.
     if (next) sawRebuyPromptRef.current = true;
     setRebuyData(next);
@@ -154,10 +151,14 @@ export default function SeatGameClient({
         // 없는 키를 지우고 위반이면 아예 안 보낸다(T71).
         const state = data as TableState;
         setGameState(state);
-        // 판정 (b): 리바인 프롬프트가 떠 있는 동안에는 좌석 소멸을
-        // 나온 것으로 보지 않는다 — 리바인 구간에도 좌석이 잠깐 빈다.
-        if (!rebuyDataRef.current && mySeatIndex !== null && state.players[mySeatIndex] === null) {
+        const me = mySeatIndex !== null ? state.players[mySeatIndex] : undefined;
+        if (me === null) {
+          // 판정 (b). 떠 있던 프롬프트는 마감을 넘긴 것이라 함께 걷는다.
           setExitReason(sawRebuyPromptRef.current ? 'eliminated' : 'seat-released');
+          if (rebuyDataRef.current) updateRebuyData(null);
+        } else if (me && me.stack > 0 && !state.rebuyPending?.seatIndexes.includes(me.seatIndex)) {
+          // 칩을 들었고 더 묻지도 않는다 — 앞의 프롬프트는 리바인으로 끝났다.
+          sawRebuyPromptRef.current = false;
         }
       } else if (serverEvent === 'tournamentClosed') {
         // **계약을 읽는다.** 손으로 필드를 꺼내면 백엔드가 모양을 바꿔도
