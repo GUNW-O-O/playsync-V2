@@ -174,9 +174,9 @@ export default function SeatGameClient({
         // (`ws.gateway.ts`의 `handlePlayerAction`). 안 읽으면 참가자는
         // 눌렀는데 아무 변화도 없는 화면을 보고 먹은 줄 안다.
         //
-        // **`renderGame`으로 지우지 않는다.** 딜러 화면은 그렇게 하지만
-        // (`DealerGameClient`), 좌석 화면에서 `renderGame`은 남이 액션할
-        // 때마다 오는 브로드캐스트라 — 내 거절 사유가 1초도 못 버틴다.
+        // **`renderGame`으로 지우지 않는다.** `renderGame`은 남이 액션할
+        // 때마다 오는 브로드캐스트라 — 내 거절 사유가 1초도 못 버틴다
+        // (딜러 화면 `DealerGameClient`도 같다).
         setActionError(typeof data === 'string' && data ? data : DEFAULT_ACTION_ERROR);
       }
     },

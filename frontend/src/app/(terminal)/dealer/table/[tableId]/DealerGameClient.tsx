@@ -106,9 +106,9 @@ export default function DealerGameClient({
         // 서버가 이미 태우기 때문이다** — `WsGateway.toWireState`가 계약에
         // 없는 키를 지우고 위반이면 아예 안 보낸다(T71).
         setGameState(data as TableState);
-        // 새 상태가 왔다는 것은 앞의 명령이 먹었다는 뜻이다. 지난 거절
-        // 사유를 남겨 두면 성공한 화면 위에 붙어 있게 된다.
-        setActionError(null);
+        // **거절 사유는 여기서 지우지 않는다.** `renderGame`은 참가자 누구든
+        // 액션하면 오는 브로드캐스트라, 지우면 딜러가 읽기 전에 사라진다.
+        // 「확인」으로만 닫는다(좌석 화면과 같다).
       } else if (serverEvent === 'tournamentClosed') {
         // **계약을 읽는다.** 손으로 필드를 꺼내면 백엔드가 모양을 바꿔도
         // 컴파일이 통과하고 화면만 조용히 어긋난다.

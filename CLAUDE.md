@@ -113,9 +113,9 @@ npm run check:images   # README가 가리키는 그림 이름이 img/ 에 있는
 
 ```
 contract       93  (9 suites)
-백엔드 단위   503  (50 suites)
-프론트 단위   382  (43 files)
-통합          808  (52 suites)
+백엔드 단위   505  (50 suites)
+프론트 단위   389  (43 files)
+통합          810  (52 suites)
 e2e            13  (4 files, regression 프로젝트)
 데모 촬영       1  (`npm run demo`)
 정산 촬영       1  (`npm run demo:settlement`, 마무리마다 한 번씩 셋)
