@@ -1359,7 +1359,7 @@ export class SessionService {
       select: { id: true },
     });
 
-    await this.prismaService.$transaction(async (tx) => {
+    const won = await this.prismaService.$transaction(async (tx) => {
       const participations = await tx.tournamentParticipation.findMany({
         where: { tournamentId },
         select: { userId: true },
@@ -1397,7 +1397,7 @@ export class SessionService {
           activePlayers: 0,
         },
       });
-      if (closed.count === 0) return;
+      if (closed.count === 0) return false;
 
       for (const { userId } of participations) {
         await tx.user.update({
@@ -1421,7 +1421,21 @@ export class SessionService {
 
       await tx.table.deleteMany({ where: { tournamentId } });
       await tx.dealerSession.delete({ where: { tournamentId } });
+      return true;
     });
+
+    // **진 쪽이 무엇에 졌는지 본다.** 다른 취소에 졌으면 아래 정리는 멱등이라 한 번
+    // 더 돌아도 된다. 시작(`startSession`)에 졌으면 대회가 살아 있다 — 정리가 돌면
+    // 방금 시작한 대회의 Redis를 지우고 「취소됨」을 방송한다.
+    if (!won) {
+      const now = await this.prismaService.tournament.findUnique({
+        where: { id: tournamentId },
+        select: { status: true },
+      });
+      if (now?.status !== TournamentStatus.CANCELLED) {
+        throw new ConflictException('이미 시작한 대회는 취소할 수 없습니다.');
+      }
+    }
 
     await this.finishClose(tournamentId, tables.map((t) => t.id), TournamentStatus.CANCELLED);
   }

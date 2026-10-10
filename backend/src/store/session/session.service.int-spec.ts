@@ -2375,6 +2375,38 @@ describe('SessionService.cancelSession', () => {
     expect(`포인트 ${user.points}`).toBe(`포인트 ${START_POINTS - ENTRY_FEE}`);
   });
 
+  /**
+   * **취소가 시작에 졌다.** 바깥 검사(`startedAt === null`)를 지난 뒤 대회가
+   * 시작되면 문지기 update가 0행이다. 예전에는 그래도 정리(`finishClose`)가
+   * 돌아 **방금 시작한 대회의 Redis를 지우고 「취소됨」을 방송했다** — DB는
+   * `ONGOING`인데 단말은 닫히고 응답은 성공이었다.
+   *
+   * 순서는 조회를 붙잡아 강제한다 — 바깥 검사와 트랜잭션 사이의 테이블 조회가
+   * 돌 때 대회를 시작시킨다.
+   */
+  it('취소가 시작과 겹쳐 지면 409이고 살아 있는 대회를 정리하지 않는다', async () => {
+    await seedPaidPlayer('player1');
+    await redis.set(`table:state:${tableId}`, JSON.stringify({ tournamentId }));
+    const heard: unknown[] = [];
+    emitter.on('TOURNAMENT_CLOSED', (payload) => heard.push(payload));
+
+    const findTables = prisma.table.findMany.bind(prisma.table);
+    const spy = jest.spyOn(prisma.table, 'findMany').mockImplementationOnce((async (args: never) => {
+      await prisma.tournament.update({
+        where: { id: tournamentId },
+        data: { status: TournamentStatus.ONGOING, startedAt: new Date() },
+      });
+      return findTables(args);
+    }) as never);
+
+    await expect(sessionService.cancelSession(tournamentId, ownerId)).rejects.toThrow(ConflictException);
+    spy.mockRestore();
+
+    const row = await prisma.tournament.findUniqueOrThrow({ where: { id: tournamentId } });
+    const snapshot = await redis.exists(`table:state:${tableId}`);
+    expect(`상태 ${row.status} 스냅샷 ${snapshot} 방송 ${heard.length}`).toBe('상태 ONGOING 스냅샷 1 방송 0');
+  });
+
   it('남의 대회는 취소할 수 없다', async () => {
     const playerId = await seedPaidPlayer('player1');
     const intruder = await prisma.user.create({
