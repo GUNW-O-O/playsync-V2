@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   NotFoundException,
@@ -189,6 +190,27 @@ describe('SessionService.createSession — OTP 해시 통합', () => {
     // 해시가 원본을 담고 있으면 저장한 의미가 없다.
     expect(row.dealerOtpHash).not.toContain(created.dealerOtp);
     expect(row.dealerOtpHash.startsWith('$2')).toBe(true);
+  });
+
+  /**
+   * T125 ③. 새 블라인드 구조와 함께 만드는 길에서, 구조가 구간표 검증보다 **먼저**
+   * 만들어졌다. 표가 틀려 400이 나가면 구조만 남고, 표를 고쳐 같은 본문으로 다시
+   * 보내면 이름 유니크에 걸려 409가 반복됐다.
+   */
+  it('구간표가 틀리면 400이고 새 블라인드 구조를 남기지 않는다', async () => {
+    const dto = { ...makeCreateDto(), blindId: undefined } as unknown as CreateTournamentDto;
+    const structure = {
+      name: '새 구조', storeId, structure: [{ lv: 1, sb: 100, ante: false, duration: 20 }],
+    };
+    const bad = { ...dto, payoutTable: [{ minEntries: 0, payouts: [{ place: 1, percent: 70 }] }] };
+
+    await expect(sessionService.createSession(bad as never, ownerId, structure as never))
+      .rejects.toThrow(BadRequestException);
+    expect(`남은 구조 ${await prisma.blindStructure.count({ where: { name: '새 구조' } })}`).toBe('남은 구조 0');
+
+    // 표를 고쳐 같은 이름으로 다시 보내면 된다.
+    const created = await sessionService.createSession(dto, ownerId, structure as never);
+    expect(created.id).toBeTruthy();
   });
 
   it('대회 조회 응답에는 OTP도 해시도 실리지 않는다', async () => {
@@ -2810,6 +2832,34 @@ describe('SessionService.updateSession — 수정 경로의 검사', () => {
       ownerId,
     );
     expect(updated.entryFee).toBe(99000);
+  });
+
+  /**
+   * T125 ②. 시작한 대회의 마감 레벨 · 블라인드 구조 · 구간표는 Redis 메타에 실려
+   * 돈다(`initializeGame`). 수정이 DB만 고치면 Redis를 먼저 보는 문(결제 · 전광판)과
+   * DB로 다시 세는 길(복구)이 서로 다른 값을 본다. 구간표는 상금이 나간 뒤에 바꾸면
+   * 그 뒤 지급만 새 표를 따른다. 시작 뒤에는 받지 않는다.
+   * 아래 「자기 상점 구조로는 바꿀 수 있다」가 반대 입력이다(시작 전).
+   */
+  it('시작한 대회의 마감 레벨 · 블라인드 구조 · 구간표는 바꿀 수 없다', async () => {
+    await prisma.tournament.update({
+      where: { id: myTournamentId },
+      data: { status: TournamentStatus.ONGOING, startedAt: new Date() },
+    });
+    const before = await prisma.tournament.findUniqueOrThrow({ where: { id: myTournamentId } });
+
+    for (const dto of [
+      { rebuyUntil: 9 },
+      { blindId: myOtherBlindId },
+      { payoutTable: [{ minEntries: 0, payouts: [{ place: 1, percent: 60 }, { place: 2, percent: 40 }] }] },
+    ]) {
+      await expect(sessionService.updateSession(myTournamentId, dto as never, ownerId))
+        .rejects.toThrow(ConflictException);
+    }
+
+    const after = await prisma.tournament.findUniqueOrThrow({ where: { id: myTournamentId } });
+    expect(`마감 ${after.rebuyUntil} 구조 ${after.blindId === before.blindId} 표 ${JSON.stringify(after.payoutTable) === JSON.stringify(before.payoutTable)}`)
+      .toBe(`마감 ${before.rebuyUntil} 구조 true 표 true`);
   });
 
   it('자기 상점 구조로는 바꿀 수 있다', async () => {

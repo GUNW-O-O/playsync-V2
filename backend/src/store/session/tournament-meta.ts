@@ -7,7 +7,7 @@ import {
   startablePayoutTable,
 } from 'src/playsync/payout-table';
 import { prizePoolOf } from 'src/playsync/prize';
-import { isRegistrationOpenAtLevel } from './registration';
+import { currentRegistrationLevel, isRegistrationOpenAtLevel } from './registration';
 
 /**
  * 대회 메타(전광판 + 블라인드 시계)를 DB 행에서 짠다.
@@ -65,7 +65,10 @@ export function buildTournamentMeta(
   // `isRegistrationOpenAtLevel`을 여기서도 적용해 마감을
   // 파생시킨다. 대회 시작(`initializeGame`)은 기준점이 항상 레벨 0이고
   // `rebuyUntil`은 그보다 크므로 이 식이 시작 경로에 영향을 주지 않는다.
-  const curLv = blindStructure[blindInfo.currentIndex]?.lv ?? 0;
+  //
+  // **휴식은 직전 실제 레벨로 판정한다**(`currentRegistrationLevel`, T63 · T125).
+  // 휴식의 `lv`(99)를 그대로 비교하면 마감 전의 휴식에서 등록이 닫힌다.
+  const curLv = currentRegistrationLevel(blindStructure, blindInfo.currentIndex);
 
   // 규모가 정하는 값 둘. 엔트리 수로 구간을 고르고, 그 구간이 상금권 인원과
   // 분배율을 함께 준다 — 둘이 같은 자리에서 나와야 어긋나지 않는다.

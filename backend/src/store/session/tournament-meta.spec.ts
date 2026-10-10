@@ -27,6 +27,36 @@ describe('buildTournamentMeta', () => {
     ...overrides,
   });
 
+  /**
+   * T125 ①. 휴식은 레벨이 아니라 그 앞 레벨의 연장이다(T63, `currentRegistrationLevel`).
+   * 이 함수만 그 판정을 안 거쳐 휴식의 `lv`(99)를 마감 레벨과 그대로 비교했다 —
+   * 휴식 중에 메타를 다시 세우면(복구) 등록이 닫힌 것으로 쓰이고, 그 값은 단조라
+   * 다시 열리지 않는다.
+   */
+  describe('휴식 중의 등록', () => {
+    const structure = [
+      { lv: 1, sb: 100, ante: false, duration: 10 },
+      { lv: 99, sb: 0, ante: false, duration: 10 },
+      { lv: 2, sb: 200, ante: false, duration: 10 },
+    ];
+    const now = Date.now();
+
+    it('마감 레벨 전의 휴식이면 열려 있다', () => {
+      const game = baseGame({ blindStructure: { structure }, rebuyUntil: 2 });
+      // 15분 전에 시작 → 휴식(인덱스 1). 직전 실제 레벨은 1이고 마감은 2다.
+      const { dashboard, blindField } = buildTournamentMeta(game, now - 15 * 60 * 1000);
+
+      expect(`휴식 ${blindField.isBreak} 등록 ${dashboard.isRegistrationOpen}`).toBe('휴식 true 등록 true');
+    });
+
+    it('마감 레벨 뒤의 휴식이면 닫혀 있다 (반대 입력)', () => {
+      const game = baseGame({ blindStructure: { structure }, rebuyUntil: 1 });
+      const { dashboard, blindField } = buildTournamentMeta(game, now - 15 * 60 * 1000);
+
+      expect(`휴식 ${blindField.isBreak} 등록 ${dashboard.isRegistrationOpen}`).toBe('휴식 true 등록 false');
+    });
+  });
+
   it('기준점을 미루면 레벨이 되돌아간다', () => {
     const structure = [
       { lv: 1, sb: 100, ante: false, duration: 10 },
