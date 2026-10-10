@@ -78,13 +78,24 @@ export class RecoveryService implements OnApplicationBootstrap, OnModuleDestroy 
   }
 
   async onApplicationBootstrap() {
-    this.booting = true;
-    this.boot = this.recoverAll().finally(() => {
-      this.booting = false;
-      // 부팅 전 장애는 방금 끝난 부팅 복구가 계상했다. 이제부터는 런타임 장애다.
-      this.outageFromBoot = false;
-    });
-    await this.boot;
+    await this.bootOnce();
+  }
+
+  /**
+   * 부팅 복구를 한 번 돌리고 그 끝을 준다. **먼저 부른 쪽이 시작한다** — 타임아웃 워커가
+   * 이것을 기다렸다 돈다(`TimeoutProcessor`, T122). 훅이 불리는 순서는 모듈 순서라
+   * 어느 쪽이 먼저인지 기대지 않는다.
+   */
+  bootOnce(): Promise<void> {
+    if (!this.boot) {
+      this.booting = true;
+      this.boot = this.recoverAll().finally(() => {
+        this.booting = false;
+        // 부팅 전 장애는 방금 끝난 부팅 복구가 계상했다. 이제부터는 런타임 장애다.
+        this.outageFromBoot = false;
+      });
+    }
+    return this.boot;
   }
 
   /**
