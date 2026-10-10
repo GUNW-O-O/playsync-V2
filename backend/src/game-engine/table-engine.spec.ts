@@ -1479,6 +1479,44 @@ describe('TableEngine 최소 레이즈 (NLHE)', () => {
     expect(state.players[1]!.hasChecked).toBe(true);
   });
 
+  /**
+   * T124 ①. 체크 표시를 안 푸는 것만으로는 「콜/폴드만 남는다」가 안 선다 —
+   * 차례가 돌아온 사람이 레이즈를 보내면 폭만 맞으면 통과했고, 닫혀 있어야 할
+   * 베팅이 다시 열렸다.
+   */
+  it('미달 올인 뒤에 이미 액션한 사람은 다시 레이즈할 수 없다', async () => {
+    const state = preflop([10000, 10000, 800]);
+    const engine = new TableEngine(state);
+
+    await engine.act(0, ActionType.RAISE, 600);
+    await engine.act(1, ActionType.CALL);
+    await engine.act(2, ActionType.RAISE, 800); // 미달 올인(폭 200)
+    const before = totalChips(state);
+
+    // 폭 400이라 금액만 보면 합법이다. 막는 것은 「이미 액션했다」다.
+    await expect(engine.act(0, ActionType.RAISE, 1200)).rejects.toThrow('콜 또는 폴드');
+    expect(`칩 ${totalChips(state)} 베팅 ${state.currentBet} 차례 ${state.currentTurnSeatIndex}`)
+      .toBe(`칩 ${before} 베팅 800 차례 0`);
+
+    // 콜은 된다 — 미달 올인의 금액까지는 맞춰야 한다.
+    await engine.act(0, ActionType.CALL);
+    expect(state.players[0]!.bet).toBe(800);
+  });
+
+  it('미달 올인을 처음 만난 사람은 레이즈할 수 있다 (반대 입력)', async () => {
+    // p1이 600, p2는 800 올인(미달). p3는 아직 액션하지 않았다 — 베팅이 열려 있다.
+    const state = preflop([10000, 800, 10000]);
+    const engine = new TableEngine(state);
+
+    await engine.act(0, ActionType.RAISE, 600);
+    await engine.act(1, ActionType.RAISE, 800);
+    await engine.act(2, ActionType.RAISE, 1200);
+
+    expect(state.currentBet).toBe(1200);
+    // 풀 레이즈라 p1에게도 베팅이 다시 열렸다.
+    expect(state.players[0]!.hasChecked).toBe(false);
+  });
+
   it('미달 올인은 직전 레이즈 폭을 갱신하지 않는다', async () => {
     const state = preflop([10000, 10000, 800]);
     const engine = new TableEngine(state);

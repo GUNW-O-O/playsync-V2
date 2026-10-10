@@ -53,7 +53,14 @@ export default function SeatActionPanel({
    * 낼 수 없는 금액이 화면에서 사라지고, 슬라이더의 `min > max`도 생기지
    * 않는다 — `min > max`인 상황이 바로 "레이즈 못 하는 상황"이다.
    */
-  const canRaiseAtAll = state !== null && myPlayer !== null && maxTotal >= minRaiseTotal;
+  /**
+   * **베팅이 나에게 닫혀 있나.** 이미 액션한 사람(`hasChecked`)에게 차례가 돌아오는
+   * 것은 미달 올인이 콜 금액만 올린 경우뿐이고, 그때는 콜과 폴드만 남는다
+   * (`table-engine.ts`의 `handleRaise`). 풀 레이즈는 모두의 표시를 푼다.
+   */
+  const bettingClosed = myPlayer?.hasChecked === true;
+  const canRaiseAtAll =
+    state !== null && myPlayer !== null && maxTotal >= minRaiseTotal && !bettingClosed;
 
   // 초기값은 자리만 잡는다. 이 값의 주인은 아래의 "지금 내 차례인가" 판정
   // 하나뿐이고, 슬라이더와 레이즈 버튼은 내 차례에만 그려지므로 여기 0이
@@ -189,19 +196,22 @@ export default function SeatActionPanel({
                     레이즈 {raiseVal.toLocaleString()}
                   </button>
                 )}
-                <button
-                  type="button"
-                  disabled={outage}
-                  onClick={() =>
-                    onAction({
-                      action: PlayerActionType.RAISE,
-                      amount: maxTotal,
-                    })
-                  }
-                  className="h-14 flex-1 border border-tb-line text-sm text-tb-ink disabled:opacity-30"
-                >
-                  올인
-                </button>
+                {/* 올인도 레이즈다. 베팅이 닫혀 있으면 두지 않는다. */}
+                {!bettingClosed && (
+                  <button
+                    type="button"
+                    disabled={outage}
+                    onClick={() =>
+                      onAction({
+                        action: PlayerActionType.RAISE,
+                        amount: maxTotal,
+                      })
+                    }
+                    className="h-14 flex-1 border border-tb-line text-sm text-tb-ink disabled:opacity-30"
+                  >
+                    올인
+                  </button>
+                )}
               </>
             )}
           </>

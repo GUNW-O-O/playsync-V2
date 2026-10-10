@@ -313,7 +313,9 @@ function pickAction(state, me, bigBlind) {
   const canCheck = toCall <= 0;
   // 레이즈는 `currentBet`보다 큰 목표 총액을 낼 수 있어야 성립한다.
   // 스택이 그에 못 미치면 레이즈를 빼고 콜(= 올인)로 접는다.
-  const canRaise = me.stack + me.bet > state.currentBet;
+  // 이미 액션한 사람(`hasChecked`)에게는 베팅이 닫혀 있다 — 미달 올인이 콜 금액만
+  // 올린 차례다. 엔진이 레이즈를 거절한다(`TableEngine.handleRaise`).
+  const canRaise = me.stack + me.bet > state.currentBet && !me.hasChecked;
 
   const r = Math.random();
   if (canRaise && r < RAISE_RATIO) {

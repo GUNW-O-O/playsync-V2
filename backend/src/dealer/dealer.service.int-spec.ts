@@ -196,6 +196,25 @@ describe('DealerService 동시성', () => {
     expect(chipTotal(state)).toBe(30000);
   });
 
+  /**
+   * T124 ②. 멈춘 테이블은 딜러가 재개하기 전까지 마감도 타임아웃 잡도 없다
+   * (`resumePending`의 약속). 딜러 폴드 · 킥이 그것을 안 보고 `scheduleTurnTimeout`을
+   * 불러, 정지 중인 테이블에 카운트다운이 흘렀다.
+   */
+  it('멈춘 테이블에서는 딜러 폴드를 거절하고 타이머를 걸지 않는다', async () => {
+    await redis.set(stateKey, JSON.stringify(makeState({
+      currentTurnSeatIndex: 0, resumePending: { downMs: 1000 }, actionDeadline: undefined,
+    })));
+
+    await expect(dealer.handleDealerAction(TOURNAMENT, TABLE, 'alice', 'FOLD'))
+      .rejects.toThrow('재개');
+
+    const state: TableState = JSON.parse((await redis.get(stateKey))!);
+    const jobs = await queue.getJobCounts('delayed', 'waiting');
+    expect(`폴드 ${state.players[0]!.hasFolded} 마감 ${state.actionDeadline} 잡 ${jobs.delayed + jobs.waiting}`)
+      .toBe('폴드 false 마감 undefined 잡 0');
+  });
+
   it('쇼다운 전에는 정산을 거부한다', async () => {
     // 페이즈 게이팅이 딜러 콘솔 UI에만 있었다. 같은 망의 단말이 WS를 직접
     // 열면 플랍에서도 승자를 확정할 수 있다.
@@ -378,6 +397,23 @@ describe('DealerService 동시성', () => {
       expect(lockDuringRebuy).toBe(0);
     });
 
+    /**
+     * T124 ②. 킥된 사람은 자리에 남아 무엇을 눌러도 폴드다(`handleAction`의
+     * `isKicked`). 블라인드로 0이 됐을 때 리바인을 물으면, 수락한 사람은 참가비를
+     * 내고 칩을 받지만 그 칩은 녹기만 한다 — 참가 행은 이미 `ELIMINATED`다.
+     * 바로 위 검사가 반대 입력이다(킥되지 않은 파산자에게는 묻는다).
+     */
+    it('킥된 파산자에게는 리바인을 묻지 않는다', async () => {
+      await seedMeta(true);
+      await redis.set(stateKey, JSON.stringify(showdownState()));
+      await redisService.setUserContext(TOURNAMENT, 'carol', TABLE, 2, 'KICKED');
+      jest.spyOn(playsync, 'processRebuy').mockResolvedValue('declined');
+
+      await dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
+
+      expect(playsync.processRebuy).toHaveBeenCalledTimes(0);
+    });
+
     it('리바인 대기 중에는 다음 핸드가 시작되지 않는다', async () => {
       // 락을 놓는 대신 페이즈가 문지기가 된다. HAND_END면 startPreFlop이 거절한다.
       await seedMeta(true);
@@ -501,6 +537,59 @@ describe('DealerService 동시성', () => {
       const state: TableState = JSON.parse((await redis.get(stateKey))!);
       expect(state.dbSyncStatus).toBe('FAILED');
       expect(broadcasts.some(s => s.dbSyncStatus === 'RETRYING')).toBe(true);
+    });
+
+    /**
+     * T124 ③. 체크포인트 고리는 락 밖에서 백오프까지 수 초를 돈다. 그 사이 딜러의
+     * 「저장 재시도」가 성공해 판이 넘어가면, 원래 고리가 **다음 핸드의 스냅샷**을
+     * 읽어 핸드 중 스택을 DB에 찍거나 넘어간 판에 실패 표시를 남겼다.
+     * 고리가 도는 동안은 재시도를 받지 않는다.
+     */
+    it('정산의 체크포인트가 도는 동안 저장 재시도는 거절한다', async () => {
+      await redis.set(stateKey, JSON.stringify(showdownState()));
+      let release!: (ok: boolean) => void;
+      const held = new Promise<boolean>((resolve) => { release = resolve; });
+      const sync = jest.spyOn(playsync, 'syncTableInventoryToDb').mockReturnValueOnce(held);
+
+      const settling = dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']]);
+      // 정산이 체크포인트에 들어설 때까지 기다린다.
+      while (sync.mock.calls.length === 0) await new Promise((r) => setTimeout(r, 10));
+
+      await expect(dealer.retryCheckpoint(TABLE)).rejects.toThrow('저장하는 중');
+      expect(`체크포인트 ${sync.mock.calls.length}번`).toBe('체크포인트 1번');
+
+      release(true);
+      await settling;
+    });
+
+    /**
+     * T124 ③. 리바인은 전원에게 동시에 묻는다. 한 사람의 처리가 던지면 `Promise.all`이
+     * 곧바로 올려, **나머지의 열린 창을 버린 채** 대기 표시가 걷혔다 — 딜러의 저장
+     * 재시도가 그 사람들을 답할 기회 없이 탈락시켰다. 전원이 끝난 뒤에 올린다.
+     */
+    it('리바인 한 사람이 던져도 나머지의 창이 닫힌 뒤에 올린다', async () => {
+      await seedMeta(true);
+      await redis.set(stateKey, JSON.stringify(makeState({
+        phase: GamePhase.SHOWDOWN,
+        pot: 1500,
+        currentTurnSeatIndex: -1,
+        players: [
+          makePlayer('alice', 0, { totalContributed: 500 }),
+          makePlayer('bob', 1, { stack: 0, isAllIn: true, totalContributed: 500 }),
+          makePlayer('carol', 2, { stack: 0, isAllIn: true, totalContributed: 500 }),
+        ],
+      })));
+      let carolAnswered = false;
+      jest.spyOn(playsync, 'processRebuy').mockImplementation(async (_t, _table, playerId) => {
+        if (playerId === 'bob') throw new Error('플레이어 정보 오류');
+        await new Promise((r) => setTimeout(r, 300));
+        carolAnswered = true;
+        return 'declined' as const;
+      });
+
+      await expect(dealer.resolveWinners(TABLE, TOURNAMENT, [['alice']])).rejects.toThrow('플레이어 정보 오류');
+
+      expect(`carol의 창이 닫혔다 ${carolAnswered}`).toBe('carol의 창이 닫혔다 true');
     });
 
     it('체크포인트 재시도는 락 밖에서 한다', async () => {
