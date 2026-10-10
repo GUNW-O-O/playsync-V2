@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { TournamentStatus } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { isClosedTournament } from 'src/store/session/tournament-status';
@@ -33,10 +33,13 @@ export class UserService {
   async paymentPoint(tx: any, userId: string, tournamentId: string, sessionName: string, amount: number) {
     await this.findByUUID(userId);
 
-    await tx.user.update({
-      where: { id: userId },
+    // **잔액 조건을 차감과 한 문장에 싣는다.** 호출자의 잔액 검사는 트랜잭션 밖의
+    // 낡은 읽기라, 그 사이 다른 대회의 참가비가 빠지면 포인트가 음수가 된다.
+    const paid = await tx.user.updateMany({
+      where: { id: userId, points: { gte: amount } },
       data: { points: { decrement: amount } }
     });
+    if (paid.count !== 1) throw new ConflictException('포인트가 부족합니다.');
     await tx.pointTransaction.create({
       data: {
         userId,

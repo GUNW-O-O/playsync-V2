@@ -1305,6 +1305,26 @@ describe('PaymentService.joinSession — 참가하는 사이에 대회가 닫히
       .toBe('참가 0행 / 결제 0명 / 걷은 0');
   });
 
+  /**
+   * **잔액 검사는 트랜잭션 밖의 낡은 읽기다.** 같은 사람이 다른 대회의 참가비를
+   * 그 사이에 내면(같은 대회는 유니크가 막지만 다른 대회는 막는 것이 없다) 차감이
+   * 무조건이라 포인트가 음수가 됐다. 그 사이의 결제를 차감 직전에 끼워 넣어 강제한다.
+   */
+  it('검사와 차감 사이에 잔액이 모자라지면 409이고 포인트가 음수가 되지 않는다', async () => {
+    jest.restoreAllMocks();
+    const real = userService.paymentPoint.bind(userService);
+    jest.spyOn(userService, 'paymentPoint').mockImplementation(async (...args) => {
+      await prisma.user.update({ where: { id: USER }, data: { points: ENTRY_FEE - 1 } });
+      return real(...args);
+    });
+
+    await expect(service.joinSession({ tournamentId: TOURNAMENT }, USER)).rejects.toThrow('포인트가 부족합니다.');
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: USER } });
+    const rows = await prisma.tournamentParticipation.count({ where: { tournamentId: TOURNAMENT } });
+    expect(`지갑 ${user.points} / 참가 ${rows}행`).toBe(`지갑 ${ENTRY_FEE - 1} / 참가 0행`);
+  });
+
   /** 재시도 루프가 이것을 OTP 충돌로 오해하면 다섯 번을 헛돈다. */
   it('재시도하지 않는다 — 마감은 단조라 결과가 같다', async () => {
     await expect(service.joinSession({ tournamentId: TOURNAMENT }, USER)).rejects.toThrow();
