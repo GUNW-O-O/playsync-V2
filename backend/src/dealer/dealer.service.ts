@@ -15,7 +15,8 @@ import { Dashboard } from 'shared/types/tournamentMeta';
 import { PlaysyncService, RebuyOutcome } from 'src/playsync/playsync.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RedisService } from 'src/redis/redis.service';
-import { FINAL_TABLE_DEALER_BLOCKED, isFinalTable } from 'src/store/session/final-table';
+import { FINAL_TABLE_DEALER_BLOCKED, PRIZE_ZONE_KICK_BLOCKED, isFinalTable } from 'src/store/session/final-table';
+import { entryCountOf, payoutsForRaw } from 'src/playsync/payout-table';
 import { closeRegistration, isRegistrationOpenLive } from 'src/store/session/registration-gate';
 import {
   NOT_CLOSED_TOURNAMENT_FILTER,
@@ -348,7 +349,10 @@ export class DealerService {
     const [session, tableCount] = await Promise.all([
       this.prisma.tournament.findUniqueOrThrow({
         where: { id: tournamentId },
-        select: { id: true, status: true, startedAt: true, isRegistrationOpen: true },
+        select: {
+          id: true, status: true, startedAt: true, isRegistrationOpen: true,
+          activePlayers: true, totalBuyinAmount: true, entryFee: true, payoutTable: true,
+        },
       }),
       this.prisma.table.count({ where: { tournamentId } }),
     ]);
@@ -371,6 +375,19 @@ export class DealerService {
       // 영영 틀린 값을 본다. 결제 게이트가 거절하면서 하는 것과 같다.
       await closeRegistration(this.prisma, tournamentId, (m) => this.logger.warn(m));
       throw new ForbiddenException(FINAL_TABLE_DEALER_BLOCKED);
+    }
+
+    // **상금권에서는 내보내지 않는다**(T123). 킥은 등수도 상금도 주지 않고 인원만
+    // 줄인다 — 남은 사람이 전부 상금권이면 다음 파산자가 한 등수를 건너뛰어 그
+    // 등수의 상금이 영영 안 나가고, 종료의 장부 대조가 안 맞는다. 파이널 테이블
+    // 게이트는 테이블이 둘 이상이면 안 걸려 따로 본다. 폴드는 카운터와 무관해 그대로다.
+    if (type === 'KICK') {
+      const paidPlaces = payoutsForRaw(
+        entryCountOf(session.totalBuyinAmount, session.entryFee), session.payoutTable,
+      ).length;
+      if (session.activePlayers <= paidPlaces) {
+        throw new ForbiddenException(PRIZE_ZONE_KICK_BLOCKED);
+      }
     }
 
     /**
