@@ -9,8 +9,7 @@
     "lint": "eslint",
     "test": "vitest run",
     "test:e2e": "playwright test --project=regression",
-    "demo": "playwright test --project=demo",
-    "test:e2e:headed": "playwright test --headed",
+    "test:e2e:headed": "playwright test --project=regression --headed",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

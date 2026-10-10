@@ -206,12 +206,22 @@ async function main() {
   if (!connectionString) {
     throw new Error('DATABASE_URL 환경 변수가 설정되지 않았습니다.');
   }
+  // **부하 무대가 아니면 돌지 않는다**(T128). 이 시드는 전부 지우고 다시 깐다
+  // (`resetAll`의 TRUNCATE와 `flushdb`). 셸에 개발용 값이 남아 있으면 개발 DB가
+  // 지워진다 — 통합 테스트는 컨테이너를 갈라 구조로 막지만 이 스크립트는 env만 본다.
+  // DB는 이름으로, Redis는 「기본값(개발 포트)으로 떨어지지 않았다」로 가린다.
+  if (new URL(connectionString).pathname !== '/playsync_test') {
+    throw new Error(`부하 시드는 playsync_test에서만 돈다. 지금 DATABASE_URL의 DB는 ${new URL(connectionString).pathname.slice(1)}다.`);
+  }
+  if (!process.env.REDIS_PORT) {
+    throw new Error('부하 시드는 REDIS_PORT를 받아야 돈다 — 없으면 개발 Redis(6379)를 비운다.');
+  }
 
   const pool = new Pool({ connectionString });
   const prisma = new PrismaClient({ adapter: new PrismaPg(pool) });
   const redis = new Redis({
     host: process.env.REDIS_HOST ?? '127.0.0.1',
-    port: Number(process.env.REDIS_PORT ?? 6379),
+    port: Number(process.env.REDIS_PORT),
     password: process.env.REDIS_PASSWORD,
   });
 

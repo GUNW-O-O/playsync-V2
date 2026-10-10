@@ -24,6 +24,14 @@ say() { echo "[$(date +%H:%M:%S)] $*" | tee -a "$OUT.log"; }
 # 컨테이너를 다시 짓지 않으면 `docker logs`에 앞 실행이 쌓여 있다 — 이번 것만 남긴다.
 SINCE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
+# 중간에 끝나도(Ctrl+C, 아래의 exit) 무대를 되돌린다(T128). 안 그러면 백엔드가 착석용
+# 6코어로 남아 다음 램프가 「1코어」라고 믿는 무대가 달라지고, k6 컨테이너가 계속 돈다.
+cleanup() {
+  docker update --cpus 1 $BE >/dev/null 2>&1
+  docker rm -f $(docker ps -aq --filter name=k6) >/dev/null 2>&1
+}
+trap cleanup EXIT
+
 say "정리"
 docker rm -f $(docker ps -aq --filter name=k6) >/dev/null 2>&1
 if [ -n "$BUILD" ]; then
@@ -41,7 +49,11 @@ LOAD_STORES=1 LOAD_MAX_TABLES=$N npm run seed:load >>"$OUT.log" 2>&1 || { say "�
 say "백엔드 재시작 (6코어로 착석)"
 docker restart $BE >/dev/null
 docker update --cpus 6 $BE >/dev/null
-until curl -sf http://127.0.0.1:3001/internal/metrics >/dev/null; do sleep 1; done
+for i in $(seq 1 120); do
+  curl -sf http://127.0.0.1:3001/internal/metrics >/dev/null && break
+  [ "$i" = 120 ] && { say "백엔드가 2분 안에 안 떴다"; exit 1; }
+  sleep 1
+done
 
 GROW=$(( N * 9 / ${RATE:-8} + 30 ))
 say "k6 시작 (증설 ${GROW}초)"
@@ -57,7 +69,7 @@ DEADLINE=$(( $(date +%s) + GROW + 600 ))
 while :; do
   SEATED=$(sql "SELECT count(*) FROM \"TournamentParticipation\" WHERE status='PLAYING'")
   [ "${SEATED:-0}" -ge "$WANT" ] && break
-  [ "$(date +%s)" -gt "$DEADLINE" ] && { say "착석 시간초과 (${SEATED:-0}/$((N*9)))"; break; }
+  [ "$(date +%s)" -gt "$DEADLINE" ] && { say "착석 시간초과 (${SEATED:-0}/$((N*9))) — 다 안 앉은 무대는 재지 않는다"; exit 1; }
   kill -0 $K6 2>/dev/null || { say "k6가 먼저 끝났다"; tail -5 "$OUT-console.txt" | tee -a "$OUT.log"; exit 1; }
   sleep 5
 done
@@ -73,18 +85,22 @@ say "kill 전 대회 상태 $(sql 'SELECT status, "activePlayers" FROM "Tourname
 
 KILL=$(date +%s)
 say "KILL"
-docker kill $BE >/dev/null
+docker kill $BE >/dev/null || { say "docker kill 실패"; exit 1; }
 sleep 8
-docker start $BE >/dev/null
+docker start $BE >/dev/null || { say "docker start 실패"; exit 1; }
 say "START"
 ( sleep 45; say "부팅 직후 TCP 대기열 $(docker exec $BE sh -c "awk '/^TcpExt/{if(!h){split(\$0,k);h=1}else{for(i=2;i<=NF;i++)if(k[i]~/ListenOverflows|ListenDrops|TCPReqQFull|SyncookiesSent|TCPBacklogDrop/)printf \"%s=%s \",k[i],\$i}}' /proc/net/netstat")" ) &
 
 CLEARED=
 # 부팅이 SYNCING을 세울 때까지 먼저 기다린다 — 그 전의 ONGOING은 kill 전 값이다.
+SAW=
 for i in $(seq 1 60); do
-  [ "$(sql 'SELECT status FROM "Tournament" LIMIT 1')" = "SYNCING" ] && break
+  [ "$(sql 'SELECT status FROM "Tournament" LIMIT 1')" = "SYNCING" ] && { SAW=1; break; }
   sleep 1
 done
+# **못 봤으면 여기서 멈춘다**(T128). 그대로 가면 아래 루프의 첫 조회가 kill 전의 ONGOING을
+# 읽어 「SYNCING 해제」를 가짜 시각으로 적는다 — 부팅이 실패한 실행이 성공으로 남는다.
+[ -z "$SAW" ] && { say "60초 안에 SYNCING을 못 봤다 — 부팅 복구가 안 돌았다"; docker logs --since "$SINCE" $BE >"$OUT-backend.log" 2>&1; exit 1; }
 say "SYNCING 확인 — kill 후 $(( $(date +%s) - KILL ))초"
 for i in $(seq 1 300); do
   sleep 2
