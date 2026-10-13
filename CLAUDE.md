@@ -95,7 +95,7 @@ npm run assets:settlement  # 정산 촬영을 자른다 (셋이 다 있어야 �
 npm run check:images   # README가 가리키는 그림 이름이 img/ 에 있는지 (CI에 없다)
 ```
 
-부하 명령(`load:up` · `load:smoke` · `load:ramp-a/b` · `load:metrics` · `load:logs` ·
+부하 명령(`load:up` · `load:smoke` · `load:ramp-a/b` · `load:standard` · `load:metrics` · `load:logs` ·
 `seed:load` · `load:down`)과 그 무대 설명은 [`load/README.md`](./load/README.md).
 
 개발용 인프라는 `cd backend && docker compose up -d`. PostgreSQL + Redis를 띄우고

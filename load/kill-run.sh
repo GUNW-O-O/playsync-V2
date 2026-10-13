@@ -32,13 +32,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# 결과가 어느 코드의 것인지 남긴다. 무대 탓 실패(VM · 측정기)는 다시 돌리면 되므로 적지 않는다.
+say "커밋 $(git rev-parse --short HEAD)$(git diff --quiet HEAD -- backend packages load || echo ' (커밋 안 된 수정 있음)')"
 say "정리"
 docker rm -f $(docker ps -aq --filter name=k6) >/dev/null 2>&1
 if [ -n "$BUILD" ]; then
   say "빌드"
-  $C --profile load up -d --build >>"$OUT.log" 2>&1
+  $C --profile load up -d --build >>"$OUT.log" 2>&1 || { say "무대 기동 실패"; exit 1; }
 else
-  $C --profile load up -d >>"$OUT.log" 2>&1
+  $C --profile load up -d >>"$OUT.log" 2>&1 || { say "무대 기동 실패"; exit 1; }
 fi
 
 say "마이그레이션 + 시드 ($N 테이블)"
@@ -83,7 +85,7 @@ sleep 150
 docker stats --no-stream --format '{{.Name}} cpu={{.CPUPerc}} mem={{.MemUsage}}' | tee -a "$OUT.log"
 say "kill 전 대회 상태 $(sql 'SELECT status, "activePlayers" FROM "Tournament"')"
 
-KILL=$(date +%s)
+KILL=$(date +%s); KILL_MS=$(date +%s%3N)
 say "KILL"
 docker kill $BE >/dev/null || { say "docker kill 실패"; exit 1; }
 sleep 8
@@ -122,4 +124,5 @@ docker logs --since "$SINCE" $BE >"$OUT-backend.log" 2>&1
 docker cp $BE:/tmp/boot.cpuprofile "$(cygpath -w "$OUT.cpuprofile")" >/dev/null 2>&1
 docker rm -f $(docker ps -aq --filter name=k6) >/dev/null 2>&1
 wait $K6 2>/dev/null
+node load/kill-report.mjs "load/results/kill-$TAG-backend.log" "$KILL_MS" | tee "$OUT-report.txt"
 say "완료. KILL=$KILL"
