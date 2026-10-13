@@ -1,4 +1,4 @@
-import { isSilent, markAlive, probe, socketPingMs, sweep, SOCKET_PING_MS, KeepaliveSocket } from './keepalive';
+import { answerPongWaiters, awaitPong, isSilent, markAlive, probe, socketPingMs, sweep, SOCKET_PING_MS, KeepaliveSocket } from './keepalive';
 
 function fake(): KeepaliveSocket & { pings: number; terminated: boolean; sent: string[] } {
   const s: any = {
@@ -80,6 +80,56 @@ describe('keepalive sweep', () => {
       const s = fake();
       s.ping = () => { throw new Error('boom'); };
       expect(() => probe(s, 1_000)).not.toThrow();
+    });
+  });
+
+  /**
+   * 접기 직전에 딜러에게 묻는다(T130). 2초마다 전 딜러를 확인하던 것을 그 순간의 확인
+   * 하나로 바꿨다 — 모르는 동안에는 접지 않는다.
+   */
+  describe('awaitPong', () => {
+    beforeEach(() => jest.useFakeTimers());
+    afterEach(() => jest.useRealTimers());
+
+    it('기다리는 동안 pong이 오면 true다 — 늦게 와도 기다리는 동안이면', async () => {
+      const s = fake();
+      const answer = awaitPong(s, 1_500);
+      jest.advanceTimersByTime(1_000);
+      answerPongWaiters(s);
+      expect(`답 ${await answer} ping ${s.pings}`).toBe('답 true ping 1');
+    });
+
+    /** 반대 입력 — 「언제나 true」가 위를 통과한다. */
+    it('기다리는 동안 pong이 없으면 false다', async () => {
+      const s = fake();
+      const answer = awaitPong(s, 1_500);
+      jest.advanceTimersByTime(1_500);
+      answerPongWaiters(s); // 늦었다
+      expect(`답 ${await answer}`).toBe('답 false');
+    });
+
+    it('열리지 않은 소켓에는 ping하지 않고 false다', async () => {
+      const s = fake();
+      s.readyState = 3;
+      expect(`답 ${await awaitPong(s, 1_500)} ping ${s.pings}`).toBe('답 false ping 0');
+    });
+
+    it('ping이 던져도 던지지 않고 false다', async () => {
+      const s = fake();
+      s.ping = () => { throw new Error('boom'); };
+      expect(`답 ${await awaitPong(s, 1_500)}`).toBe('답 false');
+    });
+
+    /** 끝난 대기는 남지 않는다 — 남으면 소켓마다 대기자가 쌓인다. */
+    it('끝나면 대기자를 치운다', async () => {
+      const s = fake();
+      const a = awaitPong(s, 1_500);
+      answerPongWaiters(s);
+      await a;
+      const b = awaitPong(s, 1_500);
+      jest.advanceTimersByTime(1_500);
+      await b;
+      expect(`남은 대기 ${s.pongWaiters?.size ?? 0}`).toBe('남은 대기 0');
     });
   });
 

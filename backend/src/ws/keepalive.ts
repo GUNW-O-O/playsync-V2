@@ -29,6 +29,8 @@ export interface KeepaliveSocket {
   /** 딜러 빠른 확인(T121)을 마지막으로 보낸 시각과, 그 뒤로 연달아 답이 없던 횟수. `probe`가 쓰고, 침묵하던 소켓이 답하면 `WsGateway.onPong`이 횟수를 0으로 되돌린다. */
   probeSentAt?: number;
   probeMisses?: number;
+  /** `awaitPong`이 기다리는 중(T130). pong이 오면 `answerPongWaiters`가 깨운다. */
+  pongWaiters?: Set<() => void>;
   ping(): void;
   terminate(): void;
   send(message: string): void;
@@ -118,4 +120,35 @@ export function sweep(sockets: Iterable<KeepaliveSocket>, message: string): Keep
     }
   }
   return dead;
+}
+
+/**
+ * 접기 직전에 딜러에게 묻는 시간(T130). 문제가 없을 때 서버는 한가해 수십 ms에 답이
+ * 온다 — 재접속 피크의 이벤트 루프 p99가 약 500ms라 그 세 배를 둔다.
+ */
+export const DEALER_CONFIRM_MS = 1_500;
+
+/**
+ * ping을 보내고 `ms` 안에 pong이 오면 true(T130). **끊지 않는다** — 답이 없다는 것만
+ * 말한다. 끊는 것은 `sweep`의 일이다.
+ */
+export function awaitPong(socket: KeepaliveSocket, ms: number): Promise<boolean> {
+  if (socket.readyState !== OPEN) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const waiters = (socket.pongWaiters ??= new Set());
+    const done = (answer: boolean) => {
+      clearTimeout(timer);
+      waiters.delete(onPong);
+      resolve(answer);
+    };
+    const onPong = () => done(true);
+    const timer = setTimeout(() => done(false), ms);
+    waiters.add(onPong);
+    try { socket.ping(); } catch { done(false); }
+  });
+}
+
+/** pong을 받았다. 기다리던 확인을 전부 깨운다. */
+export function answerPongWaiters(socket: KeepaliveSocket) {
+  for (const fn of [...(socket.pongWaiters ?? [])]) fn();
 }
