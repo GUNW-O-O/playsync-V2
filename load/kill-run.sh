@@ -36,9 +36,9 @@ say "정리"
 docker rm -f $(docker ps -aq --filter name=k6) >/dev/null 2>&1
 if [ -n "$BUILD" ]; then
   say "빌드"
-  $C --profile load up -d --build >>"$OUT.log" 2>&1
+  $C --profile load up -d --build >>"$OUT.log" 2>&1 || { say "무대 기동 실패"; exit 1; }
 else
-  $C --profile load up -d >>"$OUT.log" 2>&1
+  $C --profile load up -d >>"$OUT.log" 2>&1 || { say "무대 기동 실패"; exit 1; }
 fi
 
 say "마이그레이션 + 시드 ($N 테이블)"
