@@ -10,6 +10,11 @@
 #
 # 끊는 초를 여럿 주면(예: "20 90") 한 번 앉힌 무대에서 차례로 끊는다 — 착석을 다시 하지 않는다.
 #
+# KILL=1이면 끊기 전에 같은 무대에서 백엔드를 죽였다 살린다(kill-run.sh와 같은 순서). 착석을
+# 한 번만 하려는 것이다 — 재접속은 좌석 토큰으로 티켓만 받아 착석의 bcrypt와 무관하다. 끊김은
+# `SYNCING`이 다 풀리고 나서, 아래 「직전 같은 길이」 창이 kill 복구에 걸치지 않을 만큼
+# 지난 뒤에 시작한다.
+#
 # 결과는 `load/results/outage-<태그>*`. 표는 `outage-report.mjs`가 백엔드 로그의
 # `[event]` 줄로 만든다. 환경변수 RATE(초당 착석 인원, 기본 8)는 kill-run.sh와 같다.
 set -u
@@ -62,7 +67,8 @@ done
 
 GROW=$(( N * 9 / ${RATE:-8} + 30 ))
 # 자리 비움과 지각을 끈다 — 켜 두면 평소의 시간 초과 폴드가 끊김이 만든 것과 섞인다.
-COMMON="-e LOAD_STEADY_S=2400 -e LOAD_BREACH_STREAK=100000 -e LOAD_ABSENT_RATIO=0 -e LOAD_LATE_RATIO=0"
+# KILL이면 kill 복구(최대 10분)와 그 뒤의 간격이 얹혀 고원이 더 길어야 한다.
+COMMON="-e LOAD_STEADY_S=$([ -n "${KILL:-}" ] && echo 3600 || echo 2400)-e LOAD_BREACH_STREAK=100000 -e LOAD_ABSENT_RATIO=0 -e LOAD_LATE_RATIO=0"
 say "k6 둘 시작 (증설 ${GROW}초)"
 $C --profile load --profile k6 run --rm --name $VICTIM $COMMON \
   -e LOAD_START_TABLES=$N -e LOAD_STEP_TABLES=$N -e LOAD_MAX_TABLES=$N \
@@ -98,6 +104,32 @@ docker stats --no-stream --format '{{.Name}} cpu={{.CPUPerc}} mem={{.MemUsage}}'
 VID=$(node -e "console.log(require('./load/.load-seed.json').tournaments[0].id)")
 REPORTS=
 LAST_T1=
+if [ -n "${KILL:-}" ]; then
+  syncing() { sql "SELECT count(*) FROM \"Tournament\" WHERE status='SYNCING'"; }
+  KILLED=$(date +%s)
+  say "KILL"
+  docker kill $BE >/dev/null || { say "docker kill 실패"; exit 1; }
+  sleep 8
+  docker start $BE >/dev/null || { say "docker start 실패"; exit 1; }
+  say "START"
+  # 재접속 몰림 중에 k6가 자기 상한(10코어)에 붙었는지 본다 — 붙었으면 수치는 측정기의 것이다.
+  ( sleep 30; docker stats --no-stream --format '{{.Name}} cpu={{.CPUPerc}} mem={{.MemUsage}}' | sed 's/^/START+30 /' | tee -a "$OUT.log" ) &
+  # 부팅이 SYNCING을 세울 때까지 먼저 기다린다 — 그 전의 ONGOING은 kill 전 값이다(T128).
+  SAW=
+  for i in $(seq 1 60); do [ "$(syncing)" -gt 0 ] 2>/dev/null && { SAW=1; break; }; sleep 1; done
+  [ -z "$SAW" ] && { say "60초 안에 SYNCING을 못 봤다 — 부팅 복구가 안 돌았다"; docker logs --since "$SINCE" $BE >"$OUT-backend.log" 2>&1; exit 1; }
+  PREV=
+  for i in $(seq 1 300); do
+    S=$(syncing)
+    [ "$S" != "$PREV" ] && say "SYNCING ${S}개 — kill 후 $(( $(date +%s) - KILLED ))초"
+    PREV=$S
+    [ "$S" = 0 ] && break
+    sleep 2
+  done
+  [ "$S" != 0 ] && { say "10분 안에 SYNCING이 안 풀렸다 — 끊김은 재지 않는다"; docker logs --since "$SINCE" $BE >"$OUT-backend.log" 2>&1; exit 1; }
+  say "kill 뒤 참가자 $(sql "SELECT status, count(*) FROM \"TournamentParticipation\" GROUP BY status" | tr '\n' ' ')"
+  LAST_T1=$(ms)
+fi
 for DOWN in $DOWNS; do
   # 표의 「직전 같은 길이」 창은 끊기 전 (DOWN + 180)초다(`outage-report.mjs`). 그 창이 앞
   # 끊김과 그 뒤 180초(앞 끊김의 표가 읽는 구간)에 걸치면 복구 중의 폴드를 「평소」로
