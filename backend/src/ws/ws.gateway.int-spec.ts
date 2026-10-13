@@ -16,6 +16,7 @@ import { PrismaClient, Role, TournamentStatus } from '@prisma/client';
 import { createTestRedis, flushTestRedis } from '../../test/helpers/redis';
 import { closeTestPrisma, createTestPrisma, truncateAll } from '../../test/helpers/prisma';
 import { RecoveryService } from 'src/recovery/recovery.service';
+import { DEALER_CONFIRM_MS } from './keepalive';
 import { DEALER_REVOKED_REASON, SERVER_OUTAGE_EVENT, SERVER_RECOVERING_MESSAGE, TOURNAMENT_SYNCING_EVENT } from '@playsync/contract';
 
 // 재집계 보류 창(T117)은 SyncQueue 단위 검사가 맡는다. 통합 검사는 `connect` 직후 결과를
@@ -1825,50 +1826,104 @@ describe('WsGateway 인바운드 경계', () => {
       });
 
       /**
-       * **딜러만 빠르게 확인한다.** 10초 주기의 청소로는 회선이 끊긴 것을 10~20초 뒤에
-       * 알고, 그 사이 마감이 온 사람이 접힌다. 딜러 소켓은 2초마다 따로 확인해 그 대회의
-       * 딜러가 전부 침묵이면 **소켓이 아직 열려 있어도** 멈춘다.
+       * 접기 직전에 그 테이블의 딜러를 확인한다(T130). 타임아웃 워커와 리바인 대기가 묻는
+       * `DealerLiveness`에 게이트웨이가 걸어 둔다 — 답이 없으면 접지 않는다.
        */
-      describe('딜러 빠른 확인', () => {
+      describe('접기 직전의 딜러 확인 (T130)', () => {
         /** 그 소켓이 pong을 보냈다 — `handleConnection`이 건 핸들러를 부른다. */
         const pong = (client: any) => client.on.mock.calls.find(([name]: [string]) => name === 'pong')[1]();
-        /** 확인 한 번. 줄에 선 판정까지 기다린다. */
-        const probeOnce = async () => { gateway.probeDealers(); await (gateway as any).syncQueue.enqueue(TOURNAMENT, async () => {}); };
         const longAgo = () => Date.now() - 60_000;
+        /** 청소 한 틱 — 줄에 선 판정까지 기다린다. */
+        const sweepOnce = async () => { gateway.sweepSockets(); await (gateway as any).syncQueue.enqueue(TOURNAMENT, async () => {}); };
 
-        it('그 대회의 딜러가 연달아 두 번 답이 없으면 멈춘다 — 한 번으로는 아니고, 소켓은 끊지 않는다', async () => {
+        // 게이트웨이는 파일 전체가 하나다 — 줄인 확인 시간을 되돌린다.
+        afterEach(() => { (gateway as any).dealerConfirmMs = DEALER_CONFIRM_MS; });
+
+        it('그 테이블 딜러가 확인 안에 답하면 true다', async () => {
           await seedSyncingTournament(TournamentStatus.ONGOING);
           await seedSeats();
           const dealerClient = await connect(await dealerTicket(TABLE), TABLE);
-          const lastSeen = longAgo();
-          dealerClient.aliveAt = lastSeen;
-          dealerClient.terminate = jest.fn();
+          dealerClient.ping = jest.fn(() => setImmediate(() => pong(dealerClient)));
+
+          expect(`답 ${await gateway.confirmDealer(TABLE)} ping ${dealerClient.ping.mock.calls.length}`).toBe('답 true ping 1');
+        });
+
+        /** 반대 입력 — 「언제나 true」가 위를 통과한다. 소켓은 끊지 않는다(끊는 것은 청소다). */
+        it('답이 없으면 false다 — 소켓은 끊지 않는다', async () => {
+          await seedSyncingTournament(TournamentStatus.ONGOING);
+          await seedSeats();
+          const dealerClient = await connect(await dealerTicket(TABLE), TABLE);
           dealerClient.ping = jest.fn();
+          dealerClient.terminate = jest.fn();
+          (gateway as any).dealerConfirmMs = 50;
 
-          await probeOnce();              // 첫 확인을 보낸다
-          await probeOnce();              // 답이 없었다 (1)
-          expect(`한 번 ${pauses()}`).toBe('한 번 0');
-          await probeOnce();              // 또 없었다 (2)
+          expect(`답 ${await gateway.confirmDealer(TABLE)} 끊음 ${dealerClient.terminate.mock.calls.length}`).toBe('답 false 끊음 0');
+        });
 
-          expect(`두 번 ${pauses()} 끊음 ${dealerClient.terminate.mock.calls.length} 방에 ${(gateway as any).tableSessions.get(TABLE)?.has(dealerClient)}`)
-            .toBe('두 번 1 끊음 0 방에 true');
-          const [[, pausedAt]] = recovery.pauseForLineOutage.mock.calls as [string, Date][];
-          expect(`마지막 응답부터 ${pausedAt.getTime() === lastSeen}`).toBe('마지막 응답부터 true');
+        /** 새로고침 직후처럼 딜러 소켓이 둘 — 하나만 답해도 true다. 「모두 답해야」 구현이 걸린다. */
+        it('딜러 소켓이 둘이고 하나만 답해도 true다', async () => {
+          await seedSyncingTournament(TournamentStatus.ONGOING);
+          await seedSeats();
+          const live = await connect(await dealerTicket(TABLE), TABLE);
+          live.ping = jest.fn(() => setImmediate(() => pong(live)));
+          const silent = await connect(await dealerTicket(TABLE), TABLE);
+          silent.ping = jest.fn();
+          (gateway as any).dealerConfirmMs = 50;
+
+          expect(`답 ${await gateway.confirmDealer(TABLE)}`).toBe('답 true');
+        });
+
+        /** 딜러 태블릿이 꺼진 테이블 — 물을 소켓이 없다. 좌석 소켓은 딜러가 아니다. */
+        it('그 테이블에 딜러 소켓이 없으면 false다 — 좌석만 있어도', async () => {
+          await seedSyncingTournament(TournamentStatus.ONGOING);
+          await seedSeats();
+          await connect(await seatTicket('alice', 0), TABLE);
+
+          expect(`답 ${await gateway.confirmDealer(TABLE)}`).toBe('답 false');
+        });
+
+        /** 다른 테이블의 딜러는 이 테이블의 증거가 아니다 — (a) 결정. */
+        it('다른 테이블의 딜러만 답해도 false다', async () => {
+          await seedSyncingTournament(TournamentStatus.ONGOING);
+          await seedSeats();
+          const other = await connect(await dealerTicket(OTHER_TABLE), OTHER_TABLE);
+          other.ping = jest.fn(() => setImmediate(() => pong(other)));
+          (gateway as any).dealerConfirmMs = 50;
+
+          expect(`답 ${await gateway.confirmDealer(TABLE)}`).toBe('답 false');
+        });
+
+        it('게이트웨이가 확인을 등록부에 건다', async () => {
+          await seedSyncingTournament(TournamentStatus.ONGOING);
+          await seedSeats();
+          gateway.onModuleInit();
+          try {
+            const dealerClient = await connect(await dealerTicket(TABLE), TABLE);
+            dealerClient.ping = jest.fn(() => setImmediate(() => pong(dealerClient)));
+
+            expect(`등록부 ${await (gateway as any).redis.dealerLiveness.confirm(TABLE)} ping ${dealerClient.ping.mock.calls.length}`).toBe('등록부 true ping 1');
+          } finally {
+            gateway.onModuleDestroy();
+            // 게이트웨이는 파일 전체가 하나다. 파괴가 뗀 장애 리스너(T97)를 되돌려 뒤의 검사를 지킨다.
+            const outage = (gateway as any).redis.outage;
+            outage.on('down', (gateway as any).onOutageDown);
+            outage.on('recovered', (gateway as any).onOutageRecovered);
+          }
         });
 
         /**
-         * T126 ①. 회선이 죽은 채 상점이 「지금 진행」을 눌렀다. 딜러 소켓은 청소 전이라
-         * 아직 열려 있고 침묵 중이다 — 다음 확인 틱이 같은 「마지막으로 응답한 시각」으로
-         * 대회를 다시 멈췄다. 상점의 결정이 몇 초 만에 무효가 되고, 그 구간이 정지
-         * 시간에 두 번 더해졌다. 푼 뒤로 답한 딜러가 없으면 다시 멈추지 않는다.
+         * T126 ①. 회선이 죽은 채 상점이 「지금 진행」을 눌렀다. 딜러 소켓은 청소 전이라 아직
+         * 열려 있었고, 청소가 그 소켓을 끊는 순간 같은 「마지막으로 응답한 시각」으로 대회를
+         * 다시 멈춰, 상점의 결정이 무효가 되고 그 구간이 정지 시간에 두 번 더해졌다. 푼 뒤로
+         * 답한 딜러가 없으면 다시 멈추지 않는다.
          */
         it('상점이 강제로 푼 뒤에는 같은 침묵으로 다시 멈추지 않는다', async () => {
           await seedSyncingTournament(TournamentStatus.ONGOING);
           await seedSeats();
-          const dealerClient = await connect(await dealerTicket(TABLE), TABLE);
-          dealerClient.aliveAt = longAgo();
-          dealerClient.ping = jest.fn();
-          for (let i = 0; i < 3; i++) await probeOnce();
+          const first = await connect(await dealerTicket(TABLE), TABLE);
+          first.aliveAt = longAgo();
+          first.isAlive = false;
+          await sweepOnce();
           expect(`멈춤 ${pauses()}`).toBe('멈춤 1');
 
           await prisma.tournament.update({
@@ -1879,14 +1934,19 @@ describe('WsGateway 인바운드 경계', () => {
             where: { id: TOURNAMENT }, data: { status: TournamentStatus.ONGOING, pausedAt: null },
           });
 
-          for (let i = 0; i < 3; i++) await probeOnce();
+          // 푼 뒤 붙은 딜러가 같은 옛 시각인 채 청소에 끊긴다.
+          const second = await connect(await dealerTicket(TABLE), TABLE);
+          second.aliveAt = longAgo();
+          second.isAlive = false;
+          await sweepOnce();
           expect(`푼 뒤 멈춤 ${pauses()}`).toBe('푼 뒤 멈춤 1');
 
-          // 반대쪽 — 딜러가 돌아왔다가 다시 사라지면 그때는 멈춘다.
-          pong(dealerClient);
-          dealerClient.aliveAt = Date.now();
+          // 반대쪽 — 푼 뒤로 답한 딜러가 끊기면 그때는 멈춘다.
           await new Promise((r) => setTimeout(r, 5));
-          for (let i = 0; i < 3; i++) await probeOnce();
+          const third = await connect(await dealerTicket(TABLE), TABLE);
+          third.aliveAt = Date.now();
+          third.isAlive = false;
+          await sweepOnce();
           expect(`돌아왔다 다시 사라짐 ${pauses()}`).toBe('돌아왔다 다시 사라짐 2');
         });
 
@@ -1905,41 +1965,6 @@ describe('WsGateway 인바운드 경계', () => {
 
           expect(`기록 ${(gateway as any).lastDealerSeenAt.has(TOURNAMENT)} 유예 ${(gateway as any).graceTimers.size} 멈춤 ${pauses()}`)
             .toBe('기록 false 유예 0 멈춤 0');
-        });
-
-        /** 반대 입력 — 한 대라도 답하면 회선은 살아 있다. */
-        it('한 대라도 답하고 있으면 안 멈춘다', async () => {
-          await seedSyncingTournament(TournamentStatus.ONGOING);
-          await seedSeats();
-          const quiet = await connect(await dealerTicket(TABLE), TABLE);
-          const alive = await connect(await dealerTicket(OTHER_TABLE), OTHER_TABLE);
-          for (const c of [quiet, alive]) { c.aliveAt = longAgo(); c.ping = jest.fn(); }
-
-          for (let i = 0; i < 4; i++) { await probeOnce(); pong(alive); }
-
-          expect(pauses()).toBe(0);
-        });
-
-        /**
-         * 침묵한 딜러를 붙어 있는 것으로 세면, 멈추자마자 n/n이 차서 회선이 죽은 채로
-         * 대회가 다시 풀린다. 답이 돌아오면 그때 다시 센다.
-         */
-        it('침묵한 딜러는 n/n에 안 세고, 답이 돌아오면 다시 세어 푼다', async () => {
-          await seedSyncingTournament();
-          await seedSeats();
-          await connectSeats();
-          const quiet = await connect(await dealerTicket(TABLE), TABLE);
-          quiet.aliveAt = longAgo();
-          quiet.ping = jest.fn();
-          for (let i = 0; i < 3; i++) await probeOnce();
-
-          const other = await connect(await dealerTicket(OTHER_TABLE), OTHER_TABLE);
-          expect(lastSyncingPayload(other)).toEqual({ syncing: true, present: 3, required: 4 });
-          expect(`침묵 중 ${recovery.completeSync.mock.calls.length}`).toBe('침묵 중 0');
-
-          pong(quiet);
-          await waitUntil(() => recovery.completeSync.mock.calls.length === 1);
-          expect(lastSyncingPayload(other)).toEqual({ syncing: false, present: 4, required: 4 });
         });
       });
 

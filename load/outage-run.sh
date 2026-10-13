@@ -171,9 +171,13 @@ docker stats --no-stream --format '{{.Name}} cpu={{.CPUPerc}} mem={{.MemUsage}}'
 docker logs --since "$SINCE" $BE >"$OUT-backend.log" 2>&1
 docker rm -f $(docker ps -aq --filter name=k6) >/dev/null 2>&1
 wait $K6V $K6C 2>/dev/null
+# 같은 길이를 여러 번 끊어도 표가 덮이지 않게 처음 것은 `-report-<초>`, 다음부터는 `-report-<초>-<회차>`다.
+declare -A SEEN
 for R in $REPORTS; do
   IFS=: read -r DOWN T0 T1 <<<"$R"
-  node load/outage-report.mjs "load/results/outage-$TAG-backend.log" "$VID" "$T0" "$T1" | tee "$OUT-report-$DOWN.txt"
+  SEEN[$DOWN]=$(( ${SEEN[$DOWN]:-0} + 1 ))
+  NAME=$DOWN; [ "${SEEN[$DOWN]}" -gt 1 ] && NAME="$DOWN-${SEEN[$DOWN]}"
+  node load/outage-report.mjs "load/results/outage-$TAG-backend.log" "$VID" "$T0" "$T1" | tee "$OUT-report-$NAME.txt"
 done
 [ -n "${KILL:-}" ] && node load/kill-report.mjs "load/results/outage-$TAG-backend.log" "$KILLED_MS" | tee "$OUT-report-kill.txt"
 say "완료. VID=$VID 끊김$REPORTS"

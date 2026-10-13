@@ -32,7 +32,7 @@ import { PlaysyncService } from 'src/playsync/playsync.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { RecoveryService } from 'src/recovery/recovery.service';
 import { RedisService } from 'src/redis/redis.service';
-import { dealerProbeMs, isSilent, markAlive, probe, socketPingMs, sweep } from './keepalive';
+import { answerPongWaiters, awaitPong, DEALER_CONFIRM_MS, markAlive, socketPingMs, sweep } from './keepalive';
 import { RequiredTable, syncProgress, TablePresence } from './sync-progress';
 import { event, observe, timed } from 'src/metrics/stage-timer';
 import { dealerGoneGraceMs, SyncQueue, syncRecountHoldMs } from './sync-queue';
@@ -97,7 +97,9 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
   }
 
   private pingTimer: ReturnType<typeof setInterval> | null = null;
-  private probeTimer: ReturnType<typeof setInterval> | null = null;
+  /** 접기 직전에 딜러를 기다리는 시간(T130). 테스트가 줄인다. */
+  private dealerConfirmMs = DEALER_CONFIRM_MS;
+  private detachLiveness: (() => void) | null = null;
 
   /**
    * 좀비 소켓 청소를 시작한다(T96). 게이트웨이에 하트비트가 없던 동안 반만
@@ -114,16 +116,15 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     // `WsModule`을 `app.init()`하고 `close()`를 빠뜨린 스펙에서 jest가
     // 끝나지 않는다.
     this.pingTimer.unref();
-    // 딜러만 더 자주 확인한다(T121). 끊지는 않는다 — `probeDealers`.
-    this.probeTimer = setInterval(() => this.probeDealers(), dealerProbeMs());
-    this.probeTimer.unref();
+    // 타임아웃 워커와 리바인 대기가 접기 직전에 묻는다(T130).
+    this.detachLiveness = this.redis.dealerLiveness.attach((tableId) => this.confirmDealer(tableId));
   }
 
   onModuleDestroy() {
     if (this.pingTimer) clearInterval(this.pingTimer);
     this.pingTimer = null;
-    if (this.probeTimer) clearInterval(this.probeTimer);
-    this.probeTimer = null;
+    this.detachLiveness?.();
+    this.detachLiveness = null;
     for (const timer of this.graceTimers.values()) clearTimeout(timer);
     this.graceTimers.clear();
     // T97. 안 떼면 이 인스턴스가 공유 `RedisOutage`에 영원히 남는다 — 테스트가
@@ -132,49 +133,10 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     this.redis.outage.off('recovered', this.onOutageRecovered);
   }
 
-  /**
-   * pong을 받았다. 침묵하던 딜러가 답한 것이면(T121) 그 자리에서 다시 붙은 것으로 치고
-   * 그 대회를 다시 센다 — 소켓이 안 끊겼으니 접속 이벤트가 따로 오지 않는다.
-   */
+  /** pong을 받았다. 접기 직전의 확인이 기다리고 있으면 깨운다(T130). */
   private onPong(client: any) {
-    const wasSilent = isSilent(client);
     markAlive(client);
-    if (!wasSilent) return;
-    client.probeMisses = 0;
-    if (client.role === Role.DEALER && client.tournamentId) {
-      void this.reportSync(client.tournamentId).catch(() => { /* reportSync가 이미 로그로 남긴다 */ });
-    }
-  }
-
-  /**
-   * 딜러 빠른 확인 한 틱(T121). 테이블 방의 딜러 소켓에만 ping을 보내고, **그 대회의
-   * 딜러가 전부 침묵이면** 대회를 멈춘다 — 10초 주기의 청소(`sweepSockets`)로는 회선이
-   * 끊긴 것을 10~20초 뒤에 알고, 그 사이 마감이 온 사람이 접힌다.
-   *
-   * **끊지 않는다.** 침묵한 소켓은 「없는 딜러」로만 센다(`hasDealer` · `tablePresence`).
-   * 와이파이가 몇 초 흔들린 것이면 답이 돌아오는 순간 그 소켓 그대로 이어 간다(`onPong`).
-   * 정말 죽은 소켓은 청소가 치운다.
-   */
-  probeDealers() {
-    const now = Date.now();
-    const seen = new Map<string, { anyAnswering: boolean; lastAliveAt: number }>();
-    for (const sessions of this.tableSessions.values()) {
-      for (const s of sessions) {
-        const socket = s as any;
-        if (socket.wasTableDealer !== true || socket.readyState !== WebSocket.OPEN) continue;
-        probe(socket, now);
-        const t = seen.get(socket.tournamentId) ?? { anyAnswering: false, lastAliveAt: 0 };
-        if (!isSilent(socket)) t.anyAnswering = true;
-        t.lastAliveAt = Math.max(t.lastAliveAt, socket.aliveAt ?? 0);
-        seen.set(socket.tournamentId, t);
-      }
-    }
-    for (const [tournamentId, t] of seen) {
-      // 판정은 `pauseIfNoDealer`가 다시 한다. 여기서 거르는 것은 틱마다 전 방을 또 훑지 않으려는 것뿐이다.
-      if (t.anyAnswering) continue;
-      this.lastDealerSeenAt.set(tournamentId, Math.max(this.lastDealerSeenAt.get(tournamentId) ?? 0, t.lastAliveAt));
-      void this.pauseIfNoDealer(tournamentId);
-    }
+    answerPongWaiters(client);
   }
 
   /** 한 틱. 두 방(대회 · 테이블)의 소켓 전부. */
@@ -780,8 +742,8 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
   private readonly lastDealerSeenAt = new Map<string, number>();
   /**
    * 상점이 그 대회를 강제로 푼 시각(T126, `forceSync`). **그 뒤로 답한 딜러가 없으면 회선
-   * 탓으로 다시 멈추지 않는다** — 회선이 죽은 채 푼 것이면 딜러 소켓은 여전히 침묵 중이고,
-   * 다음 확인 틱이 같은 `pausedAt`으로 대회를 되돌려 그 구간을 두 번 계상했다.
+   * 탓으로 다시 멈추지 않는다** — 회선이 죽은 채 푼 것이면 딜러 소켓은 청소 전까지 열려
+   * 있고, 청소가 그 소켓을 끊는 순간 같은 `pausedAt`으로 대회를 되돌려 그 구간을 두 번 계상했다.
    */
   private readonly forcedAt = new Map<string, number>();
   /** 줄에서 아직 시작 안 한 「딜러 0」 확인. 한꺼번에 끊긴 딜러들이 하나로 합쳐진다. */
@@ -791,8 +753,37 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
   private readonly graceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   /**
-   * 그 대회에 **답하고 있는** 딜러 소켓이 하나라도 있나. 빈 테이블의 딜러도 센다 — 회선이
-   * 살아 있다는 증거다. 열려 있어도 빠른 확인에 침묵한 소켓은 안 센다(`probeDealers`).
+   * 그 테이블의 딜러가 지금 답하나(T130). 턴 · 리바인 시간 초과가 사람을 접기 **직전에**
+   * 묻는다(`DealerLiveness`). 답이 없으면 시간 초과 잡은 접지 않는다 — 회선이 끊겼는지
+   * 아직 모르는 동안 잡이 사람을 접지 않는다. (마감 뒤에 직접 누른 사람은 `handleAction`의
+   * `isExpired`가 여전히 접는다.)
+   *
+   * **그 테이블의 딜러만 본다.** 딜러 태블릿 하나가 꺼지면 그 테이블만 서고 나머지는
+   * 돈다. 회선이 끊기면 테이블이 하나씩 서다가, 청소(`sweepSockets`)가 딜러 소켓을 전부
+   * 끊으면 `pauseIfNoDealer`가 대회를 멈춘다.
+   *
+   * 끊지 않는다. 열린 딜러 소켓이 여럿이면(새로고침 직후) 하나라도 답하면 true다 —
+   * 첫 답에서 바로 끝나므로 반쯤 죽은 중복 소켓이 확인을 늦추지 않는다.
+   */
+  async confirmDealer(tableId: string): Promise<boolean> {
+    const dealers = [...(this.tableSessions.get(tableId) ?? [])].filter(
+      (s: any) => s.role === Role.DEALER && s.readyState === WebSocket.OPEN,
+    );
+    if (dealers.length === 0) return false;
+    return new Promise<boolean>((resolve) => {
+      let left = dealers.length;
+      for (const s of dealers) {
+        awaitPong(s as any, this.dealerConfirmMs).then(
+          (ok) => (ok ? resolve(true) : --left === 0 && resolve(false)),
+          () => --left === 0 && resolve(false),
+        );
+      }
+    });
+  }
+
+  /**
+   * 그 대회에 열려 있는 딜러 소켓이 하나라도 있나. 빈 테이블의 딜러도 센다 — 회선이
+   * 살아 있다는 증거다.
    */
   private hasDealer(tournamentId: string): boolean {
     // ponytail: 전 테이블 방을 훑는다. 딜러 끊김마다 한 번이라 지금은 충분하다 —
@@ -802,7 +793,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
         const socket = s as any;
         if (
           socket.role === Role.DEALER && socket.tournamentId === tournamentId &&
-          socket.readyState === WebSocket.OPEN && !isSilent(socket)
+          socket.readyState === WebSocket.OPEN
         ) {
           return true;
         }
@@ -998,8 +989,7 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
     for (const s of this.tableSessions.get(tableId) ?? []) {
       const socket = s as any;
       if (socket.readyState !== WebSocket.OPEN) continue;
-      // 침묵한 딜러는 돌아온 것으로 안 센다(T121) — 세면 회선이 죽은 채로 n/n이 찬다.
-      if (socket.role === Role.DEALER) dealer ||= !isSilent(socket);
+      if (socket.role === Role.DEALER) dealer = true;
       else if (typeof socket.seatIndex === 'number') seats.add(socket.seatIndex);
     }
     return { dealer, seats };

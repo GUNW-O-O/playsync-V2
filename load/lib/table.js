@@ -14,6 +14,7 @@ import {
   wsTicketAttempt,
 } from './api.js';
 import { BURST_DEFAULTS, createBurst, reconnectDelayMs } from './reconnect-burst.js';
+import { rankWinners } from './showdown.js';
 import { createWindowQueue } from './windows.js';
 
 /**
@@ -283,6 +284,12 @@ const FOLD_RATIO = Number(__ENV.LOAD_FOLD_RATIO || 0.15);
 
 /** 리바인을 수락한 횟수. 리바인 경로가 실제로 돌았다는 증거다. */
 export const rebuysAccepted = new Counter('rebuys_accepted');
+/**
+ * 서버가 거절한 딜러 명령. **0이 아니면 그 테이블이 서 있을 수 있다** — 거절에는 방송이
+ * 없고 쇼다운에는 차례도 타이머도 없다. 예전에는 이 응답을 버려, 승자 입력이 거절된
+ * 테이블이 조용히 영영 섰다(`showdown.js`).
+ */
+export const dealerRejects = new Counter('dealer_rejects');
 /** 소켓을 통째로 끊었다 다시 붙인 횟수. 재접속 폭발이 실제로 일어났다는 증거다. */
 export const reconnects = new Counter('reconnects');
 /** 전원이 다시 붙어 첫 renderGame을 받기까지. 티켓 발급 왕복이 포함된다. */
@@ -571,6 +578,14 @@ export function runHands({
         entry.ws.send(JSON.stringify({ event: 'REBUY_RESPONSE', data: { accept: true } }));
         return;
       }
+      // 거절은 보낸 소켓에만 온다. 세고 사유를 남긴다 — 버리면 선 테이블이 안 보인다.
+      // `SYNCING` 중의 거절(「모든 기기가 돌아올 때까지…」)은 띠가 걷히면 다시 판단하므로
+      // 서지 않는다. 그 밖의 거절이 쌓이면 봇이 서버의 규칙을 어기고 있는 것이다.
+      if (parsed.event === 'error' && entry.role === 'dealer') {
+        dealerRejects.add(1);
+        console.error(`딜러 명령 거절: ${String(parsed.data).slice(0, 60)}`);
+        return;
+      }
       if (parsed.event !== 'renderGame' || !parsed.data) return;
       latestState = parsed.data;
 
@@ -765,20 +780,20 @@ export function runHands({
         return;
       }
       if (state.phase === GamePhase.SHOWDOWN) {
-        // **승자를 무작위 한 명으로 고른다.** 승자는 계산되는 값이 아니라
-        // 딜러가 입력하는 값이므로(카드는 물리다) 봇이 카드를 못 봐도 이
+        // **살아 있는 전원을 무작위 순위로 넣는다**(`rankWinners`). 승자는 계산되는
+        // 값이 아니라 딜러가 입력하는 값이므로(카드는 물리다) 봇이 카드를 못 봐도 이
         // 경로는 정당하다.
         //
-        // 예전에는 폴드 안 한 전원을 한 그룹으로 넣었다(보드 하이). 그러면
-        // 팟이 낸 만큼 되돌아와 **아무도 터지지 않고**, 리바인 분기
-        // (`DealerService.resolveWinners`의 리바인 단계)가 한 번도 실행되지 않는다.
-        const alive = state.players.filter((p) => p && !p.hasFolded).map((p) => p.id);
-        if (alive.length > 0) {
-          const winner = alive[Math.floor(Math.random() * alive.length)];
+        // 한 명만 넣던 동안에는 그 한 명이 위층 사이드팟에 자격이 없으면 서버가
+        // 거절했고, 그 테이블이 쇼다운에 영영 섰다. 그 전에는 폴드 안 한 전원을 한
+        // 그룹으로 넣었다(보드 하이) — 팟이 낸 만큼 되돌아와 **아무도 터지지 않고**,
+        // 리바인 분기(`DealerService.resolveWinners`의 리바인 단계)가 한 번도 안 돌았다.
+        const winnerGroups = rankWinners(state.players, Math.random);
+        if (winnerGroups.length > 0) {
           handsPlayed.add(1);
           send(entry, {
             event: 'DEALER_ACTION',
-            data: { action: 'RESOLVE_WINNERS', winnerGroups: [[winner]] },
+            data: { action: 'RESOLVE_WINNERS', winnerGroups },
           });
         }
       }

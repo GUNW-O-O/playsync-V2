@@ -39,8 +39,8 @@ const of = (name, extra = () => true) => v.filter((e) => e.name === name && extr
 const dealerGone = of('ws.gone', (e) => e.role === 'dealer' && e.t <= T1 + 30_000);
 const seatGone = of('ws.gone', (e) => e.role === 'seat' && e.t <= T1 + 30_000);
 const lastDealerGone = max(dealerGone.map((e) => e.t)); // 마지막 딜러가 사라진 시각
-// 서버가 안 시각. 대회를 멈춘 기록이 있으면 그것이다 — 딜러 빠른 확인(T121)은 소켓을
-// 끊기 전에 침묵만으로 멈춘다. 없으면(수정 전 로그) 마지막 딜러가 사라진 시각이다.
+// 서버가 안 시각. 대회를 멈춘 기록이 있으면 그것이다 — 청소(10초)가 마지막 딜러 소켓을
+// 끊는 순간 `pauseIfNoDealer`가 멈춘다. 없으면(수정 전 로그) 마지막 딜러가 사라진 시각이다.
 const paused = min(of('tournament.paused', (e) => e.t <= T1 + 30_000).map((e) => e.t));
 const detected = paused ?? lastDealerGone;
 const folds = of('timeout.fold');

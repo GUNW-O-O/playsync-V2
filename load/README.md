@@ -9,6 +9,7 @@ lib/table.js       VU 하나가 테이블 하나를 든다. 소켓 열 개
 lib/windows.js     지연 측정 창 큐. **순수 모듈이라 테스트가 붙는다**
 lib/windows.spec.js  `npm test -w`가 아니라 `cd load && npm test`
 lib/door.js        로그인 문 판정(통과·429·그 밖의 실패). **순수 모듈**
+lib/showdown.js    봇 딜러의 승자 순위. **순수 모듈**, 스펙이 옆에 있다
 lib/door.spec.js   위와 같은 자리에서 `cd load && npm test`
 lib/reconnect-backoff.js  재접속이 상한에 걸렸을 때 언제 다시 두드릴지. **순수 모듈**, 스펙이 옆에 있다
 lib/reconnect-burst.js    재접속 폭발에서 소켓이 언제 다시 열리나. **순수 모듈**, 스펙이 옆에 있다
@@ -508,8 +509,14 @@ POST /dealer/auth              bcrypt.compare — 테이블마다 한 번
 | 체크·콜 | 나머지 65% | 핸드가 끝까지 가야 플랍·턴·리버·쇼다운이 전부 돈다 |
 | 레이즈 | `LOAD_RAISE_RATIO` 0.2 | `resetChecked()`가 돌아 라운드가 한 바퀴 더 간다. 액션 수와 fan-out이 곱해진다 |
 | 폴드 | `LOAD_FOLD_RATIO` 0.15 | 없으면 사이드팟이 안 생기고 팟이 늘 전원 분배다 |
-| 딜러 승자 | 무작위 한 명 | 칩이 쏠려 탈락자가 나온다 |
+| 딜러 승자 | 살아 있는 전원을 무작위 순위로(`lib/showdown.js`) | 칩이 쏠려 탈락자가 나온다. **한 명만 넣으면 사이드팟에서 거절된다** — 아래 |
 | 리바인 | 즉시 수락 | 좌석이 비지 않아 규모 축이 인원 감소로 흔들리지 않는다 |
+
+**승자를 한 명만 넣으면 테이블이 선다.** 그 사람이 위층 사이드팟에 자격이 없으면 서버가
+「승자가 지명되지 않은 팟」으로 거절하고(`TableEngine.resolveWinner`), 쇼다운에는 차례도
+타이머도 없어 아무도 다시 안 민다. 스택이 갈릴수록 층이 생겨 실행이 길어질수록 선 테이블이
+늘었고, 1,000테이블 실측 끝에 대조군 444테이블 중 442가 쇼다운에 서 있었다. 그 고원은 실제보다
+가벼웠다. 이제 거절은 `dealer_rejects`로 세고 사유를 콘솔에 남긴다.
 
 **합법인 것 중에서만 고른다.** 불법 액션은 엔진이 거절하는데, 그 거절이 부하에
 섞이면 재는 것이 게임이 아니라 에러 경로가 된다. 레이즈의 `amount`는 목표
@@ -758,6 +765,7 @@ node scripts/load-report.mjs load/results/ramp-b-raw.json
 | `reconnects` · `reconnect_ms` | 재접속 폭발 횟수와 복구 시간 | **최대 300초**(T113) |
 | `reconnect_seat_ms` · `reconnect_dealer_ms` | 그중 마지막 좌석 · 딜러가 돌아오기까지 | 기록용 |
 | `dealer_action_ms` | 딜러의 딜(`deal`) · 승자 입력(`winners`)이 반영되기까지. `my_action_ms`에 안 섞는다 | 기록용 |
+| `dealer_rejects` | 서버가 거절한 딜러 명령. `SYNCING` 중의 거절은 띠가 걷히면 다시 판단해 괜찮다. **「승자가 지명되지 않은 팟」이 있으면 테이블이 서 있다** | 사유를 콘솔에서 본다 |
 | `ticket_unreachable` | 재접속 티켓이 서버 무응답이라 다시 두드린 횟수 | 기록용 |
 | `my_action_server_ms` | 그 왕복 중 **서버가 답을 만들기까지** | 기록용 |
 | `my_action_client_ms` | 그 왕복 중 **선과 측정기가 나르기까지** | 기록용 |
