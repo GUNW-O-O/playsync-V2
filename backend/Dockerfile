@@ -14,7 +14,7 @@
 # **멀티스테이지로 나누지 않는다.** 런타임이 빌더 산출물을 거의 다 필요로 한다 —
 # 컨테이너가 뜰 때 `prisma migrate deploy`를 돌리므로 prisma CLI(devDependency)가
 # 있어야 한다. 나눠도 버릴 것이 없으면 단계만 늘어난다.
-FROM node:22
+FROM node:22.23.2
 
 WORKDIR /app
 

@@ -24,6 +24,7 @@
     "load:logs": "docker compose -f backend/docker-compose.test.yml logs -f backend-load",
     "load:ramp-b": "docker compose -f backend/docker-compose.test.yml --profile load --profile k6 run --rm k6 run --out json=/load/results/ramp-b-raw.json -e LOAD_RECONNECT_AT_TABLES=30 /load/scenarios/ramp.js",
     "load:ramp-a": "docker compose -f backend/docker-compose.test.yml --profile load --profile k6 run --rm k6 run --out json=/load/results/ramp-a-raw.json -e LOAD_TABLES_PER_STORE=6 -e LOAD_RECONNECT_AT_TABLES=30 /load/scenarios/ramp.js",
+    "load:standard": "bash load/standard-run.sh",
     "load:down": "docker compose -f backend/docker-compose.test.yml --profile load --profile k6 down -v",
     "demo": "node scripts/demo.mjs",
     "demo:settlement": "node scripts/demo-settlement.mjs",

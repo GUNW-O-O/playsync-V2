@@ -181,7 +181,7 @@ services:
   # `docker stats`로 확인한다.
   k6:
     profiles: ["k6"]
-    image: grafana/k6:latest
+    image: grafana/k6:2.2.0
     container_name: playsync-k6
     cpus: 10
     environment:
