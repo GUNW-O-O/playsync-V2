@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # 대회 하나의 회선만 끊는 측정(T121).
 #
-# 대회 넷을 세운다 — 첫 대회에 N테이블, 나머지 셋에 10테이블씩(대조군). 첫 대회의 봇만
+# 첫 대회에 N테이블, 그 뒤 대회들에 대조군을 세운다 — 기본은 30테이블을 10테이블씩 셋
+# (`CONTROL` · `CONTROL_PER_STORE`로 바꾼다. 예: 556 + 444를 6씩이면 전체 1,000). 첫 대회의 봇만
 # 맡은 k6 컨테이너를 `docker pause`로 얼렸다 푼다. 프로세스만 얼어 종료 신호 없이 응답만
 # 사라지므로, 서버가 보는 모습이 회선이 말없이 끊긴 것과 같다. 봇이 소켓을 직접 닫으면
 # 서버가 그 자리에서 알아채 감지 지연을 못 잰다.
@@ -19,7 +20,9 @@
 # `[event]` 줄로 만든다. 환경변수 RATE(초당 착석 인원, 기본 8)는 kill-run.sh와 같다.
 set -u
 N=$1; DOWNS=$2; TAG=$3; BUILD=${4:-}
-CONTROL=30
+CONTROL=${CONTROL:-30}
+CONTROL_PER_STORE=${CONTROL_PER_STORE:-10}
+STORES=$(( 1 + (CONTROL + CONTROL_PER_STORE - 1) / CONTROL_PER_STORE ))
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=$ROOT/load/results/outage-$TAG
 cd "$ROOT"
@@ -51,10 +54,10 @@ else
 fi
 
 TOTAL=$(( N + CONTROL ))
-say "마이그레이션 + 시드 (대회 4, $TOTAL 테이블)"
+say "마이그레이션 + 시드 (대회 $STORES, $TOTAL 테이블)"
 export DATABASE_URL="postgresql://test:test@127.0.0.1:5433/playsync_test" REDIS_HOST=127.0.0.1 REDIS_PORT=6380 REDIS_PASSWORD=test
 (cd backend && npx prisma migrate deploy) >>"$OUT.log" 2>&1
-LOAD_STORES=4 LOAD_MAX_TABLES=$TOTAL npm run seed:load >>"$OUT.log" 2>&1 || { say "시드 실패"; exit 1; }
+LOAD_STORES=$STORES LOAD_MAX_TABLES=$TOTAL npm run seed:load >>"$OUT.log" 2>&1 || { say "시드 실패"; exit 1; }
 
 say "백엔드 재시작 (6코어로 착석)"
 docker restart $BE >/dev/null
@@ -65,7 +68,8 @@ for i in $(seq 1 120); do
   sleep 1
 done
 
-GROW=$(( N * 9 / ${RATE:-8} + 30 ))
+# 둘이 같은 창에 앉는다 — 합친 도착률이 RATE가 되게 전체 인원으로 잡는다.
+GROW=$(( TOTAL * 9 / ${RATE:-8} + 30 ))
 # 자리 비움과 지각을 끈다 — 켜 두면 평소의 시간 초과 폴드가 끊김이 만든 것과 섞인다.
 # KILL이면 kill 복구(최대 10분)와 그 뒤의 간격이 얹혀 고원이 더 길어야 한다.
 COMMON="-e LOAD_STEADY_S=$([ -n "${KILL:-}" ] && echo 3600 || echo 2400) -e LOAD_BREACH_STREAK=100000 -e LOAD_ABSENT_RATIO=0 -e LOAD_LATE_RATIO=0"
@@ -77,8 +81,8 @@ $C --profile load --profile k6 run --rm --name $VICTIM $COMMON \
 K6V=$!
 $C --profile load --profile k6 run --rm --name playsync-k6-control $COMMON \
   -e LOAD_START_TABLES=$CONTROL -e LOAD_STEP_TABLES=$CONTROL -e LOAD_MAX_TABLES=$CONTROL \
-  -e LOAD_TABLES_PER_STORE=10 -e LOAD_STORE_OFFSET=1 -e LOAD_TABLE_OFFSET=$N \
-  -e LOAD_START_GROW_S=60 -e LOAD_GROW_S=60 -e LOAD_RAMP_NAME=outage-$TAG-control \
+  -e LOAD_TABLES_PER_STORE=$CONTROL_PER_STORE -e LOAD_STORE_OFFSET=1 -e LOAD_TABLE_OFFSET=$N \
+  -e LOAD_START_GROW_S=$GROW -e LOAD_GROW_S=$GROW -e LOAD_RAMP_NAME=outage-$TAG-control \
   k6 run /load/scenarios/ramp.js >"$OUT-control.txt" 2>&1 &
 K6C=$!
 

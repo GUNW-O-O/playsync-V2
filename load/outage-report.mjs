@@ -95,7 +95,7 @@ const rows = [
   ['그 폴드로 잃은 칩 합계', `${lost(folds)}`],
   ['리바인 시간 초과 탈락 합계', `${rebuys.length}`],
   ['', ''],
-  ['[5] 대조군 (다른 세 대회, 같은 구간)', ''],
+  ['[5] 대조군 (다른 대회, 같은 구간)', ''],
   ['시간 초과 폴드: 구간 / 직전 같은 길이', `${count(others, 'timeout.fold')} / ${count(baseline, 'timeout.fold')}`],
   ['리바인 시간 초과: 구간 / 직전 같은 길이', `${count(others, 'rebuy.timeout')} / ${count(baseline, 'rebuy.timeout')}`],
   ['끊긴 소켓', `${count(others, 'ws.gone')}`],
