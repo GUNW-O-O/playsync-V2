@@ -47,8 +47,10 @@ function rebuyTimeoutMs(): number {
  * - `skipped`: 묻지 않았거나 반영할 수 없었다 — 포인트 부족, DB 거절(칩은 되돌렸다), 스냅샷·좌석 없음
  * - `interrupted`: Redis 장애나 회선 끊김이 창을 끊었다(T100 · T121). 아무것도 확정하지 않았다
  * - `deferred`: DB가 일시적으로 못 받았다(T118). 아무것도 확정하지 않았다
+ * - `dealerSilent`: 마감이 왔는데 그 테이블의 딜러가 답하지 않았다(T130). 회선이
+ *   끊겼는지 아직 모른다. 아무것도 확정하지 않았다
  */
-export type RebuyOutcome = 'applied' | 'declined' | 'timeout' | 'skipped' | 'interrupted' | 'deferred';
+export type RebuyOutcome = 'applied' | 'declined' | 'timeout' | 'skipped' | 'interrupted' | 'deferred' | 'dealerSilent';
 
 const REBUY_POINTS_SHORT = '포인트 부족 혹은 유저 없음';
 /**
@@ -927,7 +929,7 @@ export class PlaysyncService {
     generation: number,
     tournamentId: string,
     lineGeneration: number,
-  ): Promise<'accepted' | 'declined' | 'timeout' | 'interrupted'> {
+  ): Promise<'accepted' | 'declined' | 'timeout' | 'interrupted' | 'dealerSilent'> {
     const outage = this.redis.outage;
     const line = this.redis.linePause;
     // 이미 끊겼거나 이 판을 시작한 뒤 한 번 끊겼다 — 묻지 않는다. 물으면 답을
@@ -942,7 +944,7 @@ export class PlaysyncService {
       const timeoutMs = rebuyTimeoutMs();
       let settled = false;
 
-      const settle = (answer: 'accepted' | 'declined' | 'timeout' | 'interrupted') => {
+      const settle = (answer: 'accepted' | 'declined' | 'timeout' | 'interrupted' | 'dealerSilent') => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
@@ -956,9 +958,18 @@ export class PlaysyncService {
 
       const handler = (accept: boolean) => settle(accept ? 'accepted' : 'declined');
 
+      // **마감에 그 테이블의 딜러에게 묻는다**(T130). 답이 없으면 회선이 끊겼는지 아직
+      // 모른다 — 거절로 세면 끊긴 태블릿의 파산자가 탈락한다. 묻는 사이 도착한 수락은
+      // 그대로 받는다(`settle`은 한 번만 정한다).
       const timer = setTimeout(() => {
-        this.logger.log(`리바인 응답 시간초과 (user=${userId})`);
-        settle('timeout');
+        this.redis.dealerLiveness.confirm(tableId).then(
+          (alive) => {
+            if (!alive) this.logger.warn(`리바인 마감에 딜러가 답하지 않는다 — 미룬다 (table=${tableId}, user=${userId})`);
+            else this.logger.log(`리바인 응답 시간초과 (user=${userId})`);
+            settle(alive ? 'timeout' : 'dealerSilent');
+          },
+          () => settle('dealerSilent'),
+        );
       }, timeoutMs);
 
       // **장애가 오면 마감을 기다리지 않는다**(T100). 서버 타이머는 프로세스

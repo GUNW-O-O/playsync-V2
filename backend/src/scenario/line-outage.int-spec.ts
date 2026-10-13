@@ -1,6 +1,39 @@
 import { ActionType, GamePhase } from 'src/game-engine/types';
 import { checkInvariants, Harness, SCENARIO, setupTournament } from './harness';
 
+const PLAYERS = ['a', 'b', 'winner'];
+const STACKS: Record<string, number> = { a: 1000, b: 1000, winner: 10000 };
+
+async function until(pred: () => boolean | Promise<boolean>, ms = 8000) {
+  const start = Date.now();
+  while (!(await pred())) {
+    if (Date.now() - start > ms) throw new Error('until timeout');
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+const pointsOf = async (h: Harness, id: string) =>
+  (await h.prisma.user.findUniqueOrThrow({ where: { id } })).points;
+const statusOf = async (h: Harness, id: string) =>
+  (await h.prisma.tournamentParticipation.findFirstOrThrow({ where: { tournamentId: h.tournamentId, userId: id } })).status;
+
+async function bustAandB(h: Harness) {
+  const state = await h.snapshot();
+  for (const p of state.players) if (p) p.stack = STACKS[p.id];
+  await h.saveSnapshot(state);
+  await h.dealer.startPreFlop(h.tournamentId, h.tableId);
+  for (let guard = 0; guard < 20; guard++) {
+    const s = await h.snapshot();
+    if (s.phase === GamePhase.SHOWDOWN) break;
+    const id = h.turnId(s);
+    if (!id) break;
+    const me = s.players[h.seatOf(s, id)]!;
+    const target = Math.min(me.stack + me.bet, 1000);
+    const action = target > s.currentBet ? ActionType.RAISE : ActionType.CALL;
+    await h.playsync.handleAction(id, h.tableId,
+      { action, ...(action === ActionType.RAISE ? { amount: target } : {}) } as never);
+  }
+}
+
 /**
  * T121 — 리바인을 묻는 중에 대회장의 회선이 끊긴다.
  *
@@ -12,39 +45,6 @@ import { checkInvariants, Harness, SCENARIO, setupTournament } from './harness';
  * 부르는 것과 같다).
  */
 describe('시나리오 — 리바인 창에 회선이 끊긴다', () => {
-  const PLAYERS = ['a', 'b', 'winner'];
-  const STACKS: Record<string, number> = { a: 1000, b: 1000, winner: 10000 };
-
-  async function until(pred: () => boolean | Promise<boolean>, ms = 8000) {
-    const start = Date.now();
-    while (!(await pred())) {
-      if (Date.now() - start > ms) throw new Error('until timeout');
-      await new Promise((r) => setTimeout(r, 20));
-    }
-  }
-  const pointsOf = async (h: Harness, id: string) =>
-    (await h.prisma.user.findUniqueOrThrow({ where: { id } })).points;
-  const statusOf = async (h: Harness, id: string) =>
-    (await h.prisma.tournamentParticipation.findFirstOrThrow({ where: { tournamentId: h.tournamentId, userId: id } })).status;
-
-  async function bustAandB(h: Harness) {
-    const state = await h.snapshot();
-    for (const p of state.players) if (p) p.stack = STACKS[p.id];
-    await h.saveSnapshot(state);
-    await h.dealer.startPreFlop(h.tournamentId, h.tableId);
-    for (let guard = 0; guard < 20; guard++) {
-      const s = await h.snapshot();
-      if (s.phase === GamePhase.SHOWDOWN) break;
-      const id = h.turnId(s);
-      if (!id) break;
-      const me = s.players[h.seatOf(s, id)]!;
-      const target = Math.min(me.stack + me.bet, 1000);
-      const action = target > s.currentBet ? ActionType.RAISE : ActionType.CALL;
-      await h.playsync.handleAction(id, h.tableId,
-        { action, ...(action === ActionType.RAISE ? { amount: target } : {}) } as never);
-    }
-  }
-
   let h: Harness;
   let chips = STACKS.a + STACKS.b + STACKS.winner;
   const prompts: { userId: string; deadline: number }[] = [];
@@ -101,5 +101,94 @@ describe('시나리오 — 리바인 창에 회선이 끊긴다', () => {
     const after = await checkInvariants(h, '5. 재개 뒤 수락', chips);
     expect(`5. a스택 ${after.players[h.seatOf(after, 'a')]!.stack} a차감 ${aPoints - (await pointsOf(h, 'a'))} b상태 ${await statusOf(h, 'b')}`)
       .toBe(`5. a스택 ${SCENARIO.startStack} a차감 ${SCENARIO.entryFee} b상태 ELIMINATED`);
+  });
+});
+
+/**
+ * T130 — 리바인 마감이 왔는데 그 테이블의 딜러가 답하지 않는다. 회선이 끊겼는지 아직
+ * 모른다(청소가 알기까지 10~20초). 탈락시키지 않고 딜러의 재개 뒤에 다시 묻는다.
+ */
+describe('시나리오 — 리바인 마감에 딜러가 답하지 않는다', () => {
+  let h: Harness;
+  let chips = STACKS.a + STACKS.b + STACKS.winner;
+  const prompts: { userId: string; deadline: number }[] = [];
+  let dealerAnswers = false;
+  let detach: () => void;
+
+  beforeAll(async () => {
+    process.env.REBUY_TIMEOUT_MS = '1000';
+    h = await setupTournament(PLAYERS, { registrationOpen: true });
+    h.emitter.on('rebuy.request.sent', (p: { userId: string; deadline: number }) => { prompts.push(p); });
+    detach = h.redisService.dealerLiveness.attach(async () => dealerAnswers);
+  });
+  afterAll(async () => {
+    delete process.env.REBUY_TIMEOUT_MS;
+    detach();
+    await h.close();
+  });
+
+  it('1~3. 마감에 딜러가 답하지 않으면 탈락이 아니라 재개 대기다 — 재개 뒤 다시 묻는다', async () => {
+    await bustAandB(h);
+    await checkInvariants(h, '1. 쇼다운', chips);
+    const aPoints = await pointsOf(h, 'a');
+
+    let settled = false;
+    const settling = h.dealer.resolveWinners(h.tableId, h.tournamentId, [['winner']]).finally(() => { settled = true; });
+    await until(() => prompts.some(p => p.userId === 'a') && prompts.some(p => p.userId === 'b'));
+
+    // 2. 둘 다 답하지 않는다. 마감에 딜러도 답하지 않는다 → 둘 다 재개 대기
+    await until(async () => settled || (await h.snapshot()).resumePending !== undefined);
+    const paused = await checkInvariants(h, '2. 재개 대기', chips);
+    expect(`2. 사유 ${paused.resumePending?.reason} a상태 ${await statusOf(h, 'a')} b상태 ${await statusOf(h, 'b')} a포인트 ${await pointsOf(h, 'a') === aPoints}`)
+      .toBe('2. 사유 lineDown a상태 PLAYING b상태 PLAYING a포인트 true');
+
+    // 3. 딜러가 돌아와 재개 → 다시 묻는다. 이번에는 딜러가 답하므로 마감이 거절로 센다
+    dealerAnswers = true;
+    await h.dealer.resumeTable(h.tableId);
+    await settling;
+    expect(`3. a묻기 ${prompts.filter(p => p.userId === 'a').length} a상태 ${await statusOf(h, 'a')} b상태 ${await statusOf(h, 'b')}`)
+      .toBe('3. a묻기 2 a상태 ELIMINATED b상태 ELIMINATED');
+  });
+
+});
+
+/**
+ * Review Focus 4 — 마감 직후, 딜러를 확인하는 사이 수락이 도착했다. 그 사람의 의사다.
+ * `settle`은 한 번만 정하므로 수락이 이기고, 확인의 false는 버려진다.
+ */
+describe('시나리오 — 딜러를 확인하는 사이 리바인 수락이 도착한다', () => {
+  let h: Harness;
+  let chips = STACKS.a + STACKS.b + STACKS.winner;
+  let detach: () => void;
+
+  beforeAll(async () => {
+    process.env.REBUY_TIMEOUT_MS = '1000';
+    h = await setupTournament(PLAYERS, { registrationOpen: true });
+    // b는 묻자마자 거절한다 — 이 검사는 a만 본다.
+    h.emitter.on('rebuy.request.sent', ({ userId }: { userId: string }) => {
+      if (userId === 'b') setImmediate(() => h.emitter.emit('rebuy_res_b', false));
+    });
+    // 마감의 확인 도중 a의 수락이 도착하고, 확인 자체는 「답 없음」으로 끝난다.
+    detach = h.redisService.dealerLiveness.attach(async () => {
+      h.emitter.emit('rebuy_res_a', true);
+      await new Promise((r) => setTimeout(r, 20));
+      return false;
+    });
+  });
+  afterAll(async () => {
+    delete process.env.REBUY_TIMEOUT_MS;
+    detach();
+    await h.close();
+  });
+
+  it('수락이 반영되고 재개 대기로 가지 않는다', async () => {
+    await bustAandB(h);
+    const aPoints = await pointsOf(h, 'a');
+    await h.dealer.resolveWinners(h.tableId, h.tournamentId, [['winner']]);
+
+    chips += SCENARIO.startStack;
+    const after = await checkInvariants(h, '수락 뒤', chips);
+    expect(`대기 ${after.resumePending === undefined} a스택 ${after.players[h.seatOf(after, 'a')]!.stack} a차감 ${aPoints - (await pointsOf(h, 'a'))} a상태 ${await statusOf(h, 'a')}`)
+      .toBe(`대기 true a스택 ${SCENARIO.startStack} a차감 ${SCENARIO.entryFee} a상태 PLAYING`);
   });
 });

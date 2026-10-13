@@ -614,14 +614,16 @@ export class DealerService {
         const generation = outage.generation;
         const lineGeneration = this.redis.linePause.generationOf(tournamentId);
         const outcomes = await this.askRebuyRound(tournamentId, tableId, asked, tournamentInfo, generation, lineGeneration);
-        // `deferred`(DB의 일시 실패, T118)도 같은 길을 탄다 — 확정하지 않고
-        // 딜러의 재개 뒤에 다시 묻는다.
-        const interrupted = asked.filter((_, i) => outcomes[i] === 'interrupted' || outcomes[i] === 'deferred');
+        // `deferred`(DB의 일시 실패, T118)와 `dealerSilent`(마감에 딜러가 답하지 않았다,
+        // T130)도 같은 길을 탄다 — 확정하지 않고 딜러의 재개 뒤에 다시 묻는다.
+        const interrupted = asked.filter((_, i) =>
+          outcomes[i] === 'interrupted' || outcomes[i] === 'deferred' || outcomes[i] === 'dealerSilent');
         if (interrupted.length === 0) break;
         // 서버가 멈춘 것이 아니면 화면이 「N초 멈췄다」 대신 그 원인을 적는다 — 회선이
-        // 끊겼거나(T121, 이 판 사이에 회선 세대가 올랐다) 일시 오류다. `isDown`이 아니라
-        // 세대로 가른다 — 그새 대회가 풀렸어도 이 판을 끊은 것은 회선이다.
-        const reason = this.redis.linePause.generationOf(tournamentId) !== lineGeneration
+        // 끊겼거나(T121, 이 판 사이에 회선 세대가 올랐다 · T130, 마감에 딜러가 답하지
+        // 않았다) 일시 오류다. `isDown`이 아니라 세대로 가른다 — 그새 대회가 풀렸어도
+        // 이 판을 끊은 것은 회선이다.
+        const reason = this.redis.linePause.generationOf(tournamentId) !== lineGeneration || outcomes.includes('dealerSilent')
           ? 'lineDown' as const
           : outcomes.includes('interrupted') ? undefined : 'transientError' as const;
 
