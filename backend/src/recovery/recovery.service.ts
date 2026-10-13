@@ -188,8 +188,8 @@ export class RecoveryService implements OnApplicationBootstrap, OnModuleDestroy 
    * 게이트웨이가 재집계와 같은 줄 안에서 부른다(`WsGateway.pauseIfNoDealer`).
    *
    * @param pausedAt 마지막 딜러가 마지막으로 응답한 시각. 서버가 끊김을 아는 데
-   *   시간이 걸리므로 지금보다 과거다 — 딜러 빠른 확인(`DEALER_PROBE_MS`, 연달아 두 번
-   *   침묵)이면 4~6초, 청소(`WsGateway.sweepSockets`)가 끊은 소켓이면 10~20초다.
+   *   시간이 걸리므로 지금보다 과거다 — 청소(`WsGateway.sweepSockets`)가 끊은 소켓이면
+   *   10~20초다. 그동안 접힌 사람은 없다 — 접기 직전에 딜러를 확인한다(T130).
    * @returns 이 호출이 멈췄으면 true
    */
   async pauseForLineOutage(tournamentId: string, pausedAt: Date): Promise<boolean> {
