@@ -12,6 +12,7 @@ import {
 } from "src/store/session/registration";
 import { outageOf, RedisOutage } from "./outage";
 import { LinePause, linePauseOf } from "./line-pause";
+import { DealerLiveness, dealerLivenessOf } from "./dealer-liveness";
 
 /**
  * pipeline을 돌리고 **하나라도 실패했으면 던진다**(T104 · T105).
@@ -40,10 +41,16 @@ export class RedisService {
    * 서비스 생성자를 늘리지 않고, `RedisService`가 둘인 배선에서도 한 상태를 본다.
    */
   readonly linePause: LinePause;
+  /**
+   * 접기 직전의 딜러 확인(T130). `linePause`와 같은 이유로 여기 둔다 — 게이트웨이가 걸고
+   * 타임아웃 워커와 리바인 대기가 묻는다.
+   */
+  readonly dealerLiveness: DealerLiveness;
 
   constructor(@Inject('REDIS_CLIENT') private readonly redis: Redis) {
     this.outage = outageOf(redis);
     this.linePause = linePauseOf(redis);
+    this.dealerLiveness = dealerLivenessOf(redis);
   }
 
   private getInfoKey(id: string) {
