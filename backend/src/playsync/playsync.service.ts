@@ -39,7 +39,7 @@ function rebuyTimeoutMs(): number {
 
 /**
  * 리바인 한 사람의 결과(T100). 금액이 아니라 **다시 물을지**를 가르는 값이다 —
- * `DealerService.askRebuys`가 `interrupted`와 `deferred`를 딜러의 재개 뒤에 다시 묻는다.
+ * `DealerService.askRebuys`가 `interrupted` · `deferred` · `dealerSilent`를 딜러의 재개 뒤에 다시 묻는다.
  *
  * - `applied`: 칩이 들어가고 돈이 빠졌다
  * - `declined`: 본인이 거절했다(게이트웨이는 up일 때만 응답을 받는다)
@@ -913,7 +913,8 @@ export class PlaysyncService {
   }
 
   /**
-   * 리바인 팝업을 띄우고 응답 하나를 기다린다. 시간이 지나면 거절로 본다.
+   * 리바인 팝업을 띄우고 응답 하나를 기다린다. 마감에는 그 테이블의 딜러에게 묻는다 —
+   * 답하면 timeout(거절), 답이 없으면 `dealerSilent`(T130).
    *
    * executor에 `async`를 붙이지 않는다. 붙이면 안에서 던진 예외가 아무도 받지
    * 않는 rejected promise로 사라지고, 이 Promise는 영영 pending으로 남는다.

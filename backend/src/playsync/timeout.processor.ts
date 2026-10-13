@@ -17,6 +17,7 @@ export const TIMEOUT_HOLD_MS = 2_000;
  * 부팅 복구는 그 뒤에 테이블을 하나씩 멈춰 세워, 아직 안 멈춘 테이블의 사람이 접혔다 —
  * 667테이블 kill에서 118건. 복구가 끝난 뒤에 집으면 그 잡은 세대가 낡아 스스로 버려진다.
  */
+// ponytail: 워커 동시성 1 — 열린 채 답 없는 딜러 소켓이 있는 테이블마다 확인이 최대 1.5초씩 줄을 막는다. 한 대회장의 회선이 끊긴 10~20초(청소가 소켓을 끊기 전) 동안 다른 대회의 시간 초과가 늦어질 수 있다(틀리지는 않는다). 늘리려면 concurrency를 올린다 — handleAction이 테이블 락과 세대로 막는다.
 @Processor('player-timeout', { autorun: false })
 export class TimeoutProcessor extends WorkerHost implements OnApplicationBootstrap {
   constructor(private readonly playsyncService: PlaysyncService,
@@ -47,7 +48,8 @@ export class TimeoutProcessor extends WorkerHost implements OnApplicationBootstr
     // **접기 직전에 그 테이블의 딜러에게 묻는다**(T130). 답이 없으면 회선이 끊겼는지
     // 딜러 태블릿만 꺼졌는지 아직 모른다 — 모르는 동안에는 접지 않는다. 같은 id로
     // 미뤄 두므로 플레이어가 누르면 `removeTimeoutJob`이 그대로 지운다.
-    if (!(await this.redis.dealerLiveness.confirm(tableId))) {
+    // 확인이 던지면 「답 없음」으로 본다 — 잡이 실패로 끝나면(`removeOnFail`) 차례에 타이머가 없다.
+    if (!(await this.redis.dealerLiveness.confirm(tableId).catch(() => false))) {
       await job.moveToDelayed(Date.now() + TIMEOUT_HOLD_MS, token);
       throw new DelayedError();
     }

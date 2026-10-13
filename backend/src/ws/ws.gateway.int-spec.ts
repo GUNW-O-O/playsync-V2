@@ -16,6 +16,7 @@ import { PrismaClient, Role, TournamentStatus } from '@prisma/client';
 import { createTestRedis, flushTestRedis } from '../../test/helpers/redis';
 import { closeTestPrisma, createTestPrisma, truncateAll } from '../../test/helpers/prisma';
 import { RecoveryService } from 'src/recovery/recovery.service';
+import { DEALER_CONFIRM_MS } from './keepalive';
 import { DEALER_REVOKED_REASON, SERVER_OUTAGE_EVENT, SERVER_RECOVERING_MESSAGE, TOURNAMENT_SYNCING_EVENT } from '@playsync/contract';
 
 // 재집계 보류 창(T117)은 SyncQueue 단위 검사가 맡는다. 통합 검사는 `connect` 직후 결과를
@@ -1835,6 +1836,9 @@ describe('WsGateway 인바운드 경계', () => {
         /** 청소 한 틱 — 줄에 선 판정까지 기다린다. */
         const sweepOnce = async () => { gateway.sweepSockets(); await (gateway as any).syncQueue.enqueue(TOURNAMENT, async () => {}); };
 
+        // 게이트웨이는 파일 전체가 하나다 — 줄인 확인 시간을 되돌린다.
+        afterEach(() => { (gateway as any).dealerConfirmMs = DEALER_CONFIRM_MS; });
+
         it('그 테이블 딜러가 확인 안에 답하면 true다', async () => {
           await seedSyncingTournament(TournamentStatus.ONGOING);
           await seedSeats();
@@ -1854,6 +1858,19 @@ describe('WsGateway 인바운드 경계', () => {
           (gateway as any).dealerConfirmMs = 50;
 
           expect(`답 ${await gateway.confirmDealer(TABLE)} 끊음 ${dealerClient.terminate.mock.calls.length}`).toBe('답 false 끊음 0');
+        });
+
+        /** 새로고침 직후처럼 딜러 소켓이 둘 — 하나만 답해도 true다. 「모두 답해야」 구현이 걸린다. */
+        it('딜러 소켓이 둘이고 하나만 답해도 true다', async () => {
+          await seedSyncingTournament(TournamentStatus.ONGOING);
+          await seedSeats();
+          const live = await connect(await dealerTicket(TABLE), TABLE);
+          live.ping = jest.fn(() => setImmediate(() => pong(live)));
+          const silent = await connect(await dealerTicket(TABLE), TABLE);
+          silent.ping = jest.fn();
+          (gateway as any).dealerConfirmMs = 50;
+
+          expect(`답 ${await gateway.confirmDealer(TABLE)}`).toBe('답 true');
         });
 
         /** 딜러 태블릿이 꺼진 테이블 — 물을 소켓이 없다. 좌석 소켓은 딜러가 아니다. */

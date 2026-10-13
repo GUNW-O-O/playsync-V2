@@ -754,26 +754,35 @@ export class WsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnMo
 
   /**
    * 그 테이블의 딜러가 지금 답하나(T130). 턴 · 리바인 시간 초과가 사람을 접기 **직전에**
-   * 묻는다(`DealerLiveness`). 답이 없으면 접지 않는다 — 회선이 끊겼는지 아직 모르는
-   * 동안에도 아무도 안 접힌다.
+   * 묻는다(`DealerLiveness`). 답이 없으면 시간 초과 잡은 접지 않는다 — 회선이 끊겼는지
+   * 아직 모르는 동안 잡이 사람을 접지 않는다. (마감 뒤에 직접 누른 사람은 `handleAction`의
+   * `isExpired`가 여전히 접는다.)
    *
    * **그 테이블의 딜러만 본다.** 딜러 태블릿 하나가 꺼지면 그 테이블만 서고 나머지는
    * 돈다. 회선이 끊기면 테이블이 하나씩 서다가, 청소(`sweepSockets`)가 딜러 소켓을 전부
    * 끊으면 `pauseIfNoDealer`가 대회를 멈춘다.
    *
-   * 끊지 않는다. 열린 딜러 소켓이 여럿이면(새로고침 직후) 하나라도 답하면 true다.
+   * 끊지 않는다. 열린 딜러 소켓이 여럿이면(새로고침 직후) 하나라도 답하면 true다 —
+   * 첫 답에서 바로 끝나므로 반쯤 죽은 중복 소켓이 확인을 늦추지 않는다.
    */
   async confirmDealer(tableId: string): Promise<boolean> {
     const dealers = [...(this.tableSessions.get(tableId) ?? [])].filter(
       (s: any) => s.role === Role.DEALER && s.readyState === WebSocket.OPEN,
     );
     if (dealers.length === 0) return false;
-    const answers = await Promise.all(dealers.map((s) => awaitPong(s as any, this.dealerConfirmMs)));
-    return answers.some(Boolean);
+    return new Promise<boolean>((resolve) => {
+      let left = dealers.length;
+      for (const s of dealers) {
+        awaitPong(s as any, this.dealerConfirmMs).then(
+          (ok) => (ok ? resolve(true) : --left === 0 && resolve(false)),
+          () => --left === 0 && resolve(false),
+        );
+      }
+    });
   }
 
   /**
-   * 그 대회에 **답하고 있는** 딜러 소켓이 하나라도 있나. 빈 테이블의 딜러도 센다 — 회선이
+   * 그 대회에 열려 있는 딜러 소켓이 하나라도 있나. 빈 테이블의 딜러도 센다 — 회선이
    * 살아 있다는 증거다.
    */
   private hasDealer(tournamentId: string): boolean {
