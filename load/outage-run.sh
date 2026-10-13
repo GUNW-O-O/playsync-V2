@@ -68,7 +68,7 @@ done
 GROW=$(( N * 9 / ${RATE:-8} + 30 ))
 # 자리 비움과 지각을 끈다 — 켜 두면 평소의 시간 초과 폴드가 끊김이 만든 것과 섞인다.
 # KILL이면 kill 복구(최대 10분)와 그 뒤의 간격이 얹혀 고원이 더 길어야 한다.
-COMMON="-e LOAD_STEADY_S=$([ -n "${KILL:-}" ] && echo 3600 || echo 2400)-e LOAD_BREACH_STREAK=100000 -e LOAD_ABSENT_RATIO=0 -e LOAD_LATE_RATIO=0"
+COMMON="-e LOAD_STEADY_S=$([ -n "${KILL:-}" ] && echo 3600 || echo 2400) -e LOAD_BREACH_STREAK=100000 -e LOAD_ABSENT_RATIO=0 -e LOAD_LATE_RATIO=0"
 say "k6 둘 시작 (증설 ${GROW}초)"
 $C --profile load --profile k6 run --rm --name $VICTIM $COMMON \
   -e LOAD_START_TABLES=$N -e LOAD_STEP_TABLES=$N -e LOAD_MAX_TABLES=$N \
