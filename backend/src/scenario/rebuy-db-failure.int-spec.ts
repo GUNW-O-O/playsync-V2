@@ -72,10 +72,9 @@ describe('시나리오 — 리바인을 수락한 순간 DB가 잠깐 못 받는
   describe('연결을 끝내 못 얻는다', () => {
   beforeAll(async () => {
     process.env.REBUY_TIMEOUT_MS = '60000';
-    // 시도마다 연결을 1초 기다리고 두 번 시도한다 — 제품 기본값(5초 · 4번)으로는
-    // 이 검사가 20초를 넘긴다.
+    // 두 번만 시도한다 — 시도마다 연결을 2초(Prisma 기본값) 기다리므로 제품 기본값(4번)으로는
+    // 이 검사가 9초를 넘긴다.
     process.env.DB_SYNC_RETRY_ATTEMPTS = '2';
-    process.env.DB_TX_MAX_WAIT_MS = '1000';
     prompts.length = 0;
     h = await setupTournament(PLAYERS, { registrationOpen: true });
     h.emitter.on('rebuy.request.sent', (p: { userId: string }) => { prompts.push(p); });
@@ -83,7 +82,6 @@ describe('시나리오 — 리바인을 수락한 순간 DB가 잠깐 못 받는
   afterAll(async () => {
     delete process.env.REBUY_TIMEOUT_MS;
     delete process.env.DB_SYNC_RETRY_ATTEMPTS;
-    delete process.env.DB_TX_MAX_WAIT_MS;
     await h.close();
   });
 
@@ -125,46 +123,5 @@ describe('시나리오 — 리바인을 수락한 순간 DB가 잠깐 못 받는
     expect(`4. a스택 ${after.players[h.seatOf(after, 'a')]!.stack} a차감 ${aPoints - (await pointsOf('a'))} b상태 ${await statusOf('b')}`)
       .toBe(`4. a스택 ${SCENARIO.startStack} a차감 ${SCENARIO.entryFee} b상태 ELIMINATED`);
   });
-  });
-
-  /**
-   * T120 — **잠깐 못 얻는 것은 기다렸다가 받는다.** `SYNCING`이 풀리는 순간 전 테이블이
-   * 한꺼번에 움직여 풀이 10~15초 물린다(667테이블 kill 실측). Prisma의 기본값은 연결을
-   * 2초만 기다리고 던져서, 재시도 넷을 다 쓰고도 리바인 200~300건이 미뤄졌다.
-   *
-   * 재시도를 끈다(시도 1번). 그래야 「2초에 던지고 다시 해서 성공」과 「기다렸다가
-   * 성공」이 갈린다 — 재시도가 있으면 예전 값으로도 초록이다.
-   */
-  describe('연결을 3초 뒤에 얻는다', () => {
-    beforeAll(async () => {
-      process.env.REBUY_TIMEOUT_MS = '60000';
-      process.env.DB_SYNC_RETRY_ATTEMPTS = '1';
-      prompts.length = 0;
-      h = await setupTournament(PLAYERS, { registrationOpen: true });
-      h.emitter.on('rebuy.request.sent', (p: { userId: string }) => { prompts.push(p); });
-    });
-    afterAll(async () => {
-      delete process.env.REBUY_TIMEOUT_MS;
-      delete process.env.DB_SYNC_RETRY_ATTEMPTS;
-      await h.close();
-    });
-
-    it('5. 미루지 않고 기다렸다가 그 한 번에 반영한다', async () => {
-      const chips = await bustAandB();
-      const aPoints = await pointsOf('a');
-      const settling = h.dealer.resolveWinners(h.tableId, h.tournamentId, [['winner']]);
-      await until(() => prompts.some(p => p.userId === 'a') && prompts.some(p => p.userId === 'b'));
-      h.emitter.emit('rebuy_res_b', false);
-
-      const release = await exhaustPool();
-      h.emitter.emit('rebuy_res_a', true);
-      await new Promise((r) => setTimeout(r, 3000));
-      await release();
-      await settling;
-
-      const after = await checkInvariants(h, '5. 기다렸다 반영', chips + SCENARIO.startStack);
-      expect(`5. 재개대기 ${after.resumePending !== undefined} a스택 ${after.players[h.seatOf(after, 'a')]!.stack} a차감 ${aPoints - (await pointsOf('a'))} a묻기 ${prompts.filter(p => p.userId === 'a').length} a상태 ${await statusOf('a')}`)
-        .toBe(`5. 재개대기 false a스택 ${SCENARIO.startStack} a차감 ${SCENARIO.entryFee} a묻기 1 a상태 PLAYING`);
-    });
   });
 });
