@@ -13,26 +13,11 @@ import { Pool } from 'pg';
 // 적용되고 타입은 그대로 남는다 — 실제로 겪은 문제였다. 여기서 명시한다.
 type PrismaClientOptionsWithSecretOmit = {
   adapter: PrismaPg;
-  transactionOptions: { maxWait: number };
   omit: {
     tournamentParticipation: { playerOtp: true };
     tournament: { dealerOtpHash: true };
   };
 };
-
-/**
- * 트랜잭션이 연결을 기다리는 시간(`DB_TX_MAX_WAIT_MS`, 기본 5초). Prisma의 기본값은 2초다.
- *
- * **잠깐 물린 풀은 기다렸다가 받는다**(T120). 재기동 뒤 `SYNCING`이 풀리면 전 테이블이
- * 한꺼번에 움직여 풀이 10~15초 물린다 — 평소에는 없는 몰림이다. 2초에 던지면 재시도
- * 넷(합쳐 약 9초)을 다 쓰고도 못 넘겨, 667테이블 kill에서 리바인 200~300건이 미뤄지고
- * 체크포인트 40~80건이 실패했다. 5초면 재시도 넷이 약 22초를 버틴다.
- *
- * 테스트 클라이언트(`test/helpers/prisma.ts`)도 이 값을 쓴다 — 제품과 설정이 같아야 한다.
- */
-export function txMaxWaitMs(env: Record<string, string | undefined> = process.env): number {
-  return Number(env.DB_TX_MAX_WAIT_MS ?? 5000);
-}
 
 @Injectable()
 export class PrismaService
@@ -54,9 +39,11 @@ export class PrismaService
     const pool = new Pool({ connectionString, max: Number(process.env.PG_POOL_MAX ?? 20) });
     const adapter = new PrismaPg(pool);
     // const adapter = new PrismaPg({ url: process.env.DATABASE_URL });
+    // 트랜잭션이 연결을 기다리는 시간은 Prisma 기본값(2초)이다(T131). T120이 5초로 올렸던
+    // 근거(667테이블 kill에서 리바인 미룸 200~300건)는 딜러 전원이 한 순간에 누르던 봇이
+    // 만든 몰림이었다 — 사람처럼 흩은 봇으로는 대회 75개 kill에서 2초로도 미룸 · P2028이 0이다.
     super({
       adapter,
-      transactionOptions: { maxWait: txMaxWaitMs() },
       // **비밀은 호출부 규율이 아니라 여기서 감춘다.**
       //
       // 참가 OTP는 평문이고 참가자 전원의 값이 한 테이블에 있다. 상점 콘솔의
